@@ -96,19 +96,4 @@ Essential features for system security that must be implemented:
   - 즉시 UI 상태 업데이트
   - 4가지 시나리오 모두 지원 (주문 유무 조합)
 
-If edits are required, they must be done in a separate branch and reviewed, or run with `ALLOW_MOVE_MERGE_EDITS=1` for one-off commits (not recommended).
-
-- Online/Togo Order List & Modal (완성됨 - 2025-12-28):
-  - `frontend/src/pages/SalesPage.tsx` (온라인/투고 주문 목록 버튼 및 모달 관련 코드)
-  
-  **보호 범위:**
-  - 온라인 주문 목록 버튼 (테이블맵 오른쪽 영역)
-  - 온라인 주문 목록 모달 (OrderDetailModal)
-  - 투고 주문 목록 버튼 (테이블맵 오른쪽 영역)
-  - 투고 주문 목록 모달 (OrderDetailModal)
-  - 픽업시간 오름차순 정렬 로직
-  - Payment 연동 및 Pickup Complete 처리
-  - Auto/Manual 주문 수락 기능 (Prep Time 설정)
-  - SSE 실시간 주문 알림
-
-  **수정 필요 시:** 반드시 사용자의 명시적 승인을 받아야 함 
+If edits are required, they must be done in a separate branch and reviewed, or run with `ALLOW_MOVE_MERGE_EDITS=1` for one-off commits (not recommended). 
