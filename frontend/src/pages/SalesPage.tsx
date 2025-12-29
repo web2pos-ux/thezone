@@ -1318,18 +1318,41 @@ const SalesPage: React.FC = () => {
         fullOrder: o, // 전체 데이터 보관
         // 추가 필드
         placedTime: o.createdAt,
-        // Firebase Timestamp 객체를 Date로 변환
+        // Firebase Timestamp 객체를 Date로 변환, 없으면 createdAt + 20분
         pickupTime: (() => {
           const pt = o.pickupTime || o.readyTime;
-          if (!pt) return null;
-          if (pt._seconds) return new Date(pt._seconds * 1000);
-          if (pt.seconds) return new Date(pt.seconds * 1000);
-          return pt;
+          if (pt) {
+            if (pt._seconds) return new Date(pt._seconds * 1000);
+            if (pt.seconds) return new Date(pt.seconds * 1000);
+            const d = new Date(pt);
+            if (!isNaN(d.getTime())) return d;
+          }
+          // pickupTime 없으면 createdAt + 20분으로 계산
+          const created = o.createdAt;
+          if (created) {
+            let createdDate: Date;
+            if (created._seconds) createdDate = new Date(created._seconds * 1000);
+            else if (created.seconds) createdDate = new Date(created.seconds * 1000);
+            else createdDate = new Date(created);
+            if (!isNaN(createdDate.getTime())) {
+              return new Date(createdDate.getTime() + 20 * 60000); // +20분
+            }
+          }
+          return null;
         })(),
         total: o.total || 0,
         sequenceNumber: idx + 1,
         status: o.status || 'pending' // Firebase에서 가져온 상태
       }));
+      
+      // 디버깅: pickupTime 확인
+      if (mappedCards.length > 0) {
+        console.log('[DEBUG] First online order pickupTime:', {
+          raw: filteredOrders[0]?.pickupTime,
+          parsed: mappedCards[0]?.pickupTime,
+          status: filteredOrders[0]?.status
+        });
+      }
       
       // 새 주문 감지 (pending 상태이고 이전에 없던 주문)
       const currentOrderIds = filteredOrders.map((o: any) => o.id);
@@ -1338,13 +1361,34 @@ const SalesPage: React.FC = () => {
         !previousOnlineOrdersRef.current.includes(o.id)
       );
       
-      // Manual 모드일 때만 새 주문 알림 표시
-      if (pendingOrders.length > 0 && prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
-        const newOrder = pendingOrders[0]; // 첫 번째 새 주문
-        setNewOrderAlertData(newOrder);
-        setSelectedPrepTime(20); // 기본 20분
-        setShowNewOrderAlert(true);
-        console.log('[loadOnlineOrders] New order detected (manual mode):', newOrder.id);
+      // 새 주문 처리
+      if (pendingOrders.length > 0) {
+        const newOrder = pendingOrders[0];
+        
+        if (prepTimeSettings.thezoneorder.mode === 'auto') {
+          // Auto 모드: 자동 수락 (모달 없음)
+          const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
+          const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+          const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+          
+          console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
+          
+          fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prepTime: prepMinutes, pickupTime })
+          }).then(() => {
+            console.log('[loadOnlineOrders] Order auto-accepted:', newOrder.id);
+          }).catch(err => {
+            console.error('[loadOnlineOrders] Auto accept failed:', err);
+          });
+        } else if (prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+          // Manual 모드: 알림 모달 표시
+          setNewOrderAlertData(newOrder);
+          setSelectedPrepTime(20);
+          setShowNewOrderAlert(true);
+          console.log('[loadOnlineOrders] New order detected (manual mode):', newOrder.id);
+        }
       }
       
       // 이전 주문 ID 목록 업데이트
@@ -7175,7 +7219,15 @@ const SalesPage: React.FC = () => {
                             const d = new Date(pt);
                             return isNaN(d.getTime()) ? null : d;
                           };
-                          const pt = parsePT(selectedOrderDetail.pickupTime) || parsePT(selectedOrderDetail.fullOrder?.pickupTime);
+                          let pt = parsePT(selectedOrderDetail.pickupTime) || parsePT(selectedOrderDetail.fullOrder?.pickupTime);
+                          // pickupTime 없으면 createdAt/placedTime + 20분
+                          if (!pt) {
+                            const created = selectedOrderDetail.placedTime || selectedOrderDetail.fullOrder?.createdAt;
+                            const createdDate = parsePT(created);
+                            if (createdDate) {
+                              pt = new Date(createdDate.getTime() + 20 * 60000);
+                            }
+                          }
                           if (pt) return pt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
                           if (selectedOrderDetail.readyTimeLabel && selectedOrderDetail.readyTimeLabel !== 'ASAP') return selectedOrderDetail.readyTimeLabel;
                           return '--:--';

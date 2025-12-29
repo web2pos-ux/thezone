@@ -478,6 +478,8 @@ router.post('/order/:orderId/accept', async (req, res) => {
 
     const { orderId } = req.params;
     const { prepTime, pickupTime } = req.body;
+    
+    console.log(`[ACCEPT] orderId: ${orderId}, prepTime: ${prepTime}, pickupTime: ${pickupTime}`);
 
     // Firebase 상태 업데이트 (confirmed + pickupTime)
     const result = await firebaseService.acceptOrder(orderId, prepTime, pickupTime);
