@@ -364,6 +364,21 @@ const SalesPage: React.FC = () => {
   // Online Settings modal state (Prep Time, Pause, Day Off tabs)
   const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
   const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff'>('preptime');
+  
+  // Pause 설정 state (각 채널별 pause 상태와 남은 시간)
+  const [pauseSettings, setPauseSettings] = useState<{
+    thezoneorder: { paused: boolean; pauseUntil: Date | null };
+    ubereats: { paused: boolean; pauseUntil: Date | null };
+    doordash: { paused: boolean; pauseUntil: Date | null };
+    skipthedishes: { paused: boolean; pauseUntil: Date | null };
+  }>({
+    thezoneorder: { paused: false, pauseUntil: null },
+    ubereats: { paused: false, pauseUntil: null },
+    doordash: { paused: false, pauseUntil: null },
+    skipthedishes: { paused: false, pauseUntil: null },
+  });
+  const [selectedPauseDuration, setSelectedPauseDuration] = useState<string | null>(null);
+  
   const [prepTimeSettings, setPrepTimeSettings] = useState<{
     thezoneorder: { mode: 'auto' | 'manual'; time: string };
     ubereats: { mode: 'auto' | 'manual'; time: string };
@@ -6178,10 +6193,152 @@ const SalesPage: React.FC = () => {
                 
                 {/* Pause Tab */}
                 {onlineModalTab === 'pause' && (
-                  <div className="flex flex-col items-center justify-center h-full py-12">
-                    <div className="text-5xl mb-4">⏸️</div>
-                    <div className="text-lg font-semibold text-gray-700 mb-2">Pause Settings</div>
-                    <div className="text-sm text-gray-500">Coming soon...</div>
+                  <div className="space-y-4">
+                    {/* 현재 시간 & Pause 종료 시간 */}
+                    <div className="flex items-center justify-between p-3 bg-slate-100 rounded-lg">
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500">Now</div>
+                        <div className="text-lg font-bold text-gray-800">{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
+                      </div>
+                      <div className="text-2xl text-gray-400">→</div>
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500">Resume at</div>
+                        <div className="text-lg font-bold text-orange-600">
+                          {(() => {
+                            const pausedChannels = (['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).filter(ch => pauseSettings[ch].pauseUntil);
+                            if (pausedChannels.length > 0 && pauseSettings[pausedChannels[0]].pauseUntil) {
+                              return pauseSettings[pausedChannels[0]].pauseUntil!.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                            }
+                            return '--:--';
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* 채널 선택 */}
+                    <div className="p-4 bg-gray-50 rounded-lg border">
+                      <div className="text-sm font-semibold text-gray-600 mb-3">Select Channels</div>
+                      <div className="grid grid-cols-5 gap-2">
+                        <button
+                          onClick={() => {
+                            const allSelected = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused);
+                            setPauseSettings(prev => ({
+                              thezoneorder: { ...prev.thezoneorder, paused: !allSelected },
+                              ubereats: { ...prev.ubereats, paused: !allSelected },
+                              doordash: { ...prev.doordash, paused: !allSelected },
+                              skipthedishes: { ...prev.skipthedishes, paused: !allSelected },
+                            }));
+                          }}
+                          className={`p-3 rounded-lg text-sm font-bold transition-all border-2 ${
+                            ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused)
+                              ? 'bg-gray-700 text-white border-gray-800'
+                              : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          All
+                        </button>
+                        {(['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).map((channel) => {
+                          const labels = { thezoneorder: 'TZO', ubereats: 'Uber', doordash: 'Door', skipthedishes: 'Skip' };
+                          const isSelected = pauseSettings[channel].paused;
+                          return (
+                            <button
+                              key={channel}
+                              onClick={() => setPauseSettings(prev => ({ ...prev, [channel]: { ...prev[channel], paused: !prev[channel].paused } }))}
+                              className={`p-3 rounded-lg text-sm font-bold transition-all border-2 ${isSelected ? 'bg-orange-500 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'}`}
+                            >
+                              {labels[channel]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    
+                    {/* Pause 시간 선택 */}
+                    <div className="p-4 bg-gray-50 rounded-lg border">
+                      <div className="text-sm font-semibold text-gray-600 mb-3">Pause Duration</div>
+                      <div className="grid grid-cols-5 gap-2 mb-2">
+                        {[
+                          { label: '15m', min: 15 },
+                          { label: '30m', min: 30 },
+                          { label: '1h', min: 60 },
+                          { label: '2h', min: 120 },
+                          { label: '3h', min: 180 },
+                        ].map(({ label, min }) => (
+                          <button
+                            key={label}
+                            onClick={() => {
+                              setSelectedPauseDuration(label);
+                              const pauseUntil = new Date(Date.now() + min * 60000);
+                              setPauseSettings(prev => {
+                                const updated = { ...prev };
+                                (['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).forEach((ch) => {
+                                  if (prev[ch].paused) {
+                                    updated[ch] = { paused: true, pauseUntil };
+                                  }
+                                });
+                                return updated;
+                              });
+                            }}
+                            className={`py-3 rounded-lg text-sm font-bold transition-all border-2 ${
+                              selectedPauseDuration === label 
+                                ? 'bg-orange-600 text-white border-orange-700 shadow-md' 
+                                : 'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { label: '4h', min: 240 },
+                          { label: '5h', min: 300 },
+                          { label: 'Today', min: -1 },
+                        ].map(({ label, min }) => (
+                          <button
+                            key={label}
+                            onClick={() => {
+                              setSelectedPauseDuration(label);
+                              const pauseUntil = min === -1 
+                                ? new Date(new Date().setHours(23, 59, 59, 999)) 
+                                : new Date(Date.now() + min * 60000);
+                              setPauseSettings(prev => {
+                                const updated = { ...prev };
+                                (['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).forEach((ch) => {
+                                  if (prev[ch].paused) {
+                                    updated[ch] = { paused: true, pauseUntil };
+                                  }
+                                });
+                                return updated;
+                              });
+                            }}
+                            className={`py-3 rounded-lg text-sm font-bold transition-all border-2 ${
+                              selectedPauseDuration === label 
+                                ? 'bg-orange-600 text-white border-orange-700 shadow-md' 
+                                : 'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    {/* Resume All 버튼 */}
+                    <button
+                      onClick={() => {
+                        setPauseSettings({
+                          thezoneorder: { paused: false, pauseUntil: null },
+                          ubereats: { paused: false, pauseUntil: null },
+                          doordash: { paused: false, pauseUntil: null },
+                          skipthedishes: { paused: false, pauseUntil: null },
+                        });
+                        setSelectedPauseDuration(null);
+                      }}
+                      className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg text-lg font-bold"
+                    >
+                      Resume All
+                    </button>
                   </div>
                 )}
                 
