@@ -29,8 +29,56 @@ async function initDayOffTable() {
   }
 }
 
+// ============================================
+// Prep Time 테이블 초기화
+// ============================================
+async function initPrepTimeTable() {
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS online_prep_time (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        restaurant_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK(mode IN ('auto', 'manual')),
+        time TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(restaurant_id, channel)
+      )
+    `);
+    console.log('✅ online_prep_time 테이블 준비 완료');
+  } catch (error) {
+    console.error('❌ online_prep_time 테이블 생성 실패:', error.message);
+  }
+}
+
+// ============================================
+// Pause 테이블 초기화
+// ============================================
+async function initPauseTable() {
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS online_pause (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        restaurant_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        paused INTEGER NOT NULL DEFAULT 0,
+        pause_until TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(restaurant_id, channel)
+      )
+    `);
+    console.log('✅ online_pause 테이블 준비 완료');
+  } catch (error) {
+    console.error('❌ online_pause 테이블 생성 실패:', error.message);
+  }
+}
+
 // 서버 시작 시 테이블 초기화
 initDayOffTable();
+initPrepTimeTable();
+initPauseTable();
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -669,8 +717,20 @@ router.post('/pause/:restaurantId', async (req, res) => {
   }
 
   try {
+    // SQLite에 저장 (UPSERT)
+    for (const channel of channels) {
+      await dbRun(`
+        INSERT INTO online_pause (restaurant_id, channel, paused, pause_until, updated_at)
+        VALUES (?, ?, 1, ?, datetime('now'))
+        ON CONFLICT(restaurant_id, channel) 
+        DO UPDATE SET paused = 1, pause_until = excluded.pause_until, updated_at = datetime('now')
+      `, [restaurantId, channel, pauseUntil]);
+    }
+    console.log('[PAUSE] SQLite 저장 완료');
+
     // Firebase restaurantSettings에 Pause 상태 저장 (TZO 호환)
     await firebaseService.updateRestaurantPause(restaurantId, pauseUntil, channels);
+    console.log('[PAUSE] Firebase 저장 완료');
     
     res.json({ 
       success: true, 
@@ -696,12 +756,141 @@ router.post('/resume/:restaurantId', async (req, res) => {
   }
 
   try {
+    // SQLite에서 Pause 해제
+    for (const channel of channels) {
+      await dbRun(`
+        INSERT INTO online_pause (restaurant_id, channel, paused, pause_until, updated_at)
+        VALUES (?, ?, 0, NULL, datetime('now'))
+        ON CONFLICT(restaurant_id, channel) 
+        DO UPDATE SET paused = 0, pause_until = NULL, updated_at = datetime('now')
+      `, [restaurantId, channel]);
+    }
+    console.log('[RESUME] SQLite 업데이트 완료');
+
     // Firebase restaurantSettings에서 Pause 상태 해제 (TZO 호환)
     await firebaseService.updateRestaurantPause(restaurantId, null, channels);
+    console.log('[RESUME] Firebase 업데이트 완료');
     
     res.json({ success: true, message: 'Resumed successfully', channels });
   } catch (error) {
     console.error('[RESUME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Pause 상태 조회
+router.get('/pause/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+
+  try {
+    // SQLite에서 조회
+    const rows = await dbAll('SELECT channel, paused, pause_until FROM online_pause WHERE restaurant_id = ?', [restaurantId]);
+    
+    const pauseSettings = {
+      thezoneorder: { paused: false, pauseUntil: null },
+      ubereats: { paused: false, pauseUntil: null },
+      doordash: { paused: false, pauseUntil: null },
+      skipthedishes: { paused: false, pauseUntil: null }
+    };
+
+    if (rows && rows.length > 0) {
+      for (const row of rows) {
+        pauseSettings[row.channel] = { 
+          paused: row.paused === 1, 
+          pauseUntil: row.pause_until 
+        };
+      }
+      return res.json({ success: true, pauseSettings, source: 'sqlite' });
+    }
+
+    res.json({ success: true, pauseSettings, source: 'default' });
+  } catch (error) {
+    console.error('[PAUSE] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// Prep Time 관리 API
+// ============================================
+
+// Prep Time 저장
+router.post('/preptime/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { prepTimeSettings } = req.body;
+
+  console.log(`[PREPTIME] 레스토랑 ${restaurantId} Prep Time 저장:`, prepTimeSettings);
+
+  if (!ensureFirebaseInit()) {
+    return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+  }
+
+  try {
+    // SQLite에 저장 (UPSERT)
+    const channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
+    for (const channel of channels) {
+      if (prepTimeSettings[channel]) {
+        await dbRun(`
+          INSERT INTO online_prep_time (restaurant_id, channel, mode, time, updated_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(restaurant_id, channel) 
+          DO UPDATE SET mode = excluded.mode, time = excluded.time, updated_at = datetime('now')
+        `, [restaurantId, channel, prepTimeSettings[channel].mode, prepTimeSettings[channel].time]);
+      }
+    }
+    console.log('[PREPTIME] SQLite 저장 완료');
+
+    // Firebase restaurantSettings에 Prep Time 저장
+    await firebaseService.updatePrepTimeSettings(restaurantId, prepTimeSettings);
+    console.log('[PREPTIME] Firebase 저장 완료');
+    
+    res.json({ success: true, message: 'Prep Time saved successfully' });
+  } catch (error) {
+    console.error('[PREPTIME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Prep Time 조회
+router.get('/preptime/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+
+  try {
+    // SQLite에서 먼저 조회
+    const rows = await dbAll('SELECT channel, mode, time FROM online_prep_time WHERE restaurant_id = ?', [restaurantId]);
+    
+    if (rows && rows.length > 0) {
+      const prepTimeSettings = {
+        thezoneorder: { mode: 'auto', time: '15m' },
+        ubereats: { mode: 'auto', time: '15m' },
+        doordash: { mode: 'auto', time: '15m' },
+        skipthedishes: { mode: 'auto', time: '15m' }
+      };
+      for (const row of rows) {
+        prepTimeSettings[row.channel] = { mode: row.mode, time: row.time };
+      }
+      return res.json({ success: true, prepTimeSettings, source: 'sqlite' });
+    }
+
+    // SQLite에 없으면 Firebase에서 조회
+    if (ensureFirebaseInit()) {
+      const prepTimeSettings = await firebaseService.getPrepTimeSettings(restaurantId);
+      return res.json({ success: true, prepTimeSettings, source: 'firebase' });
+    }
+
+    // 기본값 반환
+    res.json({ 
+      success: true, 
+      prepTimeSettings: {
+        thezoneorder: { mode: 'auto', time: '15m' },
+        ubereats: { mode: 'auto', time: '15m' },
+        doordash: { mode: 'auto', time: '15m' },
+        skipthedishes: { mode: 'auto', time: '15m' }
+      },
+      source: 'default'
+    });
+  } catch (error) {
+    console.error('[PREPTIME] Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

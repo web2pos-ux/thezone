@@ -485,6 +485,59 @@ async function cleanupPastDayOffs(restaurantId, today) {
   }
 }
 
+// Prep Time 설정 저장
+async function updatePrepTimeSettings(restaurantId, prepTimeSettings) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    
+    if (settingsDoc.exists) {
+      await settingsRef.update({
+        prepTimeSettings,
+        updatedAt: new Date().toISOString()
+      });
+    } else {
+      await settingsRef.set({
+        prepTimeSettings,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    
+    console.log('✅ Prep Time 설정 Firebase 저장 완료:', restaurantId);
+    return true;
+  } catch (error) {
+    console.error('❌ Prep Time 설정 저장 실패:', error.message);
+    throw error;
+  }
+}
+
+// Prep Time 설정 조회
+async function getPrepTimeSettings(restaurantId) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const settingsDoc = await settingsRef.get();
+    
+    if (settingsDoc.exists && settingsDoc.data().prepTimeSettings) {
+      return settingsDoc.data().prepTimeSettings;
+    }
+    
+    // 기본값 반환
+    return {
+      thezoneorder: { mode: 'auto', time: '15m' },
+      ubereats: { mode: 'auto', time: '15m' },
+      doordash: { mode: 'auto', time: '15m' },
+      skipthedishes: { mode: 'auto', time: '15m' }
+    };
+  } catch (error) {
+    console.error('❌ Prep Time 설정 조회 실패:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -501,6 +554,8 @@ module.exports = {
   updateDayOffSettings,
   deleteDayOffSetting,
   clearDayOffSettings,
-  cleanupPastDayOffs
+  cleanupPastDayOffs,
+  updatePrepTimeSettings,
+  getPrepTimeSettings
 };
 

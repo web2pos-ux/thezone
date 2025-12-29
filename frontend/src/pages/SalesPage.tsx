@@ -6023,7 +6023,7 @@ const SalesPage: React.FC = () => {
         {/* Online Settings Modal (Prep Time, Pause, Day Off) */}
         {showPrepTimeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="relative">
+            <div className="relative" style={{ marginTop: '-70px' }}>
             <div 
               className="bg-white rounded-xl shadow-2xl w-[520px]"
               onClick={(e) => e.stopPropagation()}
@@ -6541,9 +6541,28 @@ const SalesPage: React.FC = () => {
                 </button>
                 {onlineModalTab === 'preptime' && (
                   <button
-                    onClick={() => {
-                      localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
-                      setShowPrepTimeModal(false);
+                    onClick={async () => {
+                      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+                      if (!restaurantId) { alert('Restaurant ID not found'); return; }
+                      try {
+                        // localStorage 저장 (로컬 캐시)
+                        localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                        // Firebase 저장 (동기화)
+                        const response = await fetch(`${API_URL}/online-orders/preptime/${restaurantId}`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ prepTimeSettings })
+                        });
+                        const result = await response.json();
+                        if (result.success) {
+                          setShowPrepTimeModal(false);
+                        } else {
+                          alert('Save failed: ' + result.error);
+                        }
+                      } catch (error) {
+                        console.error('Prep Time save failed:', error);
+                        alert('Save failed');
+                      }
                     }}
                     className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
                   >
