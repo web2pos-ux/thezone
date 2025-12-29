@@ -361,8 +361,9 @@ const SalesPage: React.FC = () => {
   const [isBillPrintMode, setIsBillPrintMode] = useState<boolean>(false);
   const [billPrintStatus, setBillPrintStatus] = useState<string>('');
 
-  // Prep Time modal state
+  // Online Settings modal state (Prep Time, Pause, Day Off tabs)
   const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
+  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff'>('preptime');
   const [prepTimeSettings, setPrepTimeSettings] = useState<{
     thezoneorder: { mode: 'auto' | 'manual'; time: string };
     ubereats: { mode: 'auto' | 'manual'; time: string };
@@ -4138,7 +4139,8 @@ const SalesPage: React.FC = () => {
         clearMoveMergeSelection();
         setMoveMergeStatus('');
         break;
-      case 'Prep Time':
+      case 'Online':
+        setOnlineModalTab('preptime');
         setShowPrepTimeModal(true);
         break;
       case 'Order History':
@@ -4811,7 +4813,7 @@ const SalesPage: React.FC = () => {
     'Reservation',
     'Waiting List',
     'Gift Card',
-    'Prep Time',
+    'Online',
     'Clock In/Out',
     'Closing'
   ];
@@ -5889,7 +5891,7 @@ const SalesPage: React.FC = () => {
             <div className="grid grid-cols-10 h-full w-full gap-1">
               {buttonData.map((buttonName, index) => {
                 const isMoveMergeActive = buttonName === 'Move/Merge' && isMoveMergeMode;
-                const isBillPrintActive = buttonName === 'Prep Time' && isBillPrintMode;
+                const isBillPrintActive = buttonName === 'Online' && isBillPrintMode;
                 const isButtonActive = isMoveMergeActive || isBillPrintActive;
                 return (
                   <div key={buttonName} className="h-full flex items-center justify-center relative group">
@@ -5955,16 +5957,16 @@ const SalesPage: React.FC = () => {
           </div>
         <TogoOrderModal />
         
-        {/* Prep Time Settings Modal */}
+        {/* Online Settings Modal (Prep Time, Pause, Day Off) */}
         {showPrepTimeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div 
-              className="bg-white rounded-xl shadow-2xl w-[440px]"
+              className="bg-white rounded-xl shadow-2xl w-[480px]"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
               <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
-                <h2 className="text-lg font-bold text-white">⏱️ Prep Time Settings</h2>
+                <h2 className="text-lg font-bold text-white">Online Settings</h2>
                 <button
                   onClick={() => setShowPrepTimeModal(false)}
                   className="text-white hover:bg-white/20 rounded-full p-1"
@@ -5975,8 +5977,32 @@ const SalesPage: React.FC = () => {
                 </button>
               </div>
               
-              {/* Content */}
-              <div className="p-4">
+              {/* Tabs */}
+              <div className="flex border-b">
+                <button
+                  onClick={() => setOnlineModalTab('preptime')}
+                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'preptime' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                >
+                  Prep Time
+                </button>
+                <button
+                  onClick={() => setOnlineModalTab('pause')}
+                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'pause' ? 'text-orange-600 border-b-2 border-orange-600 bg-orange-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                >
+                  Pause
+                </button>
+                <button
+                  onClick={() => setOnlineModalTab('dayoff')}
+                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'dayoff' ? 'text-red-600 border-b-2 border-red-600 bg-red-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                >
+                  Day Off
+                </button>
+              </div>
+              
+              {/* Tab Content */}
+              <div className="p-4 min-h-[320px]">
+                {/* Prep Time Tab */}
+                {onlineModalTab === 'preptime' && (
                 <table className="w-full border-collapse">
                   <thead>
                     <tr className="text-xs text-gray-500 border-b">
@@ -6148,6 +6174,25 @@ const SalesPage: React.FC = () => {
                     </tr>
                   </tbody>
                 </table>
+                )}
+                
+                {/* Pause Tab */}
+                {onlineModalTab === 'pause' && (
+                  <div className="flex flex-col items-center justify-center h-full py-12">
+                    <div className="text-5xl mb-4">⏸️</div>
+                    <div className="text-lg font-semibold text-gray-700 mb-2">Pause Settings</div>
+                    <div className="text-sm text-gray-500">Coming soon...</div>
+                  </div>
+                )}
+                
+                {/* Day Off Tab */}
+                {onlineModalTab === 'dayoff' && (
+                  <div className="flex flex-col items-center justify-center h-full py-12">
+                    <div className="text-5xl mb-4">📅</div>
+                    <div className="text-lg font-semibold text-gray-700 mb-2">Day Off Settings</div>
+                    <div className="text-sm text-gray-500">Coming soon...</div>
+                  </div>
+                )}
               </div>
               
               {/* Footer */}
@@ -6156,17 +6201,19 @@ const SalesPage: React.FC = () => {
                   onClick={() => setShowPrepTimeModal(false)}
                   className="px-5 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg text-sm font-semibold"
                 >
-                  Cancel
+                  Close
                 </button>
-                <button
-                  onClick={() => {
-                    localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
-                    setShowPrepTimeModal(false);
-                  }}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
-                >
-                  Save
-                </button>
+                {onlineModalTab === 'preptime' && (
+                  <button
+                    onClick={() => {
+                      localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                      setShowPrepTimeModal(false);
+                    }}
+                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
+                  >
+                    Save
+                  </button>
+                )}
               </div>
             </div>
           </div>
