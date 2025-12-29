@@ -1318,7 +1318,14 @@ const SalesPage: React.FC = () => {
         fullOrder: o, // 전체 데이터 보관
         // 추가 필드
         placedTime: o.createdAt,
-        pickupTime: o.pickupTime || o.readyTime || null,
+        // Firebase Timestamp 객체를 Date로 변환
+        pickupTime: (() => {
+          const pt = o.pickupTime || o.readyTime;
+          if (!pt) return null;
+          if (pt._seconds) return new Date(pt._seconds * 1000);
+          if (pt.seconds) return new Date(pt.seconds * 1000);
+          return pt;
+        })(),
         total: o.total || 0,
         sequenceNumber: idx + 1,
         status: o.status || 'pending' // Firebase에서 가져온 상태
@@ -7160,17 +7167,19 @@ const SalesPage: React.FC = () => {
                           : (selectedOrderDetail.number || selectedOrderDetail.id)}
                       </div>
                       <div className="text-3xl font-bold text-red-600">
-                        {selectedOrderDetail.pickupTime 
-                          ? new Date(selectedOrderDetail.pickupTime).toLocaleTimeString('en-US', { 
-                              hour: '2-digit', minute: '2-digit', hour12: false 
-                            })
-                          : selectedOrderDetail.readyTimeLabel && selectedOrderDetail.readyTimeLabel !== 'ASAP'
-                            ? selectedOrderDetail.readyTimeLabel
-                            : selectedOrderDetail.fullOrder?.pickupTime
-                              ? new Date(selectedOrderDetail.fullOrder.pickupTime).toLocaleTimeString('en-US', { 
-                                  hour: '2-digit', minute: '2-digit', hour12: false 
-                                })
-                              : '--:--'}
+                        {(() => {
+                          const parsePT = (pt: any): Date | null => {
+                            if (!pt) return null;
+                            if (pt._seconds) return new Date(pt._seconds * 1000);
+                            if (pt.seconds) return new Date(pt.seconds * 1000);
+                            const d = new Date(pt);
+                            return isNaN(d.getTime()) ? null : d;
+                          };
+                          const pt = parsePT(selectedOrderDetail.pickupTime) || parsePT(selectedOrderDetail.fullOrder?.pickupTime);
+                          if (pt) return pt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                          if (selectedOrderDetail.readyTimeLabel && selectedOrderDetail.readyTimeLabel !== 'ASAP') return selectedOrderDetail.readyTimeLabel;
+                          return '--:--';
+                        })()}
                       </div>
                     </div>
                     <div className="flex justify-between text-sm text-gray-700">
