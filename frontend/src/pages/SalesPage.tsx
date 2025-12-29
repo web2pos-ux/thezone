@@ -7057,32 +7057,44 @@ const SalesPage: React.FC = () => {
                   >
                     Pickup Complete
                   </button>
-                  <button
-                    onClick={() => {
-                      // 결제 모달을 위한 주문 정보 설정
-                      const orderForPayment = {
-                        id: selectedOrderDetail.id,
-                        type: selectedOrderType === 'online' ? 'Online' : 'Togo',
-                        orderType: selectedOrderType,
-                        number: selectedOrderType === 'togo' 
-                          ? String(selectedOrderDetail.id).padStart(3, '0')
-                          : (selectedOrderDetail.number || selectedOrderDetail.id),
-                        time: selectedOrderDetail.time,
-                        phone: selectedOrderDetail.phone || selectedOrderDetail.customerPhone || '',
-                        name: selectedOrderDetail.name || selectedOrderDetail.customerName || '',
-                        total: Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0),
-                        subtotal: Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0),
-                        tax: Number(selectedOrderDetail.fullOrder?.tax || 0),
-                        items: selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || [],
-                        status: selectedOrderDetail.fullOrder?.status || selectedOrderDetail.status || 'pending',
-                      };
-                      setOnlineTogoPaymentOrder(orderForPayment);
-                      setShowOnlineTogoPaymentModal(true);
-                    }}
-                    className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white text-base font-bold rounded-lg transition shadow-md"
-                  >
-                    Payment
-                  </button>
+                  {(() => {
+                    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
+                    const isPaid = status === 'paid' || status === 'completed' || status === 'closed';
+                    return (
+                      <button
+                        onClick={() => {
+                          if (isPaid) return; // 이미 결제됨
+                          // 결제 모달을 위한 주문 정보 설정
+                          const orderForPayment = {
+                            id: selectedOrderDetail.id,
+                            type: selectedOrderType === 'online' ? 'Online' : 'Togo',
+                            orderType: selectedOrderType,
+                            number: selectedOrderType === 'togo' 
+                              ? String(selectedOrderDetail.id).padStart(3, '0')
+                              : (selectedOrderDetail.number || selectedOrderDetail.id),
+                            time: selectedOrderDetail.time,
+                            phone: selectedOrderDetail.phone || selectedOrderDetail.customerPhone || '',
+                            name: selectedOrderDetail.name || selectedOrderDetail.customerName || '',
+                            total: Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0),
+                            subtotal: Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0),
+                            tax: Number(selectedOrderDetail.fullOrder?.tax || 0),
+                            items: selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || [],
+                            status: selectedOrderDetail.fullOrder?.status || selectedOrderDetail.status || 'pending',
+                          };
+                          setOnlineTogoPaymentOrder(orderForPayment);
+                          setShowOnlineTogoPaymentModal(true);
+                        }}
+                        disabled={isPaid}
+                        className={`flex-1 py-3 text-white text-base font-bold rounded-lg transition shadow-md ${
+                          isPaid 
+                            ? 'bg-gray-400 cursor-not-allowed' 
+                            : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                      >
+                        {isPaid ? 'PAID' : 'Payment'}
+                      </button>
+                    );
+                  })()}
                 </div>
                 
                 {/* 주문 상세 정보 */}
