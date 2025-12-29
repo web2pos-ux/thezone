@@ -335,6 +335,156 @@ async function updateRestaurantPause(restaurantId, pauseUntil, channels = ['thez
   }
 }
 
+// ============================================
+// Day Off 관리 (Firebase 동기화)
+// ============================================
+
+// Day Off 설정 저장/업데이트
+async function updateDayOffSettings(restaurantId, dayoffs) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    // 기존 문서 확인
+    const settingsDoc = await settingsRef.get();
+    const existingData = settingsDoc.exists ? settingsDoc.data() : {};
+    const existingDayOffs = existingData.dayOffSettings || {};
+    
+    // dayoffs 배열을 객체 형태로 변환 (channel_date를 키로)
+    const newDayOffs = { ...existingDayOffs };
+    
+    for (const dayoff of dayoffs) {
+      const key = `${dayoff.channel}_${dayoff.date}`;
+      newDayOffs[key] = {
+        channel: dayoff.channel,
+        date: dayoff.date,
+        scheduleType: dayoff.scheduleType,
+        time: dayoff.time || null,
+        updatedAt: new Date()
+      };
+    }
+    
+    if (settingsDoc.exists) {
+      await settingsRef.update({
+        dayOffSettings: newDayOffs,
+        dayOffUpdatedAt: new Date()
+      });
+    } else {
+      await settingsRef.set({
+        restaurantId,
+        dayOffSettings: newDayOffs,
+        dayOffUpdatedAt: new Date(),
+        createdAt: new Date()
+      });
+    }
+    
+    console.log(`✅ Day Off 설정 Firebase 동기화 완료 (${restaurantId}): ${dayoffs.length}개`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 설정 Firebase 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
+// Day Off 설정 삭제
+async function deleteDayOffSetting(restaurantId, channel, date) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    if (!settingsDoc.exists) return true;
+    
+    const existingData = settingsDoc.data();
+    const existingDayOffs = existingData.dayOffSettings || {};
+    
+    const key = `${channel}_${date}`;
+    delete existingDayOffs[key];
+    
+    await settingsRef.update({
+      dayOffSettings: existingDayOffs,
+      dayOffUpdatedAt: new Date()
+    });
+    
+    console.log(`✅ Day Off 설정 삭제 완료 (${restaurantId}): ${channel} - ${date}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 설정 삭제 실패:', error.message);
+    throw error;
+  }
+}
+
+// 채널별 Day Off 전체 삭제
+async function clearDayOffSettings(restaurantId, channel) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    if (!settingsDoc.exists) return true;
+    
+    const existingData = settingsDoc.data();
+    const existingDayOffs = existingData.dayOffSettings || {};
+    
+    // 해당 채널의 모든 설정 삭제
+    const filteredDayOffs = {};
+    for (const [key, value] of Object.entries(existingDayOffs)) {
+      if (!key.startsWith(`${channel}_`)) {
+        filteredDayOffs[key] = value;
+      }
+    }
+    
+    await settingsRef.update({
+      dayOffSettings: filteredDayOffs,
+      dayOffUpdatedAt: new Date()
+    });
+    
+    console.log(`✅ Day Off 전체 삭제 완료 (${restaurantId}): ${channel}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 전체 삭제 실패:', error.message);
+    throw error;
+  }
+}
+
+// 지난 Day Off 자동 정리
+async function cleanupPastDayOffs(restaurantId, today) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    if (!settingsDoc.exists) return true;
+    
+    const existingData = settingsDoc.data();
+    const existingDayOffs = existingData.dayOffSettings || {};
+    
+    // 오늘 이전 날짜의 설정 삭제
+    const filteredDayOffs = {};
+    let deletedCount = 0;
+    for (const [key, value] of Object.entries(existingDayOffs)) {
+      if (value.date >= today) {
+        filteredDayOffs[key] = value;
+      } else {
+        deletedCount++;
+      }
+    }
+    
+    if (deletedCount > 0) {
+      await settingsRef.update({
+        dayOffSettings: filteredDayOffs,
+        dayOffUpdatedAt: new Date()
+      });
+      console.log(`✅ Firebase 지난 Day Off ${deletedCount}개 자동 삭제 완료 (${restaurantId})`);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Firebase 지난 Day Off 삭제 실패:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -347,6 +497,10 @@ module.exports = {
   syncMenuCategories,
   syncMenuItems,
   uploadOrder,
-  updateRestaurantPause
+  updateRestaurantPause,
+  updateDayOffSettings,
+  deleteDayOffSetting,
+  clearDayOffSettings,
+  cleanupPastDayOffs
 };
 

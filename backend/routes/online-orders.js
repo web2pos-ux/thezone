@@ -6,6 +6,32 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const { dbRun, dbGet, dbAll } = require('../db');
 
+// ============================================
+// Day Off 테이블 초기화
+// ============================================
+async function initDayOffTable() {
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS online_day_off (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL,
+        date TEXT NOT NULL,
+        schedule_type TEXT NOT NULL CHECK(schedule_type IN ('closed', 'early_close', 'late_open', 'extended')),
+        time TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(channel, date)
+      )
+    `);
+    console.log('✅ online_day_off 테이블 준비 완료');
+  } catch (error) {
+    console.error('❌ online_day_off 테이블 생성 실패:', error.message);
+  }
+}
+
+// 서버 시작 시 테이블 초기화
+initDayOffTable();
+
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
 
@@ -676,6 +702,145 @@ router.post('/resume/:restaurantId', async (req, res) => {
     res.json({ success: true, message: 'Resumed successfully', channels });
   } catch (error) {
     console.error('[RESUME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// Day Off 관리 API
+// ============================================
+
+// Day Off 목록 조회 (지난 스케줄 자동 삭제 후 반환)
+router.get('/dayoff/:restaurantId', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // 지난 스케줄 삭제 (SQLite)
+    const deleteResult = await dbRun('DELETE FROM online_day_off WHERE date < ?', [today]);
+    if (deleteResult.changes > 0) {
+      console.log(`[DAYOFF] 지난 스케줄 ${deleteResult.changes}개 자동 삭제됨`);
+      
+      // Firebase에서도 삭제
+      const { restaurantId } = req.params;
+      if (ensureFirebaseInit()) {
+        try {
+          await firebaseService.cleanupPastDayOffs(restaurantId, today);
+        } catch (fbError) {
+          console.error('[DAYOFF] Firebase 지난 스케줄 삭제 실패:', fbError.message);
+        }
+      }
+    }
+    
+    // 남은 스케줄 반환
+    const rows = await dbAll('SELECT * FROM online_day_off ORDER BY date ASC');
+    res.json({ success: true, dayoffs: rows });
+  } catch (error) {
+    console.error('[DAYOFF GET] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 저장 (단일 또는 다중)
+router.post('/dayoff/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { dayoffs } = req.body;
+
+  console.log(`[DAYOFF SAVE] 레스토랑 ${restaurantId} Day Off 저장 요청:`, dayoffs);
+
+  if (!Array.isArray(dayoffs) || dayoffs.length === 0) {
+    return res.status(400).json({ success: false, error: 'dayoffs array is required' });
+  }
+
+  try {
+    // SQLite에 저장 (UPSERT)
+    for (const dayoff of dayoffs) {
+      const { channel, date, scheduleType, time } = dayoff;
+      
+      if (!channel || !date || !scheduleType) {
+        continue; // 필수 필드 누락 시 건너뛰기
+      }
+
+      await dbRun(
+        `INSERT INTO online_day_off (channel, date, schedule_type, time, updated_at)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(channel, date) DO UPDATE SET
+           schedule_type = excluded.schedule_type,
+           time = excluded.time,
+           updated_at = CURRENT_TIMESTAMP`,
+        [channel, date, scheduleType, time || null]
+      );
+    }
+
+    // Firebase에도 동기화
+    if (ensureFirebaseInit()) {
+      try {
+        await firebaseService.updateDayOffSettings(restaurantId, dayoffs);
+      } catch (fbError) {
+        console.error('[DAYOFF] Firebase 동기화 실패:', fbError.message);
+        // Firebase 실패해도 로컬 저장은 성공으로 처리
+      }
+    }
+
+    res.json({ success: true, message: `${dayoffs.length} day off settings saved` });
+  } catch (error) {
+    console.error('[DAYOFF SAVE] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 삭제
+router.delete('/dayoff/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { channel, date } = req.body;
+
+  console.log(`[DAYOFF DELETE] 레스토랑 ${restaurantId} Day Off 삭제 요청:`, { channel, date });
+
+  if (!channel || !date) {
+    return res.status(400).json({ success: false, error: 'channel and date are required' });
+  }
+
+  try {
+    await dbRun(
+      'DELETE FROM online_day_off WHERE channel = ? AND date = ?',
+      [channel, date]
+    );
+
+    // Firebase에서도 삭제
+    if (ensureFirebaseInit()) {
+      try {
+        await firebaseService.deleteDayOffSetting(restaurantId, channel, date);
+      } catch (fbError) {
+        console.error('[DAYOFF] Firebase 삭제 실패:', fbError.message);
+      }
+    }
+
+    res.json({ success: true, message: 'Day off setting deleted' });
+  } catch (error) {
+    console.error('[DAYOFF DELETE] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 전체 삭제 (특정 채널)
+router.delete('/dayoff/:restaurantId/channel/:channel', async (req, res) => {
+  const { restaurantId, channel } = req.params;
+
+  console.log(`[DAYOFF DELETE ALL] 레스토랑 ${restaurantId} 채널 ${channel} 전체 삭제`);
+
+  try {
+    await dbRun('DELETE FROM online_day_off WHERE channel = ?', [channel]);
+
+    if (ensureFirebaseInit()) {
+      try {
+        await firebaseService.clearDayOffSettings(restaurantId, channel);
+      } catch (fbError) {
+        console.error('[DAYOFF] Firebase 전체 삭제 실패:', fbError.message);
+      }
+    }
+
+    res.json({ success: true, message: `All day off settings for ${channel} deleted` });
+  } catch (error) {
+    console.error('[DAYOFF DELETE ALL] Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
