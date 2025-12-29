@@ -288,6 +288,53 @@ async function uploadOrder(restaurantId, orderData) {
   }
 }
 
+// 레스토랑 Pause 상태 업데이트 (restaurantSettings 컬렉션 사용 - TZO 호환)
+async function updateRestaurantPause(restaurantId, pauseUntil, channels = ['thezoneorder']) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    // 기존 문서 확인
+    const settingsDoc = await settingsRef.get();
+    
+    // pauseSettings 객체 생성
+    const pauseSettings = {};
+    
+    // 각 채널별 pause 상태 설정
+    for (const channel of channels) {
+      pauseSettings[channel] = {
+        paused: pauseUntil ? true : false,
+        pausedUntil: pauseUntil || null
+      };
+    }
+    
+    if (settingsDoc.exists) {
+      // 기존 문서가 있으면 pauseSettings만 업데이트
+      const existingData = settingsDoc.data() || {};
+      const existingPauseSettings = existingData.pauseSettings || {};
+      
+      await settingsRef.update({
+        pauseSettings: { ...existingPauseSettings, ...pauseSettings },
+        pauseUpdatedAt: new Date()
+      });
+    } else {
+      // 문서가 없으면 새로 생성
+      await settingsRef.set({
+        restaurantId,
+        pauseSettings,
+        pauseUpdatedAt: new Date(),
+        createdAt: new Date()
+      });
+    }
+    
+    console.log(`✅ 레스토랑 Pause 상태 업데이트 완료 (${restaurantId}):`, pauseSettings);
+    return true;
+  } catch (error) {
+    console.error('❌ 레스토랑 Pause 상태 업데이트 실패:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -299,6 +346,7 @@ module.exports = {
   getRestaurantById,
   syncMenuCategories,
   syncMenuItems,
-  uploadOrder
+  uploadOrder,
+  updateRestaurantPause
 };
 

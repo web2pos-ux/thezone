@@ -627,6 +627,59 @@ function generateReceipt(order, restaurantName) {
   return receipt;
 }
 
+// ============================================
+// 레스토랑 Pause 관리
+// ============================================
+
+// Pause 설정
+router.post('/pause/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { pauseUntil, channels = ['thezoneorder'] } = req.body;
+
+  console.log(`[PAUSE] 레스토랑 ${restaurantId} Pause 요청:`, { pauseUntil, channels });
+
+  if (!ensureFirebaseInit()) {
+    return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+  }
+
+  try {
+    // Firebase restaurantSettings에 Pause 상태 저장 (TZO 호환)
+    await firebaseService.updateRestaurantPause(restaurantId, pauseUntil, channels);
+    
+    res.json({ 
+      success: true, 
+      message: pauseUntil ? `Paused until ${pauseUntil}` : 'Resumed',
+      pauseUntil,
+      channels
+    });
+  } catch (error) {
+    console.error('[PAUSE] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Resume (Pause 해제)
+router.post('/resume/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] } = req.body;
+
+  console.log(`[RESUME] 레스토랑 ${restaurantId} Resume 요청:`, { channels });
+
+  if (!ensureFirebaseInit()) {
+    return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+  }
+
+  try {
+    // Firebase restaurantSettings에서 Pause 상태 해제 (TZO 호환)
+    await firebaseService.updateRestaurantPause(restaurantId, null, channels);
+    
+    res.json({ success: true, message: 'Resumed successfully', channels });
+  } catch (error) {
+    console.error('[RESUME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = {
   router,
   startOrderListener
