@@ -5634,9 +5634,26 @@ const SalesPage: React.FC = () => {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-1 mb-3">
-                {/* 왼쪽: Online 주문리스트 (검색 반영 + 강조/비활성) */}
+                {/* 왼쪽: Online 주문리스트 - 픽업시간 오름차순 정렬 */}
                 <div className="space-y-1">
-                  {onlineQueueCards.map((card) => {
+                  {[...onlineQueueCards].sort((a, b) => {
+                    const getTimeMs = (order: any): number => {
+                      // pickupTime 우선, 없으면 placedTime 사용
+                      const pt = order.pickupTime;
+                      if (pt) {
+                        if (pt._seconds) return pt._seconds * 1000;
+                        const d = new Date(pt);
+                        if (!isNaN(d.getTime())) return d.getTime();
+                      }
+                      const placed = order.placedTime || order.time;
+                      if (placed) {
+                        const d = new Date(placed);
+                        if (!isNaN(d.getTime())) return d.getTime();
+                      }
+                      return Infinity;
+                    };
+                    return getTimeMs(a) - getTimeMs(b);
+                  }).map((card) => {
                     const q = togoSearch.trim().toLowerCase();
                     const inNumber = String(card.number).includes(q);
                     const inPhone = card.phone.toLowerCase().includes(q);
@@ -5699,9 +5716,10 @@ const SalesPage: React.FC = () => {
                   })}
                 </div>
                 
-                {/* 오른쪽: Togo 주문리스트 (BO와 동일한 단순 리스트, 정렬/검색 제거) */}
+                {/* 오른쪽: Togo 주문리스트 - 픽업시간 오름차순 정렬 */}
                 <div className="space-y-1">
-                  {togoOrders
+                  {[...togoOrders]
+                    .sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99'))
                     .filter(o => {
                       const q = togoSearch.trim().toLowerCase();
                       if (!q) return true;
@@ -6907,8 +6925,24 @@ const SalesPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {/* 온라인 타입일 경우 모든 온라인 주문 표시 */}
-                      {selectedOrderType === 'online' && onlineQueueCards.map((order, idx) => (
+                      {/* 온라인 타입일 경우 모든 온라인 주문 표시 - 픽업시간 오름차순 */}
+                      {selectedOrderType === 'online' && [...onlineQueueCards].sort((a, b) => {
+                        const getTimeMs = (order: any): number => {
+                          const pt = order.pickupTime;
+                          if (pt) {
+                            if (pt._seconds) return pt._seconds * 1000;
+                            const d = new Date(pt);
+                            if (!isNaN(d.getTime())) return d.getTime();
+                          }
+                          const placed = order.placedTime || order.time;
+                          if (placed) {
+                            const d = new Date(placed);
+                            if (!isNaN(d.getTime())) return d.getTime();
+                          }
+                          return Infinity;
+                        };
+                        return getTimeMs(a) - getTimeMs(b);
+                      }).map((order, idx) => (
                         <tr 
                           key={order.id}
                           onClick={() => setSelectedOrderDetail(order)}
@@ -6942,8 +6976,8 @@ const SalesPage: React.FC = () => {
                           </td>
                         </tr>
                       ))}
-                      {/* Togo 타입일 경우 모든 Togo 주문 표시 */}
-                      {selectedOrderType === 'togo' && togoOrders.map((order, idx) => (
+                      {/* Togo 타입일 경우 모든 Togo 주문 표시 - 픽업시간 오름차순 */}
+                      {selectedOrderType === 'togo' && [...togoOrders].sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99')).map((order, idx) => (
                         <tr 
                           key={order.id}
                           onClick={() => setSelectedOrderDetail(order)}
