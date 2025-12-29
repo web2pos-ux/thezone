@@ -5961,7 +5961,7 @@ const SalesPage: React.FC = () => {
         {showPrepTimeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div 
-              className="bg-white rounded-xl shadow-2xl w-[480px]"
+              className="bg-white rounded-xl shadow-2xl w-[560px]"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
@@ -5977,30 +5977,30 @@ const SalesPage: React.FC = () => {
                 </button>
               </div>
               
-              {/* Tabs */}
-              <div className="flex border-b">
+              {/* Tabs - 입체감 있는 버튼 */}
+              <div className="flex gap-2 p-3 bg-gray-100">
                 <button
                   onClick={() => setOnlineModalTab('preptime')}
-                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'preptime' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'preptime' ? 'bg-white text-blue-700 shadow-md border-2 border-blue-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Prep Time
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('pause')}
-                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'pause' ? 'text-orange-600 border-b-2 border-orange-600 bg-orange-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Pause
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('dayoff')}
-                  className={`flex-1 py-3 text-sm font-semibold transition-colors ${onlineModalTab === 'dayoff' ? 'text-red-600 border-b-2 border-red-600 bg-red-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Day Off
                 </button>
               </div>
               
-              {/* Tab Content */}
-              <div className="p-4 min-h-[320px]">
+              {/* Tab Content - 고정 높이 */}
+              <div className="p-4 h-[380px] overflow-auto">
                 {/* Prep Time Tab */}
                 {onlineModalTab === 'preptime' && (
                 <table className="w-full border-collapse">
@@ -6014,40 +6014,40 @@ const SalesPage: React.FC = () => {
                   </thead>
                   <tbody>
                     {/* TheZoneOrder */}
-                    <tr className="border-b border-gray-100">
-                      <td className="py-3">
-                        <span className="text-sm font-bold text-orange-600">TheZoneOrder</span>
+                    <tr className="border-b border-gray-200">
+                      <td className="py-4">
+                        <span className="text-base font-bold text-gray-800">TheZoneOrder</span>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-md p-0.5">
+                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'auto' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'bg-orange-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'manual' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'bg-orange-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Manual
                             </button>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <select
                           value={prepTimeSettings.thezoneorder.time}
                           onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, time: e.target.value } }))}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500"
                         >
                           {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => (
                             <option key={time} value={time}>{time}</option>
                           ))}
                         </select>
                       </td>
-                      <td className="py-3 pl-2">
+                      <td className="py-4 pl-3">
                         <button
                           onClick={() => setPrepTimeSettings(prev => ({
                             ...prev,
@@ -6055,7 +6055,7 @@ const SalesPage: React.FC = () => {
                             doordash: { ...prev.doordash, time: prev.thezoneorder.time },
                             skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time },
                           }))}
-                          className="px-2 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-semibold whitespace-nowrap"
+                          className="px-3 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold whitespace-nowrap"
                         >
                           Apply All
                         </button>
@@ -6063,33 +6063,33 @@ const SalesPage: React.FC = () => {
                     </tr>
 
                     {/* UberEats */}
-                    <tr className="border-b border-gray-100">
-                      <td className="py-3">
-                        <span className="text-sm font-bold text-green-600">UberEats</span>
+                    <tr className="border-b border-gray-200">
+                      <td className="py-4">
+                        <span className="text-base font-bold text-gray-800">UberEats</span>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-md p-0.5">
+                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'auto' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'auto' ? 'bg-green-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'manual' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'manual' ? 'bg-green-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Manual
                             </button>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <select
                           value={prepTimeSettings.ubereats.time}
                           onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, time: e.target.value } }))}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500"
                         >
                           {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => (
                             <option key={time} value={time}>{time}</option>
@@ -6100,33 +6100,33 @@ const SalesPage: React.FC = () => {
                     </tr>
 
                     {/* DoorDash */}
-                    <tr className="border-b border-gray-100">
-                      <td className="py-3">
-                        <span className="text-sm font-bold text-red-600">DoorDash</span>
+                    <tr className="border-b border-gray-200">
+                      <td className="py-4">
+                        <span className="text-base font-bold text-gray-800">DoorDash</span>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-md p-0.5">
+                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'auto' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.doordash.mode === 'auto' ? 'bg-red-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.doordash.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'manual' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.doordash.mode === 'manual' ? 'bg-red-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.doordash.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Manual
                             </button>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <select
                           value={prepTimeSettings.doordash.time}
                           onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, time: e.target.value } }))}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500"
                         >
                           {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => (
                             <option key={time} value={time}>{time}</option>
@@ -6138,32 +6138,32 @@ const SalesPage: React.FC = () => {
 
                     {/* SkipTheDishes */}
                     <tr>
-                      <td className="py-3">
-                        <span className="text-sm font-bold text-purple-600">SkipTheDishes</span>
+                      <td className="py-4">
+                        <span className="text-base font-bold text-gray-800">SkipTheDishes</span>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-md p-0.5">
+                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'auto' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'bg-purple-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'manual' } }))}
-                              className={`px-3 py-1 rounded text-xs font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'bg-purple-500 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
                             >
                               Manual
                             </button>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3">
+                      <td className="py-4">
                         <select
                           value={prepTimeSettings.skipthedishes.time}
                           onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, time: e.target.value } }))}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500"
                         >
                           {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => (
                             <option key={time} value={time}>{time}</option>
