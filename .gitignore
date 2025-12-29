@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Database - 중요! 절대 올리면 안됨
+*.db
+*.db-journal
+db/*.db
+*.sqlite
+*.sqlite3
+
+# Environment - 중요! 절대 올리면 안됨
+.env
+.env.*
+*.env
+backend/.env
+
+# Firebase Service Account Key - 중요! 절대 올리면 안됨
+**/firebase-service-account.json
+**/serviceAccountKey.json
+**/*-firebase-adminsdk-*.json
+
+# Build
+build/
+dist/
+*/build/
+*/dist/
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cache
+.cache/
+*.cache
+.npm/
+
+# Temporary
+*.tmp
+*.temp
+
+# Backup files - 백업 파일들
+*.egg
+backup_*/
+*_backup/
+web2pos_v7_*.egg
+
+# Config files with secrets
+backend/config/firebase-service-account.json

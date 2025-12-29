@@ -1,0 +1,566 @@
+// backend/index.js
+
+require('dotenv').config({ path: '../.env' });
+const express = require('express');
+const cors = require('cors');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const { Server } = require('socket.io');
+const { generateMenuId } = require('./utils/idGenerator');
+
+// --- App & DB Initialization ---
+const app = express();
+const PORT = process.env.PORT || 3177;
+// DB 파일명 원복 (기존 데이터 사용)
+const dbPath = path.resolve(__dirname, '..', 'db', 'web2pos.db');
+console.log(`[Backend] Using Database: ${dbPath}`);
+
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
+// === 카테고리 이미지 업로드 폴더 및 multer 설정 ===
+const multer = require('multer');
+const categoryUploadDir = path.join(uploadsDir, 'categories');
+if (!fs.existsSync(categoryUploadDir)) {
+  fs.mkdirSync(categoryUploadDir, { recursive: true });
+}
+const categoryStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, categoryUploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${req.params.categoryId}_${Date.now()}${ext}`);
+  }
+});
+const categoryUpload = multer({ storage: categoryStorage });
+
+// === 메뉴아이템 이미지 업로드 폴더 및 multer 설정 ===
+const itemUploadDir = path.join(uploadsDir, 'items');
+if (!fs.existsSync(itemUploadDir)) {
+  fs.mkdirSync(itemUploadDir, { recursive: true });
+}
+const itemStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, itemUploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${req.params.itemId}_${Date.now()}${ext}`);
+  }
+});
+const itemUpload = multer({ storage: itemStorage });
+
+const db = new sqlite3.Database(dbPath, async (err) => {
+  if (err) {
+    console.error('Error opening database', err.message);
+  } else {
+    console.log('=== 데이터베이스 연결 정보 (v3) ===');
+    console.log('Database connected successfully to', dbPath);
+    console.log('현재 작업 디렉토리:', __dirname);
+    
+    // 테이블 생성 (동기식 실행 보장) - CREATE IF NOT EXISTS만 사용
+    db.serialize(() => {
+        // Printers
+        db.run(`CREATE TABLE IF NOT EXISTS printers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT '',
+            type TEXT DEFAULT '',
+            selected_printer TEXT DEFAULT '',
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        
+        // Printer Groups
+        db.run(`CREATE TABLE IF NOT EXISTS printer_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        
+        // Printer Group Links
+        db.run(`CREATE TABLE IF NOT EXISTS printer_group_links (
+            group_id INTEGER NOT NULL,
+            printer_id INTEGER NOT NULL,
+            PRIMARY KEY (group_id, printer_id),
+            FOREIGN KEY (group_id) REFERENCES printer_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (printer_id) REFERENCES printers(id) ON DELETE CASCADE
+        )`);
+        
+        // Taxes
+        db.run(`CREATE TABLE IF NOT EXISTS taxes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            rate REAL NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        
+        // Tax Groups
+        db.run(`CREATE TABLE IF NOT EXISTS tax_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        
+        // Tax Group Links
+        db.run(`CREATE TABLE IF NOT EXISTS tax_group_links (
+            group_id INTEGER NOT NULL,
+            tax_id INTEGER NOT NULL,
+            PRIMARY KEY (group_id, tax_id),
+            FOREIGN KEY (group_id) REFERENCES tax_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (tax_id) REFERENCES taxes(id) ON DELETE CASCADE
+        )`);
+
+        console.log('[Backend] 테이블 초기화 완료');
+        
+        // 테이블 확인
+        db.all("SELECT name FROM sqlite_master WHERE type='table'", [], (err, rows) => {
+            if (!err) console.log('[Backend] Tables:', rows.map(r => r.name).join(', '));
+        });
+    });
+    console.log('================================');
+    
+    const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
+      db.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve(this);
+      });
+    });
+
+    const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
+      db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    const dbExec = (sql) => new Promise((resolve, reject) => {
+      db.exec(sql, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // One-time data migration for legacy data
+    const migrateLegacyData = async () => {
+      const needsMigration = (await dbAll("PRAGMA table_info(menu_categories)")).some(col => col.name === 'menu_id') &&
+                             (await dbAll("SELECT 1 FROM menu_categories WHERE menu_id IS NULL LIMIT 1")).length > 0;
+
+      if (needsMigration) {
+        console.log("Legacy data found. Starting migration...");
+        const newMenuId = await generateMenuId(db);
+        await dbRun("INSERT INTO menus (menu_id, name, description) VALUES (?, ?, ?)", [newMenuId, '20260630-1', '']);
+        await dbRun("UPDATE menu_categories SET menu_id = ? WHERE menu_id IS NULL", [newMenuId]);
+        await dbRun("UPDATE menu_items SET menu_id = ? WHERE menu_id IS NULL", [newMenuId]);
+        console.log(`Migration complete. Legacy data moved to new Menu '20260630-1' (ID: ${newMenuId}).`);
+      }
+    };
+
+    // Function to add the short_name column if it doesn't exist
+    const addShortNameColumn = async () => {
+      const columns = await dbAll("PRAGMA table_info(menu_items)");
+      const columnExists = columns.some(col => col.name === 'short_name');
+      if (!columnExists) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN short_name TEXT");
+        console.log("Successfully added 'short_name' column to 'menu_items' table.");
+      }
+    };
+
+    // Function to add menu_id columns if they don't exist
+    const addMenuIdColumns = async () => {
+      const tables = ['menu_categories', 'menu_items'];
+      for (const tableName of tables) {
+        const columns = await dbAll(`PRAGMA table_info(${tableName})`);
+        const columnExists = columns.some(col => col.name === 'menu_id');
+        if (!columnExists) {
+          await dbRun(`ALTER TABLE ${tableName} ADD COLUMN menu_id INTEGER`);
+          console.log(`Successfully added 'menu_id' column to '${tableName}' table.`);
+        }
+      }
+    };
+    
+    // Function to add the image_url column if it doesn't exist
+    const addImageUrlColumn = async () => {
+      const columns = await dbAll("PRAGMA table_info(menu_categories)");
+      const columnExists = columns.some(col => col.name === 'image_url');
+      if (!columnExists) {
+        await dbRun("ALTER TABLE menu_categories ADD COLUMN image_url TEXT");
+        console.log("Successfully added 'image_url' column to 'menu_categories' table.");
+      }
+    };
+    
+    // Function to add the image_url column to menu_items if it doesn't exist
+    const addItemImageUrlColumn = async () => {
+      const columns = await dbAll("PRAGMA table_info(menu_items)");
+      const columnExists = columns.some(col => col.name === 'image_url');
+      if (!columnExists) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN image_url TEXT");
+        console.log("Successfully added 'image_url' column to 'menu_items' table.");
+      }
+    };
+
+    // Ensure is_open_price column exists for menu_items
+    const addIsOpenPriceColumn = async () => {
+      const columns = await dbAll("PRAGMA table_info(menu_items)");
+      const exists = columns.some(col => col.name === 'is_open_price');
+      if (!exists) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN is_open_price INTEGER DEFAULT 0");
+        console.log("Successfully added 'is_open_price' column to 'menu_items' table.");
+      }
+    };
+
+    // Add sales_channels column to menus table
+    const addSalesChannelsColumn = async () => {
+      const columns = await dbAll("PRAGMA table_info(menus)");
+      const exists = columns.some(col => col.name === 'sales_channels');
+      if (!exists) {
+        await dbRun("ALTER TABLE menus ADD COLUMN sales_channels TEXT DEFAULT '[]'");
+        console.log("Successfully added 'sales_channels' column to 'menus' table.");
+      }
+    };
+
+    // Add price_delta2 column to modifiers table for Price 2 support
+    const addPriceDelta2Column = async () => {
+      const columns = await dbAll("PRAGMA table_info(modifiers)");
+      const exists = columns.some(col => col.name === 'price_delta2');
+      if (!exists) {
+        await dbRun("ALTER TABLE modifiers ADD COLUMN price_delta2 REAL DEFAULT 0");
+        console.log("Successfully added 'price_delta2' column to 'modifiers' table.");
+      }
+    };
+    
+    try {
+      await addShortNameColumn();
+      await addMenuIdColumns();
+      await addImageUrlColumn();
+      await addItemImageUrlColumn();
+      await addIsOpenPriceColumn();
+      await addSalesChannelsColumn();
+      await addPriceDelta2Column();
+      // Ensure Sold Out records table exists
+      await dbExec(`
+        CREATE TABLE IF NOT EXISTS sold_out_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          menu_id INTEGER NOT NULL,
+          scope TEXT NOT NULL, -- 'item' | 'category'
+          key_id TEXT NOT NULL,
+          soldout_type TEXT NOT NULL, -- '30min' | '1hour' | 'today' | 'indefinite'
+          end_time INTEGER NOT NULL, -- 0 for indefinite, otherwise epoch ms
+          selector TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(menu_id, scope, key_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_soldout_menu_scope ON sold_out_records(menu_id, scope);
+        CREATE INDEX IF NOT EXISTS idx_soldout_endtime ON sold_out_records(end_time);
+      `);
+      // Ensure per-item color table exists
+      await dbExec(`
+        CREATE TABLE IF NOT EXISTS menu_item_colors (
+          item_id TEXT PRIMARY KEY,
+          color TEXT NOT NULL,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      await migrateLegacyData();
+
+      // Ensure OpenPrice_Lines table exists
+      await dbExec(`
+        CREATE TABLE IF NOT EXISTS OpenPrice_Lines (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id INTEGER,
+          menu_id INTEGER,
+          name_label TEXT NOT NULL,
+          unit_price_entered REAL NOT NULL,
+          price_source TEXT NOT NULL DEFAULT 'open',
+          open_price_note TEXT,
+          tax_group_id_at_sale INTEGER,
+          printer_group_id_at_sale INTEGER,
+          entered_by_user_id INTEGER,
+          approved_by_user_id INTEGER,
+          approved_flag INTEGER DEFAULT 0,
+          approved_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_openprice_created ON OpenPrice_Lines(created_at);
+      `);
+
+      // Ensure columns exist for approval in case of legacy table
+      const cols = await dbAll("PRAGMA table_info(OpenPrice_Lines)");
+      const colNames = cols.map(c => c.name);
+      if (!colNames.includes('approved_flag')) {
+        await dbRun('ALTER TABLE OpenPrice_Lines ADD COLUMN approved_flag INTEGER DEFAULT 0');
+      }
+      if (!colNames.includes('approved_at')) {
+        await dbRun('ALTER TABLE OpenPrice_Lines ADD COLUMN approved_at DATETIME');
+      }
+      
+      console.log("Database setup and migration checks complete.");
+
+      // Initialize no-show precise scheduler (reservation_time + grace)
+      try {
+        const { init } = require('./utils/noShowScheduler');
+        const scheduler = await init(db);
+        // Expose minimal hooks if needed elsewhere
+        app.set('noShowScheduler', scheduler);
+        console.log('No-Show precise scheduler initialized.');
+      } catch (e) {
+        console.error('Failed to init no-show scheduler:', e?.message);
+      }
+
+    } catch (error) {
+      console.error("Database initialization failed:", error.message);
+    }
+  }
+});
+
+// --- Middleware ---
+// CORS: Allow POS frontend, Firebase/Thezoneorder admin, and local development
+const allowedOrigins = [
+  'http://localhost:3088',  // POS frontend
+  'http://localhost:3000',  // React dev server
+  'http://localhost:5173',  // Vite dev server
+  /\.thezoneorder\.com$/,   // Thezoneorder production
+  /\.firebaseapp\.com$/,    // Firebase hosting
+  /\.web\.app$/             // Firebase hosting (alt domain)
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return allowed === origin;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      // In development, allow all origins
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(uploadsDir));
+// --- [카테고리 이미지 업로드 엔드포인트 추가] ---
+app.post('/api/menu/categories/:categoryId/image', categoryUpload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  const imageUrl = `/uploads/categories/${req.file.filename}`;
+  // DB에 image_url 저장
+  db.run(
+    'UPDATE menu_categories SET image_url = ? WHERE category_id = ?',
+    [imageUrl, req.params.categoryId],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: 'DB update failed' });
+      }
+      res.json({ imageUrl });
+    }
+  );
+});
+
+// --- 메뉴아이템 이미지 업로드 엔드포인트 추가 ---
+app.post('/api/menu/items/:itemId/image', itemUpload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  const imageUrl = `/uploads/items/${req.file.filename}`;
+  // DB에 image_url 저장
+  db.run(
+    'UPDATE menu_items SET image_url = ? WHERE item_id = ?',
+    [imageUrl, req.params.itemId],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: 'DB update failed' });
+      }
+      res.json({ imageUrl });
+    }
+  );
+});
+
+// --- API Routers ---
+const menuRoutes = require('./routes/menus')(db);
+const menuItemRoutes = require('./routes/menu')(db);
+const modifierRoutes = require('./routes/modifiers')(db);
+const taxRoutes = require('./routes/taxes')(db);
+const printerRoutes = require('./routes/printers')(db);
+const channelRoutes = require('./routes/channels')(db);
+const taxGroupRoutes = require('./routes/taxGroups')(db);
+const modifierGroupRoutes = require('./routes/modifierGroups')(db);
+const menuIndependentOptionsRoutes = require('./routes/menuIndependentOptions')(db);
+const openPriceRoutes = require('./routes/openPrice')(db);
+const reservationRoutes = require('./routes/reservations');
+const reservationSettingsRoutes = require('./routes/reservation-settings');
+const waitingListRoutes = require('./routes/waiting-list');
+const adminSettingsRoutes = require('./routes/admin-settings');
+const tableMapRoutes = require('./routes/table-map');
+const layoutSettingsRoutes = require('./routes/layout-settings');
+const orderPageSetupsRoutes = require('./routes/order-page-setups')(db);
+const ordersRoutes = require('./routes/orders')(db);
+const paymentsRoutes = require('./routes/payments')(db);
+const refundsRoutes = require('./routes/refunds')(db);
+const promotionsRoutes = require('./routes/promotions')(db);
+const voidsRoutes = require('./routes/voids');
+const soldOutRoutes = require('./routes/sold-out')(db);
+const tableOperationsRoutes = require('./routes/table-operations')(db);
+const tableMoveHistoryRoutes = require('./routes/table-move-history')(db);
+const workScheduleRoutes = require('./routes/work-schedule');
+const giftCardsRoutes = require('./routes/gift-cards')(db);
+const { router: onlineOrdersRoutes, startOrderListener } = require('./routes/online-orders');
+const tableOrdersRoutes = require('./routes/table-orders')(db);
+const devicesRoutes = require('./routes/devices')(db);
+const menuSyncRoutes = require('./routes/menu-sync');
+
+app.use('/api/menus', menuRoutes);
+app.use('/api/menu', menuItemRoutes);
+app.use('/api/modifiers', modifierRoutes);
+app.use('/api/taxes', taxRoutes);
+app.use('/api/printers', printerRoutes);
+app.use('/api/channels', channelRoutes);
+app.use('/api/tax-groups', taxGroupRoutes);
+app.use('/api/modifier-groups', modifierGroupRoutes);
+app.use('/api/menu-independent-options', menuIndependentOptionsRoutes);
+app.use('/api/open-price', openPriceRoutes);
+app.use('/api/reservations', reservationRoutes);
+app.use('/api/reservation-settings', reservationSettingsRoutes);
+app.use('/api/waiting-list', waitingListRoutes);
+app.use('/api/admin-settings', adminSettingsRoutes);
+app.use('/api/table-map', tableMapRoutes);
+app.use('/api/layout-settings', layoutSettingsRoutes);
+app.use('/api/order-page-setups', orderPageSetupsRoutes);
+app.use('/api/orders', ordersRoutes);
+app.use('/api/payments', paymentsRoutes);
+app.use('/api/refunds', refundsRoutes);
+app.use('/api/promotions', promotionsRoutes);
+app.use('/api', voidsRoutes);
+app.use('/api/sold-out', soldOutRoutes);
+app.use('/api/table-operations/history', tableMoveHistoryRoutes);
+app.use('/api/table-operations', tableOperationsRoutes);
+app.use('/api/table-orders', tableOrdersRoutes);
+app.use('/api/work-schedule', workScheduleRoutes);
+app.use('/api/gift-cards', giftCardsRoutes);
+app.use('/api/online-orders', onlineOrdersRoutes);
+app.use('/api/devices', devicesRoutes);
+app.use('/api/menu-sync', menuSyncRoutes);
+
+// Remote Sync Routes (실시간 원격 동기화)
+const remoteSyncRoutes = require('./routes/remote-sync');
+app.use('/api/remote-sync', remoteSyncRoutes);
+
+// --- Basic Endpoints ---
+app.get('/', (req, res) => {
+  res.send('WEB2POS Backend Server is running!');
+});
+
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
+// --- Menu Item Colors API ---
+app.get('/api/menu-item-colors', (req, res) => {
+  db.all('SELECT item_id, color FROM menu_item_colors', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: 'DB error' });
+    const map = {};
+    rows.forEach(r => { map[r.item_id] = r.color; });
+    res.json(map);
+  });
+});
+
+app.put('/api/menu-item-colors', (req, res) => {
+  const body = req.body || {};
+  const entries = Object.entries(body);
+  const stmt = db.prepare('INSERT INTO menu_item_colors (item_id, color, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(item_id) DO UPDATE SET color=excluded.color, updated_at=CURRENT_TIMESTAMP');
+  db.serialize(() => {
+    try {
+      entries.forEach(([itemId, color]) => {
+        stmt.run(itemId, color);
+      });
+      stmt.finalize((err) => {
+        if (err) return res.status(500).json({ error: 'DB update failed' });
+        res.json({ ok: true, updated: entries.length });
+      });
+    } catch (e) {
+      res.status(500).json({ error: 'DB update failed' });
+    }
+  });
+});
+
+// --- Socket.io Server Setup ---
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:3088", "http://localhost:3000", "http://127.0.0.1:3088"],
+    methods: ["GET", "POST"]
+  }
+});
+
+// Socket.io 연결 핸들러
+io.on('connection', (socket) => {
+  console.log('🔌 POS client connected:', socket.id);
+  
+  socket.on('disconnect', () => {
+    console.log('🔌 POS client disconnected:', socket.id);
+  });
+});
+
+// io 객체를 전역으로 사용 가능하게 export
+app.set('io', io);
+
+// --- Server Startup ---
+server.listen(PORT, async () => {
+  console.log(`🚀 Server is running on http://localhost:${PORT}`);
+  console.log(`🔌 Socket.io ready for real-time updates`);
+
+  // Auto-initialize Remote Sync Service and Online Order Listener if restaurantId exists in DB
+  try {
+    const remoteSyncService = require('./services/remoteSyncService');
+    db.get('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1', [], async (err, row) => {
+      if (!err && row && row.firebase_restaurant_id) {
+        const restaurantId = row.firebase_restaurant_id;
+        console.log(`🔄 Auto-initializing services for restaurant: ${restaurantId}`);
+        
+        // 1. Remote Sync Service (Firebase Admin Control)
+        await remoteSyncService.initialize(restaurantId);
+        
+        // 2. Online Order Listener (Real-time orders)
+        if (typeof startOrderListener === 'function') {
+          startOrderListener(restaurantId);
+        }
+      }
+    });
+  } catch (syncErr) {
+    console.warn('⚠️ Failed to auto-initialize services:', syncErr.message);
+  }
+
+  // Background printer dispatcher (simple interval)
+  try {
+    setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:${PORT}/api/printers/jobs/dispatch`, { method: 'POST' });
+        if (!res.ok) throw new Error('dispatch failed');
+      } catch {}
+    }, 5000);
+  } catch {}
+});

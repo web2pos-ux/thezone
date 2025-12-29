@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Background -->
+  <rect width="256" height="256" rx="32" fill="#f59e0b"/>
+  
+  <!-- Plate -->
+  <circle cx="128" cy="140" r="70" fill="white" stroke="#d97706" stroke-width="4"/>
+  <circle cx="128" cy="140" r="55" fill="none" stroke="#fef3c7" stroke-width="2"/>
+  
+  <!-- Fork -->
+  <g transform="translate(60, 50)">
+    <rect x="10" y="40" width="4" height="60" fill="white" rx="2"/>
+    <rect x="6" y="30" width="4" height="15" fill="white" rx="1"/>
+    <rect x="12" y="30" width="4" height="15" fill="white" rx="1"/>
+    <rect x="18" y="30" width="4" height="15" fill="white" rx="1"/>
+    <rect x="6" y="27" width="16" height="6" fill="white" rx="2"/>
+  </g>
+  
+  <!-- Knife -->
+  <g transform="translate(170, 50)">
+    <rect x="10" y="40" width="4" height="60" fill="white" rx="2"/>
+    <path d="M8 30 L14 30 L20 45 L14 45 Z" fill="white"/>
+  </g>
+  
+  <!-- Order text -->
+  <text x="128" y="148" text-anchor="middle" fill="#d97706" font-family="Arial, sans-serif" font-size="24" font-weight="bold">ORDER</text>
+</svg>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

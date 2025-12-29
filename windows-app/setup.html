@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Table Order Setup - WEB2POS</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #fffbeb;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* Header */
+    .header {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .header-icon {
+      font-size: 40px;
+      background: rgba(255,255,255,0.2);
+      padding: 12px;
+      border-radius: 16px;
+    }
+    
+    .header-text h1 {
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    
+    .header-text p {
+      color: #fef3c7;
+      font-size: 14px;
+    }
+    
+    .device-badge {
+      margin-left: auto;
+      background: rgba(255,255,255,0.3);
+      padding: 8px 16px;
+      border-radius: 12px;
+      color: white;
+      font-family: 'Consolas', monospace;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    
+    /* Assignment Banner */
+    .assignment-banner {
+      background: #ecfdf5;
+      border-bottom: 1px solid #a7f3d0;
+      padding: 16px 24px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .assignment-banner.show {
+      display: flex;
+    }
+    
+    .assignment-text {
+      color: #065f46;
+      font-size: 14px;
+    }
+    
+    .assignment-table {
+      font-weight: bold;
+      color: #047857;
+    }
+    
+    .use-assigned-btn {
+      background: #10b981;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .use-assigned-btn:hover {
+      background: #059669;
+    }
+    
+    /* Form */
+    .form-container {
+      flex: 1;
+      padding: 32px;
+      max-width: 600px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    
+    .input-group {
+      margin-bottom: 24px;
+    }
+    
+    .label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 8px;
+    }
+    
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .input {
+      flex: 1;
+      background: white;
+      border: 2px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 16px;
+      color: #111827;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    
+    .input:focus {
+      border-color: #f59e0b;
+    }
+    
+    .input-large {
+      background: white;
+      border: 2px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      font-size: 20px;
+      font-weight: 600;
+      color: #111827;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    
+    .input-large:focus {
+      border-color: #f59e0b;
+    }
+    
+    .test-btn {
+      background: #e5e7eb;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.2s;
+      min-width: 80px;
+    }
+    
+    .test-btn:hover {
+      background: #d1d5db;
+    }
+    
+    .test-btn.success {
+      background: #10b981;
+      color: white;
+    }
+    
+    .test-btn.error {
+      background: #ef4444;
+      color: white;
+    }
+    
+    .status-text {
+      font-size: 14px;
+      margin-top: 8px;
+    }
+    
+    .status-text.success {
+      color: #16a34a;
+    }
+    
+    .status-text.error {
+      color: #dc2626;
+    }
+    
+    .status-text.registering {
+      color: #6b7280;
+    }
+    
+    .hint {
+      color: #6b7280;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    
+    /* Advanced Settings */
+    .advanced-toggle {
+      background: none;
+      border: none;
+      color: #6b7280;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 8px 0;
+      margin-bottom: 16px;
+    }
+    
+    .advanced-toggle:hover {
+      color: #374151;
+    }
+    
+    .advanced-section {
+      background: #f3f4f6;
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    
+    .advanced-section.show {
+      display: block;
+    }
+    
+    .device-id-display {
+      font-family: 'Consolas', monospace;
+      font-size: 14px;
+      color: #374151;
+      background: white;
+      padding: 12px;
+      border-radius: 8px;
+      margin-top: 8px;
+    }
+    
+    /* Buttons */
+    .button-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 32px;
+    }
+    
+    .reset-btn {
+      background: #e5e7eb;
+      border: none;
+      padding: 16px 24px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    .reset-btn:hover {
+      background: #d1d5db;
+    }
+    
+    .save-btn {
+      flex: 1;
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      border: none;
+      padding: 16px;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: bold;
+      color: white;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.2s;
+    }
+    
+    .save-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
+    }
+    
+    .save-btn:disabled {
+      background: #d1d5db;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    
+    /* Footer */
+    .footer {
+      padding: 16px;
+      text-align: center;
+      background: #f3f4f6;
+    }
+    
+    .footer-text {
+      color: #6b7280;
+      font-size: 12px;
+    }
+    
+    .footer-device-id {
+      color: #9ca3af;
+      font-size: 10px;
+      font-family: 'Consolas', monospace;
+      margin-top: 4px;
+    }
+    
+    /* Windows specific styles */
+    .platform-badge {
+      display: inline-block;
+      background: #0078d4;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-icon">🍽️</div>
+    <div class="header-text">
+      <h1>Table Order Setup <span class="platform-badge">Windows</span></h1>
+      <p>Configure this device</p>
+    </div>
+    <div class="device-badge" id="deviceIdBadge">Loading...</div>
+  </div>
+  
+  <!-- Assignment Banner -->
+  <div class="assignment-banner" id="assignmentBanner">
+    <span class="assignment-text">
+      ✨ POS에서 테이블 <span class="assignment-table" id="assignedTableId"></span>이(가) 배정되었습니다
+    </span>
+    <button class="use-assigned-btn" id="useAssignedBtn">사용하기</button>
+  </div>
+  
+  <!-- Form -->
+  <div class="form-container">
+    <!-- POS Host -->
+    <div class="input-group">
+      <label class="label">📡 POS Server Address</label>
+      <div class="input-row">
+        <input type="text" class="input" id="posHostInput" placeholder="http://192.168.1.100:3088">
+        <button class="test-btn" id="testBtn">Test</button>
+      </div>
+      <div class="status-text" id="connectionStatus" style="display: none;"></div>
+    </div>
+    
+    <!-- Registration Status -->
+    <div class="status-text registering" id="registrationStatus" style="display: none;"></div>
+    
+    <!-- Table ID -->
+    <div class="input-group">
+      <label class="label"># Table Number <span id="tableRequiredText">(Required)</span></label>
+      <input type="text" class="input-large" id="tableIdInput" placeholder="T1, T2, A1, B3...">
+      <div class="hint" id="tableHint">Enter the table ID exactly as shown in POS</div>
+    </div>
+    
+    <!-- Advanced Settings Toggle -->
+    <button class="advanced-toggle" id="advancedToggle">⚙️ Show Advanced Settings</button>
+    
+    <!-- Advanced Settings -->
+    <div class="advanced-section" id="advancedSection">
+      <label class="label">Store ID</label>
+      <input type="text" class="input" id="storeIdInput" placeholder="default" value="default">
+      <label class="label" style="margin-top: 12px;">Device ID</label>
+      <div class="device-id-display" id="deviceIdDisplay"></div>
+    </div>
+    
+    <!-- Buttons -->
+    <div class="button-row">
+      <button class="reset-btn" id="resetBtn">Reset</button>
+      <button class="save-btn" id="saveBtn" disabled>💾 Save & Start</button>
+    </div>
+  </div>
+  
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-text">WEB2POS Table Order System</div>
+    <div class="footer-device-id" id="footerDeviceId"></div>
+  </div>
+  
+  <script>
+    // DOM Elements
+    const deviceIdBadge = document.getElementById('deviceIdBadge');
+    const assignmentBanner = document.getElementById('assignmentBanner');
+    const assignedTableId = document.getElementById('assignedTableId');
+    const useAssignedBtn = document.getElementById('useAssignedBtn');
+    const posHostInput = document.getElementById('posHostInput');
+    const testBtn = document.getElementById('testBtn');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const registrationStatus = document.getElementById('registrationStatus');
+    const tableIdInput = document.getElementById('tableIdInput');
+    const tableRequiredText = document.getElementById('tableRequiredText');
+    const tableHint = document.getElementById('tableHint');
+    const advancedToggle = document.getElementById('advancedToggle');
+    const advancedSection = document.getElementById('advancedSection');
+    const storeIdInput = document.getElementById('storeIdInput');
+    const deviceIdDisplay = document.getElementById('deviceIdDisplay');
+    const resetBtn = document.getElementById('resetBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const footerDeviceId = document.getElementById('footerDeviceId');
+    
+    let currentConfig = {};
+    let assignedTable = null;
+    let checkAssignmentInterval = null;
+    
+    // 초기화
+    async function init() {
+      currentConfig = await window.electronAPI.getConfig();
+      
+      // 디바이스 ID 표시
+      const shortId = currentConfig.deviceId ? currentConfig.deviceId.slice(-6) : 'N/A';
+      deviceIdBadge.textContent = shortId;
+      deviceIdDisplay.textContent = currentConfig.deviceId || 'N/A';
+      footerDeviceId.textContent = `Device: ${currentConfig.deviceId || 'N/A'}`;
+      
+      // 저장된 설정 로드
+      if (currentConfig.posHost) posHostInput.value = currentConfig.posHost;
+      if (currentConfig.storeId) storeIdInput.value = currentConfig.storeId;
+      if (currentConfig.tableId) tableIdInput.value = currentConfig.tableId;
+      
+      updateSaveButton();
+      
+      // POS에서 배정 확인 (주기적)
+      checkForAssignment();
+      checkAssignmentInterval = setInterval(checkForAssignment, 5000);
+    }
+    
+    // POS에서 배정 확인
+    async function checkForAssignment() {
+      if (!posHostInput.value) return;
+      
+      const result = await window.electronAPI.checkAssignment();
+      if (result.assigned && result.tableId) {
+        assignedTable = result.tableId;
+        assignedTableId.textContent = result.tableLabel || result.tableId;
+        assignmentBanner.classList.add('show');
+        tableRequiredText.textContent = '(or use assigned)';
+        tableHint.textContent = `POS assigned: ${result.tableId} - you can use this or enter different`;
+        tableIdInput.placeholder = result.tableId;
+      }
+    }
+    
+    // 연결 테스트
+    async function testConnection() {
+      const host = posHostInput.value.trim();
+      if (!host) return;
+      
+      testBtn.textContent = '...';
+      testBtn.className = 'test-btn';
+      connectionStatus.style.display = 'none';
+      
+      const result = await window.electronAPI.testConnection(host);
+      
+      if (result.success) {
+        testBtn.textContent = '✓';
+        testBtn.className = 'test-btn success';
+        connectionStatus.textContent = '✅ Connected to POS';
+        connectionStatus.className = 'status-text success';
+        connectionStatus.style.display = 'block';
+        
+        // 등록 상태 표시
+        registrationStatus.textContent = '✅ Registered with POS';
+        registrationStatus.style.display = 'block';
+        
+        // 배정 확인
+        setTimeout(checkForAssignment, 500);
+      } else {
+        testBtn.textContent = '✗';
+        testBtn.className = 'test-btn error';
+        connectionStatus.textContent = '❌ Connection failed: ' + (result.error || 'Unknown error');
+        connectionStatus.className = 'status-text error';
+        connectionStatus.style.display = 'block';
+      }
+      
+      updateSaveButton();
+    }
+    
+    // 저장 버튼 활성화 상태 업데이트
+    function updateSaveButton() {
+      const posHost = posHostInput.value.trim();
+      const tableId = tableIdInput.value.trim();
+      saveBtn.disabled = !posHost || !tableId;
+    }
+    
+    // 설정 저장
+    async function saveConfig() {
+      const config = {
+        posHost: posHostInput.value.trim(),
+        storeId: storeIdInput.value.trim() || 'default',
+        tableId: tableIdInput.value.trim().toUpperCase()
+      };
+      
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      
+      const result = await window.electronAPI.saveConfig(config);
+      
+      if (result.success) {
+        // 성공 - main process에서 페이지 이동 처리
+      } else {
+        alert('Failed to save: ' + (result.error || 'Unknown error'));
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save & Start';
+      }
+    }
+    
+    // 배정된 테이블 사용
+    async function useAssignedTable() {
+      if (!assignedTable) return;
+      
+      // 테이블 ID 입력 필드에 설정
+      tableIdInput.value = assignedTable;
+      updateSaveButton();
+      
+      // 자동 저장
+      await saveConfig();
+    }
+    
+    // 설정 리셋
+    async function resetConfig() {
+      if (!confirm('Reset all settings?')) return;
+      
+      await window.electronAPI.resetConfig();
+      
+      // UI 초기화
+      posHostInput.value = '';
+      tableIdInput.value = '';
+      storeIdInput.value = 'default';
+      testBtn.textContent = 'Test';
+      testBtn.className = 'test-btn';
+      connectionStatus.style.display = 'none';
+      registrationStatus.style.display = 'none';
+      assignmentBanner.classList.remove('show');
+      assignedTable = null;
+      
+      updateSaveButton();
+    }
+    
+    // 이벤트 리스너
+    testBtn.addEventListener('click', testConnection);
+    saveBtn.addEventListener('click', saveConfig);
+    useAssignedBtn.addEventListener('click', useAssignedTable);
+    resetBtn.addEventListener('click', resetConfig);
+    
+    posHostInput.addEventListener('input', updateSaveButton);
+    tableIdInput.addEventListener('input', () => {
+      tableIdInput.value = tableIdInput.value.toUpperCase();
+      updateSaveButton();
+    });
+    
+    advancedToggle.addEventListener('click', () => {
+      const isShown = advancedSection.classList.toggle('show');
+      advancedToggle.textContent = isShown ? '⚙️ Hide Advanced Settings' : '⚙️ Show Advanced Settings';
+    });
+    
+    // Enter 키로 저장
+    tableIdInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !saveBtn.disabled) {
+        saveConfig();
+      }
+    });
+    
+    // 초기화
+    init();
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

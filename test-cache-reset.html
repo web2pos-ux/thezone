@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cache Test - WEB2POS</title>
+</head>
+<body>
+    <h1>WEB2POS Cache Test</h1>
+    <button onclick="clearAndReload()">1. Clear All Cache & Reload</button>
+    <button onclick="checkCache()">2. Check Cache Status</button>
+    <pre id="output" style="background: #f0f0f0; padding: 20px; margin-top: 20px;"></pre>
+
+    <script>
+        function log(msg) {
+            const output = document.getElementById('output');
+            output.textContent += msg + '\n';
+            console.log(msg);
+        }
+
+        function clearAndReload() {
+            log('🗑️ Clearing all cache...');
+            localStorage.removeItem('web2pos_menu_cache');
+            localStorage.removeItem('storeId');
+            localStorage.removeItem('defaultMenuId');
+            localStorage.removeItem('foh_default_menu');
+            log('✅ Cache cleared!');
+            log('🔄 Redirecting to order page...');
+            setTimeout(() => {
+                window.location.href = 'http://localhost:3088/sales/order';
+            }, 1000);
+        }
+
+        function checkCache() {
+            document.getElementById('output').textContent = '';
+            log('📊 Cache Status:\n');
+            
+            const storeId = localStorage.getItem('storeId');
+            const menuId = localStorage.getItem('defaultMenuId');
+            const fohMenu = localStorage.getItem('foh_default_menu');
+            const cache = localStorage.getItem('web2pos_menu_cache');
+            
+            log('storeId: ' + storeId);
+            log('defaultMenuId: ' + menuId);
+            log('foh_default_menu: ' + (fohMenu ? JSON.parse(fohMenu).menuId : 'null'));
+            
+            if (cache) {
+                const parsed = JSON.parse(cache);
+                log('\n📦 Cache Data:');
+                log('  Categories: ' + (parsed.categories?.length || 0));
+                log('  Menu Items: ' + (parsed.menuItems?.length || 0));
+                log('  Modifier Groups: ' + (parsed.modifierGroups?.length || 0));
+                log('  Age: ' + Math.round((Date.now() - parsed.lastUpdated) / 1000 / 60) + ' minutes old');
+            } else {
+                log('\n❌ No cache found');
+            }
+        }
+
+        // Auto-check on load
+        window.onload = checkCache;
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,99 @@
+# Cursor AI Rules for WEB2POS Project
+
+## Auto-read README.md on startup
+Always read and understand the README.md file first when starting work on this project. The README contains:
+- Project overview and technology stack
+- Environment setup instructions
+- ID generation rules
+- Channel types
+- Main features including table map management
+- Database usage rules
+- Development and execution methods
+
+## Project Context
+This is a restaurant POS system (WEB2POS) with the following key components:
+- Frontend: React + TailwindCSS
+- Backend: Node.js + Express
+- Database: SQLite
+- Features: Menu management, table map management, multi-channel ordering, Firebase integration
+
+## Important Files to Always Consider
+- README.md - Project documentation and setup
+- idGenerator.js - ID generation rules
+- .env - Environment variables
+- web2pos.db - SQLite database
+
+## Table Map Features
+The table map system includes comprehensive element management with:
+- Drag & drop functionality
+- Text editing capabilities
+- Resize and rotation features
+- Multi-floor support
+- History management (Undo/Redo)
+- Screen size management
+- Element type-specific characteristics
+
+Always refer to the README.md for complete feature documentation when working on this project.
+
+## Security and Error Prevention Features
+Essential features for system security that must be implemented:
+
+### Input Validation
+- Always validate and sanitize user inputs before database operations
+- Use parameterized queries to prevent SQL injection
+- Validate ID formats (storeId, itemId, orderId, etc.) using idGenerator rules
+- Check data types and ranges for numerical inputs (prices, quantities, etc.)
+
+### Error Handling
+- Always wrap database operations in try-catch blocks
+- Return meaningful error messages to frontend
+- Log errors with context (timestamp, user action, data involved)
+- Never expose sensitive information in error messages
+
+### Data Integrity
+- Verify foreign key relationships before insert/update operations
+- Check for duplicate entries (especially for unique IDs)
+- Validate business logic (e.g., payment amount vs order total)
+- Ensure atomic operations for related data updates (use transactions)
+
+### Authentication & Authorization
+- Verify user permissions for sensitive operations (void, refund, etc.)
+- Protect admin-only endpoints
+- Validate session tokens and employee credentials
+
+### Database Safety
+- Always backup before structural changes
+- Use transactions for multi-table operations (orders + payments)
+- Implement soft deletes where appropriate (keep audit trail)
+- Validate data before batch operations
+
+### Financial Data Protection
+- Double-check calculations (tax, total, change)
+- Validate payment amounts before processing
+- Keep payment audit trail (who, when, how much)
+- Prevent negative prices or quantities
+
+### State Management
+- Validate localStorage data before using
+- Sync critical data (orders, payments) with backend
+- Handle offline/online state transitions safely
+- Prevent data loss during table operations (move/merge)
+
+## Protected Areas (Do NOT edit without explicit approval)
+- Split Order logic and state management:
+  - `frontend/src/hooks/useOrderManagement.ts`
+  - `frontend/src/pages/OrderPage.tsx`
+
+- Table Move/Merge operations (완성됨 - 2025-10-23):
+  - `backend/routes/table-operations.js`
+  - `frontend/src/pages/SalesPage.tsx` (handleMoveMergeTableClick 함수 및 관련 로직)
+  
+  **핵심 기능:**
+  - 테이블 Move: 주문을 다른 테이블로 이동
+  - 테이블 Merge: 두 테이블의 주문 병합
+  - 체류 시간 이동/제거
+  - localStorage 동기화 (주문 ID, Split Guests, VOID, 결제 정보, 체류 시간)
+  - 즉시 UI 상태 업데이트
+  - 4가지 시나리오 모두 지원 (주문 유무 조합)
+
+If edits are required, they must be done in a separate branch and reviewed, or run with `ALLOW_MOVE_MERGE_EDITS=1` for one-off commits (not recommended). 

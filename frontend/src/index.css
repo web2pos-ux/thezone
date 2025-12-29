@@ -1,0 +1,302 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+:root,
+.menu-edit-scope {
+  --layer-base: #3b82f6; /* 기본 파란색 */
+  --layer-darker: #2b64be; /* 기본보다 약간 진한 색 */
+}
+
+/* 메뉴 에디터 전용 스코프 오버라이드 */
+/* 아이템 선택/편집 영역은 base 색상 사용, 카테고리/모디파이어/모달은 조금 더 진하게 */
+.menu-edit-scope .menu-item-container:hover {
+  background-color: color-mix(in srgb, var(--layer-base) 20%, white) !important;
+}
+.menu-edit-scope .menu-item-container .hover\:bg-blue-100:hover {
+  background-color: color-mix(in srgb, var(--layer-base) 25%, white) !important;
+}
+
+/* 우측 패널(Modifiers/Taxes/Printers)의 강조 테두리/배경 톤 업 */
+.menu-edit-scope .border-blue-300 { border-color: var(--layer-base) !important; }
+.menu-edit-scope .border-green-300 { border-color: var(--layer-darker) !important; }
+.menu-edit-scope .border-red-300 { border-color: var(--layer-darker) !important; }
+.menu-edit-scope .border-purple-300 { border-color: var(--layer-darker) !important; }
+
+.menu-edit-scope .bg-blue-50 { background-color: color-mix(in srgb, var(--layer-base) 12%, white) !important; }
+.menu-edit-scope .text-blue-600 { color: var(--layer-base) !important; }
+
+/* 모달/버튼류는 살짝 더 진하게 */
+.menu-edit-scope .bg-blue-500 { background-color: var(--layer-darker) !important; }
+.menu-edit-scope .hover\:bg-blue-600:hover { background-color: color-mix(in srgb, var(--layer-darker) 85%, black) !important; }
+
+/* 경고/안내 톤의 블루 계열도 base에 맞춤 */
+.menu-edit-scope .border-blue-200 { border-color: color-mix(in srgb, var(--layer-base) 60%, white) !important; }
+.menu-edit-scope .text-blue-700 { color: color-mix(in srgb, var(--layer-base) 85%, black) !important; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  @apply bg-slate-50;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* 스크롤바 스타일링 - 항상 보이도록 */
+.overflow-y-scroll::-webkit-scrollbar {
+  width: 12px;
+}
+
+.overflow-y-scroll::-webkit-scrollbar-track {
+  background: #f3f4f6; /* gray-100: 밝은 트랙 */
+  border-radius: 6px;
+}
+
+.overflow-y-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1; /* slate-300: 밝은 엄지 */
+  border-radius: 6px;
+  border: 2px solid #e5e7eb; /* gray-200: 밝은 테두리 */
+}
+
+.overflow-y-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; /* slate-400: hover 시 살짝 진하게 */
+}
+
+/* Slider Thumb 스타일링 */
+input[type="range"] {
+  height: 12px; /* 트랙 높이를 12px로 증가 (h-3) */
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #3b82f6; /* blue-500 */
+  border: 2px solid #d1d5db; /* 밝은 회색 (gray-300) */
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #3b82f6; /* blue-500 */
+  border: 2px solid #d1d5db; /* 밝은 회색 (gray-300) */
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+input[type="range"]::-ms-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #3b82f6; /* blue-500 */
+  border: 2px solid #d1d5db; /* 밝은 회색 (gray-300) */
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Sales (front office) should not show editor handles */
+.orderpage-scope .rotate-handle,
+.orderpage-scope .resize-handle,
+.orderpage-scope .status-dot {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* Hide tiny status dots on tables only in front office (sales) */
+.orderpage-scope [id^="table-element-"] .w-2.h-2.rounded-full,
+.orderpage-scope [id^="table-element-"] .w-3.h-3.rounded-full,
+.orderpage-scope [id^="table-element-"] .w-2.h-2.rounded-full.bg-green-500,
+.orderpage-scope [id^="table-element-"] .w-3.h-3.rounded-full.bg-green-500,
+.orderpage-scope [id^="table-element-"] .w-2.h-2.rounded-full.bg-green-400,
+.orderpage-scope [id^="table-element-"] .w-3.h-3.rounded-full.bg-green-400,
+.orderpage-scope [id^="table-element-"] .w-2.h-2.rounded-full.bg-lime-500,
+.orderpage-scope [id^="table-element-"] .w-3.h-3.rounded-full.bg-lime-500 {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* Aggressively hide any absolute top-right overlays (dots/handles) inside table elements on sales page */
+.orderpage-scope [id^="table-element-"] [class*="absolute"][class*="right-0"][class*="top-0"],
+.orderpage-scope [id^="table-element-"] [class*="absolute"][class*="-right-"][class*="-top-"],
+.orderpage-scope [id^="table-element-"] [class*="absolute"][style*="right:"][style*="top:"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* Neumorphism style for Sales/Order bottom action buttons (Print Bill / Payment / OK) */
+:root {
+  --neumo-bg: #dbeafe; /* tailwind blue-100 */
+  --neumo-shadow-dark: rgba(148, 163, 184, 0.45); /* slate-400 */
+  --neumo-shadow-light: rgba(255, 255, 255, 0.9);
+  --neumo-border: rgba(71, 85, 105, 0.28); /* 살짝 옅게 */
+  --neumo-accent-1: #34d399; /* green-400 */
+  --neumo-accent-2: #10b981; /* green-500 */
+  --neumo-accent-3: #059669; /* green-600 */
+}
+
+/* Target the action buttons grid (BottomActionBar) - match Print/Payment/OK style */
+.orderpage-scope .bottom-action-bar .grid > button {
+  /* keep original bg color class (e.g., bg-gray-500, bg-green-500) and overlay gradients like menu buttons */
+  background-image:
+    linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)),
+    linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18)) !important;
+  border: 1px solid rgba(255,255,255,0.18) !important;
+  border-bottom: 2px solid rgba(0,0,0,0.20) !important;
+  box-shadow:
+    0 4px 10px rgba(0,0,0,0.35),
+    inset 0 1px 0 rgba(255,255,255,0.30) !important;
+  transform: translateY(0);
+  transition: transform .25s cubic-bezier(0.22,1,0.36,1), box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
+}
+
+.orderpage-scope .bottom-action-bar .grid > button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 14px rgba(0,0,0,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.35) !important;
+}
+
+.orderpage-scope .bottom-action-bar .grid > button:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 3px 10px rgba(0,0,0,0.55),
+    0 1px 0 rgba(255,255,255,0.15) inset !important;
+}
+
+/* BottomActionBar buttons - single row, equal widths */
+.orderpage-scope .bottom-action-bar {
+  overflow: visible !important;
+  padding-top: 2px !important;    /* minimize top spacing */
+  padding-bottom: 2px !important; /* minimize bottom spacing */
+}
+.orderpage-scope .bottom-action-bar > .flex {
+  display: grid !important;
+  grid-template-columns: repeat(8, minmax(0, 1fr)) !important; /* 8 buttons */
+  column-gap: 0.25rem !important; /* halved spacing */
+  row-gap: 0 !important;
+  align-items: stretch !important;
+}
+/* Remove residual margins added by space-x utilities to ensure equal gaps */
+.orderpage-scope .bottom-action-bar > .flex > * { margin-left: 0 !important; margin-right: 0 !important; }
+/* Flatten the trailing group so its two buttons also participate in the grid */
+.orderpage-scope .bottom-action-bar .ml-auto { display: contents !important; margin-left: 0 !important; }
+.orderpage-scope .bottom-action-bar button {
+  box-sizing: border-box !important;  /* include border/padding in width */
+  background-image:
+    linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)),
+    linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18)) !important;
+  border: 1px solid rgba(255,255,255,0.18) !important;
+  border-bottom: 2px solid rgba(0,0,0,0.20) !important;
+  box-shadow:
+    0 4px 10px rgba(0,0,0,0.35),
+    inset 0 1px 0 rgba(255,255,255,0.30) !important;
+  height: 52px !important;           /* unified height (1.3x) */
+  min-width: 0 !important;           /* allow shrink to fit grid */
+  width: 95% !important;             /* shrink width by ~5% */
+  margin-left: auto !important;      /* center within grid cell */
+  margin-right: auto !important;
+  padding-left: 12px !important;      /* normalize padding */
+  padding-right: 12px !important;
+  text-align: center !important;       /* center multi-line text */
+  white-space: normal !important;      /* allow wrapping */
+  display: -webkit-box !important;     /* enable line clamp */
+  -webkit-line-clamp: 2;               /* clamp to 2 lines */
+  -webkit-box-orient: vertical;        /* vertical orientation */
+  overflow: hidden;                    /* hide overflow beyond 2 lines */
+  transform: translateY(0);
+  transition: transform .25s cubic-bezier(0.22,1,0.36,1), box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
+}
+.orderpage-scope .border-t-0.px-2.py-\[3\.6px\] button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 14px rgba(0,0,0,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.35) !important;
+}
+.orderpage-scope .border-t-0.px-2.py-\[3\.6px\] button:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 3px 10px rgba(0,0,0,0.55),
+    0 1px 0 rgba(255,255,255,0.15) inset !important;
+}
+
+/* Generic Neumorphism button variants - can be used anywhere */
+.neu-ring {
+  background: var(--neumo-bg);
+  color: #0f172a;
+  border-radius: 20px;
+  border: 1px solid rgba(71, 85, 105, 0.22);
+  display: inline-grid;
+  place-items: center;
+  padding: 0.75rem 1rem;
+  position: relative;
+  box-shadow:
+    12px 12px 24px var(--neumo-shadow-dark),
+    -12px -12px 24px var(--neumo-shadow-light);
+  transition: box-shadow .18s ease, transform .18s ease, background-color .18s ease, border-color .18s ease;
+}
+.neu-ring::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 14px;
+  box-shadow:
+    inset 10px 10px 20px rgba(0,0,0,0.08),
+    inset -10px -10px 22px rgba(255,255,255,0.9);
+  pointer-events: none;
+}
+.neu-ring:hover {
+  border-color: rgba(51, 65, 85, 0.32);
+  box-shadow:
+    8px 8px 18px var(--neumo-shadow-dark),
+    -8px -8px 18px var(--neumo-shadow-light),
+    0 0 18px rgba(255,255,255,.45);
+}
+.neu-ring:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 8px 8px 16px rgba(0,0,0,0.12),
+    inset -8px -8px 18px rgba(255,255,255,0.92);
+}
+
+.neu-concave {
+  background: var(--neumo-bg);
+  color: #0f172a;
+  border-radius: 20px;
+  border: 1px solid rgba(71, 85, 105, 0.2);
+  display: inline-grid;
+  place-items: center;
+  padding: 0.75rem 1rem;
+  position: relative;
+  box-shadow:
+    inset 12px 12px 24px rgba(0,0,0,0.10),
+    inset -12px -12px 26px rgba(255,255,255,0.92),
+    6px 6px 14px var(--neumo-shadow-dark),
+    -6px -6px 14px var(--neumo-shadow-light);
+}

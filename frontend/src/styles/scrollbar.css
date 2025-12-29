@@ -1,0 +1,39 @@
+/* 스크롤바 숨김을 전역이 아닌 특정 스코프에만 적용 */
+
+/* OrderPage 범위에서만 스크롤바 숨김 */
+.orderpage-scope {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.orderpage-scope ::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+/* 특정 요소에 대한 스크롤바 숨김 */
+.overflow-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.overflow-hidden::-webkit-scrollbar {
+  display: none;
+}
+/* OrderPage pressable buttons: red while pressed */
+.orderpage-scope button:active {
+  background-color: #ef4444 !important; /* tailwind red-500 */
+  color: #ffffff !important;
+}
+/* TableMapManager pressable buttons: magenta-red while pressed */
+.tablemap-scope button:active {
+  background-color: #b91c1c !important; /* tailwind red-700 as red-purple */
+  color: #ffffff !important;
+}
+
+/* TableMap 페이지에서도 스크롤바 숨김이 필요하면 스코프에 한해 적용 */
+.tablemap-scope {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.tablemap-scope ::-webkit-scrollbar {
+  display: none;
+}

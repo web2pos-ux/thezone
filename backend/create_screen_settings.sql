@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS screen_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    scale REAL DEFAULT 1.0,
+    floor TEXT DEFAULT '1F',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO screen_settings (width, height, scale, floor)
+VALUES (1920, 1080, 1.0, '1F'); 

@@ -1,0 +1,27 @@
+{
+  "name": "table-order-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start",
+    "build": "cd android && ./gradlew assembleRelease",
+    "clean": "cd android && ./gradlew clean"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.73.2",
+    "react-native-webview": "^13.6.4",
+    "@react-native-async-storage/async-storage": "^1.21.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.23.7",
+    "@babel/preset-env": "^7.23.8",
+    "@babel/runtime": "^7.23.8",
+    "@react-native/babel-preset": "0.73.19",
+    "@react-native/metro-config": "0.73.3",
+    "@types/react": "^18.2.48",
+    "typescript": "^5.3.3"
+  }
+}
+
