@@ -134,25 +134,19 @@ async function acceptOrder(orderId, prepTime, pickupTime) {
   return { success: true, orderId, status: 'confirmed', prepTime, pickupTime };
 }
 
-// 주문 목록 조회 (특정 레스토랑) - 오늘 날짜만
+// 주문 목록 조회 (특정 레스토랑) - 전체
 async function getOnlineOrders(restaurantId, options = {}) {
   const firestore = getFirestore();
   
   const { status } = options;
 
-  // 오늘 날짜 시작 시간 (00:00:00)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayTimestamp = admin.firestore.Timestamp.fromDate(today);
-
-  console.log(`[getOnlineOrders] restaurantId: "${restaurantId}", today: ${today.toISOString()}`);
+  console.log(`[getOnlineOrders] restaurantId: "${restaurantId}"`);
 
   try {
-    // 쿼리 빌드 - restaurantId + 오늘 날짜 필터링
+    // 쿼리 빌드 - restaurantId로만 필터링 (limit 없음)
     let query = firestore
       .collection('orders')
-      .where('restaurantId', '==', restaurantId)
-      .where('createdAt', '>=', todayTimestamp);
+      .where('restaurantId', '==', restaurantId);
 
     // 특정 상태만 필터링 (선택적)
     if (status) {
@@ -160,7 +154,7 @@ async function getOnlineOrders(restaurantId, options = {}) {
     }
 
     const snapshot = await query.get();
-    console.log(`[getOnlineOrders] Result: ${snapshot.size} orders found (today only)`);
+    console.log(`[getOnlineOrders] Result: ${snapshot.size} orders found`);
     
     const orders = [];
     snapshot.forEach((doc) => {
@@ -174,8 +168,6 @@ async function getOnlineOrders(restaurantId, options = {}) {
       const bTime = b.createdAt?._seconds || 0;
       return bTime - aTime;
     });
-
-    console.log(`[getOnlineOrders] Orders:`, orders.map(o => `${o.id}: ${o.status}`).join(', '));
 
     return orders;
   } catch (error) {

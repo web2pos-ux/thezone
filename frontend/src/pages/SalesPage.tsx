@@ -1376,8 +1376,26 @@ const SalesPage: React.FC = () => {
             const newOrder = data.order;
             console.log('[SSE] New order received:', newOrder.id);
 
-            // Manual 모드일 때만 알림 모달 표시
-            if (prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+            if (prepTimeSettings.thezoneorder.mode === 'auto') {
+              // Auto 모드: 자동으로 수락 (모달 없음)
+              const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
+              const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+              const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+              
+              console.log(`[SSE] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min`);
+              
+              fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prepTime: prepMinutes, pickupTime })
+              }).then(() => {
+                console.log('[SSE] Order auto-accepted:', newOrder.id);
+                loadOnlineOrders();
+              }).catch(err => {
+                console.error('[SSE] Auto accept failed:', err);
+              });
+            } else if (prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+              // Manual 모드: 알림 모달 표시
               setNewOrderAlertData(newOrder);
               setSelectedPrepTime(20);
               setShowNewOrderAlert(true);
