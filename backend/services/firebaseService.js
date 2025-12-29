@@ -134,42 +134,48 @@ async function acceptOrder(orderId, prepTime, pickupTime) {
   return { success: true, orderId, status: 'confirmed', prepTime, pickupTime };
 }
 
-// 주문 목록 조회 (특정 레스토랑)
+// 주문 목록 조회 (특정 레스토랑) - 오늘 날짜만
 async function getOnlineOrders(restaurantId, options = {}) {
   const firestore = getFirestore();
   
-  const { status, limit = 50 } = options;
+  const { status } = options;
 
-  console.log(`[getOnlineOrders] restaurantId: "${restaurantId}", status: "${status}"`);
+  // 오늘 날짜 시작 시간 (00:00:00)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayTimestamp = admin.firestore.Timestamp.fromDate(today);
+
+  console.log(`[getOnlineOrders] restaurantId: "${restaurantId}", today: ${today.toISOString()}`);
 
   try {
-    // 먼저 전체 orders 조회 (디버깅용)
-    const allOrdersSnapshot = await firestore.collection('orders').limit(10).get();
-    console.log(`[getOnlineOrders] Total orders in collection: ${allOrdersSnapshot.size}`);
-    
-    allOrdersSnapshot.forEach((doc) => {
-      const data = doc.data();
-      console.log(`[getOnlineOrders] Order: id=${doc.id}, restaurantId="${data.restaurantId}", status="${data.status}"`);
-    });
-
-    // 실제 쿼리
+    // 쿼리 빌드 - restaurantId + 오늘 날짜 필터링
     let query = firestore
       .collection('orders')
-      .where('restaurantId', '==', restaurantId);
+      .where('restaurantId', '==', restaurantId)
+      .where('createdAt', '>=', todayTimestamp);
 
+    // 특정 상태만 필터링 (선택적)
     if (status) {
       query = query.where('status', '==', status);
     }
 
-    query = query.limit(limit);
-
     const snapshot = await query.get();
-    console.log(`[getOnlineOrders] Filtered result: ${snapshot.size} orders`);
+    console.log(`[getOnlineOrders] Result: ${snapshot.size} orders found (today only)`);
+    
     const orders = [];
-  
     snapshot.forEach((doc) => {
-      orders.push({ id: doc.id, ...doc.data() });
+      const data = doc.data();
+      orders.push({ id: doc.id, ...data });
     });
+
+    // 결과를 createdAt 기준 내림차순 정렬 (클라이언트 사이드)
+    orders.sort((a, b) => {
+      const aTime = a.createdAt?._seconds || 0;
+      const bTime = b.createdAt?._seconds || 0;
+      return bTime - aTime;
+    });
+
+    console.log(`[getOnlineOrders] Orders:`, orders.map(o => `${o.id}: ${o.status}`).join(', '));
 
     return orders;
   } catch (error) {

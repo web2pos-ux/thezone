@@ -1273,7 +1273,7 @@ const SalesPage: React.FC = () => {
     
     try {
       // 모든 상태의 주문을 불러오되, cancelled 제외 (결제 완료된 completed도 포함)
-      const res = await fetch(`${API_URL}/online-orders/${currentRestaurantId}?limit=50`);
+      const res = await fetch(`${API_URL}/online-orders/${currentRestaurantId}`);
       if (!res.ok) return;
       const json = await res.json();
       const orders = Array.isArray(json.orders) ? json.orders : [];
