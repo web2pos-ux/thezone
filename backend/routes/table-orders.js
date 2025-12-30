@@ -389,6 +389,38 @@ module.exports = (db) => {
     }
   });
 
+  // POST /api/table-orders/call - 테이블에서 Call Server 요청
+  router.post('/call', async (req, res) => {
+    try {
+      const { store_id, table_id, table_label, kind } = req.body || {};
+
+      if (!store_id || !table_id) {
+        return res.status(400).json({ success: false, error: 'store_id and table_id are required' });
+      }
+
+      // Socket.io로 POS에 실시간 Call 알림 전송
+      try {
+        const io = req.app.get('io');
+        if (io) {
+          io.emit('table_call', {
+            table_id,
+            table_label: table_label || table_id,
+            kind: kind || 'call_server',
+            at: new Date().toISOString(),
+          });
+          console.log(`[Table Order] 📡 Pushed to POS: table_call for ${table_id}`);
+        }
+      } catch (socketErr) {
+        console.log('[Table Order] Socket.io not available');
+      }
+
+      res.json({ success: true });
+    } catch (err) {
+      console.error('Failed to handle table call:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // GET /api/table-orders/orders - 테이블 주문 목록 조회 (POS용)
   router.get('/orders', async (req, res) => {
     const { store_id, status, table_id } = req.query;

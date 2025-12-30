@@ -918,9 +918,27 @@ const TableOrderPage: React.FC = () => {
                   ].map((item) => (
                     <button
                       key={item.label}
-                      onClick={() => {
-                        // TODO: Send request to backend
-                        setCallServerSent(item.message);
+                      onClick={async () => {
+                        try {
+                          const tableId = effectiveTableId;
+                          const storeId = effectiveStoreId;
+                          const tableLabel = (tableInfo && (tableInfo.table_label || (tableInfo as any).tableLabel)) || tableId;
+
+                          await fetch(`${API_URL}/table-orders/call`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              store_id: storeId,
+                              table_id: tableId,
+                              table_label: tableLabel,
+                              kind: item.label,
+                            }),
+                          }).catch(() => {});
+
+                          setCallServerSent(item.message);
+                        } catch {
+                          setCallServerSent(item.message);
+                        }
                       }}
                       className={`${item.color} hover:opacity-90 text-white rounded-xl p-4 flex flex-col items-center gap-2 transition-all shadow-md hover:shadow-lg`}
                     >
