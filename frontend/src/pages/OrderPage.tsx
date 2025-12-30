@@ -4354,7 +4354,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })),
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: (it as any).item_source || (it as any).itemSource || null })),
             adjustments,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
@@ -7085,7 +7085,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                   <div className="col-span-6">
                                     <div className={`font-medium text-sm ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`}>
                                       {(item as any).item_source === 'TABLE_ORDER' && (
-                                        <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBL</span>
+                                        <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBO</span>
                                       )}
                                       <span className="truncate">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
                                     </div>

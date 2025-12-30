@@ -177,6 +177,8 @@ const SalesPage: React.FC = () => {
   const [frameReady, setFrameReady] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  // Avoid TDZ: SSE effect appears before fetchTableMapData is declared in this file.
+  const fetchTableMapDataRef = useRef<null | ((showLoading?: boolean) => void)>(null);
 
   // Floor 관련 상태
   const [selectedFloor, setSelectedFloor] = useState('1F');
@@ -1538,9 +1540,13 @@ const SalesPage: React.FC = () => {
 
             // 목록 즉시 갱신
             loadOnlineOrders();
+
+            // 테이블맵 즉시 갱신 (테이블오더가 들어오면 폴링(15s) 기다리지 않도록)
+            try { fetchTableMapDataRef.current?.(); } catch {}
           } else if (data.type === 'order_updated') {
             // 주문 상태 변경 시 목록 갱신
             loadOnlineOrders();
+            try { fetchTableMapDataRef.current?.(); } catch {}
           }
         } catch (error) {
           console.warn('[SSE] Parse error:', error);
@@ -2752,6 +2758,8 @@ const SalesPage: React.FC = () => {
       }
     }
   };
+  // Keep latest function in ref for SSE callback (declared earlier in file)
+  fetchTableMapDataRef.current = fetchTableMapData;
 
   useEffect(() => {
     fetchTableMapData(true);  // 초기 로딩 시에만 로딩 스피너 표시

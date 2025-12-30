@@ -312,7 +312,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// Replace items
 			await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
 			for (const it of (Array.isArray(items) ? items : [])) {
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate, item_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
@@ -325,7 +325,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					(it.splitDenominator || it.split_denominator || null),
 					String(it.orderLineId||it.order_line_id||'')||null,
 					Number(it.tax || 0),
-					Number(it.taxRate || it.tax_rate || 0)
+					Number(it.taxRate || it.tax_rate || 0),
+					(it.item_source || it.itemSource || it.item_source === '' ? (it.item_source || it.itemSource) : null)
 				]);
 			}
 			// Replace adjustments
