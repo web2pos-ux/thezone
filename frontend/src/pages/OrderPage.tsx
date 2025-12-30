@@ -2391,6 +2391,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     console.log('Updated selected modifiers:', newSelectedModifiers);
     setSelectedModifiers(newSelectedModifiers);
     
+    // 기존 주문 아이템이 선택된 경우 (모디파이어 편집 모드)
+    if (selectedOrderLineId) {
+      updateExistingOrderItemModifiers(selectedOrderLineId, groupId, modifierId, selectionType);
+      return;
+    }
+    
     // 부모 메뉴 아이템에 모디파이어를 종속시켜 업데이트
     if (selectedMenuItemId) {
       const selectedItem = menuItems.find(item => item.id === selectedMenuItemId);
@@ -2398,6 +2404,101 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         updateOrderItemWithModifiersImmediate(selectedItem, newSelectedModifiers);
       }
     }
+  };
+  
+  // 기존 주문 아이템의 모디파이어를 편집하는 함수
+  const updateExistingOrderItemModifiers = (orderLineId: string, groupId: string, modifierId: string, selectionType: string) => {
+    console.log('Editing existing order item modifiers:', { orderLineId, groupId, modifierId, selectionType });
+    
+    // 모디파이어 이름 및 가격 정보 가져오기
+    const groupNameById = new Map<string, string>();
+    const modifierInfoById = new Map<string, { name: string; price_delta: number }>();
+    selectedItemModifiers.forEach(link => {
+      const gid = String(link.modifier_group_id);
+      if (link.group?.name) groupNameById.set(gid, link.group.name);
+      (link.modifiers || []).forEach((m: any) => {
+        const mid = String(m.option_id ?? m.modifier_id ?? m.id);
+        if (m.name) {
+          modifierInfoById.set(mid, {
+            name: m.name,
+            price_delta: Number(m.price_delta ?? m.price_adjustment ?? 0)
+          });
+        }
+      });
+    });
+    
+    setOrderItems(prev => {
+      const idx = prev.findIndex((item: any) => item.orderLineId === orderLineId);
+      if (idx === -1) return prev;
+      
+      const updatedItems = [...prev];
+      const targetItem: any = { ...updatedItems[idx] };
+      const existingMods = Array.isArray(targetItem.modifiers) ? [...targetItem.modifiers] : [];
+      
+      // 해당 그룹 찾기
+      const groupIndex = existingMods.findIndex((m: any) => String(m.groupId) === String(groupId));
+      const groupName = groupNameById.get(groupId) || 'Unknown Group';
+      const modInfo = modifierInfoById.get(modifierId) || { name: 'Unknown', price_delta: 0 };
+      
+      if (selectionType === 'SINGLE') {
+        // SINGLE 선택: 해당 그룹의 모디파이어를 교체
+        const newModEntry = {
+          groupId,
+          groupName,
+          modifierIds: [modifierId],
+          modifierNames: [modInfo.name],
+          selectedEntries: [{ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta }],
+          totalModifierPrice: modInfo.price_delta
+        };
+        
+        if (groupIndex !== -1) {
+          existingMods[groupIndex] = newModEntry;
+        } else {
+          existingMods.push(newModEntry);
+        }
+      } else {
+        // MULTI 선택: 토글
+        if (groupIndex !== -1) {
+          const groupMod = { ...existingMods[groupIndex] };
+          const entries = [...(groupMod.selectedEntries || [])];
+          const entryIndex = entries.findIndex((e: any) => String(e.id) === String(modifierId));
+          
+          if (entryIndex !== -1) {
+            entries.splice(entryIndex, 1);
+          } else {
+            entries.push({ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta });
+          }
+          
+          if (entries.length === 0) {
+            existingMods.splice(groupIndex, 1);
+          } else {
+            groupMod.selectedEntries = entries;
+            groupMod.modifierIds = entries.map((e: any) => e.id);
+            groupMod.modifierNames = entries.map((e: any) => e.name);
+            groupMod.totalModifierPrice = entries.reduce((sum: number, e: any) => sum + (e.price_delta || 0), 0);
+            existingMods[groupIndex] = groupMod;
+          }
+        } else {
+          existingMods.push({
+            groupId,
+            groupName,
+            modifierIds: [modifierId],
+            modifierNames: [modInfo.name],
+            selectedEntries: [{ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta }],
+            totalModifierPrice: modInfo.price_delta
+          });
+        }
+      }
+      
+      // 총 모디파이어 가격 재계산
+      const totalModifierPrice = existingMods.reduce((sum: number, m: any) => sum + (m.totalModifierPrice || 0), 0);
+      targetItem.modifiers = existingMods;
+      targetItem.totalPrice = (targetItem.price || 0) + totalModifierPrice;
+      
+      updatedItems[idx] = targetItem;
+      console.log('Updated order item with new modifiers:', targetItem);
+      return updatedItems;
+    });
   };
 
   // 선택된 모디파이어의 총 가격 변동 계산
@@ -2932,6 +3033,32 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     // Ensure subsequent menu additions go to the clicked guest
     if (typeof guestNum === 'number') {
       setActiveGuestNumber(guestNum);
+    }
+    
+    // 주문 아이템 클릭 시 해당 아이템의 모디파이어 그룹을 로드 (모디파이어 편집 지원)
+    // orderItems에서 해당 아이템을 찾아 item_id를 가져옴
+    const orderItem = orderItems.find((it: any) => 
+      (orderLineId ? it.orderLineId === orderLineId : it.id === itemId) && 
+      ((it.guestNumber || 1) === (guestNum || 1))
+    );
+    if (orderItem) {
+      // item_id가 있으면 (실제 메뉴 아이템) 모디파이어 패널에 해당 아이템 표시
+      const menuItemId = (orderItem as any).item_id || orderItem.id;
+      if (menuItemId) {
+        setSelectedMenuItemId(menuItemId);
+      }
+      
+      // 현재 아이템에 선택된 모디파이어를 selectedModifiers에 반영하여 하이라이트 표시
+      const currentMods: { [key: string]: string[] } = {};
+      const itemMods = (orderItem as any).modifiers;
+      if (Array.isArray(itemMods)) {
+        itemMods.forEach((mod: any) => {
+          if (mod.groupId) {
+            currentMods[mod.groupId] = mod.modifierIds || mod.selectedEntries?.map((e: any) => e.id) || [];
+          }
+        });
+      }
+      setSelectedModifiers(currentMods);
     }
   };
 
