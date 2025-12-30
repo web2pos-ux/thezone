@@ -14,7 +14,39 @@ interface FlyingItem {
   image_url?: string;
 }
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
+const STORAGE_KEY = 'table-order-setup';
+
+function resolveTableOrderApiUrl(): string {
+  // 1) Explicit env override
+  const env = (process.env.REACT_APP_API_URL || '').trim();
+  if (env) return env;
+
+  // 2) From table-order-setup config (posHost is typically the POS host)
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const posHostRaw = String(parsed?.posHost || '').trim();
+      if (posHostRaw) {
+        const withScheme = /^https?:\/\//i.test(posHostRaw) ? posHostRaw : `http://${posHostRaw}`;
+        const u = new URL(withScheme);
+
+        // If user entered the frontend port (3088/3000), map to backend (3177).
+        const port = u.port && u.port !== '3088' && u.port !== '3000' ? u.port : '3177';
+        return `${u.protocol}//${u.hostname}:${port}/api`;
+      }
+    }
+  } catch {}
+
+  // 3) Fallback: current hostname, backend port 3177
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      return `${window.location.protocol}//${window.location.hostname}:3177/api`;
+    }
+  } catch {}
+
+  return 'http://localhost:3177/api';
+}
 
 interface MenuItem {
   item_id: number;
@@ -75,6 +107,8 @@ const TableOrderPage: React.FC = () => {
   
   const effectiveStoreId = storeId || searchParams.get('store') || 'default';
   const effectiveTableId = tableId || searchParams.get('table') || 'T01';
+
+  const API_URL = useMemo(() => resolveTableOrderApiUrl(), []);
 
   const [tableInfo, setTableInfo] = useState<TableInfo | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
