@@ -443,6 +443,48 @@ const SalesPage: React.FC = () => {
     }
   }, [API_URL]);
 
+  // Day Off 개별 삭제 함수
+  const handleDeleteDayOff = useCallback(async (entry: DayOffEntry, idx: number) => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
+    
+    try {
+      const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: entry.channel, date: entry.date })
+      });
+      const result = await response.json();
+      
+      if (result.success) {
+        setDayOffSettings(prev => prev.filter((_, i) => i !== idx));
+      } else {
+        console.error('Failed to delete day off:', result.error);
+      }
+    } catch (error) {
+      console.error('Delete day off error:', error);
+    }
+  }, [API_URL]);
+
+  // Day Off 전체 삭제 함수
+  const handleClearAllDayOff = useCallback(async () => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
+    
+    // 모든 고유한 채널 목록
+    const uniqueChannels = [...new Set(dayOffSettings.map(s => s.channel))];
+    
+    try {
+      // 각 채널별로 전체 삭제 API 호출
+      for (const channel of uniqueChannels) {
+        await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}/channel/${channel}`, {
+          method: 'DELETE'
+        });
+      }
+      setDayOffSettings([]);
+    } catch (error) {
+      console.error('Clear all day off error:', error);
+    }
+  }, [API_URL, dayOffSettings]);
+
   // 모달이 열리고 Day Off 탭이 선택되면 설정 로드
   useEffect(() => {
     if (showPrepTimeModal && onlineModalTab === 'dayoff') {
@@ -6631,7 +6673,7 @@ const SalesPage: React.FC = () => {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-bold text-gray-700">Scheduled ({dayOffSettings.length})</span>
                   <button 
-                    onClick={() => setDayOffSettings([])} 
+                    onClick={handleClearAllDayOff} 
                     className="text-xs text-red-500 hover:text-red-700 font-semibold px-2 py-1 hover:bg-red-50 rounded"
                   >
                     Clear All
@@ -6654,7 +6696,7 @@ const SalesPage: React.FC = () => {
                         <span>{entry.date.slice(5)}</span>
                         {entry.time && <span className="opacity-75">@ {entry.time}</span>}
                         <button
-                          onClick={() => setDayOffSettings(prev => prev.filter((_, i) => i !== idx))}
+                          onClick={() => handleDeleteDayOff(entry, idx)}
                           className="ml-1 w-5 h-5 flex items-center justify-center rounded-full hover:bg-white/50 text-current font-bold"
                         >
                           ×
