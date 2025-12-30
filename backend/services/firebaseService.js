@@ -538,6 +538,53 @@ async function getPrepTimeSettings(restaurantId) {
   }
 }
 
+// POS 주문 상태 업데이트 (결제 완료, 상태 변경 등)
+async function updatePosOrder(orderId, updateData) {
+  try {
+    const firestore = getFirestore();
+    
+    await firestore.collection('orders').doc(orderId).update({
+      ...updateData,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    console.log(`✅ POS 주문 업데이트: ${orderId}`);
+    return { success: true, orderId };
+  } catch (error) {
+    console.error(`❌ POS 주문 업데이트 실패: ${orderId}`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// 결제 정보 Firebase에 동기화
+async function syncPayment(restaurantId, paymentData) {
+  try {
+    const firestore = getFirestore();
+    
+    const paymentDoc = {
+      restaurantId,
+      orderId: paymentData.orderId,
+      localOrderId: paymentData.localOrderId,
+      method: paymentData.method,
+      amount: parseFloat(paymentData.amount) || 0,
+      tip: parseFloat(paymentData.tip) || 0,
+      status: paymentData.status || 'APPROVED',
+      guestNumber: paymentData.guestNumber || null,
+      ref: paymentData.ref || null,
+      source: 'POS',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+    
+    const docRef = await firestore.collection('payments').add(paymentDoc);
+    console.log(`✅ 결제 동기화 완료 (Firebase ID: ${docRef.id})`);
+    
+    return docRef.id;
+  } catch (error) {
+    console.error('❌ 결제 동기화 실패:', error.message);
+    return null;
+  }
+}
+
 // POS에서 주문 수신 확인 (테이블 디바이스에 알림용)
 async function confirmPosReceived(orderId) {
   const firestore = getFirestore();
@@ -567,6 +614,8 @@ module.exports = {
   syncMenuCategories,
   syncMenuItems,
   uploadOrder,
+  updatePosOrder,
+  syncPayment,
   updateRestaurantPause,
   updateDayOffSettings,
   deleteDayOffSetting,

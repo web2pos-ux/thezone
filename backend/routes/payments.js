@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const firebaseService = require('../services/firebaseService');
+const remoteSyncService = require('../services/remoteSyncService');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -41,6 +43,26 @@ module.exports = (db) => {
 			}
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(`INSERT INTO payments(order_id, method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
+			
+			// Firebase 결제 동기화
+			try {
+				const restaurantId = remoteSyncService.getRestaurantId();
+				if (restaurantId) {
+					await firebaseService.syncPayment(restaurantId, {
+						orderId: orderId,
+						localOrderId: orderId,
+						method,
+						amount,
+						tip,
+						status,
+						guestNumber,
+						ref
+					});
+				}
+			} catch (firebaseErr) {
+				console.error('[Payments] Failed to sync to Firebase:', firebaseErr.message);
+			}
+			
 			res.json({ success:true, paymentId: result.lastID, createdAt });
 		} catch (e) {
 			console.error('Failed to create payment:', e);

@@ -113,6 +113,20 @@ module.exports = (db) => {
 			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
+			
+			// Firebase 주문 상태 업데이트
+			try {
+				const order = await dbGet(`SELECT firebase_order_id FROM orders WHERE id = ?`, [orderId]);
+				if (order && order.firebase_order_id) {
+					await firebaseService.updatePosOrder(order.firebase_order_id, {
+						status: 'paid',
+						closedAt: closedAt
+					});
+				}
+			} catch (firebaseErr) {
+				console.error('[Orders] Failed to update Firebase status:', firebaseErr.message);
+			}
+			
 			res.json({ success: true, closedAt });
 		} catch (e) {
 			console.error('Failed to close order:', e);
@@ -375,13 +389,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			}
 
 			// 파이어베이스로 주문 업로드 (Dashboard 연동)
+			let firebaseOrderId = null;
 			try {
-				const restaurantId = remoteSyncService.restaurantId;
+				const restaurantId = remoteSyncService.getRestaurantId();
 				if (restaurantId) {
-					await firebaseService.uploadOrder(restaurantId, {
+					firebaseOrderId = await firebaseService.uploadOrder(restaurantId, {
 						orderNumber: orderNumber || orderId,
 						orderType: orderType || 'POS',
-						status: 'completed', // POS에서 저장된 주문은 이미 확정된 상태로 간주
+						status: 'pending',
 						items: items.map(it => ({
 							name: it.name || '',
 							price: Number(it.price || it.totalPrice || 0),
@@ -393,14 +408,20 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 						tableId: tableId || '',
 						customerName: customerName || 'POS Order',
 						customerPhone: customerPhone || '',
-						source: 'POS'
+						source: 'POS',
+						localOrderId: orderId
 					});
+					
+					// Firebase ID를 SQLite에 저장
+					if (firebaseOrderId) {
+						await dbRun(`UPDATE orders SET firebase_order_id = ? WHERE id = ?`, [firebaseOrderId, orderId]);
+					}
 				}
 			} catch (firebaseErr) {
 				console.error('[Orders] Failed to upload to Firebase:', firebaseErr.message);
 			}
 
-			res.json({ success: true, orderId, createdAt });
+			res.json({ success: true, orderId, createdAt, firebaseOrderId });
 		} catch (e) {
 			console.error('Failed to save order:', e);
 			res.status(500).json({ success:false, error: 'Failed to save order' });
