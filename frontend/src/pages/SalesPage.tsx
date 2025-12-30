@@ -470,7 +470,7 @@ const SalesPage: React.FC = () => {
     const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
     
     // 모든 고유한 채널 목록
-    const uniqueChannels = [...new Set(dayOffSettings.map(s => s.channel))];
+    const uniqueChannels = Array.from(new Set(dayOffSettings.map(s => s.channel)));
     
     try {
       // 각 채널별로 전체 삭제 API 호출
