@@ -75,10 +75,30 @@ async function initPauseTable() {
   }
 }
 
+async function initPosConflictsTable() {
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS pos_conflicts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        restaurant_id TEXT,
+        table_id TEXT,
+        firebase_order_id TEXT,
+        order_number TEXT,
+        reason TEXT,
+        payload_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (error) {
+    console.error('❌ pos_conflicts 테이블 생성 실패:', error.message);
+  }
+}
+
 // 서버 시작 시 테이블 초기화
 initDayOffTable();
 initPrepTimeTable();
 initPauseTable();
+initPosConflictsTable();
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -266,6 +286,33 @@ function startOrderListener(restaurantId) {
         localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [firebaseOrderId]);
 
         if (!localOrder) {
+          // Conflict check: 동일 테이블에 이미 열린 주문이 있으면 자동 반영하지 않음
+          const incomingTableId = order.tableId ? String(order.tableId) : null;
+          if (incomingTableId) {
+            const existing = await dbGet(
+              `SELECT id FROM orders WHERE table_id = ? AND status != 'PAID' ORDER BY id DESC LIMIT 1`,
+              [incomingTableId]
+            );
+            if (existing && existing.id) {
+              const reason = `CONFLICT: incoming remote POS order for table ${incomingTableId} but local open order exists (#${existing.id})`;
+              try {
+                await dbRun(
+                  `INSERT INTO pos_conflicts (restaurant_id, table_id, firebase_order_id, order_number, reason, payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?)`,
+                  [restaurantId, incomingTableId, firebaseOrderId, order.orderNumber || null, reason, JSON.stringify(order)]
+                );
+              } catch {}
+              broadcastToClients(restaurantId, {
+                type: 'pos_conflict',
+                tableId: incomingTableId,
+                firebaseOrderId,
+                orderNumber: order.orderNumber || null,
+                message: '다른 POS에서 같은 테이블 주문이 들어왔지만, 이미 이 POS에 열린 주문이 있어 자동 반영하지 않았습니다.'
+              });
+              return;
+            }
+          }
+
           const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
           const orderNumber = order.orderNumber || `POS-${Date.now()}`;
 

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
+const posLockService = require('../services/posLockService');
 
 /**
  * Orders API Routes
@@ -110,6 +111,25 @@ module.exports = (db) => {
 		try {
 			const orderId = Number(req.params.id);
 			const closedAt = new Date().toISOString();
+
+			// Multi-POS conflict prevention: table lock (if the order is linked to a table)
+			try {
+				const row = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [orderId]);
+				const tableId = row && row.table_id ? String(row.table_id) : null;
+				if (tableId) {
+					const restaurantId = remoteSyncService.getRestaurantId();
+					const lock = await posLockService.acquireTableLock(restaurantId, tableId);
+					if (!lock.ok) {
+						return res.status(409).json({
+							success: false,
+							error: '이 테이블은 다른 POS에서 사용 중입니다. 잠시 후 다시 시도해주세요.',
+							ownerId: lock.ownerId,
+							expiresAtMs: lock.expiresAtMs
+						});
+					}
+				}
+			} catch {}
+
 			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
@@ -126,6 +146,14 @@ module.exports = (db) => {
 			} catch (firebaseErr) {
 				console.error('[Orders] Failed to update Firebase status:', firebaseErr.message);
 			}
+
+			// Release table lock (best-effort)
+			try {
+				const restaurantId = remoteSyncService.getRestaurantId();
+				const row = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [orderId]);
+				const tableId = row && row.table_id ? String(row.table_id) : null;
+				if (restaurantId && tableId) await posLockService.releaseTableLock(restaurantId, tableId);
+			} catch {}
 			
 			res.json({ success: true, closedAt });
 		} catch (e) {
@@ -359,6 +387,23 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode } = req.body || {};
 			const createdAt = new Date().toISOString();
+
+			// Multi-POS conflict prevention: lock the table before creating a new order
+			try {
+				if (tableId) {
+					const restaurantId = remoteSyncService.getRestaurantId();
+					const lock = await posLockService.acquireTableLock(restaurantId, String(tableId));
+					if (!lock.ok) {
+						return res.status(409).json({
+							success: false,
+							error: '이 테이블은 다른 POS에서 사용 중입니다. 잠시 후 다시 시도해주세요.',
+							ownerId: lock.ownerId,
+							expiresAtMs: lock.expiresAtMs
+						});
+					}
+				}
+			} catch {}
+
 			const result = await dbRun(
 				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null]
