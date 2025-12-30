@@ -411,12 +411,21 @@ const SalesPage: React.FC = () => {
     time: string | null;
   }
   const [dayOffSettings, setDayOffSettings] = useState<DayOffEntry[]>([]);
+  const [originalDayOffSettings, setOriginalDayOffSettings] = useState<DayOffEntry[]>([]); // 초기 로드된 설정 (변경 감지용)
   const [dayOffSelectedChannels, setDayOffSelectedChannels] = useState<string[]>([]);
   const [dayOffSelectedDates, setDayOffSelectedDates] = useState<string[]>([]);
   const [dayOffScheduleType, setDayOffScheduleType] = useState<DayOffScheduleType>('closed');
   const [dayOffTime, setDayOffTime] = useState<string>('');
   const [dayOffCurrentMonth, setDayOffCurrentMonth] = useState<Date>(new Date());
   const [dayOffLoading, setDayOffLoading] = useState<boolean>(false);
+
+  // Day Off 변경 여부 체크
+  const dayOffHasChanges = useMemo(() => {
+    if (dayOffSettings.length !== originalDayOffSettings.length) return true;
+    const currentStr = JSON.stringify(dayOffSettings.sort((a, b) => `${a.channel}-${a.date}`.localeCompare(`${b.channel}-${b.date}`)));
+    const originalStr = JSON.stringify(originalDayOffSettings.sort((a, b) => `${a.channel}-${a.date}`.localeCompare(`${b.channel}-${b.date}`)));
+    return currentStr !== originalStr;
+  }, [dayOffSettings, originalDayOffSettings]);
 
   // Day Off 설정 로드 함수
   const loadDayOffSettings = useCallback(async () => {
@@ -435,6 +444,7 @@ const SalesPage: React.FC = () => {
           time: row.time || null
         }));
         setDayOffSettings(mapped);
+        setOriginalDayOffSettings(mapped); // 원본 저장
       }
     } catch (error) {
       console.error('Failed to load day off settings:', error);
@@ -443,47 +453,15 @@ const SalesPage: React.FC = () => {
     }
   }, [API_URL]);
 
-  // Day Off 개별 삭제 함수
-  const handleDeleteDayOff = useCallback(async (entry: DayOffEntry, idx: number) => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
-    
-    try {
-      const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: entry.channel, date: entry.date })
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        setDayOffSettings(prev => prev.filter((_, i) => i !== idx));
-      } else {
-        console.error('Failed to delete day off:', result.error);
-      }
-    } catch (error) {
-      console.error('Delete day off error:', error);
-    }
-  }, [API_URL]);
+  // Day Off 개별 삭제 함수 (프론트엔드 상태만 변경, Save 시 백엔드 반영)
+  const handleDeleteDayOff = useCallback((idx: number) => {
+    setDayOffSettings(prev => prev.filter((_, i) => i !== idx));
+  }, []);
 
-  // Day Off 전체 삭제 함수
-  const handleClearAllDayOff = useCallback(async () => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
-    
-    // 모든 고유한 채널 목록
-    const uniqueChannels = Array.from(new Set(dayOffSettings.map(s => s.channel)));
-    
-    try {
-      // 각 채널별로 전체 삭제 API 호출
-      for (const channel of uniqueChannels) {
-        await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}/channel/${channel}`, {
-          method: 'DELETE'
-        });
-      }
-      setDayOffSettings([]);
-    } catch (error) {
-      console.error('Clear all day off error:', error);
-    }
-  }, [API_URL, dayOffSettings]);
+  // Day Off 전체 삭제 함수 (프론트엔드 상태만 변경, Save 시 백엔드 반영)
+  const handleClearAllDayOff = useCallback(() => {
+    setDayOffSettings([]);
+  }, []);
 
   // 모달이 열리고 Day Off 탭이 선택되면 설정 로드
   useEffect(() => {
@@ -6637,29 +6615,45 @@ const SalesPage: React.FC = () => {
                   <button
                     onClick={async () => {
                       const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
-                      if (dayOffSettings.length === 0) { alert('No schedules to save'); return; }
                       try {
                         console.log('[DAYOFF] Saving settings:', dayOffSettings);
-                        const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ dayoffs: dayOffSettings })
-                        });
-                        console.log('[DAYOFF] Response status:', response.status);
-                        const result = await response.json();
-                        console.log('[DAYOFF] Result:', result);
-                        if (result.success) {
-                          setShowPrepTimeModal(false);
-                        } else {
-                          alert('Save failed: ' + (result.error || 'Unknown error'));
+                        
+                        // 1. 기존 설정에서 삭제된 항목들을 백엔드에서 삭제
+                        const deletedItems = originalDayOffSettings.filter(
+                          orig => !dayOffSettings.some(curr => curr.channel === orig.channel && curr.date === orig.date)
+                        );
+                        for (const item of deletedItems) {
+                          await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
+                            method: 'DELETE',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ channel: item.channel, date: item.date })
+                          });
                         }
+                        
+                        // 2. 현재 설정을 저장 (새로 추가되거나 변경된 것들)
+                        if (dayOffSettings.length > 0) {
+                          const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ dayoffs: dayOffSettings })
+                          });
+                          const result = await response.json();
+                          if (!result.success) {
+                            alert('Save failed: ' + (result.error || 'Unknown error'));
+                            return;
+                          }
+                        }
+                        
+                        // 성공 시 원본 업데이트 및 모달 닫기
+                        setOriginalDayOffSettings(dayOffSettings);
+                        setShowPrepTimeModal(false);
                       } catch (error: any) {
                         console.error('[DAYOFF] Save failed:', error);
                         alert('Save failed: ' + (error.message || 'Network error'));
                       }
                     }}
-                    disabled={dayOffSettings.length === 0}
-                    className={`px-5 py-2 rounded-lg text-sm font-semibold ${dayOffSettings.length > 0 ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+                    disabled={!dayOffHasChanges}
+                    className={`px-5 py-2 rounded-lg text-sm font-semibold ${dayOffHasChanges ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
                   >
                     Save Day Off
                   </button>
@@ -6696,7 +6690,7 @@ const SalesPage: React.FC = () => {
                         <span>{entry.date.slice(5)}</span>
                         {entry.time && <span className="opacity-75">@ {entry.time}</span>}
                         <button
-                          onClick={() => handleDeleteDayOff(entry, idx)}
+                          onClick={() => handleDeleteDayOff(idx)}
                           className="ml-1 w-5 h-5 flex items-center justify-center rounded-full hover:bg-white/50 text-current font-bold"
                         >
                           ×
