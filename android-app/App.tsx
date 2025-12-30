@@ -264,7 +264,7 @@ const App = () => {
     } catch (e) {
       // POS가 다운/네트워크 문제면 즉시 주문 비활성화
       setTableOrderEnabled(false);
-      setHealthMessage('POS is offline or kitchen printer is not ready. Please ask staff.');
+      setHealthMessage('POS is offline. Please ask staff.');
     }
   }, []);
 
@@ -678,13 +678,13 @@ const App = () => {
         }}
       />
 
-      {/* 주문 비활성화 오버레이: POS 다운 / 주방 프린터 미준비 */}
+      {/* 주문 비활성화 오버레이: POS 다운 */}
       {!tableOrderEnabled && (
         <View style={styles.blockOverlay} pointerEvents="auto">
           <View style={styles.blockCard}>
             <Text style={styles.blockTitle}>Table Order Unavailable</Text>
             <Text style={styles.blockBody}>
-              {healthMessage || 'POS is offline or kitchen printer is not ready.'}
+              {healthMessage || 'POS is offline.'}
             </Text>
             <TouchableOpacity style={styles.blockButton} onPress={() => openSettings()}>
               <Text style={styles.blockButtonText}>Open Settings</Text>

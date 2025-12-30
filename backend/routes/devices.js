@@ -67,60 +67,21 @@ module.exports = (db) => {
    * GET /api/devices/health
    * 테이블 디바이스가 "주문 가능"인지 판단하기 위한 헬스체크
    * - POS 서버 응답 OK
-   * - 주방 프린터(설정)가 준비되었는지(최소 구성 체크)
    */
   router.get('/health', async (req, res) => {
     try {
-      // 1) 주방 프린터가 최소 1개 이상 설정되어 있는지 확인
-      let kitchenPrintersCount = 0;
-      try {
-        const row = await dbGet(
-          `SELECT COUNT(1) AS cnt
-           FROM printers
-           WHERE is_active = 1 AND UPPER(type) = 'KITCHEN'`
-        );
-        kitchenPrintersCount = Number(row?.cnt || 0);
-      } catch {}
-
-      // 2) 주방 프린터가 어떤 그룹에라도 연결되어 있는지 확인 (실제 라우팅 가능성)
-      let kitchenPrinterLinked = false;
-      try {
-        const row = await dbGet(
-          `SELECT 1 AS ok
-           FROM printer_group_links pgl
-           JOIN printer_groups pg ON pg.id = pgl.group_id AND pg.is_active = 1
-           JOIN printers p ON p.id = pgl.printer_id AND p.is_active = 1 AND UPPER(p.type) = 'KITCHEN'
-           LIMIT 1`
-        );
-        kitchenPrinterLinked = !!row?.ok;
-      } catch {}
-
-      const kitchenPrinterReady = kitchenPrintersCount > 0 && kitchenPrinterLinked;
-
-      const message = kitchenPrinterReady
-        ? 'OK'
-        : kitchenPrintersCount === 0
-          ? '주방 프린터가 설정되지 않았습니다. (Kitchen printer not configured)'
-          : '주방 프린터가 프린터 그룹에 연결되지 않았습니다. (Kitchen printer not linked to a group)';
-
       res.json({
         success: true,
         server_time: new Date().toISOString(),
         posReady: true,
-        kitchenPrinter: {
-          ready: kitchenPrinterReady,
-          printersCount: kitchenPrintersCount,
-          linked: kitchenPrinterLinked
-        },
-        tableOrderEnabled: kitchenPrinterReady,
-        message
+        tableOrderEnabled: true,
+        message: 'OK'
       });
     } catch (err) {
       console.error('[devices] health error:', err);
       res.status(500).json({
         success: false,
-        posReady: true,
-        kitchenPrinter: { ready: false },
+        posReady: false,
         tableOrderEnabled: false,
         error: 'Health check failed'
       });
