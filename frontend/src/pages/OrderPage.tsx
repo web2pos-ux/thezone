@@ -6962,6 +6962,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                       )}
                                       <span className="truncate">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
                                     </div>
+                                    {/* Modifiers 표시 (테이블 오더 options 포함) */}
+                                    {(() => {
+                                      const mods = item.modifiers || [];
+                                      const opts = (item as any).options || [];
+                                      const allMods = [
+                                        ...mods.map((m: any) => typeof m === 'string' ? m : (m.name || m.choiceName || '')),
+                                        ...opts.map((o: any) => o.choiceName || o.name || '')
+                                      ].filter(Boolean);
+                                      if (allMods.length === 0) return null;
+                                      return (
+                                        <div className="text-[10px] text-gray-500 truncate pl-1">
+                                          • {allMods.join(', ')}
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                   
                                   {/* 수량 조절 (고정 위치) */}

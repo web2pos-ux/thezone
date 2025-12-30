@@ -200,10 +200,22 @@ function startOrderListener(restaurantId) {
           // 주문 아이템도 저장
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
+              // 테이블 오더의 options를 modifiers_json 형식으로 변환
+              let modifiersJson = null;
+              if (Array.isArray(item.options) && item.options.length > 0) {
+                // item.options: [{ optionName, choiceName, price }] → modifiers 형식으로 변환
+                const modifiers = item.options.map(opt => ({
+                  name: opt.choiceName || opt.name,
+                  groupName: opt.optionName,
+                  price: opt.price || 0
+                }));
+                modifiersJson = JSON.stringify(modifiers);
+              }
+              
               await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0, modifiersJson]
               );
             }
           }
