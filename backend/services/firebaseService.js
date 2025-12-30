@@ -538,6 +538,23 @@ async function getPrepTimeSettings(restaurantId) {
   }
 }
 
+// POS에서 주문 수신 확인 (테이블 디바이스에 알림용)
+async function confirmPosReceived(orderId) {
+  const firestore = getFirestore();
+  
+  try {
+    await firestore.collection('orders').doc(orderId).update({
+      posConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+      posReceived: true
+    });
+    console.log(`✅ POS 수신 확인: ${orderId}`);
+    return { success: true, orderId };
+  } catch (error) {
+    console.error(`❌ POS 수신 확인 실패: ${orderId}`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -556,6 +573,7 @@ module.exports = {
   clearDayOffSettings,
   cleanupPastDayOffs,
   updatePrepTimeSettings,
-  getPrepTimeSettings
+  getPrepTimeSettings,
+  confirmPosReceived
 };
 

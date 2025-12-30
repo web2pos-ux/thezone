@@ -220,6 +220,13 @@ function startOrderListener(restaurantId) {
             }
           }
           console.log(`📦 새 온라인 주문 SQLite 저장: #${localOrder.id}`);
+          
+          // POS 수신 확인을 Firebase에 업데이트 (테이블 디바이스에 알림)
+          try {
+            await firebaseService.confirmPosReceived(firebaseOrderId);
+          } catch (confirmError) {
+            console.error('POS 수신 확인 Firebase 업데이트 실패:', confirmError.message);
+          }
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
