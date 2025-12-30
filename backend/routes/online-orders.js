@@ -163,7 +163,7 @@ function startOrderListener(restaurantId) {
 
   console.log(`👂 주문 리스너 시작: ${restaurantId}`);
 
-  const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
+  const unsubscribeOnline = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
       // SQLite에 저장하고 localOrderId 생성
       const firebaseOrderId = order.id;
@@ -255,7 +255,102 @@ function startOrderListener(restaurantId) {
     }
   });
 
-  activeListeners.set(restaurantId, unsubscribe);
+  // 멀티 POS 동기화: POS에서 업로드한 주문(pos_pending)도 수신하여 SQLite에 저장
+  const unsubscribePos = firebaseService.listenToPosOrders(restaurantId, {
+    onNewOrder: async (order) => {
+      const firebaseOrderId = order.id;
+      let localOrder = null;
+
+      try {
+        // 이미 저장된 주문인지 확인
+        localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [firebaseOrderId]);
+
+        if (!localOrder) {
+          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+          const orderNumber = order.orderNumber || `POS-${Date.now()}`;
+
+          // orderType 매핑
+          const rawType = String(order.orderType || order.order_type || 'POS').toUpperCase();
+          const orderType = rawType === 'PICKUP' ? 'TOGO' : rawType;
+
+          // status 매핑 (pos_pending -> PENDING)
+          const status = String(order.status || 'pos_pending').toLowerCase() === 'pos_paid' ? 'PAID' : 'PENDING';
+
+          const result = await dbRun(
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, table_id, firebase_order_id, order_source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              orderNumber,
+              orderType,
+              order.total || 0,
+              status,
+              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              order.customerPhone || null,
+              order.customerName || null,
+              order.tableId || null,
+              firebaseOrderId,
+              'POS_SYNC'
+            ]
+          );
+          localOrder = { id: result.lastID };
+
+          // 주문 아이템 저장
+          if (Array.isArray(order.items)) {
+            for (const item of order.items) {
+              const modifiersJson = JSON.stringify(item.options || item.modifiers || []);
+              const orderLineId = `POSSYNC-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+              await dbRun(
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price, guest_number, modifiers_json, order_line_id)
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+                [localOrder.id, item.id || item.item_id || null, item.name || '', item.quantity || 1, item.price || 0, modifiersJson, orderLineId]
+              );
+            }
+          }
+
+          console.log(`📦 새 POS(원격) 주문 SQLite 저장: #${localOrder.id}`);
+        }
+      } catch (saveError) {
+        console.error('POS(멀티) 주문 SQLite 저장 실패:', saveError.message);
+      }
+
+      // 초기 로딩(_isInitial)에서는 UI 알림을 생략하고, 이후에는 SSE로 푸시
+      if (!order._isInitial) {
+        const formatted = formatOrderForFrontend(order);
+        formatted.localOrderId = localOrder?.id || null;
+        broadcastToClients(restaurantId, { type: 'new_order', order: formatted });
+      }
+    },
+    onOrderUpdate: async (order) => {
+      // pos_pending 범위 내에서 수정 (메모/금액 등)이 오면 반영
+      try {
+        await dbRun(`UPDATE orders SET total = COALESCE(?, total), customer_name = COALESCE(?, customer_name), customer_phone = COALESCE(?, customer_phone) WHERE firebase_order_id = ?`, [
+          order.total != null ? order.total : null,
+          order.customerName || null,
+          order.customerPhone || null,
+          order.id
+        ]);
+      } catch {}
+      broadcastToClients(restaurantId, { type: 'order_updated', order: formatOrderForFrontend(order) });
+    },
+    onOrderRemove: async (order) => {
+      // pos_pending -> pos_paid 로 빠지는 케이스를 PAID로 반영
+      try {
+        await dbRun(`UPDATE orders SET status = 'PAID' WHERE firebase_order_id = ?`, [order.id]);
+      } catch {}
+      broadcastToClients(restaurantId, { type: 'order_updated', order: formatOrderForFrontend(order) });
+    },
+    onError: (error) => {
+      broadcastToClients(restaurantId, { type: 'error', message: error.message });
+    }
+  });
+
+  // stop 시 둘 다 정리
+  const combinedUnsub = () => {
+    try { if (typeof unsubscribeOnline === 'function') unsubscribeOnline(); } catch {}
+    try { if (typeof unsubscribePos === 'function') unsubscribePos(); } catch {}
+  };
+
+  activeListeners.set(restaurantId, combinedUnsub);
 }
 
 // Firebase 주문 리스너 중지

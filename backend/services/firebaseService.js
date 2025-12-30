@@ -93,6 +93,50 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
   return unsubscribe;
 }
 
+// POS 주문 (멀티 POS 동기화용) 실시간 리스너
+// - POS에서 Firebase로 업로드한 주문은 status를 pos_pending/pos_paid로 사용
+// - online 주문(pending)과 섞이지 않도록 분리
+function listenToPosOrders(restaurantId, { onNewOrder, onOrderUpdate, onOrderRemove, onError }) {
+  if (!restaurantId) {
+    console.error('❌ restaurantId가 필요합니다');
+    return null;
+  }
+
+  const firestore = getFirestore();
+
+  console.log(`👂 POS 주문 리스너 시작 - Restaurant ID: ${restaurantId}`);
+
+  let isInitial = true;
+  const unsubscribe = firestore
+    .collection('orders')
+    .where('restaurantId', '==', restaurantId)
+    .where('status', '==', 'pos_pending')
+    .onSnapshot(
+      (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          const order = { id: change.doc.id, ...change.doc.data(), _isInitial: isInitial };
+
+          if (change.type === 'added') {
+            // 초기 로딩 포함: SQLite 동기화는 필요, UI 알림은 라우터에서 _isInitial로 제어
+            if (onNewOrder) onNewOrder(order);
+          } else if (change.type === 'modified') {
+            if (onOrderUpdate) onOrderUpdate(order);
+          } else if (change.type === 'removed') {
+            // status가 pos_paid 등으로 바뀌면 쿼리에서 빠지며 removed로 들어옴
+            if (onOrderRemove) onOrderRemove(order);
+          }
+        });
+        isInitial = false;
+      },
+      (error) => {
+        console.error('❌ POS 주문 리스너 오류:', error);
+        if (onError) onError(error);
+      }
+    );
+
+  return unsubscribe;
+}
+
 // 주문 상태 변경
 async function updateOrderStatus(orderId, newStatus) {
   const firestore = getFirestore();
@@ -273,6 +317,7 @@ async function uploadOrder(restaurantId, orderData) {
       notes: orderData.notes || orderData.customer_note || '',
       tableId: orderData.tableId || orderData.table_id || '',
       source: orderData.source || 'POS',
+      localOrderId: orderData.localOrderId || orderData.local_order_id || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
@@ -606,6 +651,7 @@ module.exports = {
   initializeFirebase,
   getFirestore,
   listenToOnlineOrders,
+  listenToPosOrders,
   updateOrderStatus,
   acceptOrder,
   getOnlineOrders,

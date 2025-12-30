@@ -119,7 +119,7 @@ module.exports = (db) => {
 				const order = await dbGet(`SELECT firebase_order_id FROM orders WHERE id = ?`, [orderId]);
 				if (order && order.firebase_order_id) {
 					await firebaseService.updatePosOrder(order.firebase_order_id, {
-						status: 'paid',
+						status: 'pos_paid',
 						closedAt: closedAt
 					});
 				}
@@ -396,7 +396,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					firebaseOrderId = await firebaseService.uploadOrder(restaurantId, {
 						orderNumber: orderNumber || orderId,
 						orderType: orderType || 'POS',
-						status: 'pending',
+						status: 'pos_pending',
 						items: items.map(it => ({
 							name: it.name || '',
 							price: Number(it.price || it.totalPrice || 0),

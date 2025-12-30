@@ -339,9 +339,9 @@ module.exports = (db) => {
 
       // 6. 파이어베이스로 주문 업로드 (Dashboard 연동)
       try {
-        const restaurantId = remoteSyncService.restaurantId;
+        const restaurantId = remoteSyncService.getRestaurantId();
         if (restaurantId) {
-          await firebaseService.uploadOrder(restaurantId, {
+          const firebaseOrderId = await firebaseService.uploadOrder(restaurantId, {
             orderNumber: orderId,
             orderType: 'dine_in',
             status: 'pending',
@@ -357,8 +357,18 @@ module.exports = (db) => {
             total: itemsSubtotal * 1.05,
             tableId: table_id,
             customerName: 'Table Order',
-            source: 'TableOrder'
+            source: 'TableOrder',
+            localOrderId: posOrderId
           });
+
+          // Firebase ID를 SQLite 주문에 저장하여 리스너 중복 저장 방지
+          if (firebaseOrderId) {
+            try {
+              await dbRun(`UPDATE orders SET firebase_order_id = ? WHERE id = ?`, [firebaseOrderId, posOrderId]);
+            } catch (e) {
+              console.error('[Table Order] Failed to save firebase_order_id to SQLite:', e.message);
+            }
+          }
         }
       } catch (firebaseErr) {
         console.error('[Table Order] Failed to upload to Firebase:', firebaseErr.message);
