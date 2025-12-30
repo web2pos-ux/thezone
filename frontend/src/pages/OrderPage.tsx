@@ -6962,12 +6962,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                       )}
                                       <span className="truncate">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
                                     </div>
-                                    {/* Modifiers 표시 (테이블 오더 options 포함) */}
+                                    {/* 테이블 오더 Modifiers 표시 (item_source가 TABLE_ORDER이고 modifiers에 name이 직접 있는 경우) */}
                                     {(() => {
+                                      // 테이블 오더인 경우만 처리 (POS modifiers는 아래 기존 방식으로 표시됨)
+                                      if ((item as any).item_source !== 'TABLE_ORDER') return null;
                                       const mods = item.modifiers || [];
-                                      const opts = (item as any).options || [];
-                                      // 테이블 오더 options만 표시 (POS modifiers는 기존 방식으로 표시됨)
-                                      const tableOrderMods = opts.map((o: any) => o.choiceName || o.name || '').filter(Boolean);
+                                      // 테이블 오더 형식: { name: "Beef", groupName: "Choose Meat", price: 0 }
+                                      const tableOrderMods = mods
+                                        .filter((m: any) => m.name && !m.selectedEntries) // 직접 name이 있고 selectedEntries가 없는 경우
+                                        .map((m: any) => m.name)
+                                        .filter(Boolean);
                                       if (tableOrderMods.length === 0) return null;
                                       return (
                                         <>
