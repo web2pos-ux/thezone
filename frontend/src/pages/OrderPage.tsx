@@ -4295,7 +4295,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             orderNumber,
             orderType: orderType || 'POS',
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })), 
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: (it as any).item_source || (it as any).itemSource || null })), 
             adjustments,
             tableId: tableIdForMap,
             serverId: selectedServer?.id || null,
@@ -5079,6 +5079,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           return;
         }
         const items = Array.isArray(json.items) ? json.items : [];
+        const orderSourceRaw = String(json?.order?.order_source || json?.order?.orderSource || '');
+        const inferTableOrder = orderSourceRaw.toUpperCase().includes('TABLE_QR') || orderSourceRaw.toUpperCase().includes('TABLE_ORDER');
         
         // Store original quantities for saved items
         items.forEach((it: any) => {
@@ -5100,7 +5102,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
           splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
           orderLineId: it.order_line_id || undefined,
-          item_source: it.item_source || undefined
+          item_source: it.item_source || (inferTableOrder ? 'TABLE_ORDER' : undefined)
         }));
         // Restore order-level Discount as a discount line from adjustments
         try {
