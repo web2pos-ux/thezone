@@ -248,7 +248,7 @@ const SalesPage: React.FC = () => {
     // Play order arrival sound (table device order)
     try {
       if (!tableOrderAudioRef.current) {
-        tableOrderAudioRef.current = new Audio('/sounds/Table_order.mp3');
+      tableOrderAudioRef.current = new Audio('/sounds/Table_Order.mp3');
       }
       tableOrderAudioRef.current.currentTime = 0;
       tableOrderAudioRef.current.play().catch(() => {});
@@ -273,12 +273,12 @@ const SalesPage: React.FC = () => {
     if (!safeTableId) return;
 
     const id = `table-call-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const label = kind ? ` (${String(kind)})` : '';
+    const label = kind ? String(kind) : 'Call Server';
     const toast: TableCallNotificationToast = {
       id,
       tableId: safeTableId,
       timestamp: new Date(),
-      message: `Call from Table ${safeTableId}${label}`,
+      message: `Table ${safeTableId} - ${label}`,
     };
 
     setTableCallToasts(prev => [toast, ...prev].slice(0, 6));

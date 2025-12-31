@@ -185,6 +185,16 @@ function startOrderListener(restaurantId) {
 
   const unsubscribeOnline = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
+      // Filter out Table-Device orders (they are handled by POS directly and should not trigger Online order notifications/sounds)
+      try {
+        const srcRaw = order && (order.source || order.orderSource || order.order_source);
+        const src = String(srcRaw || '').toLowerCase();
+        const cn = String(order && (order.customerName || order.customer_name) || '').toLowerCase();
+        if (src === 'tableorder' || src === 'table_order' || cn === 'table order') {
+          return;
+        }
+      } catch {}
+
       // SQLite에 저장하고 localOrderId 생성
       const firebaseOrderId = order.id;
       let localOrder = null;
