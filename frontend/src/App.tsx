@@ -43,6 +43,7 @@ import DebugPaymentPage from './pages/DebugPaymentPage';
 import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
+import TableAlertsOverlay from './components/TableAlertsOverlay';
 
 // 🚀 OrderPage를 Lazy Loading으로 변경 (8,693줄 → 즉시 로딩 방지)
 const OrderPage = lazy(() => import('./pages/OrderPage'));
@@ -57,6 +58,7 @@ function App() {
   return (
     <MenuCacheProvider>
       <BrowserRouter>
+        <TableAlertsOverlay />
         <Routes>
           {/* 메인 페이지들 */}
           <Route path="/" element={<IntroPage />} />

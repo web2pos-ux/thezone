@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
-import { io } from 'socket.io-client';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
 import WaitingListModal from '../components/waiting/WaitingListModal';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
@@ -47,20 +46,6 @@ interface HistoryOrderDetailPayload {
   order: any;
   items: any[];
   adjustments: any[];
-}
-
-interface TableOrderNotificationToast {
-  id: string;
-  tableId: string;
-  timestamp: Date;
-  message: string;
-}
-
-interface TableCallNotificationToast {
-  id: string;
-  tableId: string;
-  timestamp: Date;
-  message: string;
 }
 
 type VirtualOrderChannel = 'togo' | 'online';
@@ -195,14 +180,6 @@ const SalesPage: React.FC = () => {
   // Avoid TDZ: SSE effect appears before fetchTableMapData is declared in this file.
   const fetchTableMapDataRef = useRef<null | ((showLoading?: boolean) => void)>(null);
 
-  // Table Order real-time notification (from table device -> backend socket.io -> POS)
-  const [tableOrderToasts, setTableOrderToasts] = useState<TableOrderNotificationToast[]>([]);
-  const tableOrderToastTimeoutsRef = useRef<Record<string, number>>({});
-  const [tableCallToasts, setTableCallToasts] = useState<TableCallNotificationToast[]>([]);
-  const tableCallToastTimeoutsRef = useRef<Record<string, number>>({});
-  const tableOrderAudioRef = useRef<HTMLAudioElement | null>(null);
-  const callServerAudioRef = useRef<HTMLAudioElement | null>(null);
-
   // Floor 관련 상태
   const [selectedFloor, setSelectedFloor] = useState('1F');
   const [floorList, setFloorList] = useState<string[]>([]);
@@ -222,113 +199,6 @@ const SalesPage: React.FC = () => {
     [selectedFloor]
   );
 
-  const removeTableOrderToast = useCallback((id: string) => {
-    setTableOrderToasts(prev => prev.filter(t => t.id !== id));
-    const timers = tableOrderToastTimeoutsRef.current;
-    if (timers[id]) {
-      try { clearTimeout(timers[id]); } catch {}
-      delete timers[id];
-    }
-  }, []);
-
-  const addTableOrderToast = useCallback((tableId: string) => {
-    const safeTableId = String(tableId || '').trim();
-    if (!safeTableId) return;
-
-    const id = `table-order-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const toast: TableOrderNotificationToast = {
-      id,
-      tableId: safeTableId,
-      timestamp: new Date(),
-      message: `Order from Table ${safeTableId}`,
-    };
-
-    setTableOrderToasts(prev => [toast, ...prev].slice(0, 6)); // cap to avoid overflow
-
-    // Play order arrival sound (table device order)
-    try {
-      if (!tableOrderAudioRef.current) {
-      tableOrderAudioRef.current = new Audio('/sounds/Table_Order.mp3');
-      }
-      tableOrderAudioRef.current.currentTime = 0;
-      tableOrderAudioRef.current.play().catch(() => {});
-    } catch {}
-
-    // Auto-hide after 20 seconds
-    const timeoutId = window.setTimeout(() => removeTableOrderToast(id), 5000);
-    tableOrderToastTimeoutsRef.current[id] = timeoutId;
-  }, [removeTableOrderToast]);
-
-  const removeTableCallToast = useCallback((id: string) => {
-    setTableCallToasts(prev => prev.filter(t => t.id !== id));
-    const timers = tableCallToastTimeoutsRef.current;
-    if (timers[id]) {
-      try { clearTimeout(timers[id]); } catch {}
-      delete timers[id];
-    }
-  }, []);
-
-  const addTableCallToast = useCallback((tableId: string, kind?: string) => {
-    const safeTableId = String(tableId || '').trim();
-    if (!safeTableId) return;
-
-    const id = `table-call-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const label = kind ? String(kind) : 'Call Server';
-    const toast: TableCallNotificationToast = {
-      id,
-      tableId: safeTableId,
-      timestamp: new Date(),
-      message: `Table ${safeTableId} - ${label}`,
-    };
-
-    setTableCallToasts(prev => [toast, ...prev].slice(0, 6));
-
-    // Play call server sound
-    try {
-      if (!callServerAudioRef.current) {
-        callServerAudioRef.current = new Audio('/sounds/Call_Server.mp3');
-      }
-      callServerAudioRef.current.currentTime = 0;
-      callServerAudioRef.current.play().catch(() => {});
-    } catch {}
-
-    // No auto-hide for Call popups: staff must tap to dismiss
-  }, [removeTableCallToast]);
-
-  // Socket.io: listen for table device orders pushed by backend
-  useEffect(() => {
-    const socketUrl = String(API_URL || '').replace(/\/api\/?$/i, '');
-    if (!socketUrl) return;
-
-    const socket = io(socketUrl, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-    });
-
-    socket.on('table_order_received', (payload: any) => {
-      try {
-        const tableId = payload?.table_id ?? payload?.tableId ?? payload?.table ?? payload?.tableNumber;
-        if (tableId != null) addTableOrderToast(String(tableId));
-
-        // Immediately refresh table map so the order appears without waiting for polling/SSE
-        try { fetchTableMapDataRef.current?.(); } catch {}
-      } catch {}
-    });
-
-    socket.on('table_call', (payload: any) => {
-      try {
-        const tableId = payload?.table_id ?? payload?.tableId ?? payload?.table ?? payload?.tableNumber;
-        const kind = payload?.kind ?? payload?.type ?? payload?.requestType;
-        if (tableId != null) addTableCallToast(String(tableId), kind != null ? String(kind) : undefined);
-      } catch {}
-    });
-
-    return () => {
-      try { socket.removeAllListeners(); } catch {}
-      try { socket.disconnect(); } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTableOrderToast, addTableCallToast, API_URL]);
 
   const setOccupiedTimestamp = useCallback(
     (tableId: string | number | null | undefined, timestamp: number | null | undefined) => {
@@ -5809,35 +5679,6 @@ const SalesPage: React.FC = () => {
                   marginRight: 'auto'
                 }}
               >
-                {/* Table Order notification toasts (from table device) */}
-                {(tableCallToasts.length > 0 || tableOrderToasts.length > 0) && (
-                  <div className="absolute top-2 right-2 z-50 space-y-2">
-                    {tableCallToasts.map((t) => (
-                      <div
-                        key={t.id}
-                        className="bg-red-500 text-white px-3 py-2 rounded-lg shadow-lg border-l-4 border-red-700 cursor-pointer select-none"
-                        style={{ minWidth: '220px' }}
-                        onClick={() => removeTableCallToast(t.id)}
-                        title="Click to dismiss"
-                      >
-                        <div className="font-bold text-sm">{t.message}</div>
-                        <div className="text-[11px] opacity-80 mt-1">{t.timestamp.toLocaleTimeString()}</div>
-                      </div>
-                    ))}
-                    {tableOrderToasts.map((t) => (
-                      <div
-                        key={t.id}
-                        className="bg-yellow-400 text-black px-3 py-2 rounded-lg shadow-lg border-l-4 border-yellow-600 cursor-pointer select-none"
-                        style={{ minWidth: '220px' }}
-                        onClick={() => removeTableOrderToast(t.id)}
-                        title="Click to dismiss"
-                      >
-                        <div className="font-bold text-sm">{t.message}</div>
-                        <div className="text-[11px] opacity-75 mt-1">{t.timestamp.toLocaleTimeString()}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
                 {loading ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="text-center">
