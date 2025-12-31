@@ -22,7 +22,16 @@ import {
   MoreVertical,
   Search,
   Filter,
-  Settings
+  Settings,
+  Video,
+  Plus,
+  X,
+  Calendar,
+  Edit2,
+  Save,
+  Cloud,
+  CloudDownload,
+  CloudUpload
 } from 'lucide-react';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
@@ -64,6 +73,18 @@ interface DeviceStats {
   low_battery: number;
 }
 
+interface SeasonalVideo {
+  id?: number;
+  name: string;
+  video_url: string;
+  start_month: number;
+  start_day: number;
+  end_month: number;
+  end_day: number;
+  is_active: number;
+  firebase_url?: string;
+}
+
 const TableDevicesPage: React.FC = () => {
   const [devices, setDevices] = useState<Device[]>([]);
   const [unassignedTables, setUnassignedTables] = useState<TableElement[]>([]);
@@ -87,6 +108,24 @@ const TableDevicesPage: React.FC = () => {
   // 상세 정보 모달
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [detailDevice, setDetailDevice] = useState<Device | null>(null);
+  
+  // 탭 상태 (devices | videos | firebase)
+  const [activeTab, setActiveTab] = useState<'devices' | 'videos' | 'firebase'>('devices');
+  
+  // 시즌 영상 상태
+  const [seasonalVideos, setSeasonalVideos] = useState<SeasonalVideo[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
+  const [showVideoModal, setShowVideoModal] = useState(false);
+  const [editingVideo, setEditingVideo] = useState<SeasonalVideo | null>(null);
+  const [videoForm, setVideoForm] = useState<SeasonalVideo>({
+    name: '',
+    video_url: '',
+    start_month: 1,
+    start_day: 1,
+    end_month: 12,
+    end_day: 31,
+    is_active: 1
+  });
   
   // 데이터 로드
   const fetchData = useCallback(async () => {
@@ -121,13 +160,298 @@ const TableDevicesPage: React.FC = () => {
     }
   }, []);
   
+  // 시즌 영상 로드
+  const fetchSeasonalVideos = useCallback(async () => {
+    try {
+      setLoadingVideos(true);
+      const res = await fetch(`${API_URL}/table-orders/seasonal-videos`);
+      if (res.ok) {
+        const data = await res.json();
+        setSeasonalVideos(data.videos || []);
+      }
+    } catch (err) {
+      console.error('Failed to load seasonal videos:', err);
+    } finally {
+      setLoadingVideos(false);
+    }
+  }, []);
+  
   useEffect(() => {
     fetchData();
+    fetchSeasonalVideos();
+    fetchFirebaseVideos();
     
     // 5초마다 자동 갱신
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, fetchSeasonalVideos]);
+  
+  // 시즌 영상 저장
+  const handleSaveVideo = async () => {
+    try {
+      if (!videoForm.name) {
+        alert('Please enter a season name');
+        return;
+      }
+      
+      if (editingVideo?.id) {
+        // 수정
+        const res = await fetch(`${API_URL}/table-orders/seasonal-videos/${editingVideo.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(videoForm)
+        });
+        if (!res.ok) throw new Error('Failed to update video');
+      } else {
+        // 추가
+        const res = await fetch(`${API_URL}/table-orders/seasonal-videos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(videoForm)
+        });
+        if (!res.ok) throw new Error('Failed to add video');
+      }
+      
+      setShowVideoModal(false);
+      setEditingVideo(null);
+      setVideoForm({
+        name: '',
+        video_url: '',
+        start_month: 1,
+        start_day: 1,
+        end_month: 12,
+        end_day: 31,
+        is_active: 1
+      });
+      fetchSeasonalVideos();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+  
+  // 시즌 영상 삭제
+  const handleDeleteVideo = async (id: number) => {
+    if (!window.confirm('Are you sure you want to delete this video?')) return;
+    
+    try {
+      const res = await fetch(`${API_URL}/table-orders/seasonal-videos/${id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to delete video');
+      fetchSeasonalVideos();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+  
+  // 시즌 영상 편집 시작
+  const startEditVideo = (video: SeasonalVideo) => {
+    setEditingVideo(video);
+    setVideoForm({ ...video });
+    setShowVideoModal(true);
+  };
+  
+  // 새 영상 추가 시작
+  const startAddVideo = () => {
+    setEditingVideo(null);
+    setVideoForm({
+      name: '',
+      video_url: '',
+      start_month: 1,
+      start_day: 1,
+      end_month: 12,
+      end_day: 31,
+      is_active: 1
+    });
+    setShowVideoModal(true);
+  };
+  
+  // 월 이름 배열
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  // Firebase 동기화 상태
+  const [syncingFromFirebase, setSyncingFromFirebase] = useState(false);
+  const [syncingToFirebase, setSyncingToFirebase] = useState(false);
+  
+  // 비디오 업로드 상태
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [uploadingToFirebaseStorage, setUploadingToFirebaseStorage] = useState(false);
+  
+  // Firebase Storage 비디오 상태
+  const [firebaseVideos, setFirebaseVideos] = useState<any[]>([]);
+  const [loadingFirebaseVideos, setLoadingFirebaseVideos] = useState(false);
+  const [downloadingVideo, setDownloadingVideo] = useState<string | null>(null);
+  
+  // Firebase에서 시즌 영상 가져오기
+  const handleSyncFromFirebase = async () => {
+    const restaurantId = prompt('Enter Firebase Restaurant ID:');
+    if (!restaurantId) return;
+    
+    setSyncingFromFirebase(true);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/seasonal-videos/sync-from-firebase`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurant_id: restaurantId })
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Sync failed');
+      }
+      
+      const data = await res.json();
+      alert(`Successfully synced ${data.synced_count} videos from Firebase`);
+      fetchSeasonalVideos();
+    } catch (err: any) {
+      alert('Sync failed: ' + err.message);
+    } finally {
+      setSyncingFromFirebase(false);
+    }
+  };
+  
+  // Firebase로 시즌 영상 업로드
+  const handleSyncToFirebase = async () => {
+    const restaurantId = prompt('Enter Firebase Restaurant ID:');
+    if (!restaurantId) return;
+    
+    setSyncingToFirebase(true);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/seasonal-videos/sync-to-firebase`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurant_id: restaurantId })
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Upload failed');
+      }
+      
+      const data = await res.json();
+      alert(`Successfully uploaded ${data.uploaded_count} videos to Firebase`);
+    } catch (err: any) {
+      alert('Upload failed: ' + err.message);
+    } finally {
+      setSyncingToFirebase(false);
+    }
+  };
+  
+  // 비디오 파일 업로드 (로컬)
+  const handleVideoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setUploadingVideo(true);
+    try {
+      const formData = new FormData();
+      formData.append('video', file);
+      
+      const res = await fetch(`${API_URL}/table-orders/upload-video`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Upload failed');
+      }
+      
+      const data = await res.json();
+      setVideoForm({ ...videoForm, video_url: data.video_url });
+      alert('Video uploaded successfully!');
+    } catch (err: any) {
+      alert('Upload failed: ' + err.message);
+    } finally {
+      setUploadingVideo(false);
+      e.target.value = '';
+    }
+  };
+  
+  // 로컬 비디오를 Firebase Storage에 업로드
+  const handleUploadToFirebaseStorage = async (filename: string) => {
+    setUploadingToFirebaseStorage(true);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/firebase-storage/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Upload to Firebase failed');
+      }
+      
+      const data = await res.json();
+      setVideoForm({ ...videoForm, firebase_url: data.firebase_url });
+      alert('Uploaded to Firebase Storage successfully!');
+      fetchFirebaseVideos();
+    } catch (err: any) {
+      alert('Firebase upload failed: ' + err.message);
+    } finally {
+      setUploadingToFirebaseStorage(false);
+    }
+  };
+  
+  // Firebase Storage 비디오 목록 로드
+  const fetchFirebaseVideos = async () => {
+    setLoadingFirebaseVideos(true);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/firebase-storage/list`);
+      if (res.ok) {
+        const data = await res.json();
+        setFirebaseVideos(data.videos || []);
+      }
+    } catch (err) {
+      console.error('Failed to load Firebase videos:', err);
+    } finally {
+      setLoadingFirebaseVideos(false);
+    }
+  };
+  
+  // Firebase Storage에서 로컬로 다운로드
+  const handleDownloadFromFirebase = async (firebasePath: string) => {
+    setDownloadingVideo(firebasePath);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/firebase-storage/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebase_path: firebasePath })
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Download failed');
+      }
+      
+      const data = await res.json();
+      alert(`Downloaded successfully!\nLocal URL: ${data.local_url}`);
+    } catch (err: any) {
+      alert('Download failed: ' + err.message);
+    } finally {
+      setDownloadingVideo(null);
+    }
+  };
+  
+  // Firebase Storage 비디오 삭제
+  const handleDeleteFirebaseVideo = async (firebasePath: string) => {
+    if (!window.confirm('Are you sure you want to delete this video from Firebase?')) return;
+    
+    try {
+      const res = await fetch(`${API_URL}/table-orders/firebase-storage/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebase_path: firebasePath })
+      });
+      
+      if (!res.ok) throw new Error('Delete failed');
+      
+      fetchFirebaseVideos();
+    } catch (err: any) {
+      alert('Delete failed: ' + err.message);
+    }
+  };
   
   // 테이블 배정
   const handleAssignTable = async () => {
@@ -258,15 +582,58 @@ const TableDevicesPage: React.FC = () => {
           </div>
           
           <button
-            onClick={fetchData}
+            onClick={() => activeTab === 'videos' ? fetchSeasonalVideos() : fetchData()}
             className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
           >
             <RefreshCw className="w-4 h-4" />
             새로고침
           </button>
         </div>
+        
+        {/* 탭 */}
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={() => setActiveTab('devices')}
+            className={`px-4 py-2 rounded-lg font-medium transition ${
+              activeTab === 'devices'
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            <Tablet className="w-4 h-4 inline mr-2" />
+            Devices
+          </button>
+          <button
+            onClick={() => setActiveTab('videos')}
+            className={`px-4 py-2 rounded-lg font-medium transition ${
+              activeTab === 'videos'
+                ? 'bg-blue-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            <Video className="w-4 h-4 inline mr-2" />
+            Seasonal Videos
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('firebase');
+              fetchFirebaseVideos();
+            }}
+            className={`px-4 py-2 rounded-lg font-medium transition ${
+              activeTab === 'firebase'
+                ? 'bg-orange-500 text-white'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            <Cloud className="w-4 h-4 inline mr-2" />
+            Firebase Storage
+          </button>
+        </div>
       </div>
       
+      {/* 탭 콘텐츠: Devices */}
+      {activeTab === 'devices' && (
+        <>
       {/* 통계 카드 */}
       {stats && (
         <div className="px-6 py-4 bg-white border-b">
@@ -700,6 +1067,381 @@ const TableDevicesPage: React.FC = () => {
                 className="w-full px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition font-medium"
               >
                 닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+        </>
+      )}
+      
+      {/* 탭 콘텐츠: Seasonal Videos */}
+      {activeTab === 'videos' && (
+        <div className="flex-1 overflow-auto p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold text-gray-800">Seasonal Videos</h2>
+              <p className="text-sm text-gray-500">테이블오더에서 주문 완료 후 표시할 시즌 영상을 설정합니다</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSyncFromFirebase}
+                disabled={syncingFromFirebase}
+                className="flex items-center gap-2 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:bg-gray-300 transition"
+                title="Firebase에서 영상 설정 가져오기"
+              >
+                <CloudDownload className={`w-4 h-4 ${syncingFromFirebase ? 'animate-spin' : ''}`} />
+                {syncingFromFirebase ? 'Syncing...' : 'From Firebase'}
+              </button>
+              <button
+                onClick={handleSyncToFirebase}
+                disabled={syncingToFirebase}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-300 transition"
+                title="Firebase로 영상 설정 업로드"
+              >
+                <CloudUpload className={`w-4 h-4 ${syncingToFirebase ? 'animate-spin' : ''}`} />
+                {syncingToFirebase ? 'Uploading...' : 'To Firebase'}
+              </button>
+              <button
+                onClick={startAddVideo}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
+              >
+                <Plus className="w-4 h-4" />
+                Add Video
+              </button>
+            </div>
+          </div>
+          
+          {loadingVideos ? (
+            <div className="text-center py-12">
+              <RefreshCw className="w-8 h-8 text-blue-500 animate-spin mx-auto mb-4" />
+              <p className="text-gray-500">Loading...</p>
+            </div>
+          ) : seasonalVideos.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-xl border-2 border-dashed border-gray-200">
+              <Video className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-600 mb-2">No seasonal videos</h3>
+              <p className="text-gray-400 text-sm mb-6">시즌별 영상을 추가하여 주문 완료 화면을 꾸며보세요</p>
+              <button
+                onClick={startAddVideo}
+                className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
+              >
+                <Plus className="w-4 h-4 inline mr-2" />
+                Add First Video
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {seasonalVideos.map((video) => (
+                <div
+                  key={video.id}
+                  className={`bg-white rounded-xl shadow-sm border-2 ${
+                    video.is_active ? 'border-green-200' : 'border-gray-200 opacity-60'
+                  }`}
+                >
+                  {/* 영상 미리보기 */}
+                  <div className="aspect-video bg-gray-100 rounded-t-xl overflow-hidden relative">
+                    {video.video_url || video.firebase_url ? (
+                      <video
+                        src={video.video_url || video.firebase_url}
+                        className="w-full h-full object-cover"
+                        muted
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Video className="w-12 h-12 text-gray-300" />
+                      </div>
+                    )}
+                    {!video.is_active && (
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                        <span className="text-white font-medium px-3 py-1 bg-red-500 rounded">Disabled</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* 정보 */}
+                  <div className="p-4">
+                    <h3 className="font-bold text-gray-800 mb-2">{video.name}</h3>
+                    <div className="flex items-center gap-2 text-sm text-gray-500 mb-3">
+                      <Calendar className="w-4 h-4" />
+                      <span>
+                        {months[video.start_month - 1]} {video.start_day} ~ {months[video.end_month - 1]} {video.end_day}
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-400 truncate mb-4">
+                      {video.video_url || video.firebase_url || 'No video URL'}
+                    </div>
+                    
+                    {/* 액션 버튼 */}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => startEditVideo(video)}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => video.id && handleDeleteVideo(video.id)}
+                        className="px-3 py-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* 탭 콘텐츠: Firebase Storage */}
+      {activeTab === 'firebase' && (
+        <div className="flex-1 overflow-auto p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-bold text-gray-800">Firebase Storage Videos</h2>
+              <p className="text-sm text-gray-500">Firebase Storage에 저장된 비디오를 관리합니다</p>
+            </div>
+            <button
+              onClick={fetchFirebaseVideos}
+              className="flex items-center gap-2 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition"
+            >
+              <RefreshCw className={`w-4 h-4 ${loadingFirebaseVideos ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+          
+          {loadingFirebaseVideos ? (
+            <div className="text-center py-12">
+              <RefreshCw className="w-8 h-8 text-orange-500 animate-spin mx-auto mb-4" />
+              <p className="text-gray-500">Loading Firebase Storage...</p>
+            </div>
+          ) : firebaseVideos.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-xl border-2 border-dashed border-gray-200">
+              <Cloud className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-600 mb-2">No videos in Firebase Storage</h3>
+              <p className="text-gray-400 text-sm">Seasonal Videos 탭에서 영상을 업로드한 후 Firebase에 업로드하세요</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {firebaseVideos.map((video) => (
+                <div key={video.name} className="bg-white rounded-xl shadow-sm border-2 border-orange-200">
+                  {/* 영상 미리보기 */}
+                  <div className="aspect-video bg-gray-100 rounded-t-xl overflow-hidden relative">
+                    <video
+                      src={video.url}
+                      className="w-full h-full object-cover"
+                      muted
+                    />
+                    <div className="absolute top-2 right-2 bg-orange-500 text-white text-xs px-2 py-1 rounded">
+                      Firebase
+                    </div>
+                  </div>
+                  
+                  {/* 정보 */}
+                  <div className="p-4">
+                    <h3 className="font-bold text-gray-800 mb-2 truncate" title={video.name}>
+                      {video.name.split('/').pop()}
+                    </h3>
+                    <div className="text-xs text-gray-500 mb-2">
+                      Size: {(video.size / (1024 * 1024)).toFixed(2)} MB
+                    </div>
+                    <div className="text-xs text-gray-400 truncate mb-4" title={video.url}>
+                      {video.url}
+                    </div>
+                    
+                    {/* 액션 버튼 */}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleDownloadFromFirebase(video.name)}
+                        disabled={downloadingVideo === video.name}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition disabled:opacity-50"
+                      >
+                        <CloudDownload className={`w-4 h-4 ${downloadingVideo === video.name ? 'animate-spin' : ''}`} />
+                        {downloadingVideo === video.name ? 'Downloading...' : 'Download'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteFirebaseVideo(video.name)}
+                        className="px-3 py-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    
+                    {/* URL 복사 버튼 */}
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(video.url);
+                        alert('URL copied to clipboard!');
+                      }}
+                      className="w-full mt-2 px-3 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition text-sm"
+                    >
+                      📋 Copy URL
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* 영상 추가/수정 모달 */}
+      {showVideoModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+            <div className="p-6 border-b flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">
+                  {editingVideo ? 'Edit Video' : 'Add Seasonal Video'}
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  시즌별로 표시할 영상과 기간을 설정하세요
+                </p>
+              </div>
+              <button
+                onClick={() => setShowVideoModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              {/* 시즌 이름 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Season Name</label>
+                <input
+                  type="text"
+                  value={videoForm.name}
+                  onChange={(e) => setVideoForm({ ...videoForm, name: e.target.value })}
+                  placeholder="예: Summer, Winter, Holiday"
+                  className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              
+              {/* 영상 URL + 업로드 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Video URL (Local or Firebase)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={videoForm.video_url}
+                    onChange={(e) => setVideoForm({ ...videoForm, video_url: e.target.value })}
+                    placeholder="예: /uploads/videos/xxx.mp4 또는 https://..."
+                    className="flex-1 px-4 py-3 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                  />
+                  <label className="px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 cursor-pointer transition flex items-center gap-2">
+                    <CloudUpload className="w-4 h-4" />
+                    Upload
+                    <input
+                      type="file"
+                      accept="video/*"
+                      className="hidden"
+                      onChange={handleVideoFileUpload}
+                    />
+                  </label>
+                </div>
+                {uploadingVideo && (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-blue-600">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Uploading video...
+                  </div>
+                )}
+                {videoForm.video_url && videoForm.video_url.startsWith('/uploads/videos/') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const filename = videoForm.video_url.split('/').pop();
+                      if (filename) handleUploadToFirebaseStorage(filename);
+                    }}
+                    disabled={uploadingToFirebaseStorage}
+                    className="mt-2 flex items-center gap-2 px-3 py-2 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 transition text-sm"
+                  >
+                    <Cloud className="w-4 h-4" />
+                    {uploadingToFirebaseStorage ? 'Uploading to Firebase...' : 'Upload to Firebase Storage'}
+                  </button>
+                )}
+              </div>
+              
+              {/* 기간 설정 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={videoForm.start_month}
+                      onChange={(e) => setVideoForm({ ...videoForm, start_month: parseInt(e.target.value) })}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                    >
+                      {months.map((m, i) => (
+                        <option key={i} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={videoForm.start_day}
+                      onChange={(e) => setVideoForm({ ...videoForm, start_day: parseInt(e.target.value) || 1 })}
+                      className="w-16 px-3 py-2 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none text-center"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={videoForm.end_month}
+                      onChange={(e) => setVideoForm({ ...videoForm, end_month: parseInt(e.target.value) })}
+                      className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
+                    >
+                      {months.map((m, i) => (
+                        <option key={i} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={videoForm.end_day}
+                      onChange={(e) => setVideoForm({ ...videoForm, end_day: parseInt(e.target.value) || 1 })}
+                      className="w-16 px-3 py-2 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none text-center"
+                    />
+                  </div>
+                </div>
+              </div>
+              
+              {/* 활성화 */}
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="is_active"
+                  checked={videoForm.is_active === 1}
+                  onChange={(e) => setVideoForm({ ...videoForm, is_active: e.target.checked ? 1 : 0 })}
+                  className="w-5 h-5 rounded border-gray-300"
+                />
+                <label htmlFor="is_active" className="text-sm font-medium text-gray-700">
+                  Enable this seasonal video
+                </label>
+              </div>
+            </div>
+            
+            <div className="p-6 bg-gray-50 rounded-b-2xl flex gap-3">
+              <button
+                onClick={() => setShowVideoModal(false)}
+                className="flex-1 px-4 py-3 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-100 transition font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveVideo}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition font-medium"
+              >
+                <Save className="w-4 h-4" />
+                Save
               </button>
             </div>
           </div>

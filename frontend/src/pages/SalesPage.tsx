@@ -177,8 +177,6 @@ const SalesPage: React.FC = () => {
   const [frameReady, setFrameReady] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  // Avoid TDZ: SSE effect appears before fetchTableMapData is declared in this file.
-  const fetchTableMapDataRef = useRef<null | ((showLoading?: boolean) => void)>(null);
 
   // Floor 관련 상태
   const [selectedFloor, setSelectedFloor] = useState('1F');
@@ -198,7 +196,6 @@ const SalesPage: React.FC = () => {
     },
     [selectedFloor]
   );
-
 
   const setOccupiedTimestamp = useCallback(
     (tableId: string | number | null | undefined, timestamp: number | null | undefined) => {
@@ -404,74 +401,6 @@ const SalesPage: React.FC = () => {
       skipthedishes: { mode: 'auto', time: '15m' },
     };
   });
-
-  // Day Off 설정 state
-  type DayOffScheduleType = 'closed' | 'early_close' | 'late_open' | 'extended';
-  interface DayOffEntry {
-    channel: string;
-    date: string;
-    scheduleType: DayOffScheduleType;
-    time: string | null;
-  }
-  const [dayOffSettings, setDayOffSettings] = useState<DayOffEntry[]>([]);
-  const [originalDayOffSettings, setOriginalDayOffSettings] = useState<DayOffEntry[]>([]); // 초기 로드된 설정 (변경 감지용)
-  const [dayOffSelectedChannels, setDayOffSelectedChannels] = useState<string[]>([]);
-  const [dayOffSelectedDates, setDayOffSelectedDates] = useState<string[]>([]);
-  const [dayOffScheduleType, setDayOffScheduleType] = useState<DayOffScheduleType>('closed');
-  const [dayOffTime, setDayOffTime] = useState<string>('');
-  const [dayOffCurrentMonth, setDayOffCurrentMonth] = useState<Date>(new Date());
-  const [dayOffLoading, setDayOffLoading] = useState<boolean>(false);
-
-  // Day Off 변경 여부 체크
-  const dayOffHasChanges = useMemo(() => {
-    if (dayOffSettings.length !== originalDayOffSettings.length) return true;
-    const currentStr = JSON.stringify(dayOffSettings.sort((a, b) => `${a.channel}-${a.date}`.localeCompare(`${b.channel}-${b.date}`)));
-    const originalStr = JSON.stringify(originalDayOffSettings.sort((a, b) => `${a.channel}-${a.date}`.localeCompare(`${b.channel}-${b.date}`)));
-    return currentStr !== originalStr;
-  }, [dayOffSettings, originalDayOffSettings]);
-
-  // Day Off 설정 로드 함수
-  const loadDayOffSettings = useCallback(async () => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
-    if (!restaurantId) return;
-    
-    setDayOffLoading(true);
-    try {
-      const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`);
-      const result = await response.json();
-      if (result.success && Array.isArray(result.dayoffs)) {
-        const mapped: DayOffEntry[] = result.dayoffs.map((row: any) => ({
-          channel: row.channel,
-          date: row.date,
-          scheduleType: row.schedule_type as DayOffScheduleType,
-          time: row.time || null
-        }));
-        setDayOffSettings(mapped);
-        setOriginalDayOffSettings(mapped); // 원본 저장
-      }
-    } catch (error) {
-      console.error('Failed to load day off settings:', error);
-    } finally {
-      setDayOffLoading(false);
-    }
-  }, [API_URL]);
-
-  // Day Off 개별 삭제 함수 (프론트엔드 상태만 변경, Save 시 백엔드 반영)
-  const handleDeleteDayOff = useCallback((idx: number) => {
-    setDayOffSettings(prev => prev.filter((_, i) => i !== idx));
-  }, []);
-
-  // Day Off 전체 삭제 함수 (프론트엔드 상태만 변경, Save 시 백엔드 반영)
-  const handleClearAllDayOff = useCallback(() => {
-    setDayOffSettings([]);
-  }, []);
-
-  // 모달이 열리고 Day Off 탭이 선택되면 설정 로드
-  useEffect(() => {
-    if (showPrepTimeModal && onlineModalTab === 'dayoff') {
-      loadDayOffSettings();
-    }
-  }, [showPrepTimeModal, onlineModalTab, loadDayOffSettings]);
 
   // 새 온라인 주문 알림 모달 상태
   const [showNewOrderAlert, setShowNewOrderAlert] = useState<boolean>(false);
@@ -1541,13 +1470,9 @@ const SalesPage: React.FC = () => {
 
             // 목록 즉시 갱신
             loadOnlineOrders();
-
-            // 테이블맵 즉시 갱신 (테이블오더가 들어오면 폴링(15s) 기다리지 않도록)
-            try { fetchTableMapDataRef.current?.(); } catch {}
           } else if (data.type === 'order_updated') {
             // 주문 상태 변경 시 목록 갱신
             loadOnlineOrders();
-            try { fetchTableMapDataRef.current?.(); } catch {}
           }
         } catch (error) {
           console.warn('[SSE] Parse error:', error);
@@ -2759,8 +2684,6 @@ const SalesPage: React.FC = () => {
       }
     }
   };
-  // Keep latest function in ref for SSE callback (declared earlier in file)
-  fetchTableMapDataRef.current = fetchTableMapData;
 
   useEffect(() => {
     fetchTableMapData(true);  // 초기 로딩 시에만 로딩 스피너 표시
@@ -5234,7 +5157,20 @@ const SalesPage: React.FC = () => {
                             const unitPrice = Number(item.price || item.unit_price || 0);
                             const lineTotal = unitPrice * qty;
                             const modifiers = Array.isArray(item.modifiers)
-                              ? item.modifiers.map((mod: any) => mod?.name || mod).filter(Boolean)
+                              ? item.modifiers.flatMap((mod: any) => {
+                                  // Case 1: Table Order flat modifiers { name, price_adjustment }
+                                  if (mod?.name && typeof mod.price_adjustment !== 'undefined') return [mod.name];
+                                  // Case 2: POS modifiers with nested modifiers array
+                                  if (Array.isArray(mod?.modifiers)) return mod.modifiers.map((m: any) => m?.name).filter(Boolean);
+                                  // Case 3: POS modifiers with selectedEntries
+                                  if (Array.isArray(mod?.selectedEntries)) return mod.selectedEntries.map((e: any) => e?.name).filter(Boolean);
+                                  // Case 4: POS modifiers with modifierNames
+                                  if (Array.isArray(mod?.modifierNames)) return mod.modifierNames;
+                                  // Case 5: Simple string or object with name
+                                  if (typeof mod === 'string') return [mod];
+                                  if (mod?.name) return [mod.name];
+                                  return [];
+                                }).filter(Boolean)
                               : [];
                             const noteText = item.note || item.memo || item.specialRequest;
                             return (
@@ -6052,35 +5988,39 @@ const SalesPage: React.FC = () => {
         {/* Online Settings Modal (Prep Time, Pause, Day Off) */}
         {showPrepTimeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="relative" style={{ marginTop: '-70px' }}>
             <div 
-              className="bg-white rounded-xl shadow-2xl w-[520px]"
+              className="bg-white rounded-xl shadow-2xl w-[560px]"
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Header */}
+              <div className="flex items-center justify-center px-5 py-3 bg-slate-700 rounded-t-xl">
+                <h2 className="text-lg font-bold text-white">Online Settings</h2>
+              </div>
+              
               {/* Tabs - 입체감 있는 버튼 */}
-              <div className="flex gap-2 p-3 bg-gray-100 rounded-t-xl">
+              <div className="flex gap-2 p-3 bg-gray-100">
                 <button
                   onClick={() => setOnlineModalTab('preptime')}
-                  className={`flex-1 py-3 text-base font-bold rounded-lg transition-all ${onlineModalTab === 'preptime' ? 'bg-white text-blue-700 shadow-md border-2 border-blue-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'preptime' ? 'bg-white text-blue-700 shadow-md border-2 border-blue-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Prep Time
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('pause')}
-                  className={`flex-1 py-3 text-base font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Pause
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('dayoff')}
-                  className={`flex-1 py-3 text-base font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
                 >
                   Day Off
                 </button>
               </div>
               
-              {/* Tab Content - 동일한 높이 */}
-              <div className="p-4 h-[340px]">
+              {/* Tab Content - 고정 높이 */}
+              <div className="p-4 h-[380px] overflow-auto">
                 {/* Prep Time Tab */}
                 {onlineModalTab === 'preptime' && (
                 <table className="w-full border-collapse">
@@ -6387,175 +6327,10 @@ const SalesPage: React.FC = () => {
                 
                 {/* Day Off Tab */}
                 {onlineModalTab === 'dayoff' && (
-                  <div className="flex flex-col gap-3 h-full">
-                    {/* 채널 선택 (멀티 선택) */}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          const allChannels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
-                          const allSelected = allChannels.every(ch => dayOffSelectedChannels.includes(ch));
-                          setDayOffSelectedChannels(allSelected ? [] : allChannels);
-                        }}
-                        className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all border-2 ${dayOffSelectedChannels.length === 4 ? 'bg-gray-700 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}
-                      >
-                        All
-                      </button>
-                      {(['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).map((ch) => {
-                        const labels: Record<string, string> = { thezoneorder: 'TZO', ubereats: 'Uber', doordash: 'Door', skipthedishes: 'Skip' };
-                        const isSelected = dayOffSelectedChannels.includes(ch);
-                        return (
-                          <button
-                            key={ch}
-                            onClick={() => {
-                              setDayOffSelectedChannels(prev => 
-                                isSelected ? prev.filter(c => c !== ch) : [...prev, ch]
-                              );
-                            }}
-                            className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all border-2 ${isSelected ? 'bg-red-500 text-white border-red-600' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}
-                          >
-                            {labels[ch]}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* 달력 + 설정 영역 */}
-                    <div className="flex gap-3">
-                      {/* 미니 달력 */}
-                      <div className="w-[300px] bg-gray-50 rounded-lg p-3 border">
-                        <div className="flex items-center justify-between mb-2">
-                          <button onClick={() => setDayOffCurrentMonth(new Date(dayOffCurrentMonth.getFullYear(), dayOffCurrentMonth.getMonth() - 1))} className="p-2 hover:bg-gray-200 rounded text-gray-600 text-lg">◀</button>
-                          <span className="font-bold text-base text-gray-700">{dayOffCurrentMonth.toLocaleDateString('en-US', { year: 'numeric', month: 'short' })}</span>
-                          <button onClick={() => setDayOffCurrentMonth(new Date(dayOffCurrentMonth.getFullYear(), dayOffCurrentMonth.getMonth() + 1))} className="p-2 hover:bg-gray-200 rounded text-gray-600 text-lg">▶</button>
-                        </div>
-                        <div className="grid grid-cols-7 gap-1 text-center">
-                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
-                            <div key={i} className="text-gray-400 font-semibold text-xs py-1">{d}</div>
-                          ))}
-                          {(() => {
-                            const year = dayOffCurrentMonth.getFullYear();
-                            const month = dayOffCurrentMonth.getMonth();
-                            const firstDay = new Date(year, month, 1).getDay();
-                            const daysInMonth = new Date(year, month + 1, 0).getDate();
-                            const today = new Date().toISOString().split('T')[0];
-                            const cells = [];
-                            for (let i = 0; i < firstDay; i++) cells.push(<div key={`e${i}`} />);
-                            for (let day = 1; day <= daysInMonth; day++) {
-                              const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                              const isPast = dateStr < today;
-                              const isSelected = dayOffSelectedDates.includes(dateStr);
-                              const hasSchedule = dayOffSettings.some(s => s.date === dateStr && (dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes(s.channel)));
-                              const scheduleForDate = dayOffSettings.find(s => s.date === dateStr && (dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes(s.channel)));
-                              const typeColors: Record<string, string> = { closed: 'bg-red-500', early_close: 'bg-orange-500', late_open: 'bg-blue-500', extended: 'bg-purple-500' };
-                              cells.push(
-                                <button
-                                  key={day}
-                                  disabled={isPast}
-                                  onClick={() => {
-                                    if (isPast) return;
-                                    if (isSelected) {
-                                      setDayOffSelectedDates(prev => prev.filter(d => d !== dateStr));
-                                    } else {
-                                      setDayOffSelectedDates(prev => [...prev, dateStr]);
-                                    }
-                                  }}
-                                  className={`py-2.5 rounded-lg text-sm font-semibold transition-all relative ${
-                                    isPast ? 'text-gray-300 cursor-not-allowed' :
-                                    isSelected ? 'bg-red-600 text-white ring-2 ring-red-300' :
-                                    dateStr === today ? 'bg-blue-100 text-blue-700 font-bold' :
-                                    'hover:bg-gray-200 text-gray-700'
-                                  }`}
-                                >
-                                  {day}
-                                  {hasSchedule && !isSelected && !isPast && (
-                                    <div className={`absolute bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full ${scheduleForDate ? typeColors[scheduleForDate.scheduleType] : 'bg-red-500'}`} />
-                                  )}
-                                </button>
-                              );
-                            }
-                            return cells;
-                          })()}
-                        </div>
-                      </div>
-
-                      {/* 설정 패널 */}
-                      <div className="flex-1 flex flex-col gap-2">
-                        {/* 일정 유형 드롭다운 */}
-                        <div className="bg-gray-50 rounded-lg p-2 border">
-                          <div className="text-xs text-gray-500 mb-1.5 font-medium">Schedule Type</div>
-                          <select
-                            value={dayOffScheduleType}
-                            onChange={(e) => setDayOffScheduleType(e.target.value as DayOffScheduleType)}
-                            className="w-full px-2 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-red-400"
-                          >
-                            <option value="closed">Closed</option>
-                            <option value="extended">Extended Hours</option>
-                            <option value="early_close">Early Close</option>
-                            <option value="late_open">Late Open</option>
-                          </select>
-                        </div>
-
-                        {/* 시간 선택 (Closed 제외) - 30분 단위 */}
-                        {dayOffScheduleType !== 'closed' && (
-                          <div className="bg-gray-50 rounded-lg p-2 border">
-                            <div className="text-xs text-gray-500 mb-1.5 font-medium">
-                              {dayOffScheduleType === 'extended' ? 'Close at' : dayOffScheduleType === 'early_close' ? 'Close at' : 'Open at'}
-                            </div>
-                            <select
-                              value={dayOffTime}
-                              onChange={(e) => setDayOffTime(e.target.value)}
-                              className="w-full px-2 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                            >
-                              <option value="">Select time</option>
-                              {(() => {
-                                // 30분 단위 시간 생성
-                                const times: string[] = [];
-                                for (let h = 0; h < 24; h++) {
-                                  for (let m = 0; m < 60; m += 30) {
-                                    const hour12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-                                    const ampm = h < 12 ? 'AM' : 'PM';
-                                    const timeStr = `${hour12}:${m === 0 ? '00' : '30'} ${ampm}`;
-                                    times.push(timeStr);
-                                  }
-                                }
-                                return times.map(t => <option key={t} value={t}>{t}</option>);
-                              })()}
-                            </select>
-                          </div>
-                        )}
-
-                        {/* 선택된 날짜 & 추가 버튼 */}
-                        <div className="bg-gray-50 rounded-lg p-2 border flex-1">
-                          <div className="text-xs text-gray-500 mb-1 font-medium">Selected: {dayOffSelectedDates.length} day(s)</div>
-                          <div className="text-xs text-gray-600 max-h-[40px] overflow-auto mb-2">
-                            {dayOffSelectedDates.length > 0 ? dayOffSelectedDates.slice(0, 3).join(', ') + (dayOffSelectedDates.length > 3 ? ` +${dayOffSelectedDates.length - 3}` : '') : 'No dates selected'}
-                          </div>
-                          <button
-                            onClick={() => {
-                              if (dayOffSelectedDates.length === 0) return;
-                              if (dayOffSelectedChannels.length === 0) { alert('Please select at least one channel'); return; }
-                              if (dayOffScheduleType !== 'closed' && !dayOffTime) { alert('Please select a time'); return; }
-                              const newEntries: DayOffEntry[] = [];
-                              for (const ch of dayOffSelectedChannels) {
-                                for (const date of dayOffSelectedDates) {
-                                  newEntries.push({ channel: ch, date, scheduleType: dayOffScheduleType, time: dayOffScheduleType === 'closed' ? null : dayOffTime });
-                                }
-                              }
-                              setDayOffSettings(prev => {
-                                const filtered = prev.filter(e => !newEntries.some(ne => ne.channel === e.channel && ne.date === e.date));
-                                return [...filtered, ...newEntries];
-                              });
-                              setDayOffSelectedDates([]);
-                            }}
-                            disabled={dayOffSelectedDates.length === 0 || dayOffSelectedChannels.length === 0}
-                            className={`w-full py-2 rounded-lg text-sm font-bold transition-all ${dayOffSelectedDates.length > 0 && dayOffSelectedChannels.length > 0 ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-                          >
-                            + Add Schedule
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
+                  <div className="flex flex-col items-center justify-center h-full py-12">
+                    <div className="text-5xl mb-4">📅</div>
+                    <div className="text-lg font-semibold text-gray-700 mb-2">Day Off Settings</div>
+                    <div className="text-sm text-gray-500">Coming soon...</div>
                   </div>
                 )}
               </div>
@@ -6570,28 +6345,9 @@ const SalesPage: React.FC = () => {
                 </button>
                 {onlineModalTab === 'preptime' && (
                   <button
-                    onClick={async () => {
-                      const restaurantId = localStorage.getItem('firebaseRestaurantId');
-                      if (!restaurantId) { alert('Restaurant ID not found'); return; }
-                      try {
-                        // localStorage 저장 (로컬 캐시)
-                        localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
-                        // Firebase 저장 (동기화)
-                        const response = await fetch(`${API_URL}/online-orders/preptime/${restaurantId}`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ prepTimeSettings })
-                        });
-                        const result = await response.json();
-                        if (result.success) {
-                          setShowPrepTimeModal(false);
-                        } else {
-                          alert('Save failed: ' + result.error);
-                        }
-                      } catch (error) {
-                        console.error('Prep Time save failed:', error);
-                        alert('Save failed');
-                      }
+                    onClick={() => {
+                      localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                      setShowPrepTimeModal(false);
                     }}
                     className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
                   >
@@ -6620,96 +6376,7 @@ const SalesPage: React.FC = () => {
                     Save & Pause
                   </button>
                 )}
-                {onlineModalTab === 'dayoff' && (
-                  <button
-                    onClick={async () => {
-                      const restaurantId = localStorage.getItem('firebaseRestaurantId') || 'default';
-                      try {
-                        console.log('[DAYOFF] Saving settings:', dayOffSettings);
-                        
-                        // 1. 기존 설정에서 삭제된 항목들을 백엔드에서 삭제
-                        const deletedItems = originalDayOffSettings.filter(
-                          orig => !dayOffSettings.some(curr => curr.channel === orig.channel && curr.date === orig.date)
-                        );
-                        for (const item of deletedItems) {
-                          await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
-                            method: 'DELETE',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ channel: item.channel, date: item.date })
-                          });
-                        }
-                        
-                        // 2. 현재 설정을 저장 (새로 추가되거나 변경된 것들)
-                        if (dayOffSettings.length > 0) {
-                          const response = await fetch(`${API_URL}/online-orders/dayoff/${restaurantId}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ dayoffs: dayOffSettings })
-                          });
-                          const result = await response.json();
-                          if (!result.success) {
-                            alert('Save failed: ' + (result.error || 'Unknown error'));
-                            return;
-                          }
-                        }
-                        
-                        // 성공 시 원본 업데이트 및 모달 닫기
-                        setOriginalDayOffSettings(dayOffSettings);
-                        setShowPrepTimeModal(false);
-                      } catch (error: any) {
-                        console.error('[DAYOFF] Save failed:', error);
-                        alert('Save failed: ' + (error.message || 'Network error'));
-                      }
-                    }}
-                    disabled={!dayOffHasChanges}
-                    className={`px-5 py-2 rounded-lg text-sm font-semibold ${dayOffHasChanges ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-                  >
-                    Save Day Off
-                  </button>
-                )}
               </div>
-            </div>
-
-            {/* Day Off 설정된 항목 표시 창 (모달 아래 고정) */}
-            {onlineModalTab === 'dayoff' && dayOffSettings.length > 0 && (
-              <div className="absolute top-full left-0 mt-3 bg-white rounded-xl shadow-2xl w-[520px] p-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-bold text-gray-700">Scheduled ({dayOffSettings.length})</span>
-                  <button 
-                    onClick={handleClearAllDayOff} 
-                    className="text-xs text-red-500 hover:text-red-700 font-semibold px-2 py-1 hover:bg-red-50 rounded"
-                  >
-                    Clear All
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1.5 max-h-[120px] overflow-auto">
-                  {dayOffSettings.map((entry, idx) => {
-                    const typeLabels: Record<string, string> = { closed: 'Closed', early_close: 'Early Close', late_open: 'Late Open', extended: 'Extended' };
-                    const typeColors: Record<string, string> = { 
-                      closed: 'bg-red-100 text-red-700 border-red-200', 
-                      early_close: 'bg-orange-100 text-orange-700 border-orange-200', 
-                      late_open: 'bg-blue-100 text-blue-700 border-blue-200', 
-                      extended: 'bg-purple-100 text-purple-700 border-purple-200' 
-                    };
-                    const chLabels: Record<string, string> = { thezoneorder: 'TZO', ubereats: 'Uber', doordash: 'Door', skipthedishes: 'Skip' };
-                    return (
-                      <div key={idx} className={`flex items-center gap-1.5 border rounded-lg px-2 py-1 text-xs ${typeColors[entry.scheduleType]}`}>
-                        <span className="font-bold">{typeLabels[entry.scheduleType]}</span>
-                        <span className="font-semibold">{chLabels[entry.channel]}</span>
-                        <span>{entry.date.slice(5)}</span>
-                        {entry.time && <span className="opacity-75">@ {entry.time}</span>}
-                        <button
-                          onClick={() => handleDeleteDayOff(idx)}
-                          className="ml-1 w-5 h-5 flex items-center justify-center rounded-full hover:bg-white/50 text-current font-bold"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
             </div>
           </div>
         )}
@@ -7079,6 +6746,11 @@ const SalesPage: React.FC = () => {
                                         m.selectedEntries.forEach((entry: any) => {
                                           if (typeof entry === 'string') modifierNames.push(entry);
                                           else if (entry?.name) modifierNames.push(entry.name);
+                                        });
+                                      } else if (m?.modifiers && Array.isArray(m.modifiers)) {
+                                        // POS nested modifiers structure
+                                        m.modifiers.forEach((subMod: any) => {
+                                          if (subMod?.name) modifierNames.push(subMod.name);
                                         });
                                       } else if (m?.groupName) {
                                         modifierNames.push(m.groupName);

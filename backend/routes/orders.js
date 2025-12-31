@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
-const posLockService = require('../services/posLockService');
 
 /**
  * Orders API Routes
@@ -22,6 +21,30 @@ module.exports = (db) => {
 	const dbGet = (sql, params=[]) => new Promise((resolve, reject) => {
 		db.get(sql, params, (err, row) => { if (err) reject(err); else resolve(row); });
 	});
+
+	const normalizeJsonArray = (value) => {
+		if (!value) return [];
+		if (Array.isArray(value)) return value;
+		if (typeof value === 'string') {
+			try {
+				const parsed = JSON.parse(value);
+				return Array.isArray(parsed) ? parsed : [];
+			} catch {
+				return [];
+			}
+		}
+		return [];
+	};
+
+	const resolveModifiersForStorage = (it) => {
+		// Frontend payloads vary: `modifiers`, `modifiers_json`, `modifiersJson`
+		if (Array.isArray(it?.modifiers)) return it.modifiers;
+		if (Array.isArray(it?.modifiers_json)) return it.modifiers_json;
+		if (Array.isArray(it?.modifiersJson)) return it.modifiersJson;
+		if (typeof it?.modifiers_json === 'string') return normalizeJsonArray(it.modifiers_json);
+		if (typeof it?.modifiersJson === 'string') return normalizeJsonArray(it.modifiersJson);
+		return [];
+	};
 
 	// one-time init: ensure tables and indexes exist (sequential)
 	(async () => {
@@ -67,6 +90,8 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN fulfillment_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN ready_time TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN pickup_minutes INTEGER`); } catch (e) { /* ignore if exists */ }
+			// Preserve origin labels (TBO, etc.)
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_source TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN firebase_order_id TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`CREATE INDEX IF NOT EXISTS idx_orders_firebase_order_id ON orders(firebase_order_id)`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
@@ -75,6 +100,7 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN discount_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN split_denominator INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN order_line_id TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_items ADD COLUMN item_source TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax_rate REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			await dbRun(`CREATE TABLE IF NOT EXISTS order_adjustments (
@@ -111,50 +137,9 @@ module.exports = (db) => {
 		try {
 			const orderId = Number(req.params.id);
 			const closedAt = new Date().toISOString();
-
-			// Multi-POS conflict prevention: table lock (if the order is linked to a table)
-			try {
-				const row = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [orderId]);
-				const tableId = row && row.table_id ? String(row.table_id) : null;
-				if (tableId) {
-					const restaurantId = remoteSyncService.getRestaurantId();
-					const lock = await posLockService.acquireTableLock(restaurantId, tableId);
-					if (!lock.ok) {
-						return res.status(409).json({
-							success: false,
-							error: '이 테이블은 다른 POS에서 사용 중입니다. 잠시 후 다시 시도해주세요.',
-							ownerId: lock.ownerId,
-							expiresAtMs: lock.expiresAtMs
-						});
-					}
-				}
-			} catch {}
-
 			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
-			
-			// Firebase 주문 상태 업데이트
-			try {
-				const order = await dbGet(`SELECT firebase_order_id FROM orders WHERE id = ?`, [orderId]);
-				if (order && order.firebase_order_id) {
-					await firebaseService.updatePosOrder(order.firebase_order_id, {
-						status: 'pos_paid',
-						closedAt: closedAt
-					});
-				}
-			} catch (firebaseErr) {
-				console.error('[Orders] Failed to update Firebase status:', firebaseErr.message);
-			}
-
-			// Release table lock (best-effort)
-			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
-				const row = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [orderId]);
-				const tableId = row && row.table_id ? String(row.table_id) : null;
-				if (restaurantId && tableId) await posLockService.releaseTableLock(restaurantId, tableId);
-			} catch {}
-			
 			res.json({ success: true, closedAt });
 		} catch (e) {
 			console.error('Failed to close order:', e);
@@ -312,21 +297,23 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// Replace items
 			await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
 			for (const it of (Array.isArray(items) ? items : [])) {
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate, item_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				const normalizedModifiers = resolveModifiersForStorage(it);
+				const itemSource = (it && (it.item_source || it.itemSource)) ? String(it.item_source || it.itemSource) : null;
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
 					it.quantity||1,
 					Number(it.price||it.totalPrice||0),
 					Number(it.guestNumber||it.guest_number||1),
-					JSON.stringify(it.modifiers||[]),
+					JSON.stringify(normalizedModifiers),
 					it.memo ? JSON.stringify(it.memo) : null,
 					it.discount ? JSON.stringify(it.discount) : null,
 					(it.splitDenominator || it.split_denominator || null),
 					String(it.orderLineId||it.order_line_id||'')||null,
+					itemSource,
 					Number(it.tax || 0),
-					Number(it.taxRate || it.tax_rate || 0),
-					(it.item_source || it.itemSource || it.item_source === '' ? (it.item_source || it.itemSource) : null)
+					Number(it.taxRate || it.tax_rate || 0)
 				]);
 			}
 			// Replace adjustments
@@ -388,41 +375,27 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode } = req.body || {};
 			const createdAt = new Date().toISOString();
-
-			// Multi-POS conflict prevention: lock the table before creating a new order
-			try {
-				if (tableId) {
-					const restaurantId = remoteSyncService.getRestaurantId();
-					const lock = await posLockService.acquireTableLock(restaurantId, String(tableId));
-					if (!lock.ok) {
-						return res.status(409).json({
-							success: false,
-							error: '이 테이블은 다른 POS에서 사용 중입니다. 잠시 후 다시 시도해주세요.',
-							ownerId: lock.ownerId,
-							expiresAtMs: lock.expiresAtMs
-						});
-					}
-				}
-			} catch {}
-
 			const result = await dbRun(
 				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null]
 			);
 			const orderId = result.lastID;
 			for (const it of items) {
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				const normalizedModifiers = resolveModifiersForStorage(it);
+				const itemSource = (it && (it.item_source || it.itemSource)) ? String(it.item_source || it.itemSource) : null;
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
 					it.quantity||1,
 					Number(it.price||it.totalPrice||0),
 					Number(it.guestNumber||it.guest_number||1),
-					JSON.stringify(it.modifiers||[]),
+					JSON.stringify(normalizedModifiers),
 					it.memo ? JSON.stringify(it.memo) : null,
 					it.discount ? JSON.stringify(it.discount) : null,
 					(it.splitDenominator || it.split_denominator || null),
 					String(it.orderLineId||it.order_line_id||'')||null,
+					itemSource,
 					Number(it.tax || 0),
 					Number(it.taxRate || it.tax_rate || 0)
 				]);
@@ -435,14 +408,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			}
 
 			// 파이어베이스로 주문 업로드 (Dashboard 연동)
-			let firebaseOrderId = null;
 			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
+				const restaurantId = remoteSyncService.restaurantId;
 				if (restaurantId) {
-					firebaseOrderId = await firebaseService.uploadOrder(restaurantId, {
+					await firebaseService.uploadOrder(restaurantId, {
 						orderNumber: orderNumber || orderId,
 						orderType: orderType || 'POS',
-						status: 'pos_pending',
+						status: 'completed', // POS에서 저장된 주문은 이미 확정된 상태로 간주
 						items: items.map(it => ({
 							name: it.name || '',
 							price: Number(it.price || it.totalPrice || 0),
@@ -454,20 +426,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 						tableId: tableId || '',
 						customerName: customerName || 'POS Order',
 						customerPhone: customerPhone || '',
-						source: 'POS',
-						localOrderId: orderId
+						source: 'POS'
 					});
-					
-					// Firebase ID를 SQLite에 저장
-					if (firebaseOrderId) {
-						await dbRun(`UPDATE orders SET firebase_order_id = ? WHERE id = ?`, [firebaseOrderId, orderId]);
-					}
 				}
 			} catch (firebaseErr) {
 				console.error('[Orders] Failed to upload to Firebase:', firebaseErr.message);
 			}
 
-			res.json({ success: true, orderId, createdAt, firebaseOrderId });
+			res.json({ success: true, orderId, createdAt });
 		} catch (e) {
 			console.error('Failed to save order:', e);
 			res.status(500).json({ success:false, error: 'Failed to save order' });

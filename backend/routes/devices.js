@@ -63,31 +63,6 @@ module.exports = (db) => {
 
   initTables().catch(err => console.error('Failed to init registered_devices table:', err));
 
-  /**
-   * GET /api/devices/health
-   * 테이블 디바이스가 "주문 가능"인지 판단하기 위한 헬스체크
-   * - POS 서버 응답 OK
-   */
-  router.get('/health', async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        server_time: new Date().toISOString(),
-        posReady: true,
-        tableOrderEnabled: true,
-        message: 'OK'
-      });
-    } catch (err) {
-      console.error('[devices] health error:', err);
-      res.status(500).json({
-        success: false,
-        posReady: false,
-        tableOrderEnabled: false,
-        error: 'Health check failed'
-      });
-    }
-  });
-
   // ==================== 디바이스 등록 API ====================
 
   /**

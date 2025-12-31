@@ -1,8 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const firebaseService = require('../services/firebaseService');
-const remoteSyncService = require('../services/remoteSyncService');
-const posLockService = require('../services/posLockService');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -42,51 +39,8 @@ module.exports = (db) => {
 			if (!orderId || !method || typeof amount !== 'number') {
 				return res.status(400).json({ success:false, error:'orderId, method, amount are required' });
 			}
-
-			// Multi-POS conflict prevention: lock table if this order is a dine-in table order
-			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
-				if (restaurantId) {
-					const row = await new Promise((resolve, reject) => {
-						db.get(`SELECT table_id FROM orders WHERE id = ?`, [orderId], (err, r) => (err ? reject(err) : resolve(r)));
-					});
-					const tableId = row && row.table_id ? String(row.table_id) : null;
-					if (tableId) {
-						const lock = await posLockService.acquireTableLock(restaurantId, tableId);
-						if (!lock.ok) {
-							return res.status(409).json({
-								success: false,
-								error: '이 테이블은 다른 POS에서 사용 중입니다. 잠시 후 다시 시도해주세요.',
-								ownerId: lock.ownerId,
-								expiresAtMs: lock.expiresAtMs
-							});
-						}
-					}
-				}
-			} catch {}
-
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(`INSERT INTO payments(order_id, method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
-			
-			// Firebase 결제 동기화
-			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
-				if (restaurantId) {
-					await firebaseService.syncPayment(restaurantId, {
-						orderId: orderId,
-						localOrderId: orderId,
-						method,
-						amount,
-						tip,
-						status,
-						guestNumber,
-						ref
-					});
-				}
-			} catch (firebaseErr) {
-				console.error('[Payments] Failed to sync to Firebase:', firebaseErr.message);
-			}
-			
 			res.json({ success:true, paymentId: result.lastID, createdAt });
 		} catch (e) {
 			console.error('Failed to create payment:', e);

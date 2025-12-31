@@ -3,11 +3,13 @@
 
 const admin = require('firebase-admin');
 const path = require('path');
+const fs = require('fs');
 
 // 서비스 계정 키 경로
 const serviceAccountPath = path.join(__dirname, '..', 'config', 'firebase-service-account.json');
 
 let db = null;
+let bucket = null;
 let isInitialized = false;
 
 // Firebase 초기화
@@ -21,19 +23,30 @@ function initializeFirebase() {
     
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      projectId: serviceAccount.project_id
+      projectId: serviceAccount.project_id,
+      storageBucket: `${serviceAccount.project_id}.appspot.com`
     });
 
     db = admin.firestore();
+    bucket = admin.storage().bucket();
     isInitialized = true;
     console.log('🔥 Firebase Admin SDK 초기화 완료');
     console.log(`📦 Project ID: ${serviceAccount.project_id}`);
+    console.log(`📁 Storage Bucket: ${serviceAccount.project_id}.appspot.com`);
     
     return db;
   } catch (error) {
     console.error('❌ Firebase 초기화 실패:', error.message);
     throw error;
   }
+}
+
+// Storage Bucket 가져오기
+function getStorageBucket() {
+  if (!isInitialized) {
+    initializeFirebase();
+  }
+  return bucket;
 }
 
 // Firestore 인스턴스 가져오기
@@ -86,50 +99,6 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
       },
       (error) => {
         console.error('❌ 주문 리스너 오류:', error);
-        if (onError) onError(error);
-      }
-    );
-
-  return unsubscribe;
-}
-
-// POS 주문 (멀티 POS 동기화용) 실시간 리스너
-// - POS에서 Firebase로 업로드한 주문은 status를 pos_pending/pos_paid로 사용
-// - online 주문(pending)과 섞이지 않도록 분리
-function listenToPosOrders(restaurantId, { onNewOrder, onOrderUpdate, onOrderRemove, onError }) {
-  if (!restaurantId) {
-    console.error('❌ restaurantId가 필요합니다');
-    return null;
-  }
-
-  const firestore = getFirestore();
-
-  console.log(`👂 POS 주문 리스너 시작 - Restaurant ID: ${restaurantId}`);
-
-  let isInitial = true;
-  const unsubscribe = firestore
-    .collection('orders')
-    .where('restaurantId', '==', restaurantId)
-    .where('status', '==', 'pos_pending')
-    .onSnapshot(
-      (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          const order = { id: change.doc.id, ...change.doc.data(), _isInitial: isInitial };
-
-          if (change.type === 'added') {
-            // 초기 로딩 포함: SQLite 동기화는 필요, UI 알림은 라우터에서 _isInitial로 제어
-            if (onNewOrder) onNewOrder(order);
-          } else if (change.type === 'modified') {
-            if (onOrderUpdate) onOrderUpdate(order);
-          } else if (change.type === 'removed') {
-            // status가 pos_paid 등으로 바뀌면 쿼리에서 빠지며 removed로 들어옴
-            if (onOrderRemove) onOrderRemove(order);
-          }
-        });
-        isInitial = false;
-      },
-      (error) => {
-        console.error('❌ POS 주문 리스너 오류:', error);
         if (onError) onError(error);
       }
     );
@@ -317,7 +286,6 @@ async function uploadOrder(restaurantId, orderData) {
       notes: orderData.notes || orderData.customer_note || '',
       tableId: orderData.tableId || orderData.table_id || '',
       source: orderData.source || 'POS',
-      localOrderId: orderData.localOrderId || orderData.local_order_id || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
@@ -380,278 +348,194 @@ async function updateRestaurantPause(restaurantId, pauseUntil, channels = ['thez
   }
 }
 
-// ============================================
-// Day Off 관리 (Firebase 동기화)
-// ============================================
+// ========== Seasonal Videos ==========
 
-// Day Off 설정 저장/업데이트
-async function updateDayOffSettings(restaurantId, dayoffs) {
+// Firebase에서 시즌 영상 설정 가져오기
+async function getSeasonalVideosFromFirebase(restaurantId) {
   try {
     const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const snapshot = await firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('seasonal_videos')
+      .orderBy('start_month')
+      .get();
     
-    // 기존 문서 확인
-    const settingsDoc = await settingsRef.get();
-    const existingData = settingsDoc.exists ? settingsDoc.data() : {};
-    const existingDayOffs = existingData.dayOffSettings || {};
-    
-    // dayoffs 배열을 객체 형태로 변환 (channel_date를 키로)
-    const newDayOffs = { ...existingDayOffs };
-    
-    for (const dayoff of dayoffs) {
-      const key = `${dayoff.channel}_${dayoff.date}`;
-      newDayOffs[key] = {
-        channel: dayoff.channel,
-        date: dayoff.date,
-        scheduleType: dayoff.scheduleType,
-        time: dayoff.time || null,
-        updatedAt: new Date()
-      };
-    }
-    
-    if (settingsDoc.exists) {
-      await settingsRef.update({
-        dayOffSettings: newDayOffs,
-        dayOffUpdatedAt: new Date()
-      });
-    } else {
-      await settingsRef.set({
-        restaurantId,
-        dayOffSettings: newDayOffs,
-        dayOffUpdatedAt: new Date(),
-        createdAt: new Date()
-      });
-    }
-    
-    console.log(`✅ Day Off 설정 Firebase 동기화 완료 (${restaurantId}): ${dayoffs.length}개`);
-    return true;
-  } catch (error) {
-    console.error('❌ Day Off 설정 Firebase 동기화 실패:', error.message);
-    throw error;
-  }
-}
-
-// Day Off 설정 삭제
-async function deleteDayOffSetting(restaurantId, channel, date) {
-  try {
-    const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
-    
-    const settingsDoc = await settingsRef.get();
-    if (!settingsDoc.exists) return true;
-    
-    const existingData = settingsDoc.data();
-    const existingDayOffs = existingData.dayOffSettings || {};
-    
-    const key = `${channel}_${date}`;
-    delete existingDayOffs[key];
-    
-    await settingsRef.update({
-      dayOffSettings: existingDayOffs,
-      dayOffUpdatedAt: new Date()
+    const videos = [];
+    snapshot.forEach(doc => {
+      videos.push({ id: doc.id, ...doc.data() });
     });
     
-    console.log(`✅ Day Off 설정 삭제 완료 (${restaurantId}): ${channel} - ${date}`);
-    return true;
+    console.log(`📹 Firebase에서 시즌 영상 ${videos.length}개 로드됨`);
+    return videos;
   } catch (error) {
-    console.error('❌ Day Off 설정 삭제 실패:', error.message);
+    console.error('❌ Firebase 시즌 영상 로드 실패:', error);
+    return [];
+  }
+}
+
+// Firebase에 시즌 영상 설정 저장
+async function saveSeasonalVideoToFirebase(restaurantId, videoData) {
+  try {
+    const firestore = getFirestore();
+    const videoRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('seasonal_videos');
+    
+    if (videoData.id) {
+      // 업데이트
+      await videoRef.doc(videoData.id).update({
+        ...videoData,
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`📹 Firebase 시즌 영상 업데이트: ${videoData.name}`);
+    } else {
+      // 새로 추가
+      const docRef = await videoRef.add({
+        ...videoData,
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        updated_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`📹 Firebase 시즌 영상 추가: ${videoData.name} (ID: ${docRef.id})`);
+      return docRef.id;
+    }
+  } catch (error) {
+    console.error('❌ Firebase 시즌 영상 저장 실패:', error);
     throw error;
   }
 }
 
-// 채널별 Day Off 전체 삭제
-async function clearDayOffSettings(restaurantId, channel) {
+// Firebase에서 시즌 영상 삭제
+async function deleteSeasonalVideoFromFirebase(restaurantId, videoId) {
   try {
     const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    await firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('seasonal_videos')
+      .doc(videoId)
+      .delete();
     
-    const settingsDoc = await settingsRef.get();
-    if (!settingsDoc.exists) return true;
+    console.log(`📹 Firebase 시즌 영상 삭제: ${videoId}`);
+  } catch (error) {
+    console.error('❌ Firebase 시즌 영상 삭제 실패:', error);
+    throw error;
+  }
+}
+
+// ========== Firebase Storage ==========
+
+// Firebase Storage에 비디오 업로드
+async function uploadVideoToFirebase(localFilePath, destinationPath) {
+  try {
+    const storageBucket = getStorageBucket();
     
-    const existingData = settingsDoc.data();
-    const existingDayOffs = existingData.dayOffSettings || {};
+    if (!fs.existsSync(localFilePath)) {
+      throw new Error(`File not found: ${localFilePath}`);
+    }
     
-    // 해당 채널의 모든 설정 삭제
-    const filteredDayOffs = {};
-    for (const [key, value] of Object.entries(existingDayOffs)) {
-      if (!key.startsWith(`${channel}_`)) {
-        filteredDayOffs[key] = value;
+    // 파일 업로드
+    await storageBucket.upload(localFilePath, {
+      destination: destinationPath,
+      metadata: {
+        contentType: 'video/mp4',
+        cacheControl: 'public, max-age=31536000'
+      }
+    });
+    
+    // Public URL 생성
+    const file = storageBucket.file(destinationPath);
+    await file.makePublic();
+    
+    const publicUrl = `https://storage.googleapis.com/${storageBucket.name}/${destinationPath}`;
+    
+    console.log(`📹 Firebase Storage 업로드 완료: ${destinationPath}`);
+    console.log(`🔗 URL: ${publicUrl}`);
+    
+    return publicUrl;
+  } catch (error) {
+    console.error('❌ Firebase Storage 업로드 실패:', error);
+    throw error;
+  }
+}
+
+// Firebase Storage에서 비디오 다운로드
+async function downloadVideoFromFirebase(firebasePath, localFilePath) {
+  try {
+    const storageBucket = getStorageBucket();
+    const file = storageBucket.file(firebasePath);
+    
+    // 파일 존재 여부 확인
+    const [exists] = await file.exists();
+    if (!exists) {
+      throw new Error(`File not found in Firebase: ${firebasePath}`);
+    }
+    
+    // 로컬 디렉토리 생성
+    const dir = path.dirname(localFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    // 다운로드
+    await file.download({ destination: localFilePath });
+    
+    console.log(`📹 Firebase Storage 다운로드 완료: ${firebasePath} → ${localFilePath}`);
+    
+    return localFilePath;
+  } catch (error) {
+    console.error('❌ Firebase Storage 다운로드 실패:', error);
+    throw error;
+  }
+}
+
+// Firebase Storage 비디오 목록 조회
+async function listVideosFromFirebase(prefix = 'videos/') {
+  try {
+    const storageBucket = getStorageBucket();
+    
+    const [files] = await storageBucket.getFiles({ prefix });
+    
+    const videos = [];
+    for (const file of files) {
+      if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) {
+        const [metadata] = await file.getMetadata();
+        videos.push({
+          name: file.name,
+          url: `https://storage.googleapis.com/${storageBucket.name}/${file.name}`,
+          size: parseInt(metadata.size),
+          created_at: metadata.timeCreated
+        });
       }
     }
     
-    await settingsRef.update({
-      dayOffSettings: filteredDayOffs,
-      dayOffUpdatedAt: new Date()
-    });
-    
-    console.log(`✅ Day Off 전체 삭제 완료 (${restaurantId}): ${channel}`);
-    return true;
+    console.log(`📹 Firebase Storage 비디오 ${videos.length}개 조회`);
+    return videos;
   } catch (error) {
-    console.error('❌ Day Off 전체 삭제 실패:', error.message);
+    console.error('❌ Firebase Storage 비디오 목록 조회 실패:', error);
+    return [];
+  }
+}
+
+// Firebase Storage 비디오 삭제
+async function deleteVideoFromFirebase(firebasePath) {
+  try {
+    const storageBucket = getStorageBucket();
+    await storageBucket.file(firebasePath).delete();
+    
+    console.log(`📹 Firebase Storage 비디오 삭제: ${firebasePath}`);
+  } catch (error) {
+    console.error('❌ Firebase Storage 비디오 삭제 실패:', error);
     throw error;
-  }
-}
-
-// 지난 Day Off 자동 정리
-async function cleanupPastDayOffs(restaurantId, today) {
-  try {
-    const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
-    
-    const settingsDoc = await settingsRef.get();
-    if (!settingsDoc.exists) return true;
-    
-    const existingData = settingsDoc.data();
-    const existingDayOffs = existingData.dayOffSettings || {};
-    
-    // 오늘 이전 날짜의 설정 삭제
-    const filteredDayOffs = {};
-    let deletedCount = 0;
-    for (const [key, value] of Object.entries(existingDayOffs)) {
-      if (value.date >= today) {
-        filteredDayOffs[key] = value;
-      } else {
-        deletedCount++;
-      }
-    }
-    
-    if (deletedCount > 0) {
-      await settingsRef.update({
-        dayOffSettings: filteredDayOffs,
-        dayOffUpdatedAt: new Date()
-      });
-      console.log(`✅ Firebase 지난 Day Off ${deletedCount}개 자동 삭제 완료 (${restaurantId})`);
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('❌ Firebase 지난 Day Off 삭제 실패:', error.message);
-    throw error;
-  }
-}
-
-// Prep Time 설정 저장
-async function updatePrepTimeSettings(restaurantId, prepTimeSettings) {
-  try {
-    const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
-    
-    const settingsDoc = await settingsRef.get();
-    
-    if (settingsDoc.exists) {
-      await settingsRef.update({
-        prepTimeSettings,
-        updatedAt: new Date().toISOString()
-      });
-    } else {
-      await settingsRef.set({
-        prepTimeSettings,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-    }
-    
-    console.log('✅ Prep Time 설정 Firebase 저장 완료:', restaurantId);
-    return true;
-  } catch (error) {
-    console.error('❌ Prep Time 설정 저장 실패:', error.message);
-    throw error;
-  }
-}
-
-// Prep Time 설정 조회
-async function getPrepTimeSettings(restaurantId) {
-  try {
-    const firestore = getFirestore();
-    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
-    const settingsDoc = await settingsRef.get();
-    
-    if (settingsDoc.exists && settingsDoc.data().prepTimeSettings) {
-      return settingsDoc.data().prepTimeSettings;
-    }
-    
-    // 기본값 반환
-    return {
-      thezoneorder: { mode: 'auto', time: '15m' },
-      ubereats: { mode: 'auto', time: '15m' },
-      doordash: { mode: 'auto', time: '15m' },
-      skipthedishes: { mode: 'auto', time: '15m' }
-    };
-  } catch (error) {
-    console.error('❌ Prep Time 설정 조회 실패:', error.message);
-    throw error;
-  }
-}
-
-// POS 주문 상태 업데이트 (결제 완료, 상태 변경 등)
-async function updatePosOrder(orderId, updateData) {
-  try {
-    const firestore = getFirestore();
-    
-    await firestore.collection('orders').doc(orderId).update({
-      ...updateData,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    console.log(`✅ POS 주문 업데이트: ${orderId}`);
-    return { success: true, orderId };
-  } catch (error) {
-    console.error(`❌ POS 주문 업데이트 실패: ${orderId}`, error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-// 결제 정보 Firebase에 동기화
-async function syncPayment(restaurantId, paymentData) {
-  try {
-    const firestore = getFirestore();
-    
-    const paymentDoc = {
-      restaurantId,
-      orderId: paymentData.orderId,
-      localOrderId: paymentData.localOrderId,
-      method: paymentData.method,
-      amount: parseFloat(paymentData.amount) || 0,
-      tip: parseFloat(paymentData.tip) || 0,
-      status: paymentData.status || 'APPROVED',
-      guestNumber: paymentData.guestNumber || null,
-      ref: paymentData.ref || null,
-      source: 'POS',
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    };
-    
-    const docRef = await firestore.collection('payments').add(paymentDoc);
-    console.log(`✅ 결제 동기화 완료 (Firebase ID: ${docRef.id})`);
-    
-    return docRef.id;
-  } catch (error) {
-    console.error('❌ 결제 동기화 실패:', error.message);
-    return null;
-  }
-}
-
-// POS에서 주문 수신 확인 (테이블 디바이스에 알림용)
-async function confirmPosReceived(orderId) {
-  const firestore = getFirestore();
-  
-  try {
-    await firestore.collection('orders').doc(orderId).update({
-      posConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
-      posReceived: true
-    });
-    console.log(`✅ POS 수신 확인: ${orderId}`);
-    return { success: true, orderId };
-  } catch (error) {
-    console.error(`❌ POS 수신 확인 실패: ${orderId}`, error.message);
-    return { success: false, error: error.message };
   }
 }
 
 module.exports = {
   initializeFirebase,
   getFirestore,
+  getStorageBucket,
   listenToOnlineOrders,
-  listenToPosOrders,
   updateOrderStatus,
   acceptOrder,
   getOnlineOrders,
@@ -660,15 +544,15 @@ module.exports = {
   syncMenuCategories,
   syncMenuItems,
   uploadOrder,
-  updatePosOrder,
-  syncPayment,
   updateRestaurantPause,
-  updateDayOffSettings,
-  deleteDayOffSetting,
-  clearDayOffSettings,
-  cleanupPastDayOffs,
-  updatePrepTimeSettings,
-  getPrepTimeSettings,
-  confirmPosReceived
+  // Seasonal Videos
+  getSeasonalVideosFromFirebase,
+  saveSeasonalVideoToFirebase,
+  deleteSeasonalVideoFromFirebase,
+  // Firebase Storage
+  uploadVideoToFirebase,
+  downloadVideoFromFirebase,
+  listVideosFromFirebase,
+  deleteVideoFromFirebase
 };
 

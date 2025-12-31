@@ -6,100 +6,6 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const { dbRun, dbGet, dbAll } = require('../db');
 
-// ============================================
-// Day Off 테이블 초기화
-// ============================================
-async function initDayOffTable() {
-  try {
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS online_day_off (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel TEXT NOT NULL,
-        date TEXT NOT NULL,
-        schedule_type TEXT NOT NULL CHECK(schedule_type IN ('closed', 'early_close', 'late_open', 'extended')),
-        time TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(channel, date)
-      )
-    `);
-    console.log('✅ online_day_off 테이블 준비 완료');
-  } catch (error) {
-    console.error('❌ online_day_off 테이블 생성 실패:', error.message);
-  }
-}
-
-// ============================================
-// Prep Time 테이블 초기화
-// ============================================
-async function initPrepTimeTable() {
-  try {
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS online_prep_time (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        restaurant_id TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        mode TEXT NOT NULL CHECK(mode IN ('auto', 'manual')),
-        time TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(restaurant_id, channel)
-      )
-    `);
-    console.log('✅ online_prep_time 테이블 준비 완료');
-  } catch (error) {
-    console.error('❌ online_prep_time 테이블 생성 실패:', error.message);
-  }
-}
-
-// ============================================
-// Pause 테이블 초기화
-// ============================================
-async function initPauseTable() {
-  try {
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS online_pause (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        restaurant_id TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        paused INTEGER NOT NULL DEFAULT 0,
-        pause_until TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(restaurant_id, channel)
-      )
-    `);
-    console.log('✅ online_pause 테이블 준비 완료');
-  } catch (error) {
-    console.error('❌ online_pause 테이블 생성 실패:', error.message);
-  }
-}
-
-async function initPosConflictsTable() {
-  try {
-    await dbRun(`
-      CREATE TABLE IF NOT EXISTS pos_conflicts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        restaurant_id TEXT,
-        table_id TEXT,
-        firebase_order_id TEXT,
-        order_number TEXT,
-        reason TEXT,
-        payload_json TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-  } catch (error) {
-    console.error('❌ pos_conflicts 테이블 생성 실패:', error.message);
-  }
-}
-
-// 서버 시작 시 테이블 초기화
-initDayOffTable();
-initPrepTimeTable();
-initPauseTable();
-initPosConflictsTable();
-
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
 
@@ -183,18 +89,8 @@ function startOrderListener(restaurantId) {
 
   console.log(`👂 주문 리스너 시작: ${restaurantId}`);
 
-  const unsubscribeOnline = firebaseService.listenToOnlineOrders(restaurantId, {
+  const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
-      // Filter out Table-Device orders (they are handled by POS directly and should not trigger Online order notifications/sounds)
-      try {
-        const srcRaw = order && (order.source || order.orderSource || order.order_source);
-        const src = String(srcRaw || '').toLowerCase();
-        const cn = String(order && (order.customerName || order.customer_name) || '').toLowerCase();
-        if (src === 'tableorder' || src === 'table_order' || cn === 'table order') {
-          return;
-        }
-      } catch {}
-
       // SQLite에 저장하고 localOrderId 생성
       const firebaseOrderId = order.id;
       let localOrder = null;
@@ -230,33 +126,14 @@ function startOrderListener(restaurantId) {
           // 주문 아이템도 저장
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
-              // 테이블 오더의 options를 modifiers_json 형식으로 변환
-              let modifiersJson = null;
-              if (Array.isArray(item.options) && item.options.length > 0) {
-                // item.options: [{ optionName, choiceName, price }] → modifiers 형식으로 변환
-                const modifiers = item.options.map(opt => ({
-                  name: opt.choiceName || opt.name,
-                  groupName: opt.optionName,
-                  price: opt.price || 0
-                }));
-                modifiersJson = JSON.stringify(modifiers);
-              }
-              
               await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0, modifiersJson]
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
               );
             }
           }
           console.log(`📦 새 온라인 주문 SQLite 저장: #${localOrder.id}`);
-          
-          // POS 수신 확인을 Firebase에 업데이트 (테이블 디바이스에 알림)
-          try {
-            await firebaseService.confirmPosReceived(firebaseOrderId);
-          } catch (confirmError) {
-            console.error('POS 수신 확인 Firebase 업데이트 실패:', confirmError.message);
-          }
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -285,129 +162,7 @@ function startOrderListener(restaurantId) {
     }
   });
 
-  // 멀티 POS 동기화: POS에서 업로드한 주문(pos_pending)도 수신하여 SQLite에 저장
-  const unsubscribePos = firebaseService.listenToPosOrders(restaurantId, {
-    onNewOrder: async (order) => {
-      const firebaseOrderId = order.id;
-      let localOrder = null;
-
-      try {
-        // 이미 저장된 주문인지 확인
-        localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [firebaseOrderId]);
-
-        if (!localOrder) {
-          // Conflict check: 동일 테이블에 이미 열린 주문이 있으면 자동 반영하지 않음
-          const incomingTableId = order.tableId ? String(order.tableId) : null;
-          if (incomingTableId) {
-            const existing = await dbGet(
-              `SELECT id FROM orders WHERE table_id = ? AND status != 'PAID' ORDER BY id DESC LIMIT 1`,
-              [incomingTableId]
-            );
-            if (existing && existing.id) {
-              const reason = `CONFLICT: incoming remote POS order for table ${incomingTableId} but local open order exists (#${existing.id})`;
-              try {
-                await dbRun(
-                  `INSERT INTO pos_conflicts (restaurant_id, table_id, firebase_order_id, order_number, reason, payload_json)
-                   VALUES (?, ?, ?, ?, ?, ?)`,
-                  [restaurantId, incomingTableId, firebaseOrderId, order.orderNumber || null, reason, JSON.stringify(order)]
-                );
-              } catch {}
-              broadcastToClients(restaurantId, {
-                type: 'pos_conflict',
-                tableId: incomingTableId,
-                firebaseOrderId,
-                orderNumber: order.orderNumber || null,
-                message: '다른 POS에서 같은 테이블 주문이 들어왔지만, 이미 이 POS에 열린 주문이 있어 자동 반영하지 않았습니다.'
-              });
-              return;
-            }
-          }
-
-          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-          const orderNumber = order.orderNumber || `POS-${Date.now()}`;
-
-          // orderType 매핑
-          const rawType = String(order.orderType || order.order_type || 'POS').toUpperCase();
-          const orderType = rawType === 'PICKUP' ? 'TOGO' : rawType;
-
-          // status 매핑 (pos_pending -> PENDING)
-          const status = String(order.status || 'pos_pending').toLowerCase() === 'pos_paid' ? 'PAID' : 'PENDING';
-
-          const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, table_id, firebase_order_id, order_source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              orderNumber,
-              orderType,
-              order.total || 0,
-              status,
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
-              order.customerPhone || null,
-              order.customerName || null,
-              order.tableId || null,
-              firebaseOrderId,
-              'POS_SYNC'
-            ]
-          );
-          localOrder = { id: result.lastID };
-
-          // 주문 아이템 저장
-          if (Array.isArray(order.items)) {
-            for (const item of order.items) {
-              const modifiersJson = JSON.stringify(item.options || item.modifiers || []);
-              const orderLineId = `POSSYNC-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-              await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, guest_number, modifiers_json, order_line_id)
-                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-                [localOrder.id, item.id || item.item_id || null, item.name || '', item.quantity || 1, item.price || 0, modifiersJson, orderLineId]
-              );
-            }
-          }
-
-          console.log(`📦 새 POS(원격) 주문 SQLite 저장: #${localOrder.id}`);
-        }
-      } catch (saveError) {
-        console.error('POS(멀티) 주문 SQLite 저장 실패:', saveError.message);
-      }
-
-      // 초기 로딩(_isInitial)에서는 UI 알림을 생략하고, 이후에는 SSE로 푸시
-      if (!order._isInitial) {
-        const formatted = formatOrderForFrontend(order);
-        formatted.localOrderId = localOrder?.id || null;
-        broadcastToClients(restaurantId, { type: 'new_order', order: formatted });
-      }
-    },
-    onOrderUpdate: async (order) => {
-      // pos_pending 범위 내에서 수정 (메모/금액 등)이 오면 반영
-      try {
-        await dbRun(`UPDATE orders SET total = COALESCE(?, total), customer_name = COALESCE(?, customer_name), customer_phone = COALESCE(?, customer_phone) WHERE firebase_order_id = ?`, [
-          order.total != null ? order.total : null,
-          order.customerName || null,
-          order.customerPhone || null,
-          order.id
-        ]);
-      } catch {}
-      broadcastToClients(restaurantId, { type: 'order_updated', order: formatOrderForFrontend(order) });
-    },
-    onOrderRemove: async (order) => {
-      // pos_pending -> pos_paid 로 빠지는 케이스를 PAID로 반영
-      try {
-        await dbRun(`UPDATE orders SET status = 'PAID' WHERE firebase_order_id = ?`, [order.id]);
-      } catch {}
-      broadcastToClients(restaurantId, { type: 'order_updated', order: formatOrderForFrontend(order) });
-    },
-    onError: (error) => {
-      broadcastToClients(restaurantId, { type: 'error', message: error.message });
-    }
-  });
-
-  // stop 시 둘 다 정리
-  const combinedUnsub = () => {
-    try { if (typeof unsubscribeOnline === 'function') unsubscribeOnline(); } catch {}
-    try { if (typeof unsubscribePos === 'function') unsubscribePos(); } catch {}
-  };
-
-  activeListeners.set(restaurantId, combinedUnsub);
+  activeListeners.set(restaurantId, unsubscribe);
 }
 
 // Firebase 주문 리스너 중지
@@ -888,20 +643,8 @@ router.post('/pause/:restaurantId', async (req, res) => {
   }
 
   try {
-    // SQLite에 저장 (UPSERT)
-    for (const channel of channels) {
-      await dbRun(`
-        INSERT INTO online_pause (restaurant_id, channel, paused, pause_until, updated_at)
-        VALUES (?, ?, 1, ?, datetime('now'))
-        ON CONFLICT(restaurant_id, channel) 
-        DO UPDATE SET paused = 1, pause_until = excluded.pause_until, updated_at = datetime('now')
-      `, [restaurantId, channel, pauseUntil]);
-    }
-    console.log('[PAUSE] SQLite 저장 완료');
-
     // Firebase restaurantSettings에 Pause 상태 저장 (TZO 호환)
     await firebaseService.updateRestaurantPause(restaurantId, pauseUntil, channels);
-    console.log('[PAUSE] Firebase 저장 완료');
     
     res.json({ 
       success: true, 
@@ -927,280 +670,12 @@ router.post('/resume/:restaurantId', async (req, res) => {
   }
 
   try {
-    // SQLite에서 Pause 해제
-    for (const channel of channels) {
-      await dbRun(`
-        INSERT INTO online_pause (restaurant_id, channel, paused, pause_until, updated_at)
-        VALUES (?, ?, 0, NULL, datetime('now'))
-        ON CONFLICT(restaurant_id, channel) 
-        DO UPDATE SET paused = 0, pause_until = NULL, updated_at = datetime('now')
-      `, [restaurantId, channel]);
-    }
-    console.log('[RESUME] SQLite 업데이트 완료');
-
     // Firebase restaurantSettings에서 Pause 상태 해제 (TZO 호환)
     await firebaseService.updateRestaurantPause(restaurantId, null, channels);
-    console.log('[RESUME] Firebase 업데이트 완료');
     
     res.json({ success: true, message: 'Resumed successfully', channels });
   } catch (error) {
     console.error('[RESUME] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Pause 상태 조회
-router.get('/pause/:restaurantId', async (req, res) => {
-  const { restaurantId } = req.params;
-
-  try {
-    // SQLite에서 조회
-    const rows = await dbAll('SELECT channel, paused, pause_until FROM online_pause WHERE restaurant_id = ?', [restaurantId]);
-    
-    const pauseSettings = {
-      thezoneorder: { paused: false, pauseUntil: null },
-      ubereats: { paused: false, pauseUntil: null },
-      doordash: { paused: false, pauseUntil: null },
-      skipthedishes: { paused: false, pauseUntil: null }
-    };
-
-    if (rows && rows.length > 0) {
-      for (const row of rows) {
-        pauseSettings[row.channel] = { 
-          paused: row.paused === 1, 
-          pauseUntil: row.pause_until 
-        };
-      }
-      return res.json({ success: true, pauseSettings, source: 'sqlite' });
-    }
-
-    res.json({ success: true, pauseSettings, source: 'default' });
-  } catch (error) {
-    console.error('[PAUSE] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ============================================
-// Prep Time 관리 API
-// ============================================
-
-// Prep Time 저장
-router.post('/preptime/:restaurantId', async (req, res) => {
-  const { restaurantId } = req.params;
-  const { prepTimeSettings } = req.body;
-
-  console.log(`[PREPTIME] 레스토랑 ${restaurantId} Prep Time 저장:`, prepTimeSettings);
-
-  if (!ensureFirebaseInit()) {
-    return res.status(500).json({ success: false, error: 'Firebase not initialized' });
-  }
-
-  try {
-    // SQLite에 저장 (UPSERT)
-    const channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
-    for (const channel of channels) {
-      if (prepTimeSettings[channel]) {
-        await dbRun(`
-          INSERT INTO online_prep_time (restaurant_id, channel, mode, time, updated_at)
-          VALUES (?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(restaurant_id, channel) 
-          DO UPDATE SET mode = excluded.mode, time = excluded.time, updated_at = datetime('now')
-        `, [restaurantId, channel, prepTimeSettings[channel].mode, prepTimeSettings[channel].time]);
-      }
-    }
-    console.log('[PREPTIME] SQLite 저장 완료');
-
-    // Firebase restaurantSettings에 Prep Time 저장
-    await firebaseService.updatePrepTimeSettings(restaurantId, prepTimeSettings);
-    console.log('[PREPTIME] Firebase 저장 완료');
-    
-    res.json({ success: true, message: 'Prep Time saved successfully' });
-  } catch (error) {
-    console.error('[PREPTIME] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Prep Time 조회
-router.get('/preptime/:restaurantId', async (req, res) => {
-  const { restaurantId } = req.params;
-
-  try {
-    // SQLite에서 먼저 조회
-    const rows = await dbAll('SELECT channel, mode, time FROM online_prep_time WHERE restaurant_id = ?', [restaurantId]);
-    
-    if (rows && rows.length > 0) {
-      const prepTimeSettings = {
-        thezoneorder: { mode: 'auto', time: '15m' },
-        ubereats: { mode: 'auto', time: '15m' },
-        doordash: { mode: 'auto', time: '15m' },
-        skipthedishes: { mode: 'auto', time: '15m' }
-      };
-      for (const row of rows) {
-        prepTimeSettings[row.channel] = { mode: row.mode, time: row.time };
-      }
-      return res.json({ success: true, prepTimeSettings, source: 'sqlite' });
-    }
-
-    // SQLite에 없으면 Firebase에서 조회
-    if (ensureFirebaseInit()) {
-      const prepTimeSettings = await firebaseService.getPrepTimeSettings(restaurantId);
-      return res.json({ success: true, prepTimeSettings, source: 'firebase' });
-    }
-
-    // 기본값 반환
-    res.json({ 
-      success: true, 
-      prepTimeSettings: {
-        thezoneorder: { mode: 'auto', time: '15m' },
-        ubereats: { mode: 'auto', time: '15m' },
-        doordash: { mode: 'auto', time: '15m' },
-        skipthedishes: { mode: 'auto', time: '15m' }
-      },
-      source: 'default'
-    });
-  } catch (error) {
-    console.error('[PREPTIME] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ============================================
-// Day Off 관리 API
-// ============================================
-
-// Day Off 목록 조회 (지난 스케줄 자동 삭제 후 반환)
-router.get('/dayoff/:restaurantId', async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    
-    // 지난 스케줄 삭제 (SQLite)
-    const deleteResult = await dbRun('DELETE FROM online_day_off WHERE date < ?', [today]);
-    if (deleteResult.changes > 0) {
-      console.log(`[DAYOFF] 지난 스케줄 ${deleteResult.changes}개 자동 삭제됨`);
-      
-      // Firebase에서도 삭제
-      const { restaurantId } = req.params;
-      if (ensureFirebaseInit()) {
-        try {
-          await firebaseService.cleanupPastDayOffs(restaurantId, today);
-        } catch (fbError) {
-          console.error('[DAYOFF] Firebase 지난 스케줄 삭제 실패:', fbError.message);
-        }
-      }
-    }
-    
-    // 남은 스케줄 반환
-    const rows = await dbAll('SELECT * FROM online_day_off ORDER BY date ASC');
-    res.json({ success: true, dayoffs: rows });
-  } catch (error) {
-    console.error('[DAYOFF GET] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Day Off 저장 (단일 또는 다중)
-router.post('/dayoff/:restaurantId', async (req, res) => {
-  const { restaurantId } = req.params;
-  const { dayoffs } = req.body;
-
-  console.log(`[DAYOFF SAVE] 레스토랑 ${restaurantId} Day Off 저장 요청:`, dayoffs);
-
-  if (!Array.isArray(dayoffs) || dayoffs.length === 0) {
-    return res.status(400).json({ success: false, error: 'dayoffs array is required' });
-  }
-
-  try {
-    // SQLite에 저장 (UPSERT)
-    for (const dayoff of dayoffs) {
-      const { channel, date, scheduleType, time } = dayoff;
-      
-      if (!channel || !date || !scheduleType) {
-        continue; // 필수 필드 누락 시 건너뛰기
-      }
-
-      await dbRun(
-        `INSERT INTO online_day_off (channel, date, schedule_type, time, updated_at)
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(channel, date) DO UPDATE SET
-           schedule_type = excluded.schedule_type,
-           time = excluded.time,
-           updated_at = CURRENT_TIMESTAMP`,
-        [channel, date, scheduleType, time || null]
-      );
-    }
-
-    // Firebase에도 동기화
-    if (ensureFirebaseInit()) {
-      try {
-        await firebaseService.updateDayOffSettings(restaurantId, dayoffs);
-      } catch (fbError) {
-        console.error('[DAYOFF] Firebase 동기화 실패:', fbError.message);
-        // Firebase 실패해도 로컬 저장은 성공으로 처리
-      }
-    }
-
-    res.json({ success: true, message: `${dayoffs.length} day off settings saved` });
-  } catch (error) {
-    console.error('[DAYOFF SAVE] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Day Off 삭제
-router.delete('/dayoff/:restaurantId', async (req, res) => {
-  const { restaurantId } = req.params;
-  const { channel, date } = req.body;
-
-  console.log(`[DAYOFF DELETE] 레스토랑 ${restaurantId} Day Off 삭제 요청:`, { channel, date });
-
-  if (!channel || !date) {
-    return res.status(400).json({ success: false, error: 'channel and date are required' });
-  }
-
-  try {
-    await dbRun(
-      'DELETE FROM online_day_off WHERE channel = ? AND date = ?',
-      [channel, date]
-    );
-
-    // Firebase에서도 삭제
-    if (ensureFirebaseInit()) {
-      try {
-        await firebaseService.deleteDayOffSetting(restaurantId, channel, date);
-      } catch (fbError) {
-        console.error('[DAYOFF] Firebase 삭제 실패:', fbError.message);
-      }
-    }
-
-    res.json({ success: true, message: 'Day off setting deleted' });
-  } catch (error) {
-    console.error('[DAYOFF DELETE] Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Day Off 전체 삭제 (특정 채널)
-router.delete('/dayoff/:restaurantId/channel/:channel', async (req, res) => {
-  const { restaurantId, channel } = req.params;
-
-  console.log(`[DAYOFF DELETE ALL] 레스토랑 ${restaurantId} 채널 ${channel} 전체 삭제`);
-
-  try {
-    await dbRun('DELETE FROM online_day_off WHERE channel = ?', [channel]);
-
-    if (ensureFirebaseInit()) {
-      try {
-        await firebaseService.clearDayOffSettings(restaurantId, channel);
-      } catch (fbError) {
-        console.error('[DAYOFF] Firebase 전체 삭제 실패:', fbError.message);
-      }
-    }
-
-    res.json({ success: true, message: `All day off settings for ${channel} deleted` });
-  } catch (error) {
-    console.error('[DAYOFF DELETE ALL] Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

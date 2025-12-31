@@ -2391,12 +2391,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     console.log('Updated selected modifiers:', newSelectedModifiers);
     setSelectedModifiers(newSelectedModifiers);
     
-    // 기존 주문 아이템이 선택된 경우 (모디파이어 편집 모드)
-    if (selectedOrderLineId) {
-      updateExistingOrderItemModifiers(selectedOrderLineId, groupId, modifierId, selectionType);
-      return;
-    }
-    
     // 부모 메뉴 아이템에 모디파이어를 종속시켜 업데이트
     if (selectedMenuItemId) {
       const selectedItem = menuItems.find(item => item.id === selectedMenuItemId);
@@ -2404,101 +2398,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         updateOrderItemWithModifiersImmediate(selectedItem, newSelectedModifiers);
       }
     }
-  };
-  
-  // 기존 주문 아이템의 모디파이어를 편집하는 함수
-  const updateExistingOrderItemModifiers = (orderLineId: string, groupId: string, modifierId: string, selectionType: string) => {
-    console.log('Editing existing order item modifiers:', { orderLineId, groupId, modifierId, selectionType });
-    
-    // 모디파이어 이름 및 가격 정보 가져오기
-    const groupNameById = new Map<string, string>();
-    const modifierInfoById = new Map<string, { name: string; price_delta: number }>();
-    selectedItemModifiers.forEach(link => {
-      const gid = String(link.modifier_group_id);
-      if (link.group?.name) groupNameById.set(gid, link.group.name);
-      (link.modifiers || []).forEach((m: any) => {
-        const mid = String(m.option_id ?? m.modifier_id ?? m.id);
-        if (m.name) {
-          modifierInfoById.set(mid, {
-            name: m.name,
-            price_delta: Number(m.price_delta ?? m.price_adjustment ?? 0)
-          });
-        }
-      });
-    });
-    
-    setOrderItems(prev => {
-      const idx = prev.findIndex((item: any) => item.orderLineId === orderLineId);
-      if (idx === -1) return prev;
-      
-      const updatedItems = [...prev];
-      const targetItem: any = { ...updatedItems[idx] };
-      const existingMods = Array.isArray(targetItem.modifiers) ? [...targetItem.modifiers] : [];
-      
-      // 해당 그룹 찾기
-      const groupIndex = existingMods.findIndex((m: any) => String(m.groupId) === String(groupId));
-      const groupName = groupNameById.get(groupId) || 'Unknown Group';
-      const modInfo = modifierInfoById.get(modifierId) || { name: 'Unknown', price_delta: 0 };
-      
-      if (selectionType === 'SINGLE') {
-        // SINGLE 선택: 해당 그룹의 모디파이어를 교체
-        const newModEntry = {
-          groupId,
-          groupName,
-          modifierIds: [modifierId],
-          modifierNames: [modInfo.name],
-          selectedEntries: [{ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta }],
-          totalModifierPrice: modInfo.price_delta
-        };
-        
-        if (groupIndex !== -1) {
-          existingMods[groupIndex] = newModEntry;
-        } else {
-          existingMods.push(newModEntry);
-        }
-      } else {
-        // MULTI 선택: 토글
-        if (groupIndex !== -1) {
-          const groupMod = { ...existingMods[groupIndex] };
-          const entries = [...(groupMod.selectedEntries || [])];
-          const entryIndex = entries.findIndex((e: any) => String(e.id) === String(modifierId));
-          
-          if (entryIndex !== -1) {
-            entries.splice(entryIndex, 1);
-          } else {
-            entries.push({ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta });
-          }
-          
-          if (entries.length === 0) {
-            existingMods.splice(groupIndex, 1);
-          } else {
-            groupMod.selectedEntries = entries;
-            groupMod.modifierIds = entries.map((e: any) => e.id);
-            groupMod.modifierNames = entries.map((e: any) => e.name);
-            groupMod.totalModifierPrice = entries.reduce((sum: number, e: any) => sum + (e.price_delta || 0), 0);
-            existingMods[groupIndex] = groupMod;
-          }
-        } else {
-          existingMods.push({
-            groupId,
-            groupName,
-            modifierIds: [modifierId],
-            modifierNames: [modInfo.name],
-            selectedEntries: [{ id: modifierId, name: modInfo.name, price_delta: modInfo.price_delta }],
-            totalModifierPrice: modInfo.price_delta
-          });
-        }
-      }
-      
-      // 총 모디파이어 가격 재계산
-      const totalModifierPrice = existingMods.reduce((sum: number, m: any) => sum + (m.totalModifierPrice || 0), 0);
-      targetItem.modifiers = existingMods;
-      targetItem.totalPrice = (targetItem.price || 0) + totalModifierPrice;
-      
-      updatedItems[idx] = targetItem;
-      console.log('Updated order item with new modifiers:', targetItem);
-      return updatedItems;
-    });
   };
 
   // 선택된 모디파이어의 총 가격 변동 계산
@@ -3033,32 +2932,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     // Ensure subsequent menu additions go to the clicked guest
     if (typeof guestNum === 'number') {
       setActiveGuestNumber(guestNum);
-    }
-    
-    // 주문 아이템 클릭 시 해당 아이템의 모디파이어 그룹을 로드 (모디파이어 편집 지원)
-    // orderItems에서 해당 아이템을 찾아 item_id를 가져옴
-    const orderItem = orderItems.find((it: any) => 
-      (orderLineId ? it.orderLineId === orderLineId : it.id === itemId) && 
-      ((it.guestNumber || 1) === (guestNum || 1))
-    );
-    if (orderItem) {
-      // item_id가 있으면 (실제 메뉴 아이템) 모디파이어 패널에 해당 아이템 표시
-      const menuItemId = (orderItem as any).item_id || orderItem.id;
-      if (menuItemId) {
-        setSelectedMenuItemId(menuItemId);
-      }
-      
-      // 현재 아이템에 선택된 모디파이어를 selectedModifiers에 반영하여 하이라이트 표시
-      const currentMods: { [key: string]: string[] } = {};
-      const itemMods = (orderItem as any).modifiers;
-      if (Array.isArray(itemMods)) {
-        itemMods.forEach((mod: any) => {
-          if (mod.groupId) {
-            currentMods[mod.groupId] = mod.modifierIds || mod.selectedEntries?.map((e: any) => e.id) || [];
-          }
-        });
-      }
-      setSelectedModifiers(currentMods);
     }
   };
 
@@ -4295,7 +4168,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             orderNumber,
             orderType: orderType || 'POS',
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: (it as any).item_source || (it as any).itemSource || null })), 
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: it.item_source || null })), 
             adjustments,
             tableId: tableIdForMap,
             serverId: selectedServer?.id || null,
@@ -4354,7 +4227,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: (it as any).item_source || (it as any).itemSource || null })),
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: it.item_source || null })),
             adjustments,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
@@ -5079,8 +4952,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           return;
         }
         const items = Array.isArray(json.items) ? json.items : [];
-        const orderSourceRaw = String(json?.order?.order_source || json?.order?.orderSource || '');
-        const inferTableOrder = orderSourceRaw.toUpperCase().includes('TABLE_QR') || orderSourceRaw.toUpperCase().includes('TABLE_ORDER');
         
         // Store original quantities for saved items
         items.forEach((it: any) => {
@@ -5102,7 +4973,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
           splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
           orderLineId: it.order_line_id || undefined,
-          item_source: it.item_source || (inferTableOrder ? 'TABLE_ORDER' : undefined)
+          item_source: it.item_source || undefined
         }));
         // Restore order-level Discount as a discount line from adjustments
         try {
@@ -7087,32 +6958,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                   <div className="col-span-6">
                                     <div className={`font-medium text-sm ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`}>
                                       {(item as any).item_source === 'TABLE_ORDER' && (
-                                        <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBO</span>
+                                        <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBL</span>
                                       )}
                                       <span className="truncate">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
                                     </div>
-                                    {/* 테이블 오더 Modifiers 표시 (item_source가 TABLE_ORDER이고 modifiers에 name이 직접 있는 경우) */}
-                                    {(() => {
-                                      // 테이블 오더인 경우만 처리 (POS modifiers는 아래 기존 방식으로 표시됨)
-                                      if ((item as any).item_source !== 'TABLE_ORDER') return null;
-                                      const mods = item.modifiers || [];
-                                      // 테이블 오더 형식: { name: "Beef", groupName: "Choose Meat", price: 0 }
-                                      const tableOrderMods = mods
-                                        .filter((m: any) => m.name && !m.selectedEntries) // 직접 name이 있고 selectedEntries가 없는 경우
-                                        .map((m: any) => m.name)
-                                        .filter(Boolean);
-                                      if (tableOrderMods.length === 0) return null;
-                                      return (
-                                        <>
-                                          {tableOrderMods.map((modName: string, mi: number) => (
-                                            <div key={mi} className="flex items-center text-sm text-gray-600 leading-none">
-                                              <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                              <span className="ml-0.5 font-medium italic">{modName}</span>
-                                            </div>
-                                          ))}
-                                        </>
-                                      );
-                                    })()}
                                   </div>
                                   
                                   {/* 수량 조절 (고정 위치) */}
@@ -7317,34 +7166,68 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     {/* 모디파이어 정보 */}
                                     {item.modifiers && item.modifiers.length > 0 && (
                                       <div className="space-y-0 mb-0">
-                                        {/* 모든 모디파이어 동일하게 표시 (확장 + 일반) */}
-                                        {item.modifiers.flatMap((mod: any, modIndex: number) => (
-                                          (mod.selectedEntries && mod.selectedEntries.length > 0
-                                            ? mod.selectedEntries.map((entry: any, entryIdx: number) => (
-                                                <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                        {/* 모든 모디파이어 동일하게 표시 (확장 + 일반 + 테이블오더 flat 구조) */}
+                                        {item.modifiers.flatMap((mod: any, modIndex: number) => {
+                                          // Case 1: POS modifiers with selectedEntries
+                                          if (mod.selectedEntries && mod.selectedEntries.length > 0) {
+                                            return mod.selectedEntries.map((entry: any, entryIdx: number) => (
+                                              <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                                <div className="flex items-center">
+                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                  <span className="ml-0.5 font-medium italic">{entry.name}</span>
+                                                </div>
+                                                <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                  {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
+                                                </span>
+                                              </div>
+                                            ));
+                                          }
+                                          // Case 2: POS modifiers with modifierNames array
+                                          if (Array.isArray((mod as any).modifierNames) && (mod as any).modifierNames.length > 0) {
+                                            return (mod as any).modifierNames.map((name: string, entryIdx: number) => (
+                                              <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                                <div className="flex items-center">
+                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                  <span className="ml-0.5 font-medium italic">{name}</span>
+                                                </div>
+                                                <span className="text-gray-500 font-medium italic">$0.00</span>
+                                              </div>
+                                            ));
+                                          }
+                                          // Case 3: Table Order flat modifiers { name, price_adjustment } or { modifier_id, name, price_adjustment }
+                                          if (mod.name && (typeof mod.price_adjustment === 'number' || typeof mod.modifier_id !== 'undefined')) {
+                                            const priceAdj = Number(mod.price_adjustment || 0);
+                                            return [(
+                                              <div key={`${item.id}-tbo-mod-${modIndex}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                                <div className="flex items-center">
+                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                  <span className="ml-0.5 font-medium italic">{mod.name}</span>
+                                                </div>
+                                                <span className={`${priceAdj > 0 ? 'text-red-600' : priceAdj < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                  {priceAdj > 0 ? '+' : ''}${priceAdj.toFixed(2)}
+                                                </span>
+                                              </div>
+                                            )];
+                                          }
+                                          // Case 4: POS modifiers with nested modifiers array (groupId/modifiers structure)
+                                          if (Array.isArray(mod.modifiers) && mod.modifiers.length > 0) {
+                                            return mod.modifiers.map((subMod: any, subIdx: number) => {
+                                              const price = Number(subMod.totalModifierPrice || subMod.price || 0);
+                                              return (
+                                                <div key={`${item.id}-submod-${modIndex}-${subIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
                                                   <div className="flex items-center">
                                                     <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                    <span className="ml-0.5 font-medium italic">{entry.name}</span>
+                                                    <span className="ml-0.5 font-medium italic">{subMod.name}</span>
                                                   </div>
-                                                  <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                    {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
+                                                  <span className={`${price > 0 ? 'text-red-600' : price < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                    {price > 0 ? '+' : ''}${price.toFixed(2)}
                                                   </span>
                                                 </div>
-                                              ))
-                                            : (Array.isArray((mod as any).modifierNames)
-                                                ? (mod as any).modifierNames.map((name: string, entryIdx: number) => (
-                                                    <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                      <div className="flex items-center">
-                                                        <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                        <span className="ml-0.5 font-medium italic">{name}</span>
-                                                      </div>
-                                                      <span className="text-gray-500 font-medium italic">$0.00</span>
-                                                    </div>
-                                                  ))
-                                                : []
-                                              )
-                                          )
-                                        ))}
+                                              );
+                                            });
+                                          }
+                                          return [];
+                                        })}
                                       </div>
                                     )}
                                     

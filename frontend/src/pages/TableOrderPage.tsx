@@ -14,39 +14,7 @@ interface FlyingItem {
   image_url?: string;
 }
 
-const STORAGE_KEY = 'table-order-setup';
-
-function resolveTableOrderApiUrl(): string {
-  // 1) Explicit env override
-  const env = (process.env.REACT_APP_API_URL || '').trim();
-  if (env) return env;
-
-  // 2) From table-order-setup config (posHost is typically the POS host)
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const posHostRaw = String(parsed?.posHost || '').trim();
-      if (posHostRaw) {
-        const withScheme = /^https?:\/\//i.test(posHostRaw) ? posHostRaw : `http://${posHostRaw}`;
-        const u = new URL(withScheme);
-
-        // If user entered the frontend port (3088/3000), map to backend (3177).
-        const port = u.port && u.port !== '3088' && u.port !== '3000' ? u.port : '3177';
-        return `${u.protocol}//${u.hostname}:${port}/api`;
-      }
-    }
-  } catch {}
-
-  // 3) Fallback: current hostname, backend port 3177
-  try {
-    if (typeof window !== 'undefined' && window.location) {
-      return `${window.location.protocol}//${window.location.hostname}:3177/api`;
-    }
-  } catch {}
-
-  return 'http://localhost:3177/api';
-}
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
 interface MenuItem {
   item_id: number;
@@ -108,8 +76,6 @@ const TableOrderPage: React.FC = () => {
   const effectiveStoreId = storeId || searchParams.get('store') || 'default';
   const effectiveTableId = tableId || searchParams.get('table') || 'T01';
 
-  const API_URL = useMemo(() => resolveTableOrderApiUrl(), []);
-
   const [tableInfo, setTableInfo] = useState<TableInfo | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
@@ -147,6 +113,21 @@ const TableOrderPage: React.FC = () => {
   // Call Server 모달 상태
   const [showCallServerModal, setShowCallServerModal] = useState(false);
   const [callServerSent, setCallServerSent] = useState<string | null>(null);
+  
+  // My Orders 모달 상태
+  const [showMyOrdersModal, setShowMyOrdersModal] = useState(false);
+  const [myOrderData, setMyOrderData] = useState<{ order: any; items: any[] } | null>(null);
+  const [loadingMyOrders, setLoadingMyOrders] = useState(false);
+  
+  // 영상 모드 상태 (주문 완료 후 10초 뒤 전환)
+  const [videoMode, setVideoMode] = useState(false);
+  const [currentVideoUrl, setCurrentVideoUrl] = useState<string | null>(null);
+  const orderSubmittedTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // 화면 전환 애니메이션 상태
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [showVideoScreen, setShowVideoScreen] = useState(false);
+  const [sendingCallServer, setSendingCallServer] = useState(false);
 
   // 테이블 정보 및 메뉴 로드
   useEffect(() => {
@@ -180,6 +161,59 @@ const TableOrderPage: React.FC = () => {
 
     loadData();
   }, [effectiveStoreId, effectiveTableId]);
+
+  // 시즌 영상 로드
+  useEffect(() => {
+    const loadSeasonalVideo = async () => {
+      try {
+        const res = await fetch(`${API_URL}/table-orders/seasonal-video`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.video_url) {
+            // 상대 경로를 절대 경로로 변환
+            let videoUrl = data.video_url;
+            if (videoUrl.startsWith('/uploads/')) {
+              // 백엔드 서버 URL로 변환
+              const backendUrl = API_URL.replace('/api', '');
+              videoUrl = `${backendUrl}${videoUrl}`;
+            }
+            console.log('📹 Seasonal video URL:', videoUrl);
+            setCurrentVideoUrl(videoUrl);
+          }
+        }
+      } catch (err) {
+        console.log('No seasonal video configured');
+      }
+    };
+    loadSeasonalVideo();
+  }, []);
+
+  // 주문 완료 시 10초 후 영상 모드 전환 (부드러운 전환)
+  useEffect(() => {
+    if (orderSubmitted && currentVideoUrl) {
+      orderSubmittedTimerRef.current = setTimeout(() => {
+        // 페이드 아웃 시작
+        setIsTransitioning(true);
+        
+        // 0.5초 후 화면 전환
+        setTimeout(() => {
+          setOrderSubmitted(false);
+          setVideoMode(true);
+          setShowVideoScreen(true);
+          
+          // 0.1초 후 페이드 인
+          setTimeout(() => {
+            setIsTransitioning(false);
+          }, 100);
+        }, 500);
+      }, 10000);
+    }
+    return () => {
+      if (orderSubmittedTimerRef.current) {
+        clearTimeout(orderSubmittedTimerRef.current);
+      }
+    };
+  }, [orderSubmitted, currentVideoUrl]);
 
   // 현재 카테고리 아이템
   const currentItems = useMemo(() => {
@@ -372,6 +406,30 @@ const TableOrderPage: React.FC = () => {
     setCustomerNote('');
   };
 
+  // 내 주문 내역 로드
+  const loadMyOrders = async () => {
+    setLoadingMyOrders(true);
+    try {
+      const res = await fetch(`${API_URL}/table-orders/my-orders?table_id=${effectiveTableId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setMyOrderData({ order: data.order, items: data.items || [] });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load my orders:', err);
+    } finally {
+      setLoadingMyOrders(false);
+    }
+  };
+
+  // My Orders 모달 열기
+  const handleOpenMyOrders = () => {
+    setShowMyOrdersModal(true);
+    loadMyOrders();
+  };
+
   // 주문 제출
   const submitOrder = async () => {
     if (cart.length === 0) return;
@@ -415,8 +473,8 @@ const TableOrderPage: React.FC = () => {
   // 주문 완료 화면
   if (orderSubmitted) {
     return (
-      <div className="h-screen bg-gradient-to-br from-emerald-900 via-teal-800 to-cyan-900 flex items-center justify-center p-8">
-        <div className="bg-white/95 backdrop-blur rounded-3xl shadow-2xl p-12 max-w-2xl w-full text-center">
+      <div className={`h-screen bg-gradient-to-br from-emerald-900 via-teal-800 to-cyan-900 flex items-center justify-center p-8 transition-opacity duration-500 ease-in-out ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
+        <div className="bg-white/95 backdrop-blur rounded-3xl shadow-2xl p-12 max-w-2xl w-full text-center animate-[fadeIn_0.5s_ease-out]">
           <div className="w-32 h-32 bg-gradient-to-br from-green-400 to-emerald-600 rounded-full flex items-center justify-center mx-auto mb-8 shadow-lg">
             <Utensils className="w-16 h-16 text-white" />
           </div>
@@ -431,12 +489,143 @@ const TableOrderPage: React.FC = () => {
             <span>Estimated wait: 15-20 minutes</span>
           </div>
           <button
-            onClick={() => setOrderSubmitted(false)}
+            onClick={() => {
+              if (orderSubmittedTimerRef.current) clearTimeout(orderSubmittedTimerRef.current);
+              setOrderSubmitted(false);
+            }}
             className="px-12 py-4 bg-gradient-to-r from-emerald-500 to-teal-600 text-white rounded-2xl font-bold text-xl hover:from-emerald-600 hover:to-teal-700 transition-all shadow-lg hover:shadow-xl transform hover:scale-105"
           >
             Order More
           </button>
         </div>
+      </div>
+    );
+  }
+
+  // 영상 모드 화면 (주문 완료 후 10초 뒤)
+  if (videoMode && currentVideoUrl) {
+    return (
+      <div className={`h-screen flex overflow-hidden bg-black transition-opacity duration-700 ease-in-out ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
+        {/* 왼쪽: 영상 (80%) */}
+        <div className="w-4/5 h-full relative">
+          <video
+            src={currentVideoUrl}
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="w-full h-full object-cover animate-[fadeIn_1s_ease-out]"
+          />
+        </div>
+        
+        {/* 오른쪽: 버튼 (20%) */}
+        <div className="w-1/5 h-full bg-gradient-to-b from-amber-900 via-amber-800 to-amber-900 flex flex-col items-center justify-center gap-6 p-4">
+          {/* 레스토랑 로고/이름 */}
+          <div className="text-center mb-8">
+            <div className="w-20 h-20 bg-gradient-to-br from-orange-400 to-red-500 rounded-2xl flex items-center justify-center shadow-lg mx-auto mb-4">
+              <Utensils className="w-10 h-10 text-white" />
+            </div>
+            <h2 className="text-white font-bold text-lg">
+              {tableInfo?.business_name || 'Restaurant'}
+            </h2>
+            <p className="text-amber-200 text-sm mt-1">
+              Table {tableInfo?.table_label || effectiveTableId}
+            </p>
+          </div>
+
+          {/* 버튼들 */}
+          <button
+            onClick={() => {
+              setIsTransitioning(true);
+              setTimeout(() => {
+                setVideoMode(false);
+                setShowVideoScreen(false);
+                setTimeout(() => setIsTransitioning(false), 100);
+              }, 500);
+            }}
+            className="w-full py-5 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl font-bold text-lg flex flex-col items-center gap-2 shadow-lg hover:from-green-600 hover:to-emerald-700 transition-all"
+          >
+            <Utensils className="w-8 h-8" />
+            <span>Order</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              setVideoMode(false);
+              setShowCallServerModal(true);
+            }}
+            className="w-full py-5 bg-gradient-to-r from-orange-500 to-amber-600 text-white rounded-xl font-bold text-lg flex flex-col items-center gap-2 shadow-lg hover:from-orange-600 hover:to-amber-700 transition-all"
+          >
+            <Bell className="w-8 h-8" />
+            <span>Call Server</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              handleOpenMyOrders();
+            }}
+            className="w-full py-5 bg-gradient-to-r from-teal-500 to-cyan-600 text-white rounded-xl font-bold text-lg flex flex-col items-center gap-2 shadow-lg hover:from-teal-600 hover:to-cyan-700 transition-all"
+          >
+            <Receipt className="w-8 h-8" />
+            <span>My Orders</span>
+          </button>
+        </div>
+
+        {/* My Orders 모달 (영상 모드에서도 표시) */}
+        {showMyOrdersModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+              <div className="bg-gradient-to-r from-teal-500 to-cyan-600 px-6 py-4 flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-3">
+                  <Receipt className="w-6 h-6 text-white" />
+                  <h3 className="text-xl font-bold text-white">My Orders</h3>
+                </div>
+                <button onClick={() => setShowMyOrdersModal(false)} className="text-white/80 hover:text-white">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {loadingMyOrders ? (
+                  <div className="flex items-center justify-center py-12">
+                    <div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                ) : !myOrderData?.order ? (
+                  <div className="text-center py-12">
+                    <Receipt className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                    <p className="text-xl font-semibold text-slate-700">No orders yet</p>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="bg-slate-50 rounded-xl p-4 mb-4">
+                      <div className="flex justify-between"><span className="text-sm text-slate-500">Order #</span><span className="font-bold">{myOrderData.order.order_number}</span></div>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {myOrderData.items.map((item: any, idx: number) => {
+                        const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
+                        const modifierTotal = modifiers.reduce((s: number, m: any) => s + (m.price_adjustment || 0), 0);
+                        const itemTotal = (item.price + modifierTotal) * item.quantity;
+                        return (
+                          <div key={idx} className="py-1.5 flex items-start gap-2">
+                            <span className="text-sm font-medium w-6">{item.quantity}</span>
+                            <div className="flex-1"><div className="font-medium text-sm">{item.name}</div></div>
+                            <span className="font-semibold text-amber-600 text-sm">${itemTotal.toFixed(2)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-4 pt-4 border-t flex justify-between text-lg">
+                      <span className="font-semibold">Total</span>
+                      <span className="font-bold text-amber-600">${myOrderData.order.total?.toFixed(2) || '0.00'}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="border-t p-4">
+                <button onClick={() => setShowMyOrdersModal(false)} className="w-full py-3 bg-slate-100 hover:bg-slate-200 rounded-xl font-semibold">Close</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -693,14 +882,23 @@ const TableOrderPage: React.FC = () => {
           </h2>
         </div>
         
-        {/* 오른쪽: Call Server */}
-        <button
-          onClick={() => setShowCallServerModal(true)}
-          className="bg-orange-500 hover:bg-orange-600 rounded-xl px-5 py-2.5 flex items-center gap-2 transition-all shadow-md hover:shadow-lg"
-        >
-          <Bell className="w-5 h-5" />
-          <span className="font-bold">Call Server</span>
-        </button>
+        {/* 오른쪽: My Orders + Call Server */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleOpenMyOrders}
+            className="bg-teal-500 hover:bg-teal-600 rounded-xl px-5 py-2.5 flex items-center gap-2 transition-all shadow-md hover:shadow-lg"
+          >
+            <Receipt className="w-5 h-5" />
+            <span className="font-bold">My Orders</span>
+          </button>
+          <button
+            onClick={() => setShowCallServerModal(true)}
+            className="bg-orange-500 hover:bg-orange-600 rounded-xl px-5 py-2.5 flex items-center gap-2 transition-all shadow-md hover:shadow-lg"
+          >
+            <Bell className="w-5 h-5" />
+            <span className="font-bold">Call Server</span>
+          </button>
+        </div>
       </header>
 
       {/* 메인 컨텐츠 */}
@@ -953,28 +1151,33 @@ const TableOrderPage: React.FC = () => {
                     <button
                       key={item.label}
                       onClick={async () => {
+                        if (sendingCallServer) return;
+                        setSendingCallServer(true);
                         try {
-                          const tableId = effectiveTableId;
-                          const storeId = effectiveStoreId;
-                          const tableLabel = (tableInfo && (tableInfo.table_label || (tableInfo as any).tableLabel)) || tableId;
-
-                          await fetch(`${API_URL}/table-orders/call`, {
+                          const payload = {
+                            store_id: effectiveStoreId,
+                            table_id: effectiveTableId,
+                            table_label: tableInfo?.table_label || effectiveTableId,
+                            request_type: item.label,
+                            message: item.message,
+                          };
+                          const res = await fetch(`${API_URL}/table-orders/call-server`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              store_id: storeId,
-                              table_id: tableId,
-                              table_label: tableLabel,
-                              kind: item.label,
-                            }),
-                          }).catch(() => {});
-
+                            body: JSON.stringify(payload),
+                          });
+                          if (!res.ok) {
+                            const errText = await res.text().catch(() => '');
+                            throw new Error(errText || 'Failed to call server');
+                          }
                           setCallServerSent(item.message);
-                        } catch {
-                          setCallServerSent(item.message);
+                        } catch (e: any) {
+                          alert(`Failed to send request: ${e?.message || 'Unknown error'}`);
+                        } finally {
+                          setSendingCallServer(false);
                         }
                       }}
-                      className={`${item.color} hover:opacity-90 text-white rounded-xl p-4 flex flex-col items-center gap-2 transition-all shadow-md hover:shadow-lg`}
+                      className={`${item.color} ${sendingCallServer ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'} text-white rounded-xl p-4 flex flex-col items-center gap-2 transition-all shadow-md hover:shadow-lg`}
                     >
                       <item.icon className="w-8 h-8" />
                       <span className="font-bold text-sm">{item.label}</span>
@@ -1067,6 +1270,102 @@ const TableOrderPage: React.FC = () => {
                 className="flex-1 py-4 text-red-500 font-semibold hover:bg-red-50 transition"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* My Orders 모달 */}
+      {showMyOrdersModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden animate-[scaleIn_0.2s_ease-out] flex flex-col">
+            {/* 헤더 */}
+            <div className="bg-gradient-to-r from-teal-500 to-cyan-600 px-6 py-4 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <Receipt className="w-6 h-6 text-white" />
+                <h3 className="text-xl font-bold text-white">My Orders</h3>
+              </div>
+              <button
+                onClick={() => setShowMyOrdersModal(false)}
+                className="text-white/80 hover:text-white transition"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            {/* 내용 */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {loadingMyOrders ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : !myOrderData?.order ? (
+                <div className="text-center py-12">
+                  <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Receipt className="w-10 h-10 text-slate-300" />
+                  </div>
+                  <p className="text-xl font-semibold text-slate-700 mb-2">No orders yet</p>
+                  <p className="text-slate-500">Your ordered items will appear here</p>
+                </div>
+              ) : (
+                <div>
+                  {/* 주문 정보 */}
+                  <div className="bg-slate-50 rounded-xl p-4 mb-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm text-slate-500">Order #</span>
+                      <span className="font-bold text-slate-800">{myOrderData.order.order_number}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-slate-500">Status</span>
+                      <span className="px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-sm font-semibold">
+                        {myOrderData.order.status === 'PENDING' ? 'In Progress' : myOrderData.order.status}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 주문 아이템 목록 */}
+                  <div className="divide-y divide-slate-100">
+                    {myOrderData.items.map((item: any, idx: number) => {
+                      const modifiers = Array.isArray(item.modifiers) ? item.modifiers : [];
+                      const modifierTotal = modifiers.reduce((sum: number, m: any) => sum + (m.price_adjustment || 0), 0);
+                      const itemTotal = (item.price + modifierTotal) * item.quantity;
+                      
+                      return (
+                        <div key={item.id || idx} className="py-1.5 flex items-start gap-2">
+                          <span className="text-sm text-slate-600 font-medium w-6 flex-shrink-0">{item.quantity}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-slate-800 text-sm">{item.name}</div>
+                            {modifiers.length > 0 && (
+                              <div className="text-xs text-slate-500 pl-1">
+                                {modifiers.map((mod: any) => mod.name).join(', ')}
+                              </div>
+                            )}
+                          </div>
+                          <span className="font-semibold text-amber-600 text-sm w-16 text-right flex-shrink-0">${itemTotal.toFixed(2)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 총액 */}
+                  <div className="mt-4 pt-4 border-t border-slate-200">
+                    <div className="flex justify-between items-center text-lg">
+                      <span className="font-semibold text-slate-700">Total</span>
+                      <span className="font-bold text-amber-600">${myOrderData.order.total?.toFixed(2) || '0.00'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 푸터 */}
+            <div className="border-t p-4 flex-shrink-0">
+              <button
+                onClick={() => setShowMyOrdersModal(false)}
+                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition"
+              >
+                Close
               </button>
             </div>
           </div>

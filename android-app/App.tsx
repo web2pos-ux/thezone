@@ -37,9 +37,6 @@ const HEARTBEAT_INTERVAL = 30000;
 // 설정 동기화 간격 (10초)
 const CONFIG_SYNC_INTERVAL = 10000;
 
-// POS/프린터 헬스체크 간격 (10초)
-const HEALTH_CHECK_INTERVAL = 10000;
-
 interface Config {
   posHost: string;
   storeId: string;
@@ -81,13 +78,10 @@ const App = () => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [registrationStatus, setRegistrationStatus] = useState<'none' | 'registering' | 'registered' | 'error'>('none');
   const [assignedFromPOS, setAssignedFromPOS] = useState<string | null>(null);
-  const [tableOrderEnabled, setTableOrderEnabled] = useState<boolean>(true);
-  const [healthMessage, setHealthMessage] = useState<string>('');
   
   const webviewRef = useRef<WebView>(null);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const configSyncIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const healthIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const appStateRef = useRef(AppState.currentState);
 
   // ==================== 디바이스 ID 관리 ====================
@@ -250,34 +244,6 @@ const App = () => {
     
     console.log('[ConfigSync] Started with interval:', CONFIG_SYNC_INTERVAL);
   }, [syncConfigFromPOS]);
-
-  // POS/프린터 헬스 체크
-  const checkPosHealth = useCallback(async (host: string) => {
-    if (!host) return;
-    try {
-      const resp = await fetch(`${host}/api/devices/health`);
-      if (!resp.ok) throw new Error(`health status ${resp.status}`);
-      const data = await resp.json();
-      const enabled = !!data?.tableOrderEnabled;
-      setTableOrderEnabled(enabled);
-      setHealthMessage(data?.message || (enabled ? '' : 'Table order is currently unavailable'));
-    } catch (e) {
-      // POS가 다운/네트워크 문제면 즉시 주문 비활성화
-      setTableOrderEnabled(false);
-      setHealthMessage('POS is offline. Please ask staff.');
-    }
-  }, []);
-
-  const startHealthCheck = useCallback((host: string) => {
-    if (healthIntervalRef.current) {
-      clearInterval(healthIntervalRef.current);
-    }
-    // 즉시 1회
-    checkPosHealth(host);
-    healthIntervalRef.current = setInterval(() => {
-      checkPosHealth(host);
-    }, HEALTH_CHECK_INTERVAL);
-  }, [checkPosHealth]);
   
   // 모든 interval 정리
   const stopAllIntervals = useCallback(() => {
@@ -288,10 +254,6 @@ const App = () => {
     if (configSyncIntervalRef.current) {
       clearInterval(configSyncIntervalRef.current);
       configSyncIntervalRef.current = null;
-    }
-    if (healthIntervalRef.current) {
-      clearInterval(healthIntervalRef.current);
-      healthIntervalRef.current = null;
     }
   }, []);
 
@@ -339,14 +301,12 @@ const App = () => {
             // 4. Heartbeat 및 설정 동기화 시작
             startHeartbeat(parsed.posHost, devId);
             startConfigSync(parsed.posHost, devId);
-            startHealthCheck(parsed.posHost);
             
             setShowSetup(false);
           } else if (parsed.posHost) {
             // POS 주소만 있으면 등록하고 설정 동기화 시작
             await registerDevice(parsed.posHost, devId);
             startConfigSync(parsed.posHost, devId);
-            startHealthCheck(parsed.posHost);
           }
         }
       } catch (e) {
@@ -425,7 +385,6 @@ const App = () => {
       await registerDevice(config.posHost, deviceId);
       startHeartbeat(config.posHost, deviceId);
       startConfigSync(config.posHost, deviceId);
-      startHealthCheck(config.posHost);
       
       setShowSetup(false);
     } catch (e) {
@@ -449,7 +408,6 @@ const App = () => {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(configToSave));
       setConfig(configToSave);
       startHeartbeat(config.posHost, deviceId);
-      startHealthCheck(config.posHost);
       setShowSetup(false);
       setAssignedFromPOS(null);
     } catch (e) {
@@ -677,21 +635,6 @@ const App = () => {
           ]);
         }}
       />
-
-      {/* 주문 비활성화 오버레이: POS 다운 */}
-      {!tableOrderEnabled && (
-        <View style={styles.blockOverlay} pointerEvents="auto">
-          <View style={styles.blockCard}>
-            <Text style={styles.blockTitle}>Table Order Unavailable</Text>
-            <Text style={styles.blockBody}>
-              {healthMessage || 'POS is offline.'}
-            </Text>
-            <TouchableOpacity style={styles.blockButton} onPress={() => openSettings()}>
-              <Text style={styles.blockButtonText}>Open Settings</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
 
       {/* Settings Button (Hidden, long press to show) */}
       <TouchableOpacity
@@ -955,49 +898,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#fffbeb',
-  },
-  blockOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    padding: 20,
-  },
-  blockCard: {
-    width: '100%',
-    maxWidth: 420,
-    borderRadius: 16,
-    backgroundColor: '#ffffff',
-    padding: 18,
-  },
-  blockTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  blockBody: {
-    fontSize: 14,
-    color: '#374151',
-    marginBottom: 14,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  blockButton: {
-    backgroundColor: '#f59e0b',
-    paddingVertical: 10,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  blockButtonText: {
-    color: '#ffffff',
-    fontWeight: '800',
-    fontSize: 14,
   },
   settingsButton: {
     position: 'absolute',
