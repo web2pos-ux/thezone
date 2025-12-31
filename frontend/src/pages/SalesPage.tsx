@@ -255,7 +255,7 @@ const SalesPage: React.FC = () => {
     } catch {}
 
     // Auto-hide after 20 seconds
-    const timeoutId = window.setTimeout(() => removeTableOrderToast(id), 20000);
+    const timeoutId = window.setTimeout(() => removeTableOrderToast(id), 5000);
     tableOrderToastTimeoutsRef.current[id] = timeoutId;
   }, [removeTableOrderToast]);
 
@@ -292,9 +292,7 @@ const SalesPage: React.FC = () => {
       callServerAudioRef.current.play().catch(() => {});
     } catch {}
 
-    // Auto-hide after 3 minutes (like the manager canvas page)
-    const timeoutId = window.setTimeout(() => removeTableCallToast(id), 180000);
-    tableCallToastTimeoutsRef.current[id] = timeoutId;
+    // No auto-hide for Call popups: staff must tap to dismiss
   }, [removeTableCallToast]);
 
   // Socket.io: listen for table device orders pushed by backend
