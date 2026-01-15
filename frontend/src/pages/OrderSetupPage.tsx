@@ -12,7 +12,7 @@ interface OrderPageSetup {
   orderType: string;
   menuId: number;
   menuName: string;
-  priceType: 'price1' | 'price2';
+  priceType: 'price' | 'price2';
   createdAt: string;
 }
 
@@ -31,7 +31,7 @@ const OrderSetupPage = () => {
   const [menus, setMenus] = useState<Menu[]>([]);
   const [selectedOrderType, setSelectedOrderType] = useState<string>('');
   const [selectedMenu, setSelectedMenu] = useState<number | null>(null);
-  const [selectedPriceType, setSelectedPriceType] = useState<'price1' | 'price2'>('price1');
+  const [selectedPriceType, setSelectedPriceType] = useState<'price' | 'price2'>('price');
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -96,7 +96,7 @@ const OrderSetupPage = () => {
     const setup = savedSetups.find(s => s.orderType === channelId);
     if (setup) {
       setSelectedMenu(setup.menuId);
-      setSelectedPriceType(setup.priceType || 'price1');
+      setSelectedPriceType(setup.priceType === 'price1' ? 'price' : (setup.priceType || 'price'));
     }
   };
 
@@ -328,16 +328,16 @@ const OrderSetupPage = () => {
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
-                      onClick={() => setSelectedPriceType('price1')}
+                      onClick={() => setSelectedPriceType('price')}
                       className={`p-4 rounded-lg border-2 transition-all duration-200 ${
-                        selectedPriceType === 'price1'
+                        selectedPriceType === 'price'
                           ? 'border-green-500 bg-green-50'
                           : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <h4 className="font-semibold text-gray-900">Price 1</h4>
-                        {selectedPriceType === 'price1' && (
+                        <h4 className="font-semibold text-gray-900">Price</h4>
+                        {selectedPriceType === 'price' && (
                           <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
                             <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -452,7 +452,7 @@ const OrderSetupPage = () => {
                               ? 'bg-orange-100 text-orange-700' 
                               : 'bg-green-100 text-green-700'
                           }`}>
-                            {setup.priceType === 'price2' ? 'Price 2' : 'Price 1'}
+                            {setup.priceType === 'price2' ? 'Price 2' : 'Price'}
                           </span>
                         </h3>
                         <p className="text-sm text-gray-500">
@@ -464,7 +464,7 @@ const OrderSetupPage = () => {
                       onClick={() => {
                         setSelectedOrderType(setup.orderType);
                         setSelectedMenu(setup.menuId);
-                        setSelectedPriceType(setup.priceType || 'price1');
+                        setSelectedPriceType(setup.priceType === 'price1' ? 'price' : (setup.priceType || 'price'));
                       }}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
                     >

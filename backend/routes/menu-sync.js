@@ -362,7 +362,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
           [
             fbItem.name,
             fbItem.shortName || fbItem.short_name || '',
-            fbItem.price1 || fbItem.price || 0,
+            fbItem.price || fbItem.price1 || 0,
             fbItem.price2 || 0,
             posCategoryId,
             fbItem.description || '',
@@ -403,7 +403,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             [
               fbItem.id,
               fbItem.shortName || fbItem.short_name || '',
-              fbItem.price1 || fbItem.price || 0,
+              fbItem.price || fbItem.price1 || 0,
               fbItem.price2 || 0,
               posCategoryId,
               fbItem.description || '',
@@ -431,7 +431,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             [
               fbItem.name,
               fbItem.shortName || fbItem.short_name || '',
-              fbItem.price1 || fbItem.price || 0,
+              fbItem.price || fbItem.price1 || 0,
               fbItem.price2 || 0,
               posCategoryId,
               200005, // 고정 메뉴 ID
@@ -889,7 +889,7 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         name: item.name,
         shortName: item.short_name || '',
         description: item.description || '',
-        price1: item.price || 0,
+        price: item.price || 0,
         price2: item.price2 || 0,
         imageUrl: item.image_url || '',
         isAvailable: true,
@@ -2166,7 +2166,7 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         shortName: item.short_name || '',
         short_name: item.short_name || '',
         description: item.description || '',
-        price1: parseFloat(item.price) || 0,
+        price: parseFloat(item.price) || 0,
         price2: parseFloat(item.price2) || 0,
         imageUrl: item.image_url || '',
         image_url: item.image_url || '',

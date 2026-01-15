@@ -126,7 +126,7 @@ const OrderPage = () => {
   const normalizedOrderType = typeof orderType === 'string' ? orderType : 'pos';
   const normalizedOrderTypeLower = normalizedOrderType.toLowerCase();
   const isTogo = (normalizedOrderTypeLower === 'togo');
-  const normalizedPriceType: 'price1' | 'price2' = locationPriceType === 'price2' ? 'price2' : 'price1';
+  const normalizedPriceType: 'price' | 'price2' = locationPriceType === 'price2' ? 'price2' : 'price';
 
   // Resolve accurate table name for POS/table orders when not provided directly
   const [resolvedTableName, setResolvedTableName] = useState<string>('');
@@ -211,7 +211,7 @@ const OrderPage = () => {
   const { layoutSettings, setLayoutSettings, updateLayoutSetting, loadLayoutSettings, saveLayoutSettings, resetLayoutSettings } = useLayoutSettings(layoutSnapshotSeed.data || undefined);
   const mergedGroups = useMemo(() => layoutSettings.mergedGroups || [], [layoutSettings.mergedGroups]);
   const savedCategoryOrder = useMemo(() => layoutSettings.categoryBarOrder || [], [layoutSettings.categoryBarOrder]);
-  const selectServerPromptEnabled = layoutSettings.selectServerOnEntry ?? true;
+  const selectServerPromptEnabled = layoutSettings.selectServerOnEntry ?? false;
   
   // Layout Tab 권한 체크: Admin과 Distributor만 수정 가능 (Select Server 제외)
   // localStorage에서 'pos_user_role' 값을 확인 (admin, distributor, dealer, owner, staff)
@@ -1297,7 +1297,7 @@ const handleVoidPinClear = useCallback(() => {
     const now = new Date();
     const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
     const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null }) });
-    if (!saveRes.ok) throw new Error('주문 저장 실패');
+    if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
     return saved.orderId;
@@ -1500,7 +1500,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
       if (!savedOrderIdRef.current) {
         const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null }) });
-        if (!saveRes.ok) throw new Error('주문 저장 실패');
+        if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
       }
@@ -1508,7 +1508,7 @@ const handleVoidPinClear = useCallback(() => {
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
         const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: null }) });
-        if (!payRes.ok) throw new Error('결제 저장 실패');
+        if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
         setPaymentsByGuest(prev => {
@@ -1538,7 +1538,7 @@ const handleVoidPinClear = useCallback(() => {
       } else {
         // 단일 게스트 결제 저장
         const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount, tip, guestNumber: Number(guestPaymentMode) }) });
-        if (!payRes.ok) throw new Error('결제 저장 실패');
+        if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
         setPaymentsByGuest(prev => {
@@ -1552,7 +1552,7 @@ const handleVoidPinClear = useCallback(() => {
       }
     } catch (e) {
       console.error(e);
-      alert('결제 처리 중 오류가 발생했습니다.');
+      alert('An error occurred during payment processing.');
     }
   };
   const handleCompletePayment = async () => {
@@ -1614,7 +1614,7 @@ const handleVoidPinClear = useCallback(() => {
       } catch {}
 
       if (orderId) {
-        try { await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' }); } catch (e) { console.warn('주문 상태 갱신 실패(무시 가능):', e); }
+        try { await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' }); } catch (e) { console.warn('Order status update failed (can be ignored):', e); }
       }
       try {
         if (tableIdForMap) {
@@ -1631,7 +1631,7 @@ const handleVoidPinClear = useCallback(() => {
     navigate('/sales');
     } catch (e) {
       console.error(e);
-      alert('결제 완료 처리 중 오류');
+      alert('Error during payment completion');
     }
   };
 
@@ -1703,8 +1703,8 @@ const handleVoidPinClear = useCallback(() => {
     setMergyName(`Merged_${(layoutSettings.mergedGroups?.length || 0) + 1}`);
     
     // 성공 메시지 표시
-    console.log(`✅ 머지 그룹 "${mergyName}" 생성 완료! (${newGroup.categoryNames.length}개 카테고리 포함)`);
-    console.log(`📊 현재 총 ${(layoutSettings.mergedGroups?.length || 0) + 1}개의 머지 그룹이 있습니다.`);
+    console.log(`✅ Merge group "${mergyName}" created! (${newGroup.categoryNames.length} categories included)`);
+    console.log(`📊 Total ${(layoutSettings.mergedGroups?.length || 0) + 1} merge groups now.`);
   };
   
   const deleteMergyGroup = (groupId: string) => {
@@ -1914,11 +1914,11 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
       const amount = parseFloat(openPriceAmount || '0');
       const note = (openPriceNote || '').trim();
       if (!name) {
-        setOpenPriceError('이름을 입력하세요.');
+        setOpenPriceError('Please enter a name.');
         return;
       }
       if (!(amount > 0)) {
-        setOpenPriceError('0보다 큰 금액을 입력하세요.');
+        setOpenPriceError('Please enter an amount greater than 0.');
         return;
       }
 
@@ -1942,11 +1942,11 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({} as any));
-          setOpenPriceError(err?.error || '서버 저장 실패');
+          setOpenPriceError(err?.error || 'Server save failed');
           return;
         }
       } catch (e) {
-        setOpenPriceError('네트워크 오류');
+        setOpenPriceError('Network error');
         return;
       }
 
@@ -1976,7 +1976,7 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
       setOpenPriceManagerPin('');
       setOpenPriceError('');
     } catch (e) {
-      setOpenPriceError('처리 중 오류가 발생했습니다.');
+      setOpenPriceError('An error occurred during processing.');
     }
   };
   
@@ -2853,7 +2853,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     // 메뉴 아이템을 바로 주문에 추가 (기본 가격으로)
     // Block adding when active guest is locked (PAID)
     if (isGuestLocked(activeGuestNumber)) {
-      try { alert('이미 결제된 게스트에는 추가할 수 없습니다.'); } catch {}
+      try { alert('Cannot add to a guest that has already paid.'); } catch {}
       return;
     }
     addToOrder(item);
@@ -2937,7 +2937,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   const handleEditPriceClick = () => {
     if (!selectedOrderItemId) {
-      alert('가격을 변경할 메뉴를 먼저 선택해주세요.');
+      alert('Please select a menu item to change the price.');
       return;
     }
     
@@ -2950,7 +2950,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     
     const price = parseFloat(newPrice);
     if (isNaN(price) || price < 0) {
-      alert('올바른 가격을 입력해주세요.');
+      alert('Please enter a valid price.');
       return;
     }
 
@@ -3081,7 +3081,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // Item Memo 관련 함수들
   const handleItemMemoClick = () => {
     if (!selectedOrderItemId) {
-      alert('메모를 추가할 주문 아이템을 먼저 선택해주세요.');
+      alert('Please select an order item to add a memo.');
       return;
     }
     
@@ -3129,12 +3129,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const handleSplitSelectedItem = () => {
     try {
       if (!selectedOrderLineId && !selectedOrderItemId) {
-        alert('분할할 주문 아이템을 먼저 선택해주세요.');
+        alert('Please select an order item to split.');
         return;
       }
       const g = selectedOrderGuestNumber || activeGuestNumber;
       if (isGuestLocked(g)) {
-        alert('이미 결제된 게스트의 아이템은 분할할 수 없습니다.');
+        alert('Items from guests who have already paid cannot be split.');
         return;
       }
       if (!splitOriginalSnapshotRef.current) {
@@ -3612,7 +3612,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     
-    console.log('🔍 드래그 앤 드롭 시작:', { active: active.id, over: over.id });
+    console.log('🔍 Drag and drop started:', { active: active.id, over: over.id });
     
     const orderBefore = getCategoryBarOrder();
     const oldIndex = orderBefore.findIndex(id => id === String(active.id));
@@ -3622,7 +3622,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const orderAfter = [...orderBefore];
     const [movedId] = orderAfter.splice(oldIndex, 1);
     orderAfter.splice(newIndex, 0, movedId);
-    console.log('🔄 새 순서:', orderAfter);
+    console.log('🔄 New order:', orderAfter);
     
     // Persist unified order
     setLayoutSettings(prev => ({ ...prev, categoryBarOrder: orderAfter }));
@@ -4078,7 +4078,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     } catch (e) {
       console.error('Print Bill failed', e);
-      alert('Print Bill 실패');
+      alert('Print Bill failed');
     }
   };
 
@@ -4168,7 +4168,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             orderNumber,
             orderType: orderType || 'POS',
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: it.item_source || null })), 
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })), 
             adjustments,
             tableId: tableIdForMap,
             serverId: selectedServer?.id || null,
@@ -4177,10 +4177,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             customerPhone: orderCustomerInfo.phone || null,
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
-            pickupMinutes: orderPickupInfo.pickupMinutes ?? null
+            pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
+            kitchenNote: savedKitchenMemo || null
           })
         });
-        if (!saveRes.ok) throw new Error('주문 저장 실패');
+        if (!saveRes.ok) throw new Error('Failed to save order');
         const savedOrder = await saveRes.json();
         const newOrderId = savedOrder?.orderId ?? savedOrder?.id;
         try { savedOrderIdRef.current = newOrderId ?? savedOrderIdRef.current; } catch {}
@@ -4227,7 +4228,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, item_source: it.item_source || null })),
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })),
             adjustments,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
@@ -4235,10 +4236,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             customerPhone: orderCustomerInfo.phone || null,
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
-            pickupMinutes: orderPickupInfo.pickupMinutes ?? null
+            pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
+            kitchenNote: savedKitchenMemo || null
           })
         });
-        if (!putRes.ok) throw new Error('주문 업데이트 실패');
+        if (!putRes.ok) throw new Error('Failed to update order');
         if (selectedServer) persistServerSelection(selectedServer);
         
         setOrderItems(prev => prev.map(it => {
@@ -4304,40 +4306,83 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   const printKitchenOrders = async (wasUpdateMode: boolean) => {
       const items = (orderItems || []).filter(it => it.type === 'item');
-      const groups: Record<string, any[]> = {};
+      const printItems: any[] = [];
       
       items.forEach((it:any) => {
         const hasOrderLineId = !!it.orderLineId;
         const quantityDelta = Number(it.quantityDelta || 0);
         
+        // 새 주문이거나 추가 주문(quantityDelta > 0)인 경우만 출력
         if (!wasUpdateMode || !hasOrderLineId || quantityDelta > 0) {
-          const gid = String(it.printerGroupId ?? it.printer_group_id ?? 'default');
-          if (!groups[gid]) groups[gid] = [];
-          
           const printQty = (wasUpdateMode && hasOrderLineId && quantityDelta > 0) ? quantityDelta : it.quantity;
           
-          groups[gid].push({ id: it.id, name: it.name, qty: printQty });
+          // 프린터 그룹 ID들 수집
+          const printerGroupIds = Array.isArray(it.printerGroupIds) ? it.printerGroupIds : 
+                                  Array.isArray(it.printer_groups) ? it.printer_groups :
+                                  (it.printerGroupId || it.printer_group_id) ? [it.printerGroupId || it.printer_group_id] : [];
           
-          const memoPrice = ((it.memo && typeof it.memo.price === 'number') ? it.memo.price : 0);
-          const memoText = ((it.memo && typeof it.memo.text === 'string') ? it.memo.text.trim() : '');
-          if (memoPrice > 0) {
-            groups[gid].push({ id: `${it.id}-memo`, name: `Memo: ${memoText || ''} +$${memoPrice.toFixed(2)}`, qty: 1, type: 'memo' });
-          }
+          printItems.push({
+            id: it.id,
+            name: it.short_name || it.name || 'Unknown',
+            qty: printQty,
+            guestNumber: it.guestNumber || 1,
+            modifiers: (it as any).modifiers || [],
+            memo: (it as any).memo?.text || null,
+            printerGroupIds: printerGroupIds
+          });
         }
       });
       
-      if (savedKitchenMemo && savedKitchenMemo.trim()) {
-        Object.keys(groups).forEach(gid => {
-          groups[gid].push({ 
-            id: 'kitchen-note', 
-            name: `Kitchen Note: ${savedKitchenMemo}`, 
-            qty: 1,
-            type: 'kitchen-note'
-          });
-        });
-      }
+      // Kitchen Note는 orderInfo.kitchenNote로 전달됨 (Body 하단에 고정 출력)
       
-      await Promise.all(Object.entries(groups).map(([gid, list]) => fetch(`${API_URL}/printers/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printerGroupId: gid, items: list }) })));
+      if (printItems.length === 0) {
+        console.log('🖨️ No items to print');
+        return;
+      }
+
+      // 주문 타입 결정 (DINE-IN, TOGO, ONLINE 등)
+      const currentOrderType = (orderType || 'dine-in').toUpperCase();
+      const orderTypeDisplay = currentOrderType === 'TOGO' ? 'TOGO' : 
+                               currentOrderType === 'ONLINE' ? 'ONLINE' : 
+                               currentOrderType === 'DELIVERY' ? 'DELIVERY' : 'DINE-IN';
+
+      // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
+      const printTableName = resolvedTableName || tableNameFromState || '';
+      const printServerName = selectedServer?.name || '';
+      const printOrderNumber = savedOrderIdRef.current || `ORD-${Date.now()}`;
+      
+      console.log('🖨️ Sending to print-order API:', printItems.length, 'items');
+      try {
+        const response = await fetch(`${API_URL}/printers/print-order`, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ 
+            items: printItems,
+            orderInfo: {
+              orderNumber: printOrderNumber,
+              table: printTableName,
+              server: printServerName,
+              orderType: orderTypeDisplay,
+              channel: orderTypeDisplay,
+              pickupTime: orderPickupInfo.readyTimeLabel || '',
+              pickupMinutes: orderPickupInfo.pickupMinutes,
+              kitchenNote: savedKitchenMemo || ''
+            },
+            isAdditionalOrder: wasUpdateMode,
+            isPaid: false
+          }) 
+        });
+        const result = await response.json();
+        console.log('🖨️ Print-order result:', result);
+        
+        if (result.success) {
+          console.log(`🖨️ Kitchen print complete: ${result.message}`);
+        } else {
+          console.error('❌ Print-order failed:', result.error);
+        }
+      } catch (err) {
+        console.error('❌ Print-order error:', err);
+      }
 
       setOrderItems(prev => prev.map(it => {
         if ((it as any).quantityDelta) return { ...it, quantityDelta: 0 } as any;
@@ -4353,12 +4398,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
        const items = (orderItems || []).filter(it => it.type === 'item');
        if (items.length > 0 && (!savedOrderIdRef.current)) {
           // 아이템이 있는데 저장된 ID가 없으면 심각한 오류
-          alert('주문 저장에 실패하여 Print Bill을 진행할 수 없습니다.');
+          alert('Cannot proceed with Print Bill because order save failed.');
           return;
        }
      } catch (e) {
        console.error('Order save failed before print:', e);
-       alert('주문 저장 실패. 다시 시도해주세요.');
+       alert('Order save failed. Please try again.');
        return;
      }
 
@@ -4486,21 +4531,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           }
         }
       } catch (e) {
-        console.warn('테이블 상태 업데이트 실패(무시):', e);
+        console.warn('Table status update failed (ignored):', e);
       }
 
       // 5) 정리 및 이동: 테이블맵으로 이동하지만, VOID 표시를 유지하기 위해 로컬 스냅샷은 삭제하지 않음
       navigate('/sales');
     } catch (e) {
       console.error('OK flow failed', e);
-      alert('OK 처리 실패');
+      alert('OK processing failed');
     }
   };
 
   const handleVoidPayment = async (paymentId: number) => {
     try {
       const res = await fetch(`${API_URL}/payments/${paymentId}/void`, { method: 'POST' });
-      if (!res.ok) throw new Error('결제 취소 실패');
+      if (!res.ok) throw new Error('Payment cancellation failed');
       let removed: { paymentId: number; method: string; amount: number; tip: number; guestNumber?: number } | undefined;
       setSessionPayments(prev => {
         const idx = prev.findIndex(p => p.paymentId === paymentId);
@@ -4521,10 +4566,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           // ALL bucket was not used for stored entries in current logic; skip
         }
       }
-      alert('결제가 취소되었습니다.');
+      alert('Payment has been cancelled.');
     } catch (e) {
       console.error(e);
-      alert('결제 취소 중 오류가 발생했습니다.');
+      alert('An error occurred while cancelling payment.');
     }
   };
 
@@ -4534,13 +4579,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       for (const p of payments) {
         try {
           const res = await fetch(`${API_URL}/payments/${p.paymentId}/void`, { method: 'POST' });
-          if (!res.ok) throw new Error('결제 취소 실패');
+          if (!res.ok) throw new Error('Payment cancellation failed');
         } catch (e) {
-          console.warn('일부 결제 취소 실패:', p.paymentId, e);
+          console.warn('Some payment cancellation failed:', p.paymentId, e);
         }
       }
     } catch (e) {
-      console.error('결제 초기화 중 오류:', e);
+      console.error('Error during payment initialization:', e);
     } finally {
       setSessionPayments([]);
       setPaymentsByGuest({});
@@ -5075,7 +5120,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           }
         } catch {}
       } catch (e) {
-        console.warn('기존 주문 로드 실패:', e);
+        console.warn('Failed to load existing order:', e);
       }
     };
     run();
@@ -5098,6 +5143,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           const serverNameFromApi = json?.order?.server_name || json?.order?.serverName;
           if (serverIdFromApi && serverNameFromApi) {
             setSelectedServer(prev => prev ?? { id: String(serverIdFromApi), name: String(serverNameFromApi) });
+          }
+          // Load kitchen note from order
+          const kitchenNoteFromApi = json?.order?.kitchen_note || json?.order?.kitchenNote;
+          if (kitchenNoteFromApi) {
+            setSavedKitchenMemo(String(kitchenNoteFromApi));
           }
           const items = Array.isArray(json.items) ? json.items : [];
           
@@ -5130,7 +5180,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         } catch {}
         try { savedOrderIdRef.current = Number(st.orderId); } catch {}
       } catch (e) {
-        console.warn('주문ID로 기존 주문 로드 실패:', e);
+        console.warn('Failed to load existing order by orderId:', e);
       }
     };
     run();
@@ -5663,6 +5713,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           </>
         )}
                   <div className="bg-gray-800 rounded-lg p-3 mb-3">
+          {/* Back to Order Setup Button */}
+          <button
+            onClick={() => navigate('/backoffice/order-setup')}
+            className="w-full mb-3 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            <span>←</span>
+            <span>Back to Order Setup</span>
+          </button>
           {/* Layout Tab */}
           <div className="mb-3 bg-gray-700 rounded-lg p-2" style={{ display: isTogo ? 'none' : undefined }}>
             <div className="flex items-center justify-between mb-2 bg-slate-400 rounded-t-lg p-2 -m-2 mb-3">
@@ -5670,7 +5728,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 onClick={() => setPanelWidthExpanded(!panelWidthExpanded)}
                 className="text-white hover:text-slate-200 transition-colors"
-                title={panelWidthExpanded ? '접기' : '펼치기'}
+                title={panelWidthExpanded ? 'Collapse' : 'Expand'}
               >
                 {panelWidthExpanded ? '▲' : '▼'}
               </button>
@@ -5753,7 +5811,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         disabled={!canEditLayoutTab}
                         className={`w-8 h-8 rounded border-2 border-white/50 shadow transition-all duration-200 ${canEditLayoutTab ? 'hover:scale-105 cursor-pointer' : 'cursor-not-allowed'}`}
                         style={{ backgroundColor: layoutSettings.baseColor || '#3B82F6' }}
-                        title={canEditLayoutTab ? "Click to toggle color grid" : "권한이 필요합니다"}
+                        title={canEditLayoutTab ? "Click to toggle color grid" : "Permission required"}
                       >
                       </button>
                     </div>
@@ -5874,7 +5932,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex items-center justify-between gap-3">
                       <label className="text-sm font-medium text-gray-300">Select Server</label>
                       <button
-                        onClick={() => updateLayoutSetting('selectServerOnEntry', !selectServerPromptEnabled)}
+                        onClick={async () => {
+                          const newValue = !selectServerPromptEnabled;
+                          updateLayoutSetting('selectServerOnEntry', newValue);
+                          // 즉시 서버에 저장하여 SalesPage에서도 반영되도록 함
+                          try {
+                            await saveLayoutSettings({ selectServerOnEntry: newValue });
+                          } catch (e) {
+                            console.error('Failed to save selectServerOnEntry:', e);
+                          }
+                        }}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${selectServerPromptEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}
                       >
                         <span
@@ -5896,7 +5963,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 onClick={() => setCategoryTabExpanded(!categoryTabExpanded)}
                 className="text-white hover:text-slate-200 transition-colors"
-                title={categoryTabExpanded ? '접기' : '펼치기'}
+                title={categoryTabExpanded ? 'Collapse' : 'Expand'}
               >
                 {categoryTabExpanded ? '▲' : '▼'}
               </button>
@@ -5907,10 +5974,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 {/* Mergy Controls */}
                 <div className="mb-1 p-2 rounded bg-gray-600">
                   <div className="text-xs text-gray-200 mb-1">
-                    Mergy: 카테고리 2~4개 선택 → 머지 그룹 생성
+                    Mergy: Select 2-10 categories → Create merge group
                     {layoutSettings.mergedGroups && layoutSettings.mergedGroups.length > 0 && (
                       <span className="text-blue-300 ml-2">
-                        (현재 {layoutSettings.mergedGroups.length}개 그룹)
+                        ({layoutSettings.mergedGroups.length} groups)
                       </span>
                     )}
                   </div>
@@ -5919,7 +5986,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   {/* 기존 머지 그룹 목록 */}
                   {layoutSettings.mergedGroups && layoutSettings.mergedGroups.length > 0 && (
                     <div className="mb-2 p-2 rounded bg-gray-500">
-                      <div className="text-xs text-gray-200 mb-1">생성된 머지 그룹:</div>
+                      <div className="text-xs text-gray-200 mb-1">Created merge groups:</div>
                       {layoutSettings.mergedGroups.map((group) => (
                         <div key={group.id} className="flex items-center justify-between mb-1 p-1 rounded bg-gray-400">
                           <div className="text-xs text-gray-800">
@@ -5930,7 +5997,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <button
                               onClick={() => editMergyGroup(group)}
                               className="text-xs px-1 py-0.5 rounded bg-gray-500 text-gray-200 hover:bg-gray-600"
-                              title="편집"
+                              title="Edit"
                             >
                               <svg className="w-3 h-3 transform rotate-135" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
@@ -5939,7 +6006,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <button
                               onClick={() => deleteMergyGroup(group.id)}
                               className="text-xs px-1 py-0.5 rounded bg-gray-500 text-gray-200 hover:bg-gray-600"
-                              title="삭제"
+                              title="Delete"
                             >
                               🗑
                             </button>
@@ -5958,12 +6025,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       onChange={(e) => setMergyName(e.target.value)}
                       className="text-xs px-2 py-1 rounded bg-gray-500 text-white outline-none border border-gray-400"
                       placeholder="Merged"
-                      disabled={mergyActive && !editingMergyGroup}
                       maxLength={20}
                     />
                   </div>
                   <div className="grid grid-cols-2 gap-1 max-h-28 overflow-auto pr-1 p-2 rounded bg-gray-800 border border-gray-600">
-                    <div className="col-span-2 text-xs text-gray-200 mb-1 font-medium">머지할 카테고리 선택:</div>
+                    <div className="col-span-2 text-xs text-gray-200 mb-1 font-medium">Select categories to merge:</div>
                     {categories.map((c) => {
                       if (c.name === 'Open Price') return null;
                       // 이미 머지된 카테고리인지 확인
@@ -5975,7 +6041,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         <label key={`mergy-opt-${c.name}`} className="flex items-center text-xs text-gray-100 space-x-1">
                           {(() => {
                             const isInEditingGroup = !!(editingMergyGroup && Array.isArray(editingMergyGroup.categories) && editingMergyGroup.categories.includes(c.name));
-                            const disabled = (isAlreadyMerged && !isInEditingGroup) || (mergyActive && !editingMergyGroup);
+                            // 이미 머지된 카테고리는 편집 모드가 아니면 비활성화 (새 머지 그룹 생성 시에는 허용하지 않음)
+                            const disabled = isAlreadyMerged && !isInEditingGroup;
                             return (
                               <>
                                 <input
@@ -5987,7 +6054,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 />
                                 <span className={(isAlreadyMerged && !isInEditingGroup) ? 'text-gray-300 line-through' : 'text-gray-100'}>
                                   {c.name}
-                                  {(isAlreadyMerged && !isInEditingGroup) && <span className="text-xs text-gray-400 ml-1">(이미 머지됨)</span>}
+                                  {(isAlreadyMerged && !isInEditingGroup) && <span className="text-xs text-gray-400 ml-1">(already merged)</span>}
                                 </span>
                               </>
                             );
@@ -6003,15 +6070,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           className="px-2 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700"
                           onClick={updateMergyGroup}
                           disabled={mergySelectedCategories.length < 2}
-                          title={mergySelectedCategories.length < 2 ? '최소 2개 선택' : `업데이트 (${mergySelectedCategories.length}개 선택됨)`}
+                          title={mergySelectedCategories.length < 2 ? 'Select at least 2' : `Update (${mergySelectedCategories.length} selected)`}
                         >
-                          업데이트
+                          Update
                         </button>
                         <button
                           className="px-2 py-1 text-xs rounded bg-gray-500 text-white hover:bg-gray-600"
                           onClick={cancelEditMergyGroup}
                         >
-                          취소
+                          Cancel
                         </button>
                       </>
                     ) : (
@@ -6137,7 +6204,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 onClick={() => setMenuTabExpanded(!menuTabExpanded)}
                 className="text-white hover:text-stone-200 transition-colors"
-                title={menuTabExpanded ? '접기' : '펼치기'}
+                title={menuTabExpanded ? 'Collapse' : 'Expand'}
               >
                 {menuTabExpanded ? '▲' : '▼'}
               </button>
@@ -6245,7 +6312,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div className="flex items-center justify-between">
                     <label className="text-sm text-gray-300">Custom Menu Item Colors</label>
                     <button
-                      onClick={() => { if (!selectedMenuItemId) { alert('색상을 변경할 메뉴를 먼저 선택해주세요.'); return; } const it = menuItems.find(m => m.id === selectedMenuItemId); if (it) { setSelectedItemForColor(it as any); setShowItemColorModal(true); } }}
+                      onClick={() => { if (!selectedMenuItemId) { alert('Please select a menu item to change color.'); return; } const it = menuItems.find(m => m.id === selectedMenuItemId); if (it) { setSelectedItemForColor(it as any); setShowItemColorModal(true); } }}
                       className="w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition-colors flex items-center justify-center"
                       title="Set individual colors for menu items"
                     >
@@ -6265,7 +6332,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 onClick={() => setModifierTabExpanded(!modifierTabExpanded)}
                 className="text-white hover:text-gray-200 transition-colors"
-                title={modifierTabExpanded ? '접기' : '펼치기'}
+                title={modifierTabExpanded ? 'Collapse' : 'Expand'}
               >
                 {modifierTabExpanded ? '▲' : '▼'}
               </button>
@@ -6377,7 +6444,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div className="flex items-center justify-between">
                     <label className="text-sm text-gray-300">Custom Modifier Colors</label>
                     <button
-                      onClick={() => { if (!selectedModifierIdForColor) { alert('색상을 변경할 모디파이어를 먼저 선택해주세요.'); return; } setModifierColorModalSource('custom'); setShowModifierColorModal(true); }}
+                      onClick={() => { if (!selectedModifierIdForColor) { alert('Please select a modifier to change color.'); return; } setModifierColorModalSource('custom'); setShowModifierColorModal(true); }}
                       className="w-8 h-8 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded-lg transition-colors flex items-center justify-center"
                       title="Set individual colors for modifiers"
                     >
@@ -6396,7 +6463,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <button
                   onClick={() => setBagFeeTabExpanded(!bagFeeTabExpanded)}
                   className="text-white hover:text-gray-200 transition-colors"
-                  title={bagFeeTabExpanded ? '접기' : '펼치기'}
+                  title={bagFeeTabExpanded ? 'Collapse' : 'Expand'}
                 >
                   {bagFeeTabExpanded ? '▲' : '▼'}
                 </button>
@@ -6475,7 +6542,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 onClick={() => setFunctionTabExpanded(!functionTabExpanded)}
                 className="text-white hover:text-gray-200 transition-colors"
-                title={functionTabExpanded ? '접기' : '펼치기'}
+                title={functionTabExpanded ? 'Collapse' : 'Expand'}
               >
                 {functionTabExpanded ? '▲' : '▼'}
               </button>
@@ -7166,68 +7233,34 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     {/* 모디파이어 정보 */}
                                     {item.modifiers && item.modifiers.length > 0 && (
                                       <div className="space-y-0 mb-0">
-                                        {/* 모든 모디파이어 동일하게 표시 (확장 + 일반 + 테이블오더 flat 구조) */}
-                                        {item.modifiers.flatMap((mod: any, modIndex: number) => {
-                                          // Case 1: POS modifiers with selectedEntries
-                                          if (mod.selectedEntries && mod.selectedEntries.length > 0) {
-                                            return mod.selectedEntries.map((entry: any, entryIdx: number) => (
-                                              <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                <div className="flex items-center">
-                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                  <span className="ml-0.5 font-medium italic">{entry.name}</span>
-                                                </div>
-                                                <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                  {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
-                                                </span>
-                                              </div>
-                                            ));
-                                          }
-                                          // Case 2: POS modifiers with modifierNames array
-                                          if (Array.isArray((mod as any).modifierNames) && (mod as any).modifierNames.length > 0) {
-                                            return (mod as any).modifierNames.map((name: string, entryIdx: number) => (
-                                              <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                <div className="flex items-center">
-                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                  <span className="ml-0.5 font-medium italic">{name}</span>
-                                                </div>
-                                                <span className="text-gray-500 font-medium italic">$0.00</span>
-                                              </div>
-                                            ));
-                                          }
-                                          // Case 3: Table Order flat modifiers { name, price_adjustment } or { modifier_id, name, price_adjustment }
-                                          if (mod.name && (typeof mod.price_adjustment === 'number' || typeof mod.modifier_id !== 'undefined')) {
-                                            const priceAdj = Number(mod.price_adjustment || 0);
-                                            return [(
-                                              <div key={`${item.id}-tbo-mod-${modIndex}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                <div className="flex items-center">
-                                                  <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                  <span className="ml-0.5 font-medium italic">{mod.name}</span>
-                                                </div>
-                                                <span className={`${priceAdj > 0 ? 'text-red-600' : priceAdj < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                  {priceAdj > 0 ? '+' : ''}${priceAdj.toFixed(2)}
-                                                </span>
-                                              </div>
-                                            )];
-                                          }
-                                          // Case 4: POS modifiers with nested modifiers array (groupId/modifiers structure)
-                                          if (Array.isArray(mod.modifiers) && mod.modifiers.length > 0) {
-                                            return mod.modifiers.map((subMod: any, subIdx: number) => {
-                                              const price = Number(subMod.totalModifierPrice || subMod.price || 0);
-                                              return (
-                                                <div key={`${item.id}-submod-${modIndex}-${subIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                        {/* 모든 모디파이어 동일하게 표시 (확장 + 일반) */}
+                                        {item.modifiers.flatMap((mod: any, modIndex: number) => (
+                                          (mod.selectedEntries && mod.selectedEntries.length > 0
+                                            ? mod.selectedEntries.map((entry: any, entryIdx: number) => (
+                                                <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
                                                   <div className="flex items-center">
                                                     <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                    <span className="ml-0.5 font-medium italic">{subMod.name}</span>
+                                                    <span className="ml-0.5 font-medium italic">{entry.name}</span>
                                                   </div>
-                                                  <span className={`${price > 0 ? 'text-red-600' : price < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                    {price > 0 ? '+' : ''}${price.toFixed(2)}
+                                                  <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                    {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
                                                   </span>
                                                 </div>
-                                              );
-                                            });
-                                          }
-                                          return [];
-                                        })}
+                                              ))
+                                            : (Array.isArray((mod as any).modifierNames)
+                                                ? (mod as any).modifierNames.map((name: string, entryIdx: number) => (
+                                                    <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                                      <div className="flex items-center">
+                                                        <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                        <span className="ml-0.5 font-medium italic">{name}</span>
+                                                      </div>
+                                                      <span className="text-gray-500 font-medium italic">$0.00</span>
+                                                    </div>
+                                                  ))
+                                                : []
+                                              )
+                                          )
+                                        ))}
                                       </div>
                                     )}
                                     
@@ -7829,7 +7862,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               try {
                 const item = (menuItems || []).find(m => String(m.id) === String(it.id));
                 if (item) {
-                  if (isGuestLocked(activeGuestNumber)) { try { alert('이미 결제된 게스트에는 추가할 수 없습니다.'); } catch {} return; }
+                  if (isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
                   addToOrder(item);
                   setShowSearchModal(false);
                   setSoftKbTarget(null);
@@ -7842,7 +7875,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               try {
                 setSoftKbTarget('search' as any);
                 // 강제로 중앙 키보드가 보이도록 스크롤 보정
-                try { document.querySelector('input[placeholder="메뉴명, 약칭, 카테고리 검색"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+                try { document.querySelector('input[placeholder="Search menu, abbreviation, category"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
               } catch {}
             }}
           />
@@ -8082,7 +8115,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       <div ref={voidModalRef as any} className="bg-white rounded-xl shadow-2xl w-full max-w-[720px] p-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-2">
           <div className="text-lg font-bold text-gray-900">Void Items</div>
-          <button className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-11 h-11 flex items-center justify-center rounded hover:bg-gray-100 active:bg-gray-200" onClick={()=>setShowVoidModal(false)} title="닫기">×</button>
+          <button className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-11 h-11 flex items-center justify-center rounded hover:bg-gray-100 active:bg-gray-200" onClick={()=>setShowVoidModal(false)} title="Close">×</button>
         </div>
         <div className="flex flex-col lg:flex-row gap-4">
           <div className="w-full lg:max-w-[400px] lg:flex-none space-y-3">
@@ -8326,7 +8359,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           <div className="bg-white rounded-xl p-4 w-[400px] max-w-[95vw] shadow-2xl">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-lg font-bold text-gray-900">Open Price</h3>
-              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="text-gray-600 hover:text-gray-800 text-2xl font-bold" title="닫기">×</button>
+              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="text-gray-600 hover:text-gray-800 text-2xl font-bold" title="Close">×</button>
             </div>
 
             {openPriceError && (
@@ -8354,7 +8387,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       onMouseDown={() => { setSoftKbTarget('name'); }}
                       onTouchStart={() => { setSoftKbTarget('name'); }}
                       className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="예) Open Charge"
+                      placeholder="e.g. Open Charge"
                     />
                     <button
                       type="button"
@@ -8454,7 +8487,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onMouseDown={() => { setSoftKbTarget('note'); }}
                     onTouchStart={() => { setSoftKbTarget('note'); }}
                     className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="선택 입력"
+                    placeholder="Optional"
                   />
                   <button
                     type="button"

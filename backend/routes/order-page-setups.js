@@ -33,7 +33,7 @@ module.exports = (db) => {
         order_type TEXT NOT NULL UNIQUE,
         menu_id INTEGER NOT NULL,
         menu_name TEXT NOT NULL,
-        price_type TEXT DEFAULT 'price1',
+        price_type TEXT DEFAULT 'price',
         created_at TEXT NOT NULL,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -41,7 +41,7 @@ module.exports = (db) => {
     
     // Add price_type column if it doesn't exist (for existing tables)
     try {
-      await dbRun(`ALTER TABLE order_page_setups ADD COLUMN price_type TEXT DEFAULT 'price1'`);
+      await dbRun(`ALTER TABLE order_page_setups ADD COLUMN price_type TEXT DEFAULT 'price'`);
       console.log('[order-page-setups] Added price_type column');
     } catch (err) {
       // Column already exists, ignore error
@@ -68,7 +68,7 @@ module.exports = (db) => {
           orderType: row.order_type,
           menuId: row.menu_id,
           menuName: row.menu_name,
-          priceType: row.price_type || 'price1',
+          priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }))
@@ -108,7 +108,7 @@ module.exports = (db) => {
           orderType: row.order_type,
           menuId: row.menu_id,
           menuName: row.menu_name,
-          priceType: row.price_type || 'price1',
+          priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }
@@ -135,7 +135,7 @@ module.exports = (db) => {
     }
 
     const createdAt = new Date().toISOString();
-    const validPriceType = priceType === 'price2' ? 'price2' : 'price1';
+    const validPriceType = priceType === 'price2' ? 'price2' : 'price';
     
     try {
       // UPSERT: 같은 order_type이 있으면 업데이트, 없으면 삽입
@@ -164,7 +164,7 @@ module.exports = (db) => {
           orderType: saved.order_type,
           menuId: saved.menu_id,
           menuName: saved.menu_name,
-          priceType: saved.price_type || 'price1',
+          priceType: saved.price_type === 'price1' ? 'price' : (saved.price_type || 'price'),
           createdAt: saved.created_at,
           updatedAt: saved.updated_at
         }
@@ -192,7 +192,7 @@ module.exports = (db) => {
     }
 
     const updatedAt = new Date().toISOString();
-    const validPriceType = priceType === 'price2' ? 'price2' : 'price1';
+    const validPriceType = priceType === 'price2' ? 'price2' : 'price';
     
     try {
       const result = await dbRun(`
@@ -277,7 +277,7 @@ module.exports = (db) => {
           orderType: row.order_type,
           menuId: row.menu_id,
           menuName: row.menu_name,
-          priceType: row.price_type || 'price1',
+          priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }))

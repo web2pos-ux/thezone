@@ -20,7 +20,7 @@ export interface UseMenuDataResult {
   fetchMenuTaxes: (menuId: number) => Promise<void>;
 }
 
-export function useMenuData(menuId?: number, orderType: string = 'pos', priceType: 'price1' | 'price2' = 'price1'): UseMenuDataResult {
+export function useMenuData(menuId?: number, orderType: string = 'pos', priceType: 'price' | 'price1' | 'price2' = 'price'): UseMenuDataResult {
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [menuTaxes, setMenuTaxes] = useState<any[]>([]);
