@@ -12,7 +12,7 @@ interface OrderPageSetup {
   orderType: string;
   menuId: number;
   menuName: string;
-  priceType: 'price' | 'price2';
+  priceType: 'price' | 'price1' | 'price2';  // price1 for backward compatibility
   createdAt: string;
 }
 
@@ -31,7 +31,7 @@ const OrderSetupPage = () => {
   const [menus, setMenus] = useState<Menu[]>([]);
   const [selectedOrderType, setSelectedOrderType] = useState<string>('');
   const [selectedMenu, setSelectedMenu] = useState<number | null>(null);
-  const [selectedPriceType, setSelectedPriceType] = useState<'price' | 'price2'>('price');
+  const [selectedPriceType, setSelectedPriceType] = useState<'price' | 'price1' | 'price2'>('price');
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
