@@ -145,6 +145,20 @@ router.post('/items', async (req, res) => {
     if (!name || price === undefined || !category_id || !menu_id) {
       return res.status(400).json({ error: 'name, price, category_id, and menu_id are required.' });
     }
+    
+    // 가격 유효성 검증
+    const priceNum = parseFloat(price);
+    const price2Num = parseFloat(price2 || 0);
+    
+    if (isNaN(priceNum) || priceNum < 0) {
+      return res.status(400).json({ error: 'Price must be a non-negative number.' });
+    }
+    if (isNaN(price2Num) || price2Num < 0) {
+      return res.status(400).json({ error: 'Price2 must be a non-negative number.' });
+    }
+    if (priceNum > 99999.99 || price2Num > 99999.99) {
+      return res.status(400).json({ error: 'Price cannot exceed 99999.99.' });
+    }
 
     try {
       const newId = await generateMenuItemId(db);
@@ -168,6 +182,20 @@ router.patch('/items/:id', (req, res) => {
 
     if (!name || price === undefined) {
         return res.status(400).json({ error: 'Item name and price are required.' });
+    }
+    
+    // 가격 유효성 검증
+    const priceNum = parseFloat(price);
+    const price2Num = parseFloat(price2 || 0);
+    
+    if (isNaN(priceNum) || priceNum < 0) {
+      return res.status(400).json({ error: 'Price must be a non-negative number.' });
+    }
+    if (isNaN(price2Num) || price2Num < 0) {
+      return res.status(400).json({ error: 'Price2 must be a non-negative number.' });
+    }
+    if (priceNum > 99999.99 || price2Num > 99999.99) {
+      return res.status(400).json({ error: 'Price cannot exceed 99999.99.' });
     }
 
     db.run('UPDATE menu_items SET name = ?, short_name = ?, price = ?, price2 = ?, description = ? WHERE item_id = ?', 

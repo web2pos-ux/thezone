@@ -3,13 +3,11 @@
 
 const admin = require('firebase-admin');
 const path = require('path');
-const fs = require('fs');
 
 // 서비스 계정 키 경로
 const serviceAccountPath = path.join(__dirname, '..', 'config', 'firebase-service-account.json');
 
 let db = null;
-let bucket = null;
 let isInitialized = false;
 
 // Firebase 초기화
@@ -23,30 +21,19 @@ function initializeFirebase() {
     
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      projectId: serviceAccount.project_id,
-      storageBucket: `${serviceAccount.project_id}.appspot.com`
+      projectId: serviceAccount.project_id
     });
 
     db = admin.firestore();
-    bucket = admin.storage().bucket();
     isInitialized = true;
     console.log('🔥 Firebase Admin SDK 초기화 완료');
     console.log(`📦 Project ID: ${serviceAccount.project_id}`);
-    console.log(`📁 Storage Bucket: ${serviceAccount.project_id}.appspot.com`);
     
     return db;
   } catch (error) {
     console.error('❌ Firebase 초기화 실패:', error.message);
     throw error;
   }
-}
-
-// Storage Bucket 가져오기
-function getStorageBucket() {
-  if (!isInitialized) {
-    initializeFirebase();
-  }
-  return bucket;
 }
 
 // Firestore 인스턴스 가져오기
@@ -215,13 +202,14 @@ async function getRestaurantById(restaurantId) {
   return { id: doc.id, ...doc.data() };
 }
 
-// 메뉴 카테고리 동기화 (POS → Firebase)
+// 메뉴 카테고리 동기화 (POS → Firebase 서브컬렉션)
 async function syncMenuCategories(restaurantId, categories) {
   const firestore = getFirestore();
+  const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
   const batch = firestore.batch();
 
   for (const category of categories) {
-    const ref = firestore.collection('menuCategories').doc();
+    const ref = restaurantRef.collection('menuCategories').doc();
     batch.set(ref, {
       restaurantId,
       name: category.name,
@@ -236,13 +224,14 @@ async function syncMenuCategories(restaurantId, categories) {
   console.log(`✅ ${categories.length}개 카테고리 동기화 완료`);
 }
 
-// 메뉴 아이템 동기화 (POS → Firebase)
+// 메뉴 아이템 동기화 (POS → Firebase 서브컬렉션)
 async function syncMenuItems(restaurantId, categoryId, items) {
   const firestore = getFirestore();
+  const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
   const batch = firestore.batch();
 
   for (const item of items) {
-    const ref = firestore.collection('menuItems').doc();
+    const ref = restaurantRef.collection('menuItems').doc();
     batch.set(ref, {
       restaurantId,
       categoryId,
@@ -348,193 +337,9 @@ async function updateRestaurantPause(restaurantId, pauseUntil, channels = ['thez
   }
 }
 
-// ========== Seasonal Videos ==========
-
-// Firebase에서 시즌 영상 설정 가져오기
-async function getSeasonalVideosFromFirebase(restaurantId) {
-  try {
-    const firestore = getFirestore();
-    const snapshot = await firestore
-      .collection('restaurants')
-      .doc(restaurantId)
-      .collection('seasonal_videos')
-      .orderBy('start_month')
-      .get();
-    
-    const videos = [];
-    snapshot.forEach(doc => {
-      videos.push({ id: doc.id, ...doc.data() });
-    });
-    
-    console.log(`📹 Firebase에서 시즌 영상 ${videos.length}개 로드됨`);
-    return videos;
-  } catch (error) {
-    console.error('❌ Firebase 시즌 영상 로드 실패:', error);
-    return [];
-  }
-}
-
-// Firebase에 시즌 영상 설정 저장
-async function saveSeasonalVideoToFirebase(restaurantId, videoData) {
-  try {
-    const firestore = getFirestore();
-    const videoRef = firestore
-      .collection('restaurants')
-      .doc(restaurantId)
-      .collection('seasonal_videos');
-    
-    if (videoData.id) {
-      // 업데이트
-      await videoRef.doc(videoData.id).update({
-        ...videoData,
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-      console.log(`📹 Firebase 시즌 영상 업데이트: ${videoData.name}`);
-    } else {
-      // 새로 추가
-      const docRef = await videoRef.add({
-        ...videoData,
-        created_at: admin.firestore.FieldValue.serverTimestamp(),
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-      console.log(`📹 Firebase 시즌 영상 추가: ${videoData.name} (ID: ${docRef.id})`);
-      return docRef.id;
-    }
-  } catch (error) {
-    console.error('❌ Firebase 시즌 영상 저장 실패:', error);
-    throw error;
-  }
-}
-
-// Firebase에서 시즌 영상 삭제
-async function deleteSeasonalVideoFromFirebase(restaurantId, videoId) {
-  try {
-    const firestore = getFirestore();
-    await firestore
-      .collection('restaurants')
-      .doc(restaurantId)
-      .collection('seasonal_videos')
-      .doc(videoId)
-      .delete();
-    
-    console.log(`📹 Firebase 시즌 영상 삭제: ${videoId}`);
-  } catch (error) {
-    console.error('❌ Firebase 시즌 영상 삭제 실패:', error);
-    throw error;
-  }
-}
-
-// ========== Firebase Storage ==========
-
-// Firebase Storage에 비디오 업로드
-async function uploadVideoToFirebase(localFilePath, destinationPath) {
-  try {
-    const storageBucket = getStorageBucket();
-    
-    if (!fs.existsSync(localFilePath)) {
-      throw new Error(`File not found: ${localFilePath}`);
-    }
-    
-    // 파일 업로드
-    await storageBucket.upload(localFilePath, {
-      destination: destinationPath,
-      metadata: {
-        contentType: 'video/mp4',
-        cacheControl: 'public, max-age=31536000'
-      }
-    });
-    
-    // Public URL 생성
-    const file = storageBucket.file(destinationPath);
-    await file.makePublic();
-    
-    const publicUrl = `https://storage.googleapis.com/${storageBucket.name}/${destinationPath}`;
-    
-    console.log(`📹 Firebase Storage 업로드 완료: ${destinationPath}`);
-    console.log(`🔗 URL: ${publicUrl}`);
-    
-    return publicUrl;
-  } catch (error) {
-    console.error('❌ Firebase Storage 업로드 실패:', error);
-    throw error;
-  }
-}
-
-// Firebase Storage에서 비디오 다운로드
-async function downloadVideoFromFirebase(firebasePath, localFilePath) {
-  try {
-    const storageBucket = getStorageBucket();
-    const file = storageBucket.file(firebasePath);
-    
-    // 파일 존재 여부 확인
-    const [exists] = await file.exists();
-    if (!exists) {
-      throw new Error(`File not found in Firebase: ${firebasePath}`);
-    }
-    
-    // 로컬 디렉토리 생성
-    const dir = path.dirname(localFilePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    
-    // 다운로드
-    await file.download({ destination: localFilePath });
-    
-    console.log(`📹 Firebase Storage 다운로드 완료: ${firebasePath} → ${localFilePath}`);
-    
-    return localFilePath;
-  } catch (error) {
-    console.error('❌ Firebase Storage 다운로드 실패:', error);
-    throw error;
-  }
-}
-
-// Firebase Storage 비디오 목록 조회
-async function listVideosFromFirebase(prefix = 'videos/') {
-  try {
-    const storageBucket = getStorageBucket();
-    
-    const [files] = await storageBucket.getFiles({ prefix });
-    
-    const videos = [];
-    for (const file of files) {
-      if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) {
-        const [metadata] = await file.getMetadata();
-        videos.push({
-          name: file.name,
-          url: `https://storage.googleapis.com/${storageBucket.name}/${file.name}`,
-          size: parseInt(metadata.size),
-          created_at: metadata.timeCreated
-        });
-      }
-    }
-    
-    console.log(`📹 Firebase Storage 비디오 ${videos.length}개 조회`);
-    return videos;
-  } catch (error) {
-    console.error('❌ Firebase Storage 비디오 목록 조회 실패:', error);
-    return [];
-  }
-}
-
-// Firebase Storage 비디오 삭제
-async function deleteVideoFromFirebase(firebasePath) {
-  try {
-    const storageBucket = getStorageBucket();
-    await storageBucket.file(firebasePath).delete();
-    
-    console.log(`📹 Firebase Storage 비디오 삭제: ${firebasePath}`);
-  } catch (error) {
-    console.error('❌ Firebase Storage 비디오 삭제 실패:', error);
-    throw error;
-  }
-}
-
 module.exports = {
   initializeFirebase,
   getFirestore,
-  getStorageBucket,
   listenToOnlineOrders,
   updateOrderStatus,
   acceptOrder,
@@ -544,15 +349,6 @@ module.exports = {
   syncMenuCategories,
   syncMenuItems,
   uploadOrder,
-  updateRestaurantPause,
-  // Seasonal Videos
-  getSeasonalVideosFromFirebase,
-  saveSeasonalVideoToFirebase,
-  deleteSeasonalVideoFromFirebase,
-  // Firebase Storage
-  uploadVideoToFirebase,
-  downloadVideoFromFirebase,
-  listVideosFromFirebase,
-  deleteVideoFromFirebase
+  updateRestaurantPause
 };
 

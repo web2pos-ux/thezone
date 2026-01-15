@@ -159,6 +159,10 @@ module.exports = (db) => {
       if (typeof tax.name !== 'string' || typeof tax.rate !== 'number' || tax.rate < 0) {
         return res.status(400).json({ error: 'Each tax in the array must have a valid name and a non-negative rate.' });
       }
+      // 세금 비율 범위 검증 (0-100%)
+      if (tax.rate > 100) {
+        return res.status(400).json({ error: 'Tax rate cannot exceed 100%.' });
+      }
     }
 
     await dbRun('BEGIN TRANSACTION');
@@ -211,6 +215,17 @@ module.exports = (db) => {
 
     if (!name || !Array.isArray(taxes)) {
       return res.status(400).json({ error: 'Group name and a taxes array are required.' });
+    }
+    
+    // Validate each tax item
+    for (const tax of taxes) {
+      if (typeof tax.name !== 'string' || typeof tax.rate !== 'number' || tax.rate < 0) {
+        return res.status(400).json({ error: 'Each tax must have a valid name and a non-negative rate.' });
+      }
+      // 세금 비율 범위 검증 (0-100%)
+      if (tax.rate > 100) {
+        return res.status(400).json({ error: 'Tax rate cannot exceed 100%.' });
+      }
     }
     
     await dbRun('BEGIN TRANSACTION');

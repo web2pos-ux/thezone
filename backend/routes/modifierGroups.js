@@ -161,6 +161,15 @@ module.exports = (db) => {
       if (typeof modifier.price_adjustment !== 'number') {
         return res.status(400).json({ error: 'Each modifier in the array must have a valid name and price_adjustment.' });
       }
+      // 가격 조정 범위 검증 (-99999 ~ 99999)
+      if (modifier.price_adjustment < -99999 || modifier.price_adjustment > 99999) {
+        return res.status(400).json({ error: 'Price adjustment must be between -99999 and 99999.' });
+      }
+      if (modifier.price_adjustment_2 !== undefined) {
+        if (typeof modifier.price_adjustment_2 !== 'number' || modifier.price_adjustment_2 < -99999 || modifier.price_adjustment_2 > 99999) {
+          return res.status(400).json({ error: 'Price adjustment 2 must be a number between -99999 and 99999.' });
+        }
+      }
     }
 
     await dbRun('BEGIN TRANSACTION');
@@ -350,6 +359,15 @@ module.exports = (db) => {
       }
       if (typeof modifier.price_adjustment !== 'number') {
         return res.status(400).json({ error: 'Each modifier must have a valid price_adjustment.' });
+      }
+      // 가격 조정 범위 검증 (-99999 ~ 99999)
+      if (modifier.price_adjustment < -99999 || modifier.price_adjustment > 99999) {
+        return res.status(400).json({ error: 'Price adjustment must be between -99999 and 99999.' });
+      }
+      if (modifier.price_adjustment_2 !== undefined) {
+        if (typeof modifier.price_adjustment_2 !== 'number' || modifier.price_adjustment_2 < -99999 || modifier.price_adjustment_2 > 99999) {
+          return res.status(400).json({ error: 'Price adjustment 2 must be a number between -99999 and 99999.' });
+        }
       }
     }
 

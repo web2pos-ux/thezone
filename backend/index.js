@@ -432,6 +432,9 @@ const { router: onlineOrdersRoutes, startOrderListener } = require('./routes/onl
 const tableOrdersRoutes = require('./routes/table-orders')(db);
 const devicesRoutes = require('./routes/devices')(db);
 const menuSyncRoutes = require('./routes/menu-sync');
+const callServerRoutes = require('./routes/call-server');
+const reportsRoutes = require('./routes/reports');
+const reportsV2Routes = require('./routes/reports-v2');
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -464,6 +467,9 @@ app.use('/api/gift-cards', giftCardsRoutes);
 app.use('/api/online-orders', onlineOrdersRoutes);
 app.use('/api/devices', devicesRoutes);
 app.use('/api/menu-sync', menuSyncRoutes);
+app.use('/api/call-server', callServerRoutes);
+app.use('/api/reports', reportsRoutes);
+app.use('/api/reports-v2', reportsV2Routes);
 
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
@@ -520,8 +526,59 @@ const io = new Server(server, {
 io.on('connection', (socket) => {
   console.log('🔌 POS client connected:', socket.id);
   
+  // 디바이스 타입 등록 (main_pos, sub_pos, handheld)
+  socket.on('register_device', (data) => {
+    socket.deviceType = data.type || 'unknown';
+    socket.deviceName = data.name || 'Unknown Device';
+    socket.join(`device_${data.type}`);
+    console.log(`📱 Device registered: ${data.name} (${data.type}) - ${socket.id}`);
+    
+    // 다른 클라이언트들에게 새 디바이스 알림
+    socket.broadcast.emit('device_connected', {
+      id: socket.id,
+      type: data.type,
+      name: data.name
+    });
+  });
+  
+  // 테이블 상태 변경 알림 (모든 디바이스에 브로드캐스트)
+  socket.on('table_status_changed', (data) => {
+    socket.broadcast.emit('table_status_changed', data);
+    console.log(`🪑 Table status changed: ${data.table_id} → ${data.status}`);
+  });
+  
+  // 핸드헬드에서 주문 전송 시 메인 POS에 알림
+  socket.on('handheld_order_sent', (data) => {
+    io.to('device_main_pos').emit('handheld_order_received', data);
+    console.log(`📱 Handheld order sent from ${data.server_name}: Table ${data.table_id}`);
+  });
+  
+  // 메인 POS에서 핸드헬드로 테이블 업데이트 전송
+  socket.on('broadcast_table_update', (data) => {
+    io.to('device_handheld').emit('table_updated', data);
+    io.to('device_sub_pos').emit('table_updated', data);
+  });
+  
+  // 결제 시작/완료 알림 (테이블 잠금용)
+  socket.on('payment_started', (data) => {
+    socket.broadcast.emit('payment_started', data);
+    console.log(`💳 Payment started: Table ${data.table_id} by ${data.device_name}`);
+  });
+  
+  socket.on('payment_completed', (data) => {
+    socket.broadcast.emit('payment_completed', data);
+    console.log(`✅ Payment completed: Table ${data.table_id}`);
+  });
+  
   socket.on('disconnect', () => {
-    console.log('🔌 POS client disconnected:', socket.id);
+    console.log(`🔌 POS client disconnected: ${socket.deviceName || socket.id} (${socket.deviceType || 'unknown'})`);
+    
+    // 다른 클라이언트들에게 디바이스 연결 해제 알림
+    socket.broadcast.emit('device_disconnected', {
+      id: socket.id,
+      type: socket.deviceType,
+      name: socket.deviceName
+    });
   });
 });
 
