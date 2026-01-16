@@ -435,6 +435,7 @@ const menuSyncRoutes = require('./routes/menu-sync');
 const callServerRoutes = require('./routes/call-server');
 const reportsRoutes = require('./routes/reports');
 const reportsV2Routes = require('./routes/reports-v2');
+const salesDashboardRoutes = require('./routes/sales-dashboard');
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -470,6 +471,7 @@ app.use('/api/menu-sync', menuSyncRoutes);
 app.use('/api/call-server', callServerRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/reports-v2', reportsV2Routes);
+app.use('/api/sales-dashboard', salesDashboardRoutes);
 
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');

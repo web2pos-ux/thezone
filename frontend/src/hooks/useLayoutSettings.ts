@@ -13,6 +13,7 @@ export interface UseLayoutSettingsResult {
     modifierLayoutByItem?: Record<string, string[]>;
     categoryOrder?: number[];
     menuItemOrderByCategory?: Record<number, string[]>;
+    selectServerOnEntry?: boolean;
   }) => Promise<void>;
   resetLayoutSettings: () => void;
 }
@@ -83,6 +84,7 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     modifierLayoutByItem?: Record<string, string[]>;
     categoryOrder?: number[];
     menuItemOrderByCategory?: Record<number, string[]>;
+    selectServerOnEntry?: boolean;
   }) => {
     const payload = {
       ...layoutSettings,

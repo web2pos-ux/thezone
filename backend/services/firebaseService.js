@@ -58,11 +58,11 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
   
   console.log(`👂 온라인 주문 리스너 시작 - Restaurant ID: ${restaurantId}`);
 
-  // pending 상태의 주문만 실시간 감지
+  // pending 상태의 주문만 실시간 감지 (서브컬렉션 우선)
   let isInitial = true;
-  const unsubscribe = firestore
+  const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+  const unsubscribe = restaurantRef
     .collection('orders')
-    .where('restaurantId', '==', restaurantId)
     .where('status', '==', 'pending')
     .onSnapshot(
       (snapshot) => {
@@ -93,8 +93,8 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
   return unsubscribe;
 }
 
-// 주문 상태 변경
-async function updateOrderStatus(orderId, newStatus) {
+// 주문 상태 변경 (서브컬렉션 우선, 글로벌 fallback)
+async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
   const firestore = getFirestore();
   
   const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled', 'picked_up'];
@@ -102,17 +102,26 @@ async function updateOrderStatus(orderId, newStatus) {
     throw new Error(`Invalid status: ${newStatus}`);
   }
 
-  await firestore.collection('orders').doc(orderId).update({
+  const updateData = {
     status: newStatus,
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  });
+  };
+
+  // 서브컬렉션 우선 시도
+  if (restaurantId) {
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    await restaurantRef.collection('orders').doc(orderId).update(updateData);
+  } else {
+    // fallback: 글로벌 컬렉션
+    await firestore.collection('orders').doc(orderId).update(updateData);
+  }
 
   console.log(`✅ 주문 상태 변경: ${orderId} → ${newStatus}`);
   return { success: true, orderId, status: newStatus };
 }
 
 // 주문 수락 (pending → confirmed + prepTime/pickupTime 설정)
-async function acceptOrder(orderId, prepTime, pickupTime) {
+async function acceptOrder(orderId, prepTime, pickupTime, restaurantId = null) {
   const firestore = getFirestore();
   
   const updateData = {
@@ -128,7 +137,14 @@ async function acceptOrder(orderId, prepTime, pickupTime) {
     updateData.pickupTime = pickupTime;
   }
 
-  await firestore.collection('orders').doc(orderId).update(updateData);
+  // 서브컬렉션 우선 시도
+  if (restaurantId) {
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    await restaurantRef.collection('orders').doc(orderId).update(updateData);
+  } else {
+    // fallback: 글로벌 컬렉션
+    await firestore.collection('orders').doc(orderId).update(updateData);
+  }
 
   console.log(`✅ 주문 수락: ${orderId} - Prep Time: ${prepTime}분, Pickup Time: ${pickupTime}`);
   return { success: true, orderId, status: 'confirmed', prepTime, pickupTime };
@@ -143,10 +159,9 @@ async function getOnlineOrders(restaurantId, options = {}) {
   console.log(`[getOnlineOrders] restaurantId: "${restaurantId}"`);
 
   try {
-    // 쿼리 빌드 - restaurantId로만 필터링 (limit 없음)
-    let query = firestore
-      .collection('orders')
-      .where('restaurantId', '==', restaurantId);
+    // 쿼리 빌드 - 서브컬렉션 우선 사용
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    let query = restaurantRef.collection('orders');
 
     // 특정 상태만 필터링 (선택적)
     if (status) {
@@ -176,10 +191,20 @@ async function getOnlineOrders(restaurantId, options = {}) {
   }
 }
 
-// 단일 주문 조회
-async function getOrderById(orderId) {
+// 단일 주문 조회 (서브컬렉션 우선, 글로벌 fallback)
+async function getOrderById(orderId, restaurantId = null) {
   const firestore = getFirestore();
   
+  // 서브컬렉션 우선 시도
+  if (restaurantId) {
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    const doc = await restaurantRef.collection('orders').doc(orderId).get();
+    if (doc.exists) {
+      return { id: doc.id, ...doc.data() };
+    }
+  }
+  
+  // fallback: 글로벌 컬렉션
   const doc = await firestore.collection('orders').doc(orderId).get();
   
   if (!doc.exists) {
@@ -279,7 +304,9 @@ async function uploadOrder(restaurantId, orderData) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
-    const docRef = await firestore.collection('orders').add(orderDoc);
+    // 서브컬렉션에 주문 저장
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    const docRef = await restaurantRef.collection('orders').add(orderDoc);
     console.log(`✅ 주문 업로드 완료 (Firebase ID: ${docRef.id}, Order Number: ${orderDoc.orderNumber})`);
     
     return docRef.id;

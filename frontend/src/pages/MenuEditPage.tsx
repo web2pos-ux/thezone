@@ -2721,7 +2721,7 @@ Import때 참고해야하는것,
                  }, 0);
                 }}>
                   <div className="space-y-4">
-                    <div className="grid grid-cols-9 gap-4">
+                    <div className="grid grid-cols-10 gap-4">
                       <div className="col-span-4">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                           Item Name
@@ -2742,7 +2742,7 @@ Import때 참고해야하는것,
                     />
                   </div>
                   
-                      <div className="col-span-3">
+                      <div className="col-span-2">
                         <label className="block text-sm font-medium text-gray-700 mb-2">
                           Short Name
                     </label>
@@ -2763,11 +2763,25 @@ Import때 참고해야하는것,
                   
                       <div className="col-span-2">
                         <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Price
+                          Price 1
                     </label>
                     <input
                       type="number"
                           name="price"
+                      step="0.01"
+                      min="0"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="0.00"
+                    />
+                      </div>
+
+                      <div className="col-span-2">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Price 2
+                    </label>
+                    <input
+                      type="number"
+                          name="price2"
                       step="0.01"
                       min="0"
                           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -2802,7 +2816,7 @@ Import때 참고해야하는것,
                       </div>
 
                       {(category.name || '').toLowerCase() === 'open price' && (
-                        <div className="col-span-9">
+                        <div className="col-span-10">
                           <label className="inline-flex items-center space-x-2 select-none">
                             <input type="checkbox" name="is_open_price" className="h-4 w-4" />
                             <span className="text-sm text-gray-700">Open Price (allow 0 price)</span>
@@ -3537,22 +3551,51 @@ Import때 참고해야하는것,
   return (
     <div className="menu-edit-scope flex flex-col h-screen bg-gray-50" style={{ ['--layer-base' as any]: baseColor, ['--layer-darker' as any]: darkerColor }}>
 
-      <Header 
-        title={currentMenu?.name || 'Menu'}
-        leftAction={{ text: 'Back to List', onClick: handleBackToList }}
-        rightAction={{ 
-          text: isSaving ? 'Saving...' : 'Save', 
-          onClick: handleSaveAll,
-          icon: <Save size={18} />
-        }}
-        onTitleChange={handleMenuNameChange}
-        isTitleEditable={true}
-        excelAction={{
-          onExport: handleExcelExport,
-          onImport: handleExcelImport,
-          isProcessing: isExporting || isImporting
-        }}
-      />
+      {/* Top Tab Navigation */}
+      <div className="bg-white border-b px-4 py-2 flex items-center gap-6">
+        <h1 className="text-xl font-bold text-gray-900 whitespace-nowrap">Menu Manager</h1>
+        <div className="flex gap-1">
+          <button
+            className="px-4 py-2 font-medium rounded-t-lg transition-colors text-sm bg-blue-600 text-white"
+          >
+            Menu
+          </button>
+          <button
+            onClick={() => navigate('/backoffice/menu?tab=tax')}
+            className="px-4 py-2 font-medium rounded-t-lg transition-colors text-sm bg-gray-200 text-gray-700 hover:bg-gray-300"
+          >
+            Tax Settings
+          </button>
+          <button
+            onClick={() => navigate('/backoffice/menu?tab=sync')}
+            className="px-4 py-2 font-medium rounded-t-lg transition-colors text-sm bg-gray-200 text-gray-700 hover:bg-gray-300"
+          >
+            🌐 Thezoneorder Sync
+          </button>
+        </div>
+        {/* Save Button */}
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={handleExcelExport}
+            disabled={isExporting}
+            className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+          >
+            {isExporting ? '⏳' : '📥'} Excel Export
+          </button>
+          <label className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 cursor-pointer">
+            {isImporting ? '⏳' : '📤'} Excel Import
+            <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImport(e.target.files?.[0])} className="hidden" />
+          </label>
+          <button
+            onClick={handleSaveAll}
+            disabled={isSaving}
+            className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+          >
+            <Save size={16} />
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
       
       <main className="flex-1 flex overflow-hidden">
         <DndContext 

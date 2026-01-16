@@ -133,7 +133,7 @@ const BasicInfoPage: React.FC = () => {
     
     try {
       // Get layout from POS DB
-      const response = await fetch(`${API_URL}/layout-settings`, {
+      const response = await fetch(`${API_URL}/printers/layout-settings`, {
         method: 'GET',
         headers: { 'X-Role': 'ADMIN' }
       });
@@ -144,7 +144,7 @@ const BasicInfoPage: React.FC = () => {
       
       const result = await response.json();
       
-      if (!result.data) {
+      if (!result.settings) {
         throw new Error('No layout settings found in POS. Configure Order Screen first.');
       }
       
@@ -158,7 +158,7 @@ const BasicInfoPage: React.FC = () => {
         },
         body: JSON.stringify({
           restaurantId,
-          layoutSettings: result.data
+          layoutSettings: result.settings
         })
       });
       
@@ -213,13 +213,13 @@ const BasicInfoPage: React.FC = () => {
       const result = await response.json();
       
       // Save to POS DB
-      await fetch(`${API_URL}/layout-settings`, {
+      await fetch(`${API_URL}/printers/layout-settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Role': 'ADMIN'
         },
-        body: JSON.stringify(result.layoutSettings)
+        body: JSON.stringify({ settings: result.layoutSettings })
       });
       
       setSyncStatus(prev => ({

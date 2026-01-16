@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
+const salesSyncService = require('../services/salesSyncService');
 
 /**
  * Orders API Routes
@@ -21,30 +22,6 @@ module.exports = (db) => {
 	const dbGet = (sql, params=[]) => new Promise((resolve, reject) => {
 		db.get(sql, params, (err, row) => { if (err) reject(err); else resolve(row); });
 	});
-
-	const normalizeJsonArray = (value) => {
-		if (!value) return [];
-		if (Array.isArray(value)) return value;
-		if (typeof value === 'string') {
-			try {
-				const parsed = JSON.parse(value);
-				return Array.isArray(parsed) ? parsed : [];
-			} catch {
-				return [];
-			}
-		}
-		return [];
-	};
-
-	const resolveModifiersForStorage = (it) => {
-		// Frontend payloads vary: `modifiers`, `modifiers_json`, `modifiersJson`
-		if (Array.isArray(it?.modifiers)) return it.modifiers;
-		if (Array.isArray(it?.modifiers_json)) return it.modifiers_json;
-		if (Array.isArray(it?.modifiersJson)) return it.modifiersJson;
-		if (typeof it?.modifiers_json === 'string') return normalizeJsonArray(it.modifiers_json);
-		if (typeof it?.modifiersJson === 'string') return normalizeJsonArray(it.modifiersJson);
-		return [];
-	};
 
 	// one-time init: ensure tables and indexes exist (sequential)
 	(async () => {
@@ -90,17 +67,18 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN fulfillment_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN ready_time TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN pickup_minutes INTEGER`); } catch (e) { /* ignore if exists */ }
-			// Preserve origin labels (TBO, etc.)
-			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_source TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN firebase_order_id TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`CREATE INDEX IF NOT EXISTS idx_orders_firebase_order_id ON orders(firebase_order_id)`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN kitchen_note TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_rate REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_breakdown TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN discount_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN split_denominator INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN order_line_id TEXT`); } catch (e) { /* ignore if exists */ }
-			try { await dbRun(`ALTER TABLE order_items ADD COLUMN item_source TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax_rate REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			await dbRun(`CREATE TABLE IF NOT EXISTS order_adjustments (
@@ -140,6 +118,49 @@ module.exports = (db) => {
 			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
+			
+			// Firebase 실시간 매출 동기화
+			try {
+				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || 
+					require('fs').existsSync(require('path').join(__dirname, '..', '.env')) 
+						? process.env.FIREBASE_RESTAURANT_ID 
+						: null;
+				
+				if (restaurantId) {
+					// 주문 정보 조회
+					const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [orderId]);
+					// 결제 정보 조회
+					const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [orderId]);
+					// 주문 아이템 조회
+					const items = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
+					
+					if (orderData && payments.length > 0) {
+						// 총 결제 금액 계산
+						const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+						const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
+						const paymentMethod = payments[0]?.method || 'CASH';
+						
+						// Firebase 동기화 (비동기, 실패해도 결제는 성공)
+						salesSyncService.syncPaymentToFirebase(
+							{ ...orderData, items },
+							{ amount: totalPayment, tip: totalTips, method: paymentMethod },
+							restaurantId
+						).catch(err => console.warn('[SalesSync] Background sync error:', err.message));
+						
+						// 아이템별 매출 동기화
+						if (items.length > 0) {
+							salesSyncService.syncOrderItemsToFirebase(
+								{ ...orderData, items },
+								restaurantId
+							).catch(err => console.warn('[SalesSync] Item sync error:', err.message));
+						}
+					}
+				}
+			} catch (syncErr) {
+				// Firebase 동기화 실패해도 결제는 성공 처리
+				console.warn('[SalesSync] Sync skipped:', syncErr.message);
+			}
+			
 			res.json({ success: true, closedAt });
 		} catch (e) {
 			console.error('Failed to close order:', e);
@@ -170,6 +191,19 @@ router.get('/:id/guest-status', async (req, res) => {
     } catch (e) {
         console.error('Failed to fetch guest status:', e);
         res.status(500).json({ success:false, error: 'Failed to fetch guest status' });
+    }
+});
+
+// Update kitchen note for an order
+router.patch('/:id/kitchen-note', async (req, res) => {
+    try {
+        const orderId = Number(req.params.id);
+        const kitchenNote = req.body?.kitchenNote || null;
+        await dbRun(`UPDATE orders SET kitchen_note = ? WHERE id = ?`, [kitchenNote, orderId]);
+        res.json({ success: true, kitchenNote });
+    } catch (e) {
+        console.error('Failed to update kitchen note:', e);
+        res.status(500).json({ success: false, error: 'Failed to update kitchen note' });
     }
 });
 
@@ -235,7 +269,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.map(c => c.replace('order_type = ?', 'UPPER(order_type) = ?')).join(' AND ')) : '';
-			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
+			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -254,7 +288,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
@@ -292,26 +326,23 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.put('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const { items = [], adjustments = [], total = 0, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode } = req.body || {};
+			const { items = [], adjustments = [], total = 0, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
 			await dbRun('BEGIN');
 			// Replace items
 			await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
 			for (const it of (Array.isArray(items) ? items : [])) {
-				const normalizedModifiers = resolveModifiersForStorage(it);
-				const itemSource = (it && (it.item_source || it.itemSource)) ? String(it.item_source || it.itemSource) : null;
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
 					it.quantity||1,
 					Number(it.price||it.totalPrice||0),
 					Number(it.guestNumber||it.guest_number||1),
-					JSON.stringify(normalizedModifiers),
+					JSON.stringify(it.modifiers||[]),
 					it.memo ? JSON.stringify(it.memo) : null,
 					it.discount ? JSON.stringify(it.discount) : null,
 					(it.splitDenominator || it.split_denominator || null),
 					String(it.orderLineId||it.order_line_id||'')||null,
-					itemSource,
 					Number(it.tax || 0),
 					Number(it.taxRate || it.tax_rate || 0)
 				]);
@@ -359,6 +390,10 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				updateFields.push('pickup_minutes = ?');
 				updateParams.push(Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null);
 			}
+			if (Object.prototype.hasOwnProperty.call(req.body || {}, 'kitchenNote')) {
+				updateFields.push('kitchen_note = ?');
+				updateParams.push(kitchenNote || null);
+			}
 			updateParams.push(orderId);
 			await dbRun(`UPDATE orders SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
 			await dbRun('COMMIT');
@@ -373,29 +408,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode } = req.body || {};
+			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(
-				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null]
+				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null, kitchenNote || null]
 			);
 			const orderId = result.lastID;
 			for (const it of items) {
-				const normalizedModifiers = resolveModifiersForStorage(it);
-				const itemSource = (it && (it.item_source || it.itemSource)) ? String(it.item_source || it.itemSource) : null;
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
 					it.quantity||1,
 					Number(it.price||it.totalPrice||0),
 					Number(it.guestNumber||it.guest_number||1),
-					JSON.stringify(normalizedModifiers),
+					JSON.stringify(it.modifiers||[]),
 					it.memo ? JSON.stringify(it.memo) : null,
 					it.discount ? JSON.stringify(it.discount) : null,
 					(it.splitDenominator || it.split_denominator || null),
 					String(it.orderLineId||it.order_line_id||'')||null,
-					itemSource,
 					Number(it.tax || 0),
 					Number(it.taxRate || it.tax_rate || 0)
 				]);

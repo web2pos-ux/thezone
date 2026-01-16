@@ -69,9 +69,47 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [filter, setFilter] = useState<string>('pending');
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const audioUnlockedRef = useRef<boolean>(false);
+
+  // 오디오 초기화 (한 번만)
+  useEffect(() => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio('/sounds/new-order.mp3');
+      audioRef.current.preload = 'auto';
+      audioRef.current.volume = 1.0;
+    }
+  }, []);
+
+  // 브라우저 자동재생 정책 해제 (사용자 상호작용 시)
+  const unlockAudio = useCallback(() => {
+    if (audioUnlockedRef.current || !audioRef.current) return;
+    
+    // 무음으로 한 번 재생해서 브라우저 정책 해제
+    audioRef.current.volume = 0;
+    audioRef.current.play()
+      .then(() => {
+        audioRef.current!.pause();
+        audioRef.current!.currentTime = 0;
+        audioRef.current!.volume = 1.0;
+        audioUnlockedRef.current = true;
+        setAudioUnlocked(true);
+        console.log('🔓 오디오 자동재생 해제됨');
+      })
+      .catch(() => {
+        // 무시 - 사용자 상호작용 필요
+      });
+  }, []);
+
+  // 패널 열릴 때 오디오 해제 시도
+  useEffect(() => {
+    if (isOpen) {
+      unlockAudio();
+    }
+  }, [isOpen, unlockAudio]);
 
   // 알림음 재생
   const playNotificationSound = useCallback(() => {
@@ -82,9 +120,25 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
         audioRef.current = new Audio('/sounds/new-order.mp3');
       }
       audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(err => {
-        console.warn('알림음 재생 실패:', err);
-      });
+      audioRef.current.volume = 1.0;
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log('🔔 알림음 재생 성공');
+          })
+          .catch(err => {
+            console.warn('알림음 재생 실패 (자동재생 차단):', err.message);
+            // 브라우저 알림으로 대체
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('새 온라인 주문', {
+                body: '새로운 주문이 들어왔습니다!',
+                icon: '/favicon.ico'
+              });
+            }
+          });
+      }
     } catch (error) {
       console.error('오디오 초기화 실패:', error);
     }
@@ -136,14 +190,10 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
         } else if (data.type === 'new_order') {
           console.log('🆕 새 주문:', data.order);
           
-          // 알림음 재생 (최근 1분 이내 주문인 경우에만 재생)
-          const orderTime = new Date(data.order.createdAt).getTime();
-          const now = Date.now();
-          if (now - orderTime < 60000) {
-            playNotificationSound();
-          } else {
-            console.log('📦 오래된 주문 알림 생략:', data.order.orderNumber);
-          }
+          // 알림음 재생 (새 주문이 SSE로 들어오면 항상 재생)
+          // createdAt 시간과 관계없이 SSE new_order 이벤트 = 새 주문이므로 알림음 재생
+          playNotificationSound();
+          console.log('🔔 새 주문 알림음 재생:', data.order.orderNumber);
           
           // 주문 목록에 추가
           setOrders(prev => {
@@ -271,8 +321,28 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
     return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Safari/모든 브라우저 호환: 패널 클릭 시 오디오 해제
+  const handlePanelClick = () => {
+    if (!audioUnlockedRef.current && audioRef.current) {
+      audioRef.current.volume = 0;
+      audioRef.current.play()
+        .then(() => {
+          audioRef.current!.pause();
+          audioRef.current!.currentTime = 0;
+          audioRef.current!.volume = 1.0;
+          audioUnlockedRef.current = true;
+          setAudioUnlocked(true);
+          console.log('🔓 Safari: 오디오 자동재생 해제됨 (클릭)');
+        })
+        .catch(() => {});
+    }
+  };
+
   return (
-    <div className="fixed right-0 top-0 h-full w-96 bg-white shadow-2xl z-50 flex flex-col">
+    <div 
+      className="fixed right-0 top-0 h-full w-96 bg-white shadow-2xl z-50 flex flex-col"
+      onClick={handlePanelClick}
+    >
       {/* 헤더 */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -280,6 +350,14 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
           <h2 className="text-lg font-bold">온라인 주문</h2>
           {connected && (
             <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="연결됨" />
+          )}
+          {soundEnabled && (
+            <span 
+              className={`text-sm ${audioUnlocked ? 'text-green-300' : 'text-yellow-300 animate-pulse cursor-pointer'}`}
+              title={audioUnlocked ? '알림음 활성화됨' : '클릭하여 알림음 활성화'}
+            >
+              {audioUnlocked ? '🔔' : '🔕'}
+            </span>
           )}
         </div>
         <button 

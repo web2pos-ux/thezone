@@ -21,6 +21,10 @@ import OnlineOrderPage from './pages/OnlineOrderPage';
 import QrOrderPage from './pages/QrOrderPage';
 import TableOrderPage from './pages/TableOrderPage';
 import TableOrderSetupPage from './pages/TableOrderSetupPage';
+import HandheldSetupPage from './pages/HandheldSetupPage';
+import HandheldPage from './pages/HandheldPage';
+import SubPosSetupPage from './pages/SubPosSetupPage';
+import SubPosPage from './pages/SubPosPage';
 import KioskOrderPage from './pages/KioskOrderPage';
 import TableReservationSettingsPage from './pages/TableReservationSettingsPage';
 import EmployeeManagerPage from './pages/EmployeeManagerPage';
@@ -43,7 +47,7 @@ import DebugPaymentPage from './pages/DebugPaymentPage';
 import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
-import PosRealtimeNotifications from './components/PosRealtimeNotifications';
+import ReportsDashboardPage from './pages/ReportsDashboardPage';
 
 // 🚀 OrderPage를 Lazy Loading으로 변경 (8,693줄 → 즉시 로딩 방지)
 const OrderPage = lazy(() => import('./pages/OrderPage'));
@@ -58,7 +62,6 @@ function App() {
   return (
     <MenuCacheProvider>
       <BrowserRouter>
-        <PosRealtimeNotifications />
         <Routes>
           {/* 메인 페이지들 */}
           <Route path="/" element={<IntroPage />} />
@@ -67,6 +70,14 @@ function App() {
           <Route path="/table-order-setup" element={<TableOrderSetupPage />} />
           <Route path="/table-order/:storeId/:tableId" element={<TableOrderPage />} />
           <Route path="/to/:storeId/:tableId" element={<TableOrderPage />} />
+          
+          {/* 핸드헬드 POS (서버용 주문기) */}
+          <Route path="/handheld-setup" element={<HandheldSetupPage />} />
+          <Route path="/handheld" element={<HandheldPage />} />
+          
+          {/* 서브 POS (보조 결제 스테이션) */}
+          <Route path="/sub-pos-setup" element={<SubPosSetupPage />} />
+          <Route path="/sub-pos" element={<SubPosPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/order" element={
             <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
@@ -116,6 +127,7 @@ function App() {
             <Route path="qr-code" element={<QrCodePage />} />
             <Route path="kds" element={<KdsPage />} />
             <Route path="reports" element={<ReportManagerPage />} />
+            <Route path="reports-dashboard" element={<ReportsDashboardPage />} />
             <Route path="gift-card-report" element={<GiftCardReportPage />} />
             <Route path="togo-settings" element={<BackofficeTogoSettingsPage />} />
             <Route path="sales-summary" element={<BackofficeSalesSummaryPage />} />

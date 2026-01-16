@@ -122,13 +122,15 @@ interface KitchenElementStyle extends ElementStyle {
   textAlign?: 'left' | 'center' | 'right';  // 텍스트 정렬 (Date/Time 등에 사용)
   showInHeader?: boolean;  // Header에 표시 (PAID, DateTime, Server 용)
   showInFooter?: boolean;  // Footer에 표시 (PAID, DateTime, Server 용)
+  lineHeight?: number;  // 줄간격 px 단위 (12 ~ 60px)
 }
 
 // 병합된 요소 (두 요소를 한 줄에 표시)
 interface MergedElementItem {
   key: string;                   // 요소 키 (예: 'orderType')
   fontSize: number;              // 개별 폰트 사이즈
-  lineSpacing: number;           // 개별 줄간격
+  lineSpacing: number;           // 개별 Top 마진
+  lineHeight?: number;           // 개별 줄간격 (px)
   fontWeight: 'regular' | 'bold' | 'extrabold';  // 개별 폰트 굵기
   isItalic: boolean;             // 개별 이탤릭
   inverse: boolean;              // 개별 INVERSE
@@ -153,6 +155,7 @@ interface KitchenPrinterLayout {
   paperWidth: number;
   topMargin: number;
   leftMargin: number;
+  fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
   orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
@@ -169,6 +172,8 @@ interface KitchenPrinterLayout {
   items: KitchenElementStyle;
   modifiers: KitchenElementStyle & { prefix: string };
   itemNote: KitchenElementStyle & { prefix: string };
+  // Kitchen Note (Body 하단 고정)
+  kitchenNote: KitchenElementStyle;    // 주방용 메모 출력
   // Status
   paidStatus: KitchenElementStyle;     // PAID / UNPAID
   // Footer
@@ -193,8 +198,15 @@ interface DineInKitchenSettings {
 }
 
 // External Kitchen 설정 (Kitchen + Waitress)
-// Uber Eats, DoorDash, SkiptheDishes, 자체온라인오더링, Togo
+// ThezoneOrder (온라인), Togo Order (배달 없는 경우)
 interface ExternalKitchenSettings {
+  kitchenPrinter: ExternalKitchenPrinterLayout;   // 주방 프린터
+  waitressPrinter: ExternalKitchenPrinterLayout;  // 서버용 확인 티켓
+}
+
+// Delivery Kitchen 설정 (Kitchen + Waitress)
+// Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo 배달 주문
+interface DeliveryKitchenSettings {
   kitchenPrinter: ExternalKitchenPrinterLayout;   // 주방 프린터
   waitressPrinter: ExternalKitchenPrinterLayout;  // 서버용 확인 티켓
 }
@@ -205,6 +217,7 @@ interface KitchenLayoutSettings {
   paperWidth: number;
   topMargin: number;
   leftMargin: number;
+  fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
   orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
@@ -231,6 +244,8 @@ interface KitchenLayoutSettings {
   paidStatus: KitchenElementStyle;     // PAID / UNPAID
   // Footer
   specialInstructions: KitchenElementStyle & { text: string };
+  // Kitchen Note (Body 하단 고정)
+  kitchenNote?: KitchenElementStyle;
   // 병합된 요소들
   mergedElements?: MergedElement[];
 }
@@ -279,8 +294,12 @@ interface PrintLayoutSettings {
   dineInKitchen: DineInKitchenSettings;
   
   // External Kitchen (Kitchen + Waitress)
-  // Uber Eats, DoorDash, SkiptheDishes, 자체온라인오더링, Togo
+  // ThezoneOrder (온라인), Togo Order (배달 없는 경우)
   externalKitchen: ExternalKitchenSettings;
+  
+  // Delivery Kitchen (Kitchen + Waitress)
+  // Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo 배달 주문
+  deliveryKitchen: DeliveryKitchenSettings;
   
   bill: StyleSettings & {
     showStoreName: boolean;
@@ -365,7 +384,7 @@ interface PrintLayoutSettings {
 const createDefaultElementStyle = (fontSize: number = 12, visible: boolean = true): ElementStyle => ({
   fontFamily: 'Arial',
   fontSize,
-  lineSpacing: 1.2,
+  lineSpacing: 0,  // Top spacing in px (margin-top)
   fontWeight: 'regular',
   visible,
   separatorStyle: 'none',
@@ -467,7 +486,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     guestNumber: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 5, inverse: true },
     // Separators
     separator1: { visible: true, style: 'solid' },
-    splitSeparator: { visible: true, style: 'dashed' },
+    splitSeparator: { visible: false, style: 'dashed' },
     separator2: { visible: true, style: 'solid' },
     // Body
     serverName: { ...createDefaultElementStyle(12), order: 5, inverse: false },
@@ -498,21 +517,23 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       paperWidth: 80,
       topMargin: 10,
       leftMargin: 0,
+      fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true },
       tableNumber: { ...createDefaultElementStyle(24), fontWeight: 'bold', order: 2, inverse: false },
       posOrderNumber: { ...createDefaultElementStyle(14), order: 3, inverse: false },
       externalOrderNumber: { ...createDefaultElementStyle(12), order: 4, inverse: false },
       guestNumber: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 5, inverse: true },
       separator1: { visible: true, style: 'solid' },
-      splitSeparator: { visible: true, style: 'dashed' },
+      splitSeparator: { visible: false, style: 'dashed' },
       separator2: { visible: true, style: 'solid' },
       serverName: { ...createDefaultElementStyle(12), order: 6, inverse: false, showInHeader: true, showInFooter: true },
       dateTime: { ...createDefaultElementStyle(12), order: 7, inverse: false, showInHeader: true, showInFooter: true },
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 9, inverse: false },
       itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 10, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 11, inverse: true, showInHeader: true, showInFooter: false },
-      specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 12, inverse: false, text: '' },
+      specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
       mergedElements: [],
     },
     waitressPrinter: {
@@ -522,26 +543,31 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       paperWidth: 80,
       topMargin: 5,
       leftMargin: 0,
+      fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false },
       tableNumber: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 2, inverse: false },
       posOrderNumber: { ...createDefaultElementStyle(12), order: 3, inverse: false },
       externalOrderNumber: { ...createDefaultElementStyle(10), order: 4, inverse: false },
       guestNumber: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 5, inverse: false },
       separator1: { visible: true, style: 'dashed' },
-      splitSeparator: { visible: true, style: 'dashed' },
+      splitSeparator: { visible: false, style: 'dashed' },
       separator2: { visible: true, style: 'dashed' },
       serverName: { ...createDefaultElementStyle(11), order: 6, inverse: false, showInHeader: true, showInFooter: true },
       dateTime: { ...createDefaultElementStyle(11), order: 7, inverse: false, showInHeader: true, showInFooter: true },
       items: { ...createDefaultElementStyle(12), order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 9, inverse: false },
       itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 10, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 11, inverse: false, showInHeader: true, showInFooter: false },
-      specialInstructions: { ...createDefaultElementStyle(10), order: 12, inverse: false, text: '' },
+      specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
       mergedElements: [],
     },
   },
   
-  // External Kitchen Settings (Uber Eats, DoorDash, SkiptheDishes, Online Order, Togo)
+  // External Kitchen Settings - Ticket for Take-out
+  // ThezoneOrder (온라인), Togo Order (배달 없는 경우)
+  // ⚠️ paidStatus 기본값: UNPAID
+  // Firebase에서 온라인 결제가 완료된 경우에만 PAID로 표시
   externalKitchen: {
     kitchenPrinter: {
       enabled: true,
@@ -550,6 +576,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       paperWidth: 80,
       topMargin: 10,
       leftMargin: 0,
+      fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true, showInHeader: true, showInFooter: false },
       tableNumber: { ...createDefaultElementStyle(24), fontWeight: 'bold', order: 2, inverse: false, showInHeader: false, showInFooter: false },
       posOrderNumber: { ...createDefaultElementStyle(14), order: 3, inverse: false, showInHeader: true, showInFooter: false },
@@ -563,13 +590,14 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       dateTime: { ...createDefaultElementStyle(12), order: 11, inverse: false, showInHeader: true, showInFooter: false },
       guestNumber: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 12, inverse: true },
       separator1: { visible: true, style: 'solid' },
-      splitSeparator: { visible: true, style: 'dashed' },
+      splitSeparator: { visible: false, style: 'dashed' },
       separator2: { visible: true, style: 'solid' },
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
-      specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, text: '' },
+      specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
       mergedElements: [],
     },
     waitressPrinter: {
@@ -579,6 +607,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       paperWidth: 80,
       topMargin: 5,
       leftMargin: 0,
+      fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false, showInHeader: true, showInFooter: false },
       tableNumber: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 2, inverse: false, showInHeader: false, showInFooter: false },
       posOrderNumber: { ...createDefaultElementStyle(12), order: 3, inverse: false, showInHeader: true, showInFooter: false },
@@ -592,13 +621,83 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       dateTime: { ...createDefaultElementStyle(11), order: 11, inverse: false, showInHeader: true, showInFooter: false },
       guestNumber: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 12, inverse: false },
       separator1: { visible: true, style: 'dashed' },
-      splitSeparator: { visible: true, style: 'dashed' },
+      splitSeparator: { visible: false, style: 'dashed' },
       separator2: { visible: true, style: 'dashed' },
       items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
-      specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, text: '' },
+      specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
+      mergedElements: [],
+    },
+  },
+  
+  // Delivery Kitchen Settings - Ticket for Delivery
+  // Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo 배달
+  // ⚠️ 3rd Party 배달앱: 대부분 이미 결제됨 (PAID)
+  // ThezoneOrder/Togo 배달: 기본 UNPAID, Firebase 온라인결제 시에만 PAID
+  deliveryKitchen: {
+    kitchenPrinter: {
+      enabled: true,
+      printerName: '',
+      printMode: 'graphic',
+      paperWidth: 80,
+      topMargin: 10,
+      leftMargin: 0,
+      fontScale: 1.0,
+      orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true, showInHeader: true, showInFooter: false },
+      tableNumber: { ...createDefaultElementStyle(24), fontWeight: 'bold', order: 2, inverse: false, showInHeader: false, showInFooter: false },
+      posOrderNumber: { ...createDefaultElementStyle(14), order: 3, inverse: false, showInHeader: true, showInFooter: false },
+      externalOrderNumber: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 4, inverse: true, showInHeader: true, showInFooter: false },
+      deliveryChannel: { ...createDefaultElementStyle(18), fontWeight: 'bold', order: 5, inverse: true, showInHeader: true, showInFooter: false },
+      pickupTime: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 6, inverse: true, showInHeader: true, showInFooter: false },
+      customerName: { ...createDefaultElementStyle(12), order: 7, inverse: false, showInHeader: true, showInFooter: false },
+      customerPhone: { ...createDefaultElementStyle(12), order: 8, inverse: false, showInHeader: true, showInFooter: false },
+      deliveryAddress: { ...createDefaultElementStyle(11), order: 9, inverse: false, showInHeader: true, showInFooter: false },
+      serverName: { ...createDefaultElementStyle(12), order: 10, inverse: false, showInHeader: true, showInFooter: false },
+      dateTime: { ...createDefaultElementStyle(12), order: 11, inverse: false, showInHeader: true, showInFooter: false },
+      guestNumber: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 12, inverse: true },
+      separator1: { visible: true, style: 'solid' },
+      splitSeparator: { visible: false, style: 'dashed' },
+      separator2: { visible: true, style: 'solid' },
+      items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
+      modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
+      itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
+      paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
+      specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
+      mergedElements: [],
+    },
+    waitressPrinter: {
+      enabled: false,
+      printerName: '',
+      printMode: 'graphic',
+      paperWidth: 80,
+      topMargin: 5,
+      leftMargin: 0,
+      fontScale: 1.0,
+      orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false, showInHeader: true, showInFooter: false },
+      tableNumber: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 2, inverse: false, showInHeader: false, showInFooter: false },
+      posOrderNumber: { ...createDefaultElementStyle(12), order: 3, inverse: false, showInHeader: true, showInFooter: false },
+      externalOrderNumber: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 4, inverse: false, showInHeader: true, showInFooter: false },
+      deliveryChannel: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 5, inverse: false, showInHeader: true, showInFooter: false },
+      pickupTime: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 6, inverse: false, showInHeader: true, showInFooter: false },
+      customerName: { ...createDefaultElementStyle(11), order: 7, inverse: false, showInHeader: true, showInFooter: false },
+      customerPhone: { ...createDefaultElementStyle(11), order: 8, inverse: false, showInHeader: true, showInFooter: false },
+      deliveryAddress: { ...createDefaultElementStyle(10), order: 9, inverse: false, showInHeader: true, showInFooter: false },
+      serverName: { ...createDefaultElementStyle(11), order: 10, inverse: false, showInHeader: true, showInFooter: false },
+      dateTime: { ...createDefaultElementStyle(11), order: 11, inverse: false, showInHeader: true, showInFooter: false },
+      guestNumber: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 12, inverse: false },
+      separator1: { visible: true, style: 'dashed' },
+      splitSeparator: { visible: false, style: 'dashed' },
+      separator2: { visible: true, style: 'dashed' },
+      items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
+      modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
+      itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
+      paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
+      specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
       mergedElements: [],
     },
   },
@@ -757,7 +856,7 @@ const kitchenElementLabels: Record<string, string> = {
 
 
 const PrinterPage = () => {
-  const [activeTab, setActiveTab] = useState<'printers' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen'>('printers');
+  const [activeTab, setActiveTab] = useState<'printers' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen' | 'deliveryKitchen'>('printers');
   
   // Kitchen 프린터 타입 (Kitchen vs Waitress)
   const [kitchenPrinterType, setKitchenPrinterType] = useState<'kitchen' | 'waitress'>('kitchen');
@@ -805,6 +904,11 @@ const PrinterPage = () => {
       return kitchenPrinterType === 'kitchen'
         ? layoutSettings.externalKitchen.kitchenPrinter
         : layoutSettings.externalKitchen.waitressPrinter;
+    } else if (activeTab === 'deliveryKitchen') {
+      if (!layoutSettings.deliveryKitchen) return layoutSettings.externalKitchen?.kitchenPrinter || layoutSettings.kitchenLayout;
+      return kitchenPrinterType === 'kitchen'
+        ? layoutSettings.deliveryKitchen.kitchenPrinter
+        : layoutSettings.deliveryKitchen.waitressPrinter;
     }
     return layoutSettings.kitchenLayout;
   };
@@ -828,6 +932,16 @@ const PrinterPage = () => {
         ...layoutSettings,
         externalKitchen: {
           ...layoutSettings.externalKitchen,
+          [printerKey]: { ...current, ...updates }
+        }
+      });
+    } else if (activeTab === 'deliveryKitchen') {
+      const printerKey = kitchenPrinterType === 'kitchen' ? 'kitchenPrinter' : 'waitressPrinter';
+      const current = layoutSettings.deliveryKitchen[printerKey];
+      updateLayoutSettings({
+        ...layoutSettings,
+        deliveryKitchen: {
+          ...layoutSettings.deliveryKitchen,
           [printerKey]: { ...current, ...updates }
         }
       });
@@ -1080,54 +1194,139 @@ const PrinterPage = () => {
       const response = await fetch(`${API_URL}/printers/layout-settings`);
       if (response.ok) {
         const data = await response.json();
-        if (data.settings) {
+        // 백엔드 printers.js의 /layout-settings는 { success: true, settings: ... } 형태로 반환
+        const savedSettings = data.settings;
+        if (savedSettings) {
           // 깊은 병합 - billLayout과 kitchen 등 중첩 객체도 병합
           const merged = {
             ...defaultLayoutSettings,
-            ...data.settings,
+            ...savedSettings,
             billLayout: {
               ...defaultLayoutSettings.billLayout,
-              ...(data.settings.billLayout || {}),
+              ...(savedSettings.billLayout || {}),
             },
             receiptLayout: {
               ...defaultLayoutSettings.receiptLayout,
-              ...(data.settings.receiptLayout || {}),
+              ...(savedSettings.receiptLayout || {}),
             },
             kitchenLayout: {
               ...defaultLayoutSettings.kitchenLayout,
-              ...(data.settings.kitchenLayout || {}),
+              ...(savedSettings.kitchenLayout || {}),
             },
             dineInKitchen: {
               kitchenPrinter: {
                 ...defaultLayoutSettings.dineInKitchen.kitchenPrinter,
-                ...(data.settings.dineInKitchen?.kitchenPrinter || {}),
+                ...(savedSettings.dineInKitchen?.kitchenPrinter || {}),
+                // 개별 요소 깊은 병합 (paidStatus, specialInstructions, dateTime 등)
+                paidStatus: {
+                  ...defaultLayoutSettings.dineInKitchen.kitchenPrinter.paidStatus,
+                  ...(savedSettings.dineInKitchen?.kitchenPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.dineInKitchen.kitchenPrinter.specialInstructions,
+                  ...(savedSettings.dineInKitchen?.kitchenPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.dineInKitchen.kitchenPrinter.dateTime,
+                  ...(savedSettings.dineInKitchen?.kitchenPrinter?.dateTime || {}),
+                },
               },
               waitressPrinter: {
                 ...defaultLayoutSettings.dineInKitchen.waitressPrinter,
-                ...(data.settings.dineInKitchen?.waitressPrinter || {}),
+                ...(savedSettings.dineInKitchen?.waitressPrinter || {}),
+                paidStatus: {
+                  ...defaultLayoutSettings.dineInKitchen.waitressPrinter.paidStatus,
+                  ...(savedSettings.dineInKitchen?.waitressPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.dineInKitchen.waitressPrinter.specialInstructions,
+                  ...(savedSettings.dineInKitchen?.waitressPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.dineInKitchen.waitressPrinter.dateTime,
+                  ...(savedSettings.dineInKitchen?.waitressPrinter?.dateTime || {}),
+                },
               },
             },
             externalKitchen: {
               kitchenPrinter: {
                 ...defaultLayoutSettings.externalKitchen.kitchenPrinter,
-                ...(data.settings.externalKitchen?.kitchenPrinter || {}),
+                ...(savedSettings.externalKitchen?.kitchenPrinter || {}),
+                paidStatus: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.paidStatus,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.specialInstructions,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.dateTime,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.dateTime || {}),
+                },
               },
               waitressPrinter: {
                 ...defaultLayoutSettings.externalKitchen.waitressPrinter,
-                ...(data.settings.externalKitchen?.waitressPrinter || {}),
+                ...(savedSettings.externalKitchen?.waitressPrinter || {}),
+                paidStatus: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.paidStatus,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.specialInstructions,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.dateTime,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.dateTime || {}),
+                },
+              },
+            },
+            deliveryKitchen: {
+              kitchenPrinter: {
+                ...defaultLayoutSettings.deliveryKitchen.kitchenPrinter,
+                ...(savedSettings.deliveryKitchen?.kitchenPrinter || {}),
+                paidStatus: {
+                  ...defaultLayoutSettings.deliveryKitchen.kitchenPrinter.paidStatus,
+                  ...(savedSettings.deliveryKitchen?.kitchenPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.deliveryKitchen.kitchenPrinter.specialInstructions,
+                  ...(savedSettings.deliveryKitchen?.kitchenPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.deliveryKitchen.kitchenPrinter.dateTime,
+                  ...(savedSettings.deliveryKitchen?.kitchenPrinter?.dateTime || {}),
+                },
+              },
+              waitressPrinter: {
+                ...defaultLayoutSettings.deliveryKitchen.waitressPrinter,
+                ...(savedSettings.deliveryKitchen?.waitressPrinter || {}),
+                paidStatus: {
+                  ...defaultLayoutSettings.deliveryKitchen.waitressPrinter.paidStatus,
+                  ...(savedSettings.deliveryKitchen?.waitressPrinter?.paidStatus || {}),
+                },
+                specialInstructions: {
+                  ...defaultLayoutSettings.deliveryKitchen.waitressPrinter.specialInstructions,
+                  ...(savedSettings.deliveryKitchen?.waitressPrinter?.specialInstructions || {}),
+                },
+                dateTime: {
+                  ...defaultLayoutSettings.deliveryKitchen.waitressPrinter.dateTime,
+                  ...(savedSettings.deliveryKitchen?.waitressPrinter?.dateTime || {}),
+                },
               },
             },
             bill: {
               ...defaultLayoutSettings.bill,
-              ...(data.settings.bill || {}),
+              ...(savedSettings.bill || {}),
             },
             receipt: {
               ...defaultLayoutSettings.receipt,
-              ...(data.settings.receipt || {}),
+              ...(savedSettings.receipt || {}),
             },
             kitchen: {
               ...defaultLayoutSettings.kitchen,
-              ...(data.settings.kitchen || {}),
+              ...(savedSettings.kitchen || {}),
             },
           };
           // Courier New는 더 이상 지원하지 않음 - Arial로 강제 변경
@@ -1146,19 +1345,58 @@ const PrinterPage = () => {
             if (printer.deliveryAddress?.order > 10) printer.deliveryAddress.order = 9;
             if (printer.serverName?.order > 10) printer.serverName.order = 10;
             if (printer.dateTime?.order > 15) printer.dateTime.order = 11;
-            // paidStatus는 Header에 위치 (order 12)
-            if (printer.paidStatus?.order > 15) printer.paidStatus.order = 12;
+            // paidStatus는 Header에 위치 (order 12~13) - 필수 속성 보장
+            if (!printer.paidStatus) {
+              printer.paidStatus = { fontFamily: 'Arial', fontSize: 16, lineSpacing: 0, fontWeight: 'bold', separatorStyle: 'none', order: 13, inverse: true, visible: true, showInHeader: true, showInFooter: false };
+            } else {
+              if (typeof printer.paidStatus.order !== 'number') printer.paidStatus.order = 13;
+              if (printer.paidStatus.showInHeader === undefined) printer.paidStatus.showInHeader = true;
+              if (printer.paidStatus.visible === undefined) printer.paidStatus.visible = true;
+              if (printer.paidStatus.fontSize === undefined) printer.paidStatus.fontSize = 16;
+              if (printer.paidStatus.fontWeight === undefined) printer.paidStatus.fontWeight = 'bold';
+              if (printer.paidStatus.lineSpacing === undefined) printer.paidStatus.lineSpacing = 0;
+            }
             if (printer.guestNumber?.order < 12) printer.guestNumber.order = 13;
             // Body 요소들
             if (printer.items?.order < 100) printer.items.order = 100;
             if (printer.modifiers?.order < 100) printer.modifiers.order = 101;
             if (printer.itemNote?.order < 100) printer.itemNote.order = 102;
-            // Footer 요소들
-            if (printer.specialInstructions?.order < 200) printer.specialInstructions.order = 200;
+            // Footer 요소들 - specialInstructions 필수 속성 보장
+            if (!printer.specialInstructions) {
+              printer.specialInstructions = { fontFamily: 'Arial', fontSize: 12, lineSpacing: 0, fontWeight: 'bold', order: 200, visible: true, inverse: false, text: '' };
+            } else {
+              if (typeof printer.specialInstructions.order !== 'number' || printer.specialInstructions.order < 200) printer.specialInstructions.order = 200;
+              if (printer.specialInstructions.visible === undefined) printer.specialInstructions.visible = true;
+              if (printer.specialInstructions.fontSize === undefined) printer.specialInstructions.fontSize = 12;
+              if (printer.specialInstructions.lineSpacing === undefined) printer.specialInstructions.lineSpacing = 0;
+            }
+            // dateTime 필수 속성 보장
+            if (!printer.dateTime) {
+              printer.dateTime = { fontFamily: 'Arial', fontSize: 12, lineSpacing: 0, fontWeight: 'normal', order: 7, visible: true, inverse: false, showInHeader: true, showInFooter: true };
+            } else {
+              if (typeof printer.dateTime.order !== 'number') printer.dateTime.order = 7;
+              if (printer.dateTime.visible === undefined) printer.dateTime.visible = true;
+              if (printer.dateTime.fontSize === undefined) printer.dateTime.fontSize = 12;
+              if (printer.dateTime.showInHeader === undefined) printer.dateTime.showInHeader = true;
+              if (printer.dateTime.showInFooter === undefined) printer.dateTime.showInFooter = true;
+            }
           };
+          // dineInKitchen paidStatus 마이그레이션
+          console.log('[Migration] Before migration - dineIn kitchenPrinter paidStatus:', JSON.stringify(merged.dineInKitchen?.kitchenPrinter?.paidStatus));
+          console.log('[Migration] Before migration - dineIn kitchenPrinter specialInstructions:', JSON.stringify(merged.dineInKitchen?.kitchenPrinter?.specialInstructions));
+          if (merged.dineInKitchen) {
+            migrateExternalKitchenOrder(merged.dineInKitchen.kitchenPrinter);
+            migrateExternalKitchenOrder(merged.dineInKitchen.waitressPrinter);
+          }
+          console.log('[Migration] After migration - dineIn kitchenPrinter paidStatus:', JSON.stringify(merged.dineInKitchen?.kitchenPrinter?.paidStatus));
+          console.log('[Migration] After migration - dineIn kitchenPrinter specialInstructions:', JSON.stringify(merged.dineInKitchen?.kitchenPrinter?.specialInstructions));
           if (merged.externalKitchen) {
             migrateExternalKitchenOrder(merged.externalKitchen.kitchenPrinter);
             migrateExternalKitchenOrder(merged.externalKitchen.waitressPrinter);
+          }
+          if (merged.deliveryKitchen) {
+            migrateExternalKitchenOrder(merged.deliveryKitchen.kitchenPrinter);
+            migrateExternalKitchenOrder(merged.deliveryKitchen.waitressPrinter);
           }
           
           setLayoutSettings(merged);
@@ -1408,10 +1646,10 @@ const PrinterPage = () => {
           <input type="number" value={element.fontSize} onChange={(e) => onChange({ fontSize: parseInt(e.target.value) || 12 })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} disabled={!element.visible} />
         </div>
         
-        {/* Line Spacing */}
+        {/* Top Spacing (margin-top in px) */}
         <div className="flex items-center gap-1">
-          <span className="text-sm text-gray-400">Line</span>
-          <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 1.2 })} className="w-12 p-1 border rounded text-sm text-center" step={0.1} min={0.8} max={2.5} disabled={!element.visible} />
+          <span className="text-sm text-gray-400">Top</span>
+          <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} disabled={!element.visible} />
         </div>
         
         {/* R/B/B+/I Style */}
@@ -1823,10 +2061,16 @@ const PrinterPage = () => {
             <input type="number" value={element.fontSize} onChange={(e) => onChange({ fontSize: parseInt(e.target.value) || 12 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} disabled={!isVisible} draggable="false" />
           </div>
           
-          {/* Line Spacing */}
+          {/* Top Spacing (margin-top in px) */}
+          <div className="flex items-center gap-1 pointer-events-auto">
+            <span className="text-sm text-gray-400">Top</span>
+            <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 0 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} disabled={!isVisible} draggable="false" />
+          </div>
+          
+          {/* Line Height (px) */}
           <div className="flex items-center gap-1 pointer-events-auto">
             <span className="text-sm text-gray-400">Line</span>
-            <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 1.2 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={0.1} min={0.8} max={2.5} disabled={!isVisible} draggable="false" />
+            <input type="number" value={element.lineHeight || element.fontSize} onChange={(e) => onChange({ lineHeight: parseInt(e.target.value) || element.fontSize })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} disabled={!isVisible} draggable="false" />
           </div>
           
           {/* R/B/B+/I Style */}
@@ -1877,11 +2121,15 @@ const PrinterPage = () => {
     ];
 
     const updateLeftElement = (updates: Partial<MergedElementItem>) => {
+      const scrollY = window.scrollY;
       onUpdate({ leftElement: { ...merged.leftElement, ...updates } });
+      requestAnimationFrame(() => window.scrollTo(0, scrollY));
     };
 
     const updateRightElement = (updates: Partial<MergedElementItem>) => {
+      const scrollY = window.scrollY;
       onUpdate({ rightElement: { ...merged.rightElement, ...updates } });
+      requestAnimationFrame(() => window.scrollTo(0, scrollY));
     };
 
     // 좌우 스왑 함수
@@ -1960,14 +2208,14 @@ const PrinterPage = () => {
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs text-gray-500">Gap:</span>
           <input 
-            type="range" 
+            type="number" 
             min={0} 
             max={100} 
             value={merged.gap || 16} 
-            onChange={(e) => onUpdate({ gap: parseInt(e.target.value) })}
-            className="w-24 h-2"
+            onChange={(e) => onUpdate({ gap: parseInt(e.target.value) || 0 })}
+            className="w-14 p-1 border rounded text-sm text-center"
           />
-          <span className="text-xs text-gray-600 w-12">{merged.gap || 16}px</span>
+          <span className="text-xs text-gray-400">px</span>
         </div>
         
         {/* Left Element Settings */}
@@ -1988,8 +2236,12 @@ const PrinterPage = () => {
                 <input type="number" value={merged.leftElement.fontSize} onChange={(e) => updateLeftElement({ fontSize: parseInt(e.target.value) || 12 })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} />
               </div>
               <div className="flex items-center gap-1">
+                <span className="text-sm text-gray-400">Top</span>
+                <input type="number" value={merged.leftElement.lineSpacing} onChange={(e) => updateLeftElement({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} />
+              </div>
+              <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Line</span>
-                <input type="number" value={merged.leftElement.lineSpacing} onChange={(e) => updateLeftElement({ lineSpacing: parseFloat(e.target.value) || 1.2 })} className="w-12 p-1 border rounded text-sm text-center" step={0.1} min={0.8} max={2.5} />
+                <input type="number" value={merged.leftElement.lineHeight || merged.leftElement.fontSize} onChange={(e) => updateLeftElement({ lineHeight: parseInt(e.target.value) || merged.leftElement.fontSize })} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} />
               </div>
               <div className="flex gap-0.5">
                 <button onClick={() => updateLeftElement({ fontWeight: 'regular' })} className={`px-1.5 py-1 text-xs rounded ${merged.leftElement.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Regular">R</button>
@@ -2017,8 +2269,12 @@ const PrinterPage = () => {
                 <input type="number" value={merged.rightElement.fontSize} onChange={(e) => updateRightElement({ fontSize: parseInt(e.target.value) || 12 })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} />
               </div>
               <div className="flex items-center gap-1">
+                <span className="text-sm text-gray-400">Top</span>
+                <input type="number" value={merged.rightElement.lineSpacing} onChange={(e) => updateRightElement({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} />
+              </div>
+              <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Line</span>
-                <input type="number" value={merged.rightElement.lineSpacing} onChange={(e) => updateRightElement({ lineSpacing: parseFloat(e.target.value) || 1.2 })} className="w-12 p-1 border rounded text-sm text-center" step={0.1} min={0.8} max={2.5} />
+                <input type="number" value={merged.rightElement.lineHeight || merged.rightElement.fontSize} onChange={(e) => updateRightElement({ lineHeight: parseInt(e.target.value) || merged.rightElement.fontSize })} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} />
               </div>
               <div className="flex gap-0.5">
                 <button onClick={() => updateRightElement({ fontWeight: 'regular' })} className={`px-1.5 py-1 text-xs rounded ${merged.rightElement.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Regular">R</button>
@@ -2475,7 +2731,7 @@ const PrinterPage = () => {
         default: return 'border-solid';
       }
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px', marginLeft: '-8px', marginRight: '-8px' } : {};
+    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     return (
       <div 
         className="bg-white border-2 border-dashed border-gray-300 p-6 font-mono text-sm mx-auto"
@@ -2635,8 +2891,13 @@ const PrinterPage = () => {
   // Kitchen 미리보기 (Dine-in) - 새 구조 (동적 정렬 적용)
   const KitchenPreviewDineInNew = () => {
     const kl = getCurrentLayoutSettings();
+    // DEBUG: kl 전체 내용 확인
+    console.log('[DineIn Preview] kl keys:', Object.keys(kl).join(', '));
+    console.log('[DineIn Preview] kl.paidStatus:', JSON.stringify(kl.paidStatus));
+    console.log('[DineIn Preview] kl.specialInstructions:', JSON.stringify(kl.specialInstructions));
     const mergedElements = kl.mergedElements || [];
     const mergedKeys = new Set(mergedElements.flatMap(m => [m.leftElement.key, m.rightElement.key]));
+    const fontScale = kl.fontScale || 1.0; // Epson 프린터용 스케일 (기본 1.0)
 
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
@@ -2647,7 +2908,7 @@ const PrinterPage = () => {
     const getSeparatorClass = (style: string) => {
       switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px', marginLeft: '-8px', marginRight: '-8px' } : {};
+    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     
     // 샘플 데이터
     const sampleData: Record<string, string> = {
@@ -2658,6 +2919,7 @@ const PrinterPage = () => {
       serverName: 'Sarah K.',
       dateTime: '3:45 PM',
       paidStatus: 'UNPAID',
+      specialInstructions: 'No peanuts please',
     };
 
     const renderItemsList = () => {
@@ -2668,14 +2930,15 @@ const PrinterPage = () => {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
+        const elLineHeight = el.lineHeight || el.fontSize;
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
         }
         return null;
       };
@@ -2689,19 +2952,13 @@ const PrinterPage = () => {
       return (
         <div className="mt-2 text-left">
            {kl.guestNumber.visible && (
-             <>
-               {kl.splitSeparator.visible && <div className={`border-b ${getSeparatorClass(kl.splitSeparator.style)} border-gray-400 my-1`} />}
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize}px`, lineHeight: kl.guestNumber.lineSpacing, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 1 --------------------</div>
-             </>
+               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 1 --------------------</div>
            )}
            {renderItemRow('1x Salmon Sashimi', 'Extra Ginger', 'No wasabi')}
            {renderItemRow('1x Miso Soup')}
            
            {kl.guestNumber.visible && (
-             <>
-               {kl.splitSeparator.visible && <div className={`border-b ${getSeparatorClass(kl.splitSeparator.style)} border-gray-400 my-2`} />}
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize}px`, lineHeight: kl.guestNumber.lineSpacing, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 2 --------------------</div>
-             </>
+               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 2 --------------------</div>
            )}
            {renderItemRow('2x Beef Teriyaki', 'Well Done')}
            {renderItemRow('1x Green Tea')}
@@ -2760,17 +3017,22 @@ const PrinterPage = () => {
       
       return (
         <div key={merged.id} className={`flex ${getVerticalAlign()}`} style={{ ...getContainerStyle(), ...getLineInverseStyle() }}>
-          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize}px`, lineHeight: merged.leftElement.lineSpacing, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.leftElement.key)}
           </div>
-          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize}px`, lineHeight: merged.rightElement.lineSpacing, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.rightElement.key)}
           </div>
         </div>
       );
     };
 
-    const allKeys = Object.keys(kl).filter(k => k !== 'mergedElements' && k !== 'printMode' && k !== 'paperWidth' && k !== 'topMargin' && k !== 'separator1' && k !== 'separator2' && k !== 'splitSeparator' && k !== 'enabled' && k !== 'printerName');
+    // 모든 레이아웃 요소 키 (비-요소 속성 제외)
+    const allKeys = Object.keys(kl).filter(k => 
+      k !== 'mergedElements' && k !== 'printMode' && k !== 'paperWidth' && k !== 'topMargin' && k !== 'leftMargin' && 
+      k !== 'separator1' && k !== 'separator2' && k !== 'splitSeparator' && k !== 'enabled' && k !== 'printerName' && k !== 'fontScale' &&
+      k !== 'fontFamily' && k !== 'lineSpacing' && k !== 'separatorStyle' && k !== 'kitchenNote'
+    );
     
     // Header, Body, Footer 키 정의
     const HEADER_KEYS = ['orderType', 'tableNumber', 'posOrderNumber', 'externalOrderNumber', 'serverName', 'dateTime', 'deliveryChannel', 'pickupTime', 'customerName', 'customerPhone', 'deliveryAddress', 'paidStatus'];
@@ -2785,7 +3047,15 @@ const PrinterPage = () => {
       if (['modifiers', 'itemNote', 'guestNumber'].includes(key)) return;
       
       const el = (kl as any)[key] as KitchenElementStyle;
-      if (el && typeof el.order === 'number') {
+      // paidStatus와 specialInstructions는 항상 표시 (visible 기본값 true)
+      const isVisible = el?.visible !== false;
+      
+      // DEBUG: paidStatus와 specialInstructions 확인
+      if (key === 'paidStatus' || key === 'specialInstructions') {
+        console.log(`[DineIn Preview] ${key}:`, JSON.stringify({ order: el?.order, visible: el?.visible, showInHeader: (el as any)?.showInHeader, fontSize: el?.fontSize }));
+      }
+      
+      if (el && typeof el.order === 'number' && isVisible) {
         // 중복 표시 로직
         const isHeaderKey = HEADER_KEYS.includes(key);
         const isBodyKey = BODY_KEYS.includes(key);
@@ -2830,19 +3100,31 @@ const PrinterPage = () => {
     const bodyItems = renderList.filter(item => item.section === 'body').sort((a, b) => a.order - b.order);
     const footerItems = renderList.filter(item => item.section === 'footer').sort((a, b) => a.order - b.order);
     
+    // DEBUG: 최종 렌더 리스트 확인
+    console.log('[DineIn Preview] headerItems:', headerItems.map(i => i.key).join(', '));
+    console.log('[DineIn Preview] footerItems:', footerItems.map(i => i.key).join(', '));
+    
     // 렌더링 함수
     const renderItem = (item: typeof renderList[0]) => {
       if (item.type === 'single' && item.key) {
         if (item.key === 'items') return renderItemsList();
+        const el = (kl as any)[item.key];
+        // 방어적 코드: 요소가 없거나 필수 속성이 없으면 기본값 사용
+        const fontSize = el?.fontSize ?? 12;
+        const lineSpacing = el?.lineSpacing ?? 0;
+        const fontWeight = el?.fontWeight ?? 'normal';
+        const inverse = el?.inverse ?? false;
+        const textAlign = el?.textAlign || (item.key === 'serverName' ? 'left' : 'center');
+        
         return (
-          <div className={item.key === 'serverName' ? '' : (kl as any)[item.key]?.textAlign ? '' : 'text-center'} 
+          <div className={item.key === 'serverName' ? '' : textAlign ? '' : 'text-center'} 
                style={{ 
-                 fontSize: `${(kl as any)[item.key].fontSize}px`, 
-                 lineHeight: (kl as any)[item.key].lineSpacing, 
-                 fontWeight: getFontWeight((kl as any)[item.key].fontWeight), 
-                 fontStyle: getFontStyle((kl as any)[item.key]),
-                 textAlign: (kl as any)[item.key]?.textAlign || (item.key === 'serverName' ? 'left' : 'center'),
-                 ...getInverseStyle((kl as any)[item.key].inverse) 
+                 fontSize: `${fontSize}px`, 
+                 marginTop: `${lineSpacing * 2}px`, 
+                 fontWeight: getFontWeight(fontWeight), 
+                 fontStyle: getFontStyle(el),
+                 textAlign: textAlign,
+                 ...getInverseStyle(inverse) 
                }}>
             {sampleData[item.key] || kitchenElementLabels[item.key] || item.key}
           </div>
@@ -2855,7 +3137,7 @@ const PrinterPage = () => {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${(kl.leftMargin || 0) * 2}px` }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
@@ -2868,6 +3150,21 @@ const PrinterPage = () => {
         {bodyItems.map((item, index) => (
           <React.Fragment key={`body-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
+        
+        {/* Kitchen Note (Body 하단 고정) */}
+        {kl.kitchenNote?.visible && (
+          <div 
+            className="text-center"
+            style={{ 
+              fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
+              marginTop: `${(kl.kitchenNote.lineSpacing || 1.2) * 8}px`,
+              fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
+              ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
+            }}
+          >
+            *** Kitchen Note ***
+          </div>
+        )}
         
         {/* Body End Separator */}
         {bodyItems.length > 0 && kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
@@ -2882,6 +3179,7 @@ const PrinterPage = () => {
 
   const KitchenPreviewDineInNew_OLD = () => {
     const kl = layoutSettings.kitchenLayout;
+    const fontScale = kl.fontScale || 1.0;
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
       if (weight === 'bold') return 700;
@@ -2891,7 +3189,7 @@ const PrinterPage = () => {
     const getSeparatorClass = (style: string) => {
       switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px', marginLeft: '-8px', marginRight: '-8px' } : {};
+    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     
     // 샘플 데이터
     const sampleData: Record<string, string> = {
@@ -2962,8 +3260,9 @@ const PrinterPage = () => {
           <span 
             style={{ 
               ...getLeftStyle(),
-              fontSize: `${merged.leftElement.fontSize}px`, 
-              lineHeight: merged.leftElement.lineSpacing, 
+              fontSize: `${merged.leftElement.fontSize * fontScale}px`, 
+              lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`,
+              marginTop: `${merged.leftElement.lineSpacing * 2}px`, 
               fontWeight: getFontWeight(merged.leftElement.fontWeight),
               fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal',
               ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {})
@@ -2974,8 +3273,9 @@ const PrinterPage = () => {
           <span 
             style={{ 
               ...getRightStyle(),
-              fontSize: `${merged.rightElement.fontSize}px`, 
-              lineHeight: merged.rightElement.lineSpacing, 
+              fontSize: `${merged.rightElement.fontSize * fontScale}px`, 
+              lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`,
+              marginTop: `${merged.rightElement.lineSpacing * 2}px`, 
               fontWeight: getFontWeight(merged.rightElement.fontWeight),
               fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal',
               ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {})
@@ -2992,31 +3292,31 @@ const PrinterPage = () => {
     const mergedKeys = new Set(mergedElements.flatMap(m => [m.leftElement.key, m.rightElement.key]));
     
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${(kl.leftMargin || 0) * 2}px` }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px` }}>
         {/* 병합된 요소들 먼저 렌더링 */}
         {mergedElements.map(merged => renderMergedElement(merged))}
         
         {/* Order Type */}
         {kl.orderType.visible && !mergedKeys.has('orderType') && (
-          <div className="text-center font-bold" style={{ fontSize: `${kl.orderType.fontSize}px`, lineHeight: kl.orderType.lineSpacing, fontWeight: getFontWeight(kl.orderType.fontWeight), fontStyle: getFontStyle(kl.orderType), ...getInverseStyle(kl.orderType.inverse) }}>
+          <div className="text-center font-bold" style={{ fontSize: `${kl.orderType.fontSize * fontScale}px`, marginTop: `${kl.orderType.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.orderType.fontWeight), fontStyle: getFontStyle(kl.orderType), ...getInverseStyle(kl.orderType.inverse) }}>
             DINE-IN
           </div>
         )}
         {/* Table Number */}
         {kl.tableNumber.visible && !mergedKeys.has('tableNumber') && (
-          <div className="text-center font-bold" style={{ fontSize: `${kl.tableNumber.fontSize}px`, lineHeight: kl.tableNumber.lineSpacing, fontWeight: getFontWeight(kl.tableNumber.fontWeight), fontStyle: getFontStyle(kl.tableNumber), ...getInverseStyle(kl.tableNumber.inverse) }}>
+          <div className="text-center font-bold" style={{ fontSize: `${kl.tableNumber.fontSize * fontScale}px`, marginTop: `${kl.tableNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.tableNumber.fontWeight), fontStyle: getFontStyle(kl.tableNumber), ...getInverseStyle(kl.tableNumber.inverse) }}>
             TABLE 5
           </div>
         )}
         {/* POS Order Number - 내부 순차번호 */}
         {kl.posOrderNumber.visible && !mergedKeys.has('posOrderNumber') && (
-          <div className="text-center" style={{ fontSize: `${kl.posOrderNumber.fontSize}px`, lineHeight: kl.posOrderNumber.lineSpacing, fontWeight: getFontWeight(kl.posOrderNumber.fontWeight), fontStyle: getFontStyle(kl.posOrderNumber), ...getInverseStyle(kl.posOrderNumber.inverse) }}>
+          <div className="text-center" style={{ fontSize: `${kl.posOrderNumber.fontSize * fontScale}px`, marginTop: `${kl.posOrderNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.posOrderNumber.fontWeight), fontStyle: getFontStyle(kl.posOrderNumber), ...getInverseStyle(kl.posOrderNumber.inverse) }}>
             Order #: 042
           </div>
         )}
         {/* External Order Number - Dine-in에서는 보통 표시 안함 */}
         {kl.externalOrderNumber.visible && !mergedKeys.has('externalOrderNumber') && (
-          <div className="text-center" style={{ fontSize: `${kl.externalOrderNumber.fontSize}px`, lineHeight: kl.externalOrderNumber.lineSpacing, fontWeight: getFontWeight(kl.externalOrderNumber.fontWeight), fontStyle: getFontStyle(kl.externalOrderNumber), ...getInverseStyle(kl.externalOrderNumber.inverse) }}>
+          <div className="text-center" style={{ fontSize: `${kl.externalOrderNumber.fontSize * fontScale}px`, marginTop: `${kl.externalOrderNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.externalOrderNumber.fontWeight), fontStyle: getFontStyle(kl.externalOrderNumber), ...getInverseStyle(kl.externalOrderNumber.inverse) }}>
             Ext: N/A
           </div>
         )}
@@ -3025,13 +3325,13 @@ const PrinterPage = () => {
         {/* Server & DateTime */}
         {(kl.serverName.visible && !mergedKeys.has('serverName')) || (kl.dateTime.visible && !mergedKeys.has('dateTime')) ? (
           <div className="flex justify-between text-xs">
-            {kl.serverName.visible && !mergedKeys.has('serverName') && <span style={{ fontSize: `${kl.serverName.fontSize}px`, lineHeight: kl.serverName.lineSpacing, fontWeight: getFontWeight(kl.serverName.fontWeight), ...getInverseStyle(kl.serverName.inverse) }}>Sarah K.</span>}
-            {kl.dateTime.visible && !mergedKeys.has('dateTime') && <span style={{ fontSize: `${kl.dateTime.fontSize}px`, lineHeight: kl.dateTime.lineSpacing, fontWeight: getFontWeight(kl.dateTime.fontWeight), ...getInverseStyle(kl.dateTime.inverse) }}>3:45 PM</span>}
+            {kl.serverName.visible && !mergedKeys.has('serverName') && <span style={{ fontSize: `${kl.serverName.fontSize * fontScale}px`, marginTop: `${kl.serverName.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.serverName.fontWeight), ...getInverseStyle(kl.serverName.inverse) }}>Sarah K.</span>}
+            {kl.dateTime.visible && !mergedKeys.has('dateTime') && <span style={{ fontSize: `${kl.dateTime.fontSize * fontScale}px`, marginTop: `${kl.dateTime.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.dateTime.fontWeight), ...getInverseStyle(kl.dateTime.inverse) }}>3:45 PM</span>}
           </div>
         ) : null}
         {/* PAID Status */}
         {kl.paidStatus.visible && !mergedKeys.has('paidStatus') && (
-          <div className="text-center mt-2" style={{ fontSize: `${kl.paidStatus.fontSize}px`, lineHeight: kl.paidStatus.lineSpacing, fontWeight: getFontWeight(kl.paidStatus.fontWeight), ...getInverseStyle(kl.paidStatus.inverse) }}>
+          <div className="text-center mt-2" style={{ fontSize: `${kl.paidStatus.fontSize * fontScale}px`, marginTop: `${kl.paidStatus.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.paidStatus.fontWeight), ...getInverseStyle(kl.paidStatus.inverse) }}>
             UNPAID
           </div>
         )}
@@ -3039,50 +3339,44 @@ const PrinterPage = () => {
         {kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
         {/* ===== GUEST 1 ===== */}
         {kl.guestNumber.visible && (
-          <>
-            {kl.splitSeparator.visible && <div className={`border-b ${getSeparatorClass(kl.splitSeparator.style)} border-gray-400 my-1`} />}
-            <div className="text-center font-bold" style={{ fontSize: `${kl.guestNumber.fontSize}px`, lineHeight: kl.guestNumber.lineSpacing, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>
+            <div className="text-center font-bold" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>
               -------------------- GUEST 1 --------------------
             </div>
-          </>
         )}
         {/* Guest 1 Items */}
         {kl.items.visible && (
-          <div className="mt-2 space-y-1">
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight), ...getInverseStyle(kl.items.inverse) }}>1x Salmon Sashimi</div>
+          <div className="mt-2">
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight), ...getInverseStyle(kl.items.inverse) }}>1x Salmon Sashimi</div>
             {kl.modifiers.visible && (
-              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize}px`, lineHeight: kl.modifiers.lineSpacing, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
+              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize * fontScale}px`, marginTop: `${kl.modifiers.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
                 {kl.modifiers.prefix} Extra Ginger
               </div>
             )}
             {kl.itemNote.visible && (
-              <div className="ml-4 text-gray-800" style={{ fontSize: `${kl.itemNote.fontSize}px`, lineHeight: kl.itemNote.lineSpacing, fontWeight: getFontWeight(kl.itemNote.fontWeight), fontStyle: getFontStyle(kl.itemNote) }}>
+              <div className="ml-4 text-gray-800" style={{ fontSize: `${kl.itemNote.fontSize * fontScale}px`, marginTop: `${kl.itemNote.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.itemNote.fontWeight), fontStyle: getFontStyle(kl.itemNote) }}>
                 {kl.itemNote.prefix} No wasabi
               </div>
             )}
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Miso Soup</div>
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Miso Soup</div>
           </div>
         )}
 
         {/* ===== GUEST 2 ===== */}
         {kl.guestNumber.visible && (
-          <>
-            {kl.splitSeparator.visible && <div className={`border-b ${getSeparatorClass(kl.splitSeparator.style)} border-gray-400 my-2`} />}
-            <div className="text-center font-bold" style={{ fontSize: `${kl.guestNumber.fontSize}px`, lineHeight: kl.guestNumber.lineSpacing, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>
+            <div className="text-center font-bold" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>
               -------------------- GUEST 2 --------------------
             </div>
-          </>
         )}
         {/* Guest 2 Items */}
         {kl.items.visible && kl.guestNumber.visible && (
-          <div className="mt-2 space-y-1">
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight), ...getInverseStyle(kl.items.inverse) }}>2x Beef Teriyaki</div>
+          <div className="mt-2">
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight), ...getInverseStyle(kl.items.inverse) }}>2x Beef Teriyaki</div>
             {kl.modifiers.visible && (
-              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize}px`, lineHeight: kl.modifiers.lineSpacing, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
+              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize * fontScale}px`, marginTop: `${kl.modifiers.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
                 {kl.modifiers.prefix} Well Done
               </div>
             )}
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Green Tea</div>
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Green Tea</div>
           </div>
         )}
       </div>
@@ -3093,8 +3387,13 @@ const PrinterPage = () => {
   // External Kitchen 미리보기 - 새 구조 (동적 정렬 적용)
   const KitchenPreviewOnlineNew = () => {
     const kl = getCurrentLayoutSettings();
+    // DEBUG: kl 전체 내용 확인
+    console.log('[Online Preview] kl keys:', Object.keys(kl).join(', '));
+    console.log('[Online Preview] kl.paidStatus:', JSON.stringify(kl.paidStatus));
+    console.log('[Online Preview] kl.specialInstructions:', JSON.stringify(kl.specialInstructions));
     const mergedElements = kl.mergedElements || [];
     const mergedKeys = new Set(mergedElements.flatMap((m: MergedElement) => [m.leftElement.key, m.rightElement.key]));
+    const fontScale = kl.fontScale || 1.0; // Epson 프린터용 스케일 (기본 1.0)
 
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
@@ -3105,22 +3404,24 @@ const PrinterPage = () => {
     const getSeparatorClass = (style: string) => {
       switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px', marginLeft: '-8px', marginRight: '-8px' } : {};
+    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     
     // 샘플 데이터
+    // Togo와 Thezone Order는 기본적으로 UNPAID
+    // Firebase에서 온라인 결제가 완료된 경우에만 PAID로 표시
     const sampleData: Record<string, string> = {
-      orderType: 'DELIVERY',
+      orderType: 'TOGO',
       tableNumber: 'N/A',
       posOrderNumber: 'Order #: 043',
-      externalOrderNumber: '#DD-78542',
+      externalOrderNumber: '#TZ-12345',
       serverName: 'System',
       dateTime: '4:15 PM',
-      paidStatus: 'PAID',
+      paidStatus: 'UNPAID',  // 기본값: UNPAID (온라인결제 시에만 PAID)
       pickupTime: 'PICKUP: 4:30 PM',
-      deliveryChannel: 'DOORDASH',
+      deliveryChannel: 'THEZONE',
       customerName: 'John Smith',
       customerPhone: '778-555-1234',
-      deliveryAddress: '123 Main St, Vancouver',
+      deliveryAddress: '',
       specialInstructions: 'Allergy: Peanuts',
     };
 
@@ -3132,14 +3433,15 @@ const PrinterPage = () => {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
+        const elLineHeight = el.lineHeight || el.fontSize;
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize}px`, lineHeight: el.lineSpacing, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
         }
         return null;
       };
@@ -3210,17 +3512,22 @@ const PrinterPage = () => {
       
       return (
         <div key={merged.id} className={`flex ${getVerticalAlign()}`} style={{ ...getContainerStyle(), ...getLineInverseStyle() }}>
-          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize}px`, lineHeight: merged.leftElement.lineSpacing, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.leftElement.key)}
           </div>
-          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize}px`, lineHeight: merged.rightElement.lineSpacing, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.rightElement.key)}
           </div>
         </div>
       );
     };
 
-    const allKeys = Object.keys(kl).filter(k => k !== 'mergedElements' && k !== 'printMode' && k !== 'paperWidth' && k !== 'topMargin' && k !== 'separator1' && k !== 'separator2' && k !== 'splitSeparator' && k !== 'enabled' && k !== 'printerName');
+    // 모든 레이아웃 요소 키 (비-요소 속성 제외)
+    const allKeys = Object.keys(kl).filter(k => 
+      k !== 'mergedElements' && k !== 'printMode' && k !== 'paperWidth' && k !== 'topMargin' && k !== 'leftMargin' && 
+      k !== 'separator1' && k !== 'separator2' && k !== 'splitSeparator' && k !== 'enabled' && k !== 'printerName' && k !== 'fontScale' &&
+      k !== 'fontFamily' && k !== 'lineSpacing' && k !== 'separatorStyle' && k !== 'kitchenNote'
+    );
     
     // Header, Body, Footer 키 정의
     const HEADER_KEYS = ['orderType', 'tableNumber', 'posOrderNumber', 'externalOrderNumber', 'serverName', 'dateTime', 'deliveryChannel', 'pickupTime', 'customerName', 'customerPhone', 'deliveryAddress', 'paidStatus'];
@@ -3235,7 +3542,15 @@ const PrinterPage = () => {
       if (['modifiers', 'itemNote', 'guestNumber'].includes(key)) return;
       
       const el = (kl as any)[key] as KitchenElementStyle;
-      if (el && typeof el.order === 'number') {
+      // paidStatus와 specialInstructions는 항상 표시 (visible 기본값 true)
+      const isVisible = el?.visible !== false;
+      
+      // DEBUG: paidStatus와 specialInstructions 확인
+      if (key === 'paidStatus' || key === 'specialInstructions') {
+        console.log(`[Online Preview] ${key}:`, JSON.stringify({ order: el?.order, visible: el?.visible, showInHeader: (el as any)?.showInHeader, fontSize: el?.fontSize }));
+      }
+      
+      if (el && typeof el.order === 'number' && isVisible) {
         // 중복 표시 로직
         const isHeaderKey = HEADER_KEYS.includes(key);
         const isBodyKey = BODY_KEYS.includes(key);
@@ -3280,19 +3595,32 @@ const PrinterPage = () => {
     const bodyItems = renderList.filter(item => item.section === 'body').sort((a, b) => a.order - b.order);
     const footerItems = renderList.filter(item => item.section === 'footer').sort((a, b) => a.order - b.order);
     
+    // DEBUG: 최종 렌더 리스트 확인
+    console.log('[Online Preview] headerItems:', headerItems.map(i => i.key).join(', '));
+    console.log('[Online Preview] footerItems:', footerItems.map(i => i.key).join(', '));
+    
     // 렌더링 함수
     const renderItem = (item: typeof renderList[0]) => {
       if (item.type === 'single' && item.key) {
         if (item.key === 'items') return renderItemsList();
+        const el = (kl as any)[item.key];
+        // 방어적 코드: 요소가 없거나 필수 속성이 없으면 기본값 사용
+        const fontSize = el?.fontSize ?? 12;
+        const lineSpacing = el?.lineSpacing ?? 0;
+        const fontWeight = el?.fontWeight ?? 'normal';
+        const inverse = el?.inverse ?? false;
+        const isLeftAligned = ['serverName', 'customerName', 'customerPhone', 'deliveryAddress'].includes(item.key);
+        const textAlign = el?.textAlign || (isLeftAligned ? 'left' : 'center');
+        
         return (
-          <div className={['serverName', 'customerName', 'customerPhone', 'deliveryAddress'].includes(item.key) ? '' : (kl as any)[item.key]?.textAlign ? '' : 'text-center'} 
+          <div className={isLeftAligned ? '' : textAlign ? '' : 'text-center'} 
                style={{ 
-                 fontSize: `${(kl as any)[item.key].fontSize}px`, 
-                 lineHeight: (kl as any)[item.key].lineSpacing, 
-                 fontWeight: getFontWeight((kl as any)[item.key].fontWeight), 
-                 fontStyle: getFontStyle((kl as any)[item.key]),
-                 textAlign: (kl as any)[item.key]?.textAlign || (['serverName', 'customerName', 'customerPhone', 'deliveryAddress'].includes(item.key) ? 'left' : 'center'),
-                 ...getInverseStyle((kl as any)[item.key].inverse) 
+                 fontSize: `${fontSize}px`, 
+                 lineHeight: lineSpacing, 
+                 fontWeight: getFontWeight(fontWeight), 
+                 fontStyle: getFontStyle(el),
+                 textAlign: textAlign,
+                 ...getInverseStyle(inverse) 
                }}>
             {sampleData[item.key] || kitchenElementLabels[item.key] || item.key}
           </div>
@@ -3305,7 +3633,7 @@ const PrinterPage = () => {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${(kl.leftMargin || 0) * 2}px` }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
@@ -3318,6 +3646,21 @@ const PrinterPage = () => {
         {bodyItems.map((item, index) => (
           <React.Fragment key={`body-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
+        
+        {/* Kitchen Note (Body 하단 고정) */}
+        {kl.kitchenNote?.visible && (
+          <div 
+            className="text-center"
+            style={{ 
+              fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
+              marginTop: `${(kl.kitchenNote.lineSpacing || 1.2) * 8}px`,
+              fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
+              ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
+            }}
+          >
+            *** Kitchen Note ***
+          </div>
+        )}
         
         {/* Body End Separator */}
         {bodyItems.length > 0 && kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
@@ -3332,6 +3675,7 @@ const PrinterPage = () => {
 
   const KitchenPreviewOnlineNew_OLD = () => {
     const kl = layoutSettings.kitchenLayout;
+    const fontScale = kl.fontScale || 1.0;
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
       if (weight === 'bold') return 700;
@@ -3341,7 +3685,7 @@ const PrinterPage = () => {
     const getSeparatorClass = (style: string) => {
       switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px', marginLeft: '-8px', marginRight: '-8px' } : {};
+    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     
     // 샘플 데이터
     const sampleData: Record<string, string> = {
@@ -3352,9 +3696,9 @@ const PrinterPage = () => {
       guestNumber: 'N/A',
       serverName: 'System',
       dateTime: '4:15 PM',
-      paidStatus: 'PAID',
+      paidStatus: 'UNPAID',  // 기본값: UNPAID (온라인결제 시에만 PAID)
       pickupTime: 'PICKUP: 4:30 PM',
-      deliveryChannel: 'DOORDASH',
+      deliveryChannel: 'THEZONE',
       customerName: 'John Smith',
       customerPhone: '778-555-1234',
       deliveryAddress: '123 Main St, Vancouver',
@@ -3412,8 +3756,9 @@ const PrinterPage = () => {
           <span 
             style={{ 
               ...getLeftStyle(),
-              fontSize: `${merged.leftElement.fontSize}px`, 
-              lineHeight: merged.leftElement.lineSpacing, 
+              fontSize: `${merged.leftElement.fontSize * fontScale}px`, 
+              lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`,
+              marginTop: `${merged.leftElement.lineSpacing * 2}px`, 
               fontWeight: getFontWeight(merged.leftElement.fontWeight),
               fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal',
               ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {})
@@ -3424,8 +3769,9 @@ const PrinterPage = () => {
           <span 
             style={{ 
               ...getRightStyle(),
-              fontSize: `${merged.rightElement.fontSize}px`, 
-              lineHeight: merged.rightElement.lineSpacing, 
+              fontSize: `${merged.rightElement.fontSize * fontScale}px`, 
+              lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`,
+              marginTop: `${merged.rightElement.lineSpacing * 2}px`, 
               fontWeight: getFontWeight(merged.rightElement.fontWeight),
               fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal',
               ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {})
@@ -3441,37 +3787,37 @@ const PrinterPage = () => {
     const mergedKeys = new Set(mergedElements.flatMap(m => [m.leftElement.key, m.rightElement.key]));
     
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${(kl.leftMargin || 0) * 2}px` }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px` }}>
         {/* 병합된 요소들 먼저 렌더링 */}
         {mergedElements.map(merged => renderMergedElement(merged))}
         
         {/* Delivery Channel */}
         {kl.deliveryChannel.visible && !mergedKeys.has('deliveryChannel') && (
-          <div className="text-center font-bold" style={{ fontSize: `${kl.deliveryChannel.fontSize}px`, lineHeight: kl.deliveryChannel.lineSpacing, fontWeight: getFontWeight(kl.deliveryChannel.fontWeight), ...getInverseStyle(kl.deliveryChannel.inverse) }}>
+          <div className="text-center font-bold" style={{ fontSize: `${kl.deliveryChannel.fontSize * fontScale}px`, marginTop: `${kl.deliveryChannel.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.deliveryChannel.fontWeight), ...getInverseStyle(kl.deliveryChannel.inverse) }}>
             DOORDASH
           </div>
         )}
         {/* Order Type */}
         {kl.orderType.visible && !mergedKeys.has('orderType') && (
-          <div className="text-center font-bold" style={{ fontSize: `${kl.orderType.fontSize}px`, lineHeight: kl.orderType.lineSpacing, fontWeight: getFontWeight(kl.orderType.fontWeight), ...getInverseStyle(kl.orderType.inverse) }}>
+          <div className="text-center font-bold" style={{ fontSize: `${kl.orderType.fontSize * fontScale}px`, marginTop: `${kl.orderType.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.orderType.fontWeight), ...getInverseStyle(kl.orderType.inverse) }}>
             DELIVERY
           </div>
         )}
         {/* POS Order Number - 내부 순차번호 */}
         {kl.posOrderNumber.visible && !mergedKeys.has('posOrderNumber') && (
-          <div className="text-center" style={{ fontSize: `${kl.posOrderNumber.fontSize}px`, lineHeight: kl.posOrderNumber.lineSpacing, fontWeight: getFontWeight(kl.posOrderNumber.fontWeight), fontStyle: getFontStyle(kl.posOrderNumber), ...getInverseStyle(kl.posOrderNumber.inverse) }}>
+          <div className="text-center" style={{ fontSize: `${kl.posOrderNumber.fontSize * fontScale}px`, marginTop: `${kl.posOrderNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.posOrderNumber.fontWeight), fontStyle: getFontStyle(kl.posOrderNumber), ...getInverseStyle(kl.posOrderNumber.inverse) }}>
             Order #: 043
           </div>
         )}
         {/* External Order Number - 딜리버리 채널 원본 번호 */}
         {kl.externalOrderNumber.visible && !mergedKeys.has('externalOrderNumber') && (
-          <div className="text-center" style={{ fontSize: `${kl.externalOrderNumber.fontSize}px`, lineHeight: kl.externalOrderNumber.lineSpacing, fontWeight: getFontWeight(kl.externalOrderNumber.fontWeight), fontStyle: getFontStyle(kl.externalOrderNumber), ...getInverseStyle(kl.externalOrderNumber.inverse) }}>
+          <div className="text-center" style={{ fontSize: `${kl.externalOrderNumber.fontSize * fontScale}px`, marginTop: `${kl.externalOrderNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.externalOrderNumber.fontWeight), fontStyle: getFontStyle(kl.externalOrderNumber), ...getInverseStyle(kl.externalOrderNumber.inverse) }}>
             #DD-78542
           </div>
         )}
         {/* Pickup Time */}
         {kl.pickupTime.visible && !mergedKeys.has('pickupTime') && (
-          <div className="text-center mt-2" style={{ fontSize: `${kl.pickupTime.fontSize}px`, lineHeight: kl.pickupTime.lineSpacing, fontWeight: getFontWeight(kl.pickupTime.fontWeight), ...getInverseStyle(kl.pickupTime.inverse) }}>
+          <div className="text-center mt-2" style={{ fontSize: `${kl.pickupTime.fontSize * fontScale}px`, marginTop: `${kl.pickupTime.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.pickupTime.fontWeight), ...getInverseStyle(kl.pickupTime.inverse) }}>
             PICKUP: 4:30 PM
           </div>
         )}
@@ -3479,23 +3825,23 @@ const PrinterPage = () => {
         {kl.separator1.visible && <div className={`border-b ${getSeparatorClass(kl.separator1.style)} border-gray-400 my-2`} />}
         {/* Customer Info */}
         {kl.customerName.visible && !mergedKeys.has('customerName') && (
-          <div style={{ fontSize: `${kl.customerName.fontSize}px`, lineHeight: kl.customerName.lineSpacing, fontWeight: getFontWeight(kl.customerName.fontWeight), ...getInverseStyle(kl.customerName.inverse) }}>
+          <div style={{ fontSize: `${kl.customerName.fontSize * fontScale}px`, marginTop: `${kl.customerName.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.customerName.fontWeight), ...getInverseStyle(kl.customerName.inverse) }}>
             John Smith
           </div>
         )}
         {kl.customerPhone.visible && !mergedKeys.has('customerPhone') && (
-          <div style={{ fontSize: `${kl.customerPhone.fontSize}px`, lineHeight: kl.customerPhone.lineSpacing, fontWeight: getFontWeight(kl.customerPhone.fontWeight), ...getInverseStyle(kl.customerPhone.inverse) }}>
+          <div style={{ fontSize: `${kl.customerPhone.fontSize * fontScale}px`, marginTop: `${kl.customerPhone.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.customerPhone.fontWeight), ...getInverseStyle(kl.customerPhone.inverse) }}>
             778-555-1234
           </div>
         )}
         {kl.deliveryAddress.visible && !mergedKeys.has('deliveryAddress') && (
-          <div style={{ fontSize: `${kl.deliveryAddress.fontSize}px`, lineHeight: kl.deliveryAddress.lineSpacing, fontWeight: getFontWeight(kl.deliveryAddress.fontWeight), ...getInverseStyle(kl.deliveryAddress.inverse) }}>
+          <div style={{ fontSize: `${kl.deliveryAddress.fontSize * fontScale}px`, marginTop: `${kl.deliveryAddress.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.deliveryAddress.fontWeight), ...getInverseStyle(kl.deliveryAddress.inverse) }}>
             123 Main St, Vancouver
           </div>
         )}
         {/* PAID Status */}
         {kl.paidStatus.visible && !mergedKeys.has('paidStatus') && (
-          <div className="text-center mt-2" style={{ fontSize: `${kl.paidStatus.fontSize}px`, lineHeight: kl.paidStatus.lineSpacing, fontWeight: getFontWeight(kl.paidStatus.fontWeight), ...getInverseStyle(kl.paidStatus.inverse) }}>
+          <div className="text-center mt-2" style={{ fontSize: `${kl.paidStatus.fontSize * fontScale}px`, marginTop: `${kl.paidStatus.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.paidStatus.fontWeight), ...getInverseStyle(kl.paidStatus.inverse) }}>
             PAID
           </div>
         )}
@@ -3503,24 +3849,24 @@ const PrinterPage = () => {
         {kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
         {/* Items */}
         {kl.items.visible && (
-          <div className="mt-2 space-y-1">
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Salmon Sashimi</div>
+          <div className="mt-2">
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight) }}>1x Salmon Sashimi</div>
             {kl.modifiers.visible && (
-              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize}px`, lineHeight: kl.modifiers.lineSpacing, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
+              <div className="ml-4 text-gray-600" style={{ fontSize: `${kl.modifiers.fontSize * fontScale}px`, marginTop: `${kl.modifiers.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.modifiers.fontWeight) }}>
                 {kl.modifiers.prefix} Extra Ginger
               </div>
             )}
             {kl.itemNote.visible && (
-              <div className="ml-4 text-gray-800" style={{ fontSize: `${kl.itemNote.fontSize}px`, lineHeight: kl.itemNote.lineSpacing, fontWeight: getFontWeight(kl.itemNote.fontWeight), fontStyle: getFontStyle(kl.itemNote) }}>
+              <div className="ml-4 text-gray-800" style={{ fontSize: `${kl.itemNote.fontSize * fontScale}px`, marginTop: `${kl.itemNote.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.itemNote.fontWeight), fontStyle: getFontStyle(kl.itemNote) }}>
                 {kl.itemNote.prefix} No wasabi
               </div>
             )}
-            <div style={{ fontSize: `${kl.items.fontSize}px`, lineHeight: kl.items.lineSpacing, fontWeight: getFontWeight(kl.items.fontWeight) }}>2x Beef Teriyaki</div>
+            <div style={{ fontSize: `${kl.items.fontSize * fontScale}px`, marginTop: `${kl.items.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.items.fontWeight) }}>2x Beef Teriyaki</div>
           </div>
         )}
         {/* Special Instructions */}
         {kl.specialInstructions.visible && kl.specialInstructions.text && (
-          <div className="mt-2 p-2 bg-yellow-100 border border-yellow-400 rounded" style={{ fontSize: `${kl.specialInstructions.fontSize}px`, lineHeight: kl.specialInstructions.lineSpacing, fontWeight: getFontWeight(kl.specialInstructions.fontWeight) }}>
+          <div className="mt-2 p-2 bg-yellow-100 border border-yellow-400 rounded" style={{ fontSize: `${kl.specialInstructions.fontSize * fontScale}px`, marginTop: `${kl.specialInstructions.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.specialInstructions.fontWeight) }}>
             ⚠️ {kl.specialInstructions.text}
           </div>
         )}
@@ -3731,8 +4077,9 @@ const PrinterPage = () => {
           { id: 'printers', label: 'Printers & Groups' },
           { id: 'bill', label: 'Bill' },
           { id: 'receipt', label: 'Receipt' },
-          { id: 'kitchen', label: 'Kitchen' },
-          { id: 'externalKitchen', label: 'External Kitchen' },
+          { id: 'kitchen', label: 'Ticket for Dine-in' },
+          { id: 'externalKitchen', label: 'Ticket for Take-out' },
+          { id: 'deliveryKitchen', label: 'Ticket for Delivery' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -4434,7 +4781,8 @@ const PrinterPage = () => {
             <h2 className="text-lg font-bold text-gray-800">
               Dine-In - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
             </h2>
-            
+            <p className="text-sm text-gray-500">Dine-in Order, Table Order, QRcode Order, Sub POS / Hand Held POS</p>
+
             {/* Print Mode & Paper */}
             <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
               <div className="flex items-center justify-between">
@@ -4483,6 +4831,11 @@ const PrinterPage = () => {
                   <span className="text-gray-600">Left:</span>
                   <input type="number" value={currentLayout.leftMargin || 0} onChange={(e) => updateCurrentLayoutSettings({ leftMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
                   <span className="text-gray-400">mm</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-600">Font Scale:</span>
+                  <input type="number" step={0.1} value={currentLayout.fontScale || 1.0} onChange={(e) => updateCurrentLayoutSettings({ fontScale: parseFloat(e.target.value) || 1.0 })} className="w-14 p-1 border rounded text-xs" min={0.5} max={2.0} />
+                  <span className="text-gray-400 text-xs">(Epson: 1.2)</span>
                 </div>
               </div>
             </div>
@@ -4543,6 +4896,13 @@ const PrinterPage = () => {
               />
               
               {renderSortedElements(KITCHEN_BODY_KEYS, 'kitchen')}
+              
+              {/* Kitchen Note (Body 하단 고정) */}
+              {currentLayout.kitchenNote && (
+                <KitchenElementRow label="Kitchen Note (Fixed)" element={currentLayout.kitchenNote}
+                  onChange={(updated) => updateCurrentLayoutSettings({ kitchenNote: { ...currentLayout.kitchenNote, ...updated } })}
+                />
+              )}
             </div>
 
             {/* ========== FOOTER Section ========== */}
@@ -4607,9 +4967,9 @@ const PrinterPage = () => {
             {/* Left: Settings */}
             <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3" style={{ scrollBehavior: 'auto' }}>
               <h2 className="text-lg font-bold text-gray-800">
-                External - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
+                Take-out - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
               </h2>
-              <p className="text-sm text-gray-500">Uber Eats, DoorDash, SkiptheDishes, Online Order, Togo</p>
+              <p className="text-sm text-gray-500">ThezoneOrder (Online), Togo Order (No Delivery)</p>
               
               {/* Print Mode & Paper */}
               <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
@@ -4735,7 +5095,175 @@ const PrinterPage = () => {
               <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
               {/* External Preview */}
               <div>
-                <h3 className="text-sm font-bold text-orange-700 mb-2 text-center">External Kitchen Ticket</h3>
+                <h3 className="text-sm font-bold text-orange-700 mb-2 text-center">Take-out Kitchen Ticket</h3>
+                <KitchenPreviewOnlineNew />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== Delivery Kitchen 탭 ===================== */}
+      {/* Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo 배달 주문 */}
+      {activeTab === 'deliveryKitchen' && (
+        <div className="h-[calc(100vh-220px)]">
+          {/* 프린터 타입 선택 (Kitchen vs Waitress) */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setKitchenPrinterType('kitchen')}
+              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
+                kitchenPrinterType === 'kitchen'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Kitchen Printer
+            </button>
+            <button
+              onClick={() => setKitchenPrinterType('waitress')}
+              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
+                kitchenPrinterType === 'waitress'
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Waitress Printer (Server Ticket)
+            </button>
+          </div>
+
+          <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100%-50px)]">
+            {/* Left: Settings */}
+            <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3" style={{ scrollBehavior: 'auto' }}>
+              <h2 className="text-lg font-bold text-gray-800">
+                Delivery - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
+              </h2>
+              <p className="text-sm text-gray-500">Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo (Delivery)</p>
+              
+              {/* Print Mode & Paper */}
+              <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
+                  <div className="flex gap-2">
+                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
+                      currentLayout.printMode === 'graphic' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
+                    }`}>
+                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'graphic'}
+                        onChange={() => updateCurrentLayoutSettings({ printMode: 'graphic' })} />
+                      🎨 Roll Graphic
+                    </label>
+                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
+                      currentLayout.printMode === 'text' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
+                    }`}>
+                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'text'}
+                        onChange={() => updateCurrentLayoutSettings({ printMode: 'text' })} />
+                      📝 Text Mode
+                    </label>
+                  </div>
+                </div>
+                <div className="flex gap-4 mt-2 text-xs">
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-600">Font:</span>
+                    <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
+                      <option value="Arial">Arial</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Tahoma">Tahoma</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-600">Paper:</span>
+                    <select value={currentLayout.paperWidth} onChange={(e) => updateCurrentLayoutSettings({ paperWidth: parseInt(e.target.value) })} className="p-1 border rounded text-xs">
+                      <option value={58}>58mm</option>
+                      <option value={80}>80mm</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-600">Top:</span>
+                    <input type="number" value={currentLayout.topMargin} onChange={(e) => updateCurrentLayoutSettings({ topMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
+                    <span className="text-gray-400">mm</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-600">Left:</span>
+                    <input type="number" value={currentLayout.leftMargin || 0} onChange={(e) => updateCurrentLayoutSettings({ leftMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
+                    <span className="text-gray-400">mm</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Merged Elements */}
+              {(currentLayout.mergedElements || []).length > 0 && (
+                <div className="p-2 bg-purple-100 rounded-lg border border-purple-300 mb-2">
+                  <div className="font-bold text-purple-700 text-sm mb-2">🔗 MERGED ELEMENTS</div>
+                  {(currentLayout.mergedElements || []).map((merged: MergedElement) => (
+                    <MergedElementRow
+                      key={merged.id}
+                      merged={merged}
+                      onUpdate={(updates) => updateMergedElement(merged.id, updates, 'external')}
+                      onUnmerge={() => handleUnmergeElements(merged.id, 'external')}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Header Section */}
+              <div className="p-2 bg-orange-50 rounded-lg border border-orange-200">
+                <div className="font-bold text-orange-700 text-sm mb-2">📌 HEADER (Drag elements to merge)</div>
+                {renderSortedElements(EXTERNAL_HEADER_KEYS, 'external')}
+              </div>
+
+              {/* ========== SEPARATORS ========== */}
+              <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
+                <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
+                    <button onClick={() => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, visible: !currentLayout.separator1.visible } })}
+                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
+                    >{currentLayout.separator1.visible ? '✓' : '–'}</button>
+                    <span className="flex-1 text-gray-600">Header End</span>
+                    <select value={currentLayout.separator1.style} onChange={(e) => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
+                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
+                    <button onClick={() => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, visible: !currentLayout.separator2.visible } })}
+                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
+                    >{currentLayout.separator2.visible ? '✓' : '–'}</button>
+                    <span className="flex-1 text-gray-600">Body End</span>
+                    <select value={currentLayout.separator2.style} onChange={(e) => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
+                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Body Section */}
+              <div className="p-2 bg-green-50 rounded-lg border border-green-200">
+                <div className="font-bold text-green-700 text-sm mb-2">📄 BODY (Drag elements to merge)</div>
+                <KitchenElementRow label="Guest Number (Split) (Fixed)" element={currentLayout.guestNumber}
+                  onChange={(updated) => updateCurrentLayoutSettings({ guestNumber: { ...currentLayout.guestNumber, ...updated } })}
+                />
+                {renderSortedElements(EXTERNAL_BODY_KEYS, 'external')}
+              </div>
+
+              {/* Footer Section */}
+              <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
+                <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER (Header 요소를 Footer에도 표시)</div>
+                
+                {/* Header 요소들을 Footer에서 설정 */}
+                {renderFooterElements(EXTERNAL_HEADER_KEYS, 'external')}
+                
+                {/* Special Instructions */}
+                {renderSortedElements(EXTERNAL_FOOTER_KEYS, 'external')}
+              </div>
+            </div>
+            
+            {/* Right: Preview */}
+            <div className="bg-gray-100 rounded-lg p-4 overflow-y-auto max-h-full flex flex-col items-center">
+              <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
+              {/* Delivery Preview */}
+              <div>
+                <h3 className="text-sm font-bold text-red-700 mb-2 text-center">Delivery Kitchen Ticket</h3>
                 <KitchenPreviewOnlineNew />
               </div>
             </div>

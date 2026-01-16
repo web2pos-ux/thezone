@@ -496,7 +496,8 @@ const SalesPage: React.FC = () => {
       if (cancelled) return;
       try {
         const nextValue = raw?.selectServerOnEntry;
-        setSelectServerPromptEnabled(nextValue !== false);
+        // 명시적으로 true인 경우에만 활성화 (기본값: false)
+        setSelectServerPromptEnabled(nextValue === true);
       } catch (error) {
         console.warn('Failed to parse selectServerOnEntry flag:', error);
       }
@@ -517,10 +518,10 @@ const SalesPage: React.FC = () => {
           }
           return;
         }
-        const res = await fetch(`${API_URL}/layout-settings`, { cache: 'no-store' as RequestCache });
+        const res = await fetch(`${API_URL}/printers/layout-settings`, { cache: 'no-store' as RequestCache });
         if (!res.ok) return;
         const json = await res.json();
-        const payload = (json && typeof json === 'object' && json.data) ? json.data : json;
+        const payload = (json && typeof json === 'object' && json.settings) ? json.settings : json;
         if (!payload || typeof payload !== 'object') return;
         if (cancelled) return;
         sessionStorage.setItem(LAYOUT_SETTINGS_SNAPSHOT_KEY, JSON.stringify(payload));
@@ -714,7 +715,7 @@ const SalesPage: React.FC = () => {
   const [clockedInServers, setClockedInServers] = useState<ClockedInEmployee[]>([]);
   const [selectedTogoServer, setSelectedTogoServer] = useState<ClockedInEmployee | null>(null);
   const [togoOrderMeta, setTogoOrderMeta] = useState<Record<string, VirtualOrderMeta>>({});
-  const [selectServerPromptEnabled, setSelectServerPromptEnabled] = useState(true);
+  const [selectServerPromptEnabled, setSelectServerPromptEnabled] = useState(false);
   const shouldPromptServerSelection = selectServerPromptEnabled !== false;
   const [selectedHistoryOrderId, setSelectedHistoryOrderId] = useState<number | null>(null);
   const [historyDetailsMap, setHistoryDetailsMap] = useState<Record<number, HistoryOrderDetailPayload>>({});
@@ -1865,11 +1866,42 @@ const SalesPage: React.FC = () => {
       }
       
       // Move/Merge 모드가 아닐 때: 모달 열기
+      // Togo 주문인 경우 상세 정보(items) 가져오기
+      if (channel === 'togo' && order.id) {
+        try {
+          const res = await fetch(`${API_URL}/orders/${order.id}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.items) {
+              // fullOrder 형태로 변환하여 저장
+              const fullOrder = {
+                ...order,
+                items: data.items.map((item: any) => ({
+                  name: item.name,
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
+                })),
+                subtotal: data.order?.total || order.total || 0,
+                tax: data.order?.tax || 0,
+                taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
+                total: data.order?.total || order.total || 0
+              };
+              setSelectedOrderDetail({ ...order, fullOrder });
+              setSelectedOrderType(channel);
+              setShowOrderDetailModal(true);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to load togo order details:', e);
+        }
+      }
       setSelectedOrderDetail(order);
       setSelectedOrderType(channel);
       setShowOrderDetailModal(true);
     },
-    [isMoveMergeMode, sourceTableId, sourceTogoOrder, sourceOnlineOrder, selectionChoice, selectedFloor, loadTogoOrders, clearMoveMergeSelection]
+    [isMoveMergeMode, sourceTableId, sourceTogoOrder, sourceOnlineOrder, selectionChoice, selectedFloor, loadTogoOrders, clearMoveMergeSelection, API_URL]
   );
   useEffect(() => {
     setTogoOrderMeta((prev) => {
@@ -5157,20 +5189,7 @@ const SalesPage: React.FC = () => {
                             const unitPrice = Number(item.price || item.unit_price || 0);
                             const lineTotal = unitPrice * qty;
                             const modifiers = Array.isArray(item.modifiers)
-                              ? item.modifiers.flatMap((mod: any) => {
-                                  // Case 1: Table Order flat modifiers { name, price_adjustment }
-                                  if (mod?.name && typeof mod.price_adjustment !== 'undefined') return [mod.name];
-                                  // Case 2: POS modifiers with nested modifiers array
-                                  if (Array.isArray(mod?.modifiers)) return mod.modifiers.map((m: any) => m?.name).filter(Boolean);
-                                  // Case 3: POS modifiers with selectedEntries
-                                  if (Array.isArray(mod?.selectedEntries)) return mod.selectedEntries.map((e: any) => e?.name).filter(Boolean);
-                                  // Case 4: POS modifiers with modifierNames
-                                  if (Array.isArray(mod?.modifierNames)) return mod.modifierNames;
-                                  // Case 5: Simple string or object with name
-                                  if (typeof mod === 'string') return [mod];
-                                  if (mod?.name) return [mod.name];
-                                  return [];
-                                }).filter(Boolean)
+                              ? item.modifiers.map((mod: any) => mod?.name || mod).filter(Boolean)
                               : [];
                             const noteText = item.note || item.memo || item.specialRequest;
                             return (
@@ -6747,11 +6766,6 @@ const SalesPage: React.FC = () => {
                                           if (typeof entry === 'string') modifierNames.push(entry);
                                           else if (entry?.name) modifierNames.push(entry.name);
                                         });
-                                      } else if (m?.modifiers && Array.isArray(m.modifiers)) {
-                                        // POS nested modifiers structure
-                                        m.modifiers.forEach((subMod: any) => {
-                                          if (subMod?.name) modifierNames.push(subMod.name);
-                                        });
                                       } else if (m?.groupName) {
                                         modifierNames.push(m.groupName);
                                       }
@@ -7245,7 +7259,35 @@ const SalesPage: React.FC = () => {
                       {selectedOrderType === 'togo' && [...togoOrders].sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99')).map((order, idx) => (
                         <tr 
                           key={order.id}
-                          onClick={() => setSelectedOrderDetail(order)}
+                          onClick={async () => {
+                            // Togo 주문 상세 정보 가져오기
+                            try {
+                              const res = await fetch(`${API_URL}/orders/${order.id}`);
+                              if (res.ok) {
+                                const data = await res.json();
+                                if (data.success && data.items) {
+                                  const fullOrder = {
+                                    ...order,
+                                    items: data.items.map((item: any) => ({
+                                      name: item.name,
+                                      quantity: item.quantity || 1,
+                                      price: item.price || 0,
+                                      options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
+                                    })),
+                                    subtotal: data.order?.total || order.total || 0,
+                                    tax: data.order?.tax || 0,
+                                    taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
+                                    total: data.order?.total || order.total || 0
+                                  };
+                                  setSelectedOrderDetail({ ...order, fullOrder });
+                                  return;
+                                }
+                              }
+                            } catch (e) {
+                              console.warn('Failed to load togo order details:', e);
+                            }
+                            setSelectedOrderDetail(order);
+                          }}
                           className={`cursor-pointer hover:bg-orange-50 transition min-h-[44px] ${
                             selectedOrderDetail.id === order.id 
                               ? 'bg-orange-100 border-l-4 border-orange-500' 
@@ -7468,15 +7510,30 @@ const SalesPage: React.FC = () => {
                     {/* 아이템 목록 */}
                     <div className="divide-y flex-1 overflow-auto" style={{ maxHeight: '120px' }}>
                       {(selectedOrderDetail.fullOrder?.items || []).length > 0 ? (
-                        (selectedOrderDetail.fullOrder?.items || []).map((item: any, idx: number) => (
-                          <div key={idx} className="px-3 py-1 grid grid-cols-12 text-sm">
-                            <div className="col-span-2 font-medium">{item.quantity || 1}</div>
-                            <div className="col-span-7 text-gray-800 truncate">{item.name}</div>
-                            <div className="col-span-3 text-right text-gray-600">
-                              ${Number(item.price || item.subtotal || 0).toFixed(2)}
+                        (selectedOrderDetail.fullOrder?.items || []).map((item: any, idx: number) => {
+                          // 모디파이어 표시 (options 배열에서)
+                          const modifierText = (item.options || [])
+                            .map((opt: any) => opt.choiceName || opt.name || '')
+                            .filter((n: string) => n)
+                            .join(', ');
+                          
+                          return (
+                            <div key={idx} className="px-3 py-1">
+                              <div className="grid grid-cols-12 text-sm">
+                                <div className="col-span-2 font-medium text-blue-600">{item.quantity || 1}</div>
+                                <div className="col-span-7 text-gray-800">{item.name}</div>
+                                <div className="col-span-3 text-right text-gray-600">
+                                  ${Number(item.price || item.subtotal || 0).toFixed(2)}
+                                </div>
+                              </div>
+                              {modifierText && (
+                                <div className="text-xs text-orange-600 ml-8 mt-0.5">
+                                  {modifierText}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))
+                          );
+                        })
                       ) : selectedOrderDetail.items && selectedOrderDetail.items.length > 0 ? (
                         selectedOrderDetail.items.map((itemName: string, idx: number) => (
                           <div key={idx} className="px-3 py-1 grid grid-cols-12 text-sm">
@@ -7496,10 +7553,20 @@ const SalesPage: React.FC = () => {
                         <span className="text-gray-600">Sub Total</span>
                         <span>${Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0).toFixed(2)}</span>
                       </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Tax</span>
-                        <span>${Number(selectedOrderDetail.fullOrder?.tax || 0).toFixed(2)}</span>
-                      </div>
+                      {/* 개별 세금 표시 (GST, PST 등) */}
+                      {selectedOrderDetail.fullOrder?.taxBreakdown && Array.isArray(selectedOrderDetail.fullOrder.taxBreakdown) && selectedOrderDetail.fullOrder.taxBreakdown.length > 0 ? (
+                        selectedOrderDetail.fullOrder.taxBreakdown.map((taxItem: any, idx: number) => (
+                          <div key={idx} className="flex justify-between text-sm">
+                            <span className="text-gray-600">{taxItem.name} ({taxItem.rate}%)</span>
+                            <span>${Number(taxItem.amount || 0).toFixed(2)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Tax</span>
+                          <span>${Number(selectedOrderDetail.fullOrder?.tax || 0).toFixed(2)}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between text-base font-bold border-t pt-1">
                         <span>Total</span>
                         <span className="text-blue-600">${Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0).toFixed(2)}</span>

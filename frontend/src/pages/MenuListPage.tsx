@@ -17,7 +17,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Trash2, Settings, Save, X, Edit } from 'lucide-react';
 // Header removed - using BackOfficeLayout header instead
 import { Menu } from '../types';
@@ -723,14 +723,19 @@ const ThezoneorderSyncTab = () => {
   const [profile, setProfile] = useState<any>({ firebase_restaurant_id: '' });
   const [syncing, setSyncing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [fullSyncing, setFullSyncing] = useState(false);
   const [cloudConnected, setCloudConnected] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ linked: number; total: number } | null>(null);
   const [backups, setBackups] = useState<any[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(false);
   
-  // Menu selection for upload
+  // Menu selection for upload - 고정 메뉴 ID 사용
   const [menus, setMenus] = useState<any[]>([]);
-  const [selectedMenuId, setSelectedMenuId] = useState<string>('');
+  const selectedMenuId = '200005'; // 고정 메뉴
+  
+  // Firebase menus list
+  const [firebaseMenus, setFirebaseMenus] = useState<any[]>([]);
+  const [loadingFirebaseMenus, setLoadingFirebaseMenus] = useState(false);
 
   // Load profile, sync status, and menus
   useEffect(() => {
@@ -750,8 +755,9 @@ const ThezoneorderSyncTab = () => {
               const fbRes = await fetch(`${API_URL}/menu-sync/firebase-restaurant/${profileRes.firebase_restaurant_id}`);
               if (fbRes.ok) setCloudConnected(true);
             } catch {}
-            // Load backups
+            // Load backups and Firebase menus
             loadBackups(profileRes.firebase_restaurant_id);
+            loadFirebaseMenus(profileRes.firebase_restaurant_id);
           }
         }
         if (syncRes?.stats) {
@@ -759,9 +765,6 @@ const ThezoneorderSyncTab = () => {
         }
         if (Array.isArray(menusRes)) {
           setMenus(menusRes.filter((m: any) => !m.is_deleted));
-          if (menusRes.length > 0) {
-            setSelectedMenuId(menusRes[0].menu_id?.toString() || '');
-          }
         }
       } catch (e) {
         console.error('Failed to load data:', e);
@@ -897,12 +900,7 @@ const ThezoneorderSyncTab = () => {
       alert('Please enter Thezoneorder Restaurant ID first');
       return;
     }
-    if (!selectedMenuId) {
-      alert('Please select a menu to upload');
-      return;
-    }
-    const selectedMenu = menus.find(m => m.menu_id?.toString() === selectedMenuId);
-    if (!window.confirm(`⚠️ Upload "${selectedMenu?.name || 'Selected Menu'}" to Thezoneorder?\n\nThis will upload:\n1. Modifier Groups\n2. Tax Groups\n3. Printer Groups\n4. Menu\n\nExisting Thezoneorder data will be backed up and replaced.`)) return;
+    if (!window.confirm(`⚠️ Upload "Menu" to Thezoneorder?\n\nThis will upload:\n1. Modifier Groups\n2. Tax Groups\n3. Printer Groups\n4. Menu\n\nExisting Thezoneorder data will be backed up and replaced.`)) return;
     
     setUploading(true);
     
@@ -961,7 +959,7 @@ const ThezoneorderSyncTab = () => {
         throw new Error(`Menu upload failed: ${data.error || 'Unknown error'}`);
       }
       
-      alert(`✅ Step 4 Complete!\n\nMenu uploaded successfully!\n\n📤 Uploaded "${selectedMenu?.name}":\n  Categories: ${data.summary.categoriesUploaded}\n  Items: ${data.summary.itemsUploaded}\n\n💾 Backup saved:\n  Categories: ${data.backup?.categoriesBackedUp || 0}\n  Items: ${data.backup?.itemsBackedUp || 0}\n\n✅ All uploads completed successfully!`);
+      alert(`✅ Step 4 Complete!\n\nMenu uploaded successfully!\n\n📤 Uploaded "Menu":\n  Categories: ${data.summary.categoriesUploaded}\n  Items: ${data.summary.itemsUploaded}\n\n💾 Backup saved:\n  Categories: ${data.backup?.categoriesBackedUp || 0}\n  Items: ${data.backup?.itemsBackedUp || 0}\n\n✅ All uploads completed successfully!`);
       
         loadBackups(profile.firebase_restaurant_id);
         const syncRes = await fetch(`${API_URL}/menu-sync/sync-status`).then(r => r.json()).catch(() => null);
@@ -991,6 +989,84 @@ const ThezoneorderSyncTab = () => {
       }
     } catch (e: any) {
       alert('❌ Restore failed: ' + e.message);
+    }
+  };
+
+  // 🆕 전체 동기화 (TZO Cloud 형식) - 메뉴 컨테이너 + 카테고리 + 아이템 모두 동기화
+  const handleFullSyncToCloud = async () => {
+    if (!profile.firebase_restaurant_id) {
+      alert('Please enter Thezoneorder Restaurant ID first');
+      return;
+    }
+    if (!window.confirm(`🔄 Full Sync "Menu" to TZO Cloud?\n\n이 작업은:\n1. 모디파이어 그룹 업로드\n2. 세금 그룹 업로드\n3. 프린터 그룹 업로드\n4. 카테고리 업로드\n5. 메뉴 아이템 업로드\n6. 모든 연결 정보 업로드\n\n⚠️ 기존 같은 이름의 메뉴는 교체됩니다.\n\n계속하시겠습니까?`)) return;
+    
+    setFullSyncing(true);
+    
+    try {
+      // Full sync to Firebase (모든 데이터를 한 번에 업로드)
+      const res = await fetch(`${API_URL}/menu-sync/full-sync-to-firebase`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
+        body: JSON.stringify({ 
+          restaurantId: profile.firebase_restaurant_id,
+          menuId: selectedMenuId,
+          deleteExisting: true
+        })
+      });
+      const data = await res.json();
+      
+      if (!data.success) {
+        throw new Error(data.error || 'Full sync failed');
+      }
+      
+      const s = data.summary;
+      alert(`✅ Full Sync Complete!\n\n📁 Menu: ${s.menuName}\n\n📦 업로드된 데이터:\n• 모디파이어 그룹: ${s.modifierGroupsUploaded || 0}개\n• 세금 그룹: ${s.taxGroupsUploaded || 0}개\n• 프린터 그룹: ${s.printerGroupsUploaded || 0}개\n• 카테고리: ${s.categoriesUploaded}개\n• 아이템: ${s.itemsUploaded}개\n\n🔗 연결:\n• 카테고리-모디파이어: ${s.categoryModifierLinksUploaded || 0}개\n• 아이템-모디파이어: ${s.itemModifierLinksUploaded || 0}개\n• 카테고리-세금: ${s.categoryTaxLinksUploaded || 0}개\n• 아이템-세금: ${s.itemTaxLinksUploaded || 0}개\n• 카테고리-프린터: ${s.categoryPrinterLinksUploaded || 0}개\n• 아이템-프린터: ${s.itemPrinterLinksUploaded || 0}개\n\n🔗 Firebase Menu ID:\n${s.firebaseMenuId}\n\n이제 TZO Cloud와 온라인 주문에서 이 메뉴를 사용할 수 있습니다.`);
+      
+      // Refresh Firebase menus list
+      loadFirebaseMenus(profile.firebase_restaurant_id);
+      
+    } catch (e: any) {
+      alert(`❌ Full Sync Failed: ${e.message}\n\n일부 그룹은 업로드되었을 수 있습니다.`);
+    } finally {
+      setFullSyncing(false);
+    }
+  };
+
+  // Load Firebase menus
+  const loadFirebaseMenus = async (restaurantId: string) => {
+    setLoadingFirebaseMenus(true);
+    try {
+      const res = await fetch(`${API_URL}/menu-sync/firebase-menus/${restaurantId}`);
+      const data = await res.json();
+      if (data.success) {
+        setFirebaseMenus(data.menus || []);
+      }
+    } catch (e) {
+      console.error('Failed to load Firebase menus:', e);
+    } finally {
+      setLoadingFirebaseMenus(false);
+    }
+  };
+
+  // Delete Firebase menu
+  const handleDeleteFirebaseMenu = async (menuId: string, menuName: string) => {
+    if (!window.confirm(`⚠️ Delete "${menuName}" from TZO Cloud?\n\n이 메뉴와 연결된 모든 카테고리, 아이템이 삭제됩니다.\n\n⚠️ 이 작업은 취소할 수 없습니다!`)) return;
+    
+    try {
+      const res = await fetch(`${API_URL}/menu-sync/firebase-menu/${profile.firebase_restaurant_id}/${menuId}`, {
+        method: 'DELETE',
+        headers: { 'X-Role': 'MANAGER' }
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        alert(`✅ Deleted!\n\nCategories: ${data.deletedCategories}개\nItems: ${data.deletedItems}개`);
+        loadFirebaseMenus(profile.firebase_restaurant_id);
+      } else {
+        alert('❌ Delete failed: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e: any) {
+      alert('❌ Delete failed: ' + e.message);
     }
   };
 
@@ -1250,36 +1326,56 @@ const ThezoneorderSyncTab = () => {
         
             <div className="p-6 space-y-6">
               {/* Upload Section */}
-              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+              <div className="border border-green-300 rounded-lg p-4 bg-green-50">
                 <div className="flex items-center gap-2 mb-4">
-                  <span className="text-2xl">📤</span>
-                  <h3 className="text-lg font-bold text-gray-800">Upload to Thezoneorder</h3>
+                  <span className="text-2xl">🔄</span>
+                  <h3 className="text-lg font-bold text-green-800">Full Sync to TZO Cloud</h3>
+                  <span className="ml-auto text-xs bg-green-600 text-white px-2 py-1 rounded-full">추천</span>
           </div>
           
                 <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Select Menu</label>
-              <select
-                value={selectedMenuId}
-                onChange={(e) => setSelectedMenuId(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white"
-              >
-                      <option value="">Select Menu</option>
-                      {menus.map((menu) => (
-                    <option key={menu.menu_id} value={menu.menu_id?.toString()}>
-                      {menu.name}
-                    </option>
-                      ))}
-              </select>
-            </div>
-            
+            <button 
+              onClick={handleFullSyncToCloud}
+              disabled={fullSyncing || !profile.firebase_restaurant_id}
+                    className={`w-full px-4 py-3 rounded-lg text-sm font-bold transition-all ${
+                      fullSyncing 
+                        ? 'bg-gray-300 cursor-not-allowed text-gray-500' 
+                        : 'bg-green-600 text-white hover:bg-green-700 shadow-sm hover:shadow'
+              }`}
+            >
+                    {fullSyncing ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <span className="animate-spin">⏳</span>
+                        Syncing...
+                      </span>
+                    ) : (
+                      '🔄 Full Sync to Cloud'
+                    )}
+            </button>
+                  
+                  <p className="text-xs text-gray-600 mt-2">
+                    ✅ 메뉴 + 카테고리 + 아이템을 TZO Cloud에 완전히 동기화합니다.<br/>
+                    ✅ posId가 포함되어 온라인 주문 시 프린터 라우팅이 정확해집니다.
+                  </p>
+                </div>
+          </div>
+
+              {/* Legacy Upload Section */}
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-2xl">📤</span>
+                  <h3 className="text-lg font-bold text-gray-800">Legacy Upload</h3>
+                  <span className="ml-auto text-xs bg-gray-400 text-white px-2 py-1 rounded-full">기존방식</span>
+          </div>
+          
+                <div className="space-y-3">
             <button 
               onClick={handleUploadToThezoneorder}
               disabled={uploading || !profile.firebase_restaurant_id || !selectedMenuId}
-                    className={`w-full px-4 py-3 rounded-lg text-sm font-bold transition-all ${
+                    className={`w-full px-4 py-3 rounded-lg text-sm font-medium transition-all ${
                       uploading || !selectedMenuId 
                         ? 'bg-gray-300 cursor-not-allowed text-gray-500' 
-                        : 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm hover:shadow'
+                        : 'bg-gray-600 text-white hover:bg-gray-700 shadow-sm hover:shadow'
               }`}
             >
                     {uploading ? (
@@ -1288,12 +1384,12 @@ const ThezoneorderSyncTab = () => {
                         Uploading...
                       </span>
                     ) : (
-                      '📤 Upload All'
+                      '📤 Upload (Legacy)'
                     )}
             </button>
                   
                   <p className="text-xs text-gray-500 mt-2">
-                    Uploads: Modifiers → Taxes → Printers → Menu
+                    ⚠️ 기존 방식: 최상위 컬렉션에 업로드 (권장하지 않음)
                   </p>
                 </div>
           </div>
@@ -1381,14 +1477,92 @@ const ThezoneorderSyncTab = () => {
         )}
           </div>
         </div>
+
+        {/* TZO Cloud Menus Section - Full Width */}
+        <div className="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-green-700 px-6 py-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <span className="text-2xl">☁️</span>
+                TZO Cloud Menus (Firebase)
+              </h2>
+              <button
+                onClick={() => loadFirebaseMenus(profile.firebase_restaurant_id)}
+                disabled={!profile.firebase_restaurant_id || loadingFirebaseMenus}
+                className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-500 transition-all"
+              >
+                {loadingFirebaseMenus ? '⏳' : '🔄'} Refresh
+              </button>
+            </div>
+          </div>
+          
+          <div className="p-6">
+            {!profile.firebase_restaurant_id ? (
+              <div className="text-center py-8 text-gray-500">
+                <div className="text-4xl mb-2">🔗</div>
+                <div>Please enter Thezoneorder Restaurant ID first.</div>
+              </div>
+            ) : loadingFirebaseMenus ? (
+              <div className="text-center py-8 text-gray-500">
+                <div className="animate-spin text-4xl mb-2">⏳</div>
+                <div>Loading TZO Cloud menus...</div>
+              </div>
+            ) : firebaseMenus.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <div className="text-4xl mb-2">📭</div>
+                <div>No menus in TZO Cloud.</div>
+                <div className="text-sm mt-1">Use "Full Sync to Cloud" to upload menus from POS.</div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {firebaseMenus.map((menu) => (
+                  <div key={menu.id} className="bg-green-50 rounded-lg p-4 border border-green-200 hover:shadow transition-all">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex-1">
+                        <div className="font-bold text-gray-800 text-lg mb-1">
+                          {menu.name}
+                        </div>
+                        <div className="text-xs text-gray-600 mb-2">
+                          {menu.description || 'No description'}
+                        </div>
+                        <div className="text-xs text-gray-500 mb-1">
+                          ID: <span className="font-mono text-xs">{menu.id}</span>
+                        </div>
+                        {menu.posId && (
+                          <div className="text-xs text-green-600">
+                            ✅ POS ID: {menu.posId}
+                          </div>
+                        )}
+                        <div className="text-xs text-gray-500 mt-1">
+                          Channels: {(menu.sales_channels || []).join(', ') || 'None'}
+                        </div>
+                      </div>
+                      <div className={`w-3 h-3 rounded-full ${menu.is_active === 1 || menu.is_active === true ? 'bg-green-500' : 'bg-gray-400'}`}></div>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteFirebaseMenu(menu.id, menu.name)}
+                      className="w-full px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium transition-all shadow-sm hover:shadow"
+                    >
+                      🗑️ Delete from Cloud
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
 const MenuListPage = () => {
-  // Tab state
-  const [activeTab, setActiveTab] = useState<'menus' | 'tax' | 'sync'>('menus');
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  // Tab state - URL param으로 tax 또는 sync가 지정되면 해당 탭 표시, 아니면 menus(→ 편집 페이지로 리다이렉트)
+  const [activeTab, setActiveTab] = useState<'menus' | 'tax' | 'sync'>(
+    tabParam === 'tax' ? 'tax' : tabParam === 'sync' ? 'sync' : 'menus'
+  );
   
   const [menus, setMenus] = useState<Menu[]>([]);
   const [isAdding, setIsAdding] = useState(false);
@@ -1420,6 +1594,13 @@ const MenuListPage = () => {
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   // Manager PIN 모달 제거
   const navigate = useNavigate();
+
+  // 'menus' 탭 선택시 자동으로 메뉴 편집 페이지로 이동 (고정 메뉴 ID: 200005)
+  useEffect(() => {
+    if (activeTab === 'menus') {
+      navigate('/backoffice/menu/edit/200005', { replace: true });
+    }
+  }, [activeTab, navigate]);
 
   useEffect(() => {
     const fetchAllMenus = async () => {
@@ -1577,17 +1758,17 @@ const MenuListPage = () => {
           {/* Tabs */}
           <div className="flex gap-1">
             <button
-              onClick={() => setActiveTab('menus')}
+              onClick={() => navigate('/backoffice/menu/edit/200005')}
               className={`px-4 py-2 font-medium rounded-t-lg transition-colors text-sm ${
                 activeTab === 'menus'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
-              Menus
+              Menu
             </button>
             <button
-              onClick={() => setActiveTab('tax')}
+              onClick={() => { setActiveTab('tax'); navigate('/backoffice/menu?tab=tax', { replace: true }); }}
               className={`px-4 py-2 font-medium rounded-t-lg transition-colors text-sm ${
                 activeTab === 'tax'
                   ? 'bg-blue-600 text-white'
@@ -1597,7 +1778,7 @@ const MenuListPage = () => {
               Tax Settings
             </button>
             <button
-              onClick={() => setActiveTab('sync')}
+              onClick={() => { setActiveTab('sync'); navigate('/backoffice/menu?tab=sync', { replace: true }); }}
               className={`px-4 py-2 font-medium rounded-t-lg transition-colors text-sm ${
                 activeTab === 'sync'
                   ? 'bg-orange-500 text-white'

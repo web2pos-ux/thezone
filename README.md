@@ -25,8 +25,8 @@ PORT=3177
 # 프론트엔드 주소
 CORS_ORIGIN=http://localhost:3088
 
-# SQLite DB 경로 (web2pos.db만 사용)
-DB_PATH=db/web2pos.db
+# SQLite DB 경로 (tzp.db만 사용)
+DB_PATH=db/tzp.db
 ```
 
 ## 🧩 ID 생성 규칙 (idGenerator.js 기반)
@@ -188,10 +188,40 @@ npm start
 ## 📁 관련 파일
 - `idGenerator.js`: 모든 ID 생성 로직 정의
 - `.env`: 환경 변수 파일
-- `web2pos.db`: SQLite 데이터베이스 파일
+- `tzp.db`: SQLite 데이터베이스 파일
 
 ## 🗄️ 데이터베이스 사용 규칙
-- **데이터베이스 파일**: `web2pos.db`만 사용합니다.
-- **경로**: `db/web2pos.db` (상대 경로)
+- **데이터베이스 파일**: `tzp.db`만 사용합니다.
+- **경로**: `db/tzp.db` (상대 경로)
 - **다른 .db 파일**: 무시하거나 삭제하세요.
-- **백업**: 필요시 `web2pos.db` 파일만 백업하세요. 
+- **백업**: 필요시 `tzp.db` 파일만 백업하세요.
+
+## 🔥 Firebase ID 처리 규칙 (중요!)
+
+### ⚠️ 절대 parseInt()로 Firebase 문서 ID를 변환하지 마세요!
+
+Firebase 문서 ID는 `"1KPpCzNIjYVzP96ZMXUM"` 같은 랜덤 문자열입니다.
+JavaScript의 `parseInt()`는 숫자로 시작하는 문자열을 잘못 변환합니다:
+
+```javascript
+// ❌ 잘못된 예 - 절대 사용 금지!
+const id = parseInt(doc.id, 10);  
+// "1KPpCzNIjYVzP96ZMXUM" → 1 (버그!)
+// "9gdaO21hhyR3jFovDSPr" → 9 (버그!)
+
+// ✅ 올바른 예
+const id = doc.id;  // 문자열 그대로 사용
+```
+
+### SQLite vs Firebase ID 차이점
+
+| 시스템 | ID 타입 | 예시 |
+|--------|---------|------|
+| **SQLite (POS)** | 숫자 (INTEGER) | `15001`, `10002` |
+| **Firebase** | 문자열 (랜덤) | `"1KPpCzNIjYVzP96ZMXUM"` |
+| **동기화용 firebase_id** | 문자열 | `"1KPpCzNIjYVzP96ZMXUM"` |
+
+### 규칙 요약
+1. **POS 내부**: `item_id`, `category_id` 등은 **숫자** 사용 OK
+2. **Firebase 관련**: `firebase_id`, `categoryId` 등은 **문자열** 사용 필수
+3. **TZO 앱**: 모든 ID는 **문자열**로 처리 

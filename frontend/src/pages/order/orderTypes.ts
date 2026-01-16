@@ -3,6 +3,7 @@ export interface OrderItem {
   orderLineId?: string; // unique per UI row (menu id + timestamp/random), used for selection and edits
   name: string;
   short_name?: string;
+  category?: string;  // 아이템의 카테고리 이름 (클릭 시 해당 카테고리로 이동용)
   quantity: number;
   price: number;
   modifiers?: {
@@ -20,6 +21,7 @@ export interface OrderItem {
   note?: string | null;
   taxGroupId?: number | null;
   printerGroupId?: number | null;
+  printer_groups?: number[];  // 여러 프린터 그룹에 출력해야 하는 경우
   memo?: { text: string; price: number } | undefined;
   discount?: {
     type: string;
@@ -44,6 +46,7 @@ export interface MenuItem {
   is_available?: boolean;
   sort_order?: number;
   short_name?: string;
+  printer_groups?: number[];  // 메뉴 아이템이 출력될 프린터 그룹 ID 배열
 }
 
 export interface Category {
