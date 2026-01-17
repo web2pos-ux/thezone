@@ -4506,6 +4506,10 @@ const SalesPage: React.FC = () => {
       case 'Back Office':
         navigate('/backoffice/tables');
         break;
+      case 'QSR/Cafe':
+        console.log('QSR/Cafe 버튼 클릭됨');
+        navigate('/qsr');
+        break;
       default:
         console.log(`${buttonName} 버튼이 클릭되었습니다.`);
         break;
@@ -5140,6 +5144,7 @@ const SalesPage: React.FC = () => {
     'Waiting List',
     'Gift Card',
     'Online',
+    'QSR/Cafe',
     'Clock In/Out',
     'Closing'
   ];

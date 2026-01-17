@@ -25,6 +25,8 @@ import HandheldSetupPage from './pages/HandheldSetupPage';
 import HandheldPage from './pages/HandheldPage';
 import SubPosSetupPage from './pages/SubPosSetupPage';
 import SubPosPage from './pages/SubPosPage';
+import QsrSetupPage from './pages/QsrSetupPage';
+import QsrPage from './pages/QsrPage';
 import KioskOrderPage from './pages/KioskOrderPage';
 import TableReservationSettingsPage from './pages/TableReservationSettingsPage';
 import EmployeeManagerPage from './pages/EmployeeManagerPage';
@@ -78,6 +80,12 @@ function App() {
           {/* 서브 POS (보조 결제 스테이션) */}
           <Route path="/sub-pos-setup" element={<SubPosSetupPage />} />
           <Route path="/sub-pos" element={<SubPosPage />} />
+          
+          {/* QSR / 카페 모드 */}
+          <Route path="/qsr-setup" element={<QsrSetupPage />} />
+          <Route path="/qsr" element={<QsrPage />} />
+          <Route path="/cafe" element={<QsrPage />} />
+          
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/order" element={
             <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
