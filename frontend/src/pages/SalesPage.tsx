@@ -4,7 +4,6 @@ import { API_URL } from '../config/constants';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
 import WaitingListModal from '../components/waiting/WaitingListModal';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
-import ClockInOutButtons from '../components/ClockInOutButtons';
 import PinInputModal from '../components/PinInputModal';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { useMenuCache } from '../contexts/MenuCacheContext';
@@ -402,6 +401,13 @@ const SalesPage: React.FC = () => {
     };
   });
 
+  // Day Off 설정 state
+  const [dayOffDates, setDayOffDates] = useState<{ date: string; reason: string | null; channels: string }[]>([]);
+  const [dayOffCalendarMonth, setDayOffCalendarMonth] = useState<Date>(new Date());
+  const [dayOffSelectedDates, setDayOffSelectedDates] = useState<string[]>([]);
+  const [dayOffSelectedChannels, setDayOffSelectedChannels] = useState<string[]>(['all']);
+  const [dayOffSaveStatus, setDayOffSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
   // 새 온라인 주문 알림 모달 상태
   const [showNewOrderAlert, setShowNewOrderAlert] = useState<boolean>(false);
   const [newOrderAlertData, setNewOrderAlertData] = useState<any>(null);
@@ -417,8 +423,12 @@ const SalesPage: React.FC = () => {
   const [orderListLoading, setOrderListLoading] = useState<boolean>(false);
   const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
   const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
+  const [orderListTab, setOrderListTab] = useState<'history' | 'live'>('history');
+  const [liveOrders, setLiveOrders] = useState<any[]>([]);
+  const [liveOrderHighlightItem, setLiveOrderHighlightItem] = useState<string | null>(null);
   
   // Order List modal scroll refs
+  const liveOrderCardRefs = useRef<{ [tableId: string]: HTMLDivElement | null }>({});
   const orderListScrollRef = useRef<HTMLDivElement>(null);
   const orderDetailScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1422,6 +1432,133 @@ const SalesPage: React.FC = () => {
     const t = setInterval(loadOnlineOrders, 30000); // 30초마다 백업 갱신
     return () => clearInterval(t);
   }, [loadOnlineOrders]);
+
+  // Day Off 데이터 로드
+  const loadDayOffDates = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/online-orders/day-off`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && Array.isArray(data.dayOffs)) {
+          setDayOffDates(data.dayOffs.map((d: any) => ({ 
+            date: d.date, 
+            reason: d.reason,
+            channels: d.channels || 'all'
+          })));
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load day off dates:', error);
+    }
+  }, [API_URL]);
+
+  useEffect(() => {
+    loadDayOffDates();
+  }, [loadDayOffDates]);
+
+  // Day Off 날짜 선택 토글 (UI용 - 아직 저장 안함)
+  const toggleDayOffSelection = (dateStr: string) => {
+    setDayOffSaveStatus('idle'); // 변경 시 상태 리셋
+    setDayOffSelectedDates(prev => {
+      if (prev.includes(dateStr)) {
+        return prev.filter(d => d !== dateStr);
+      } else {
+        return [...prev, dateStr].sort();
+      }
+    });
+  };
+
+  // Day Off 채널 선택 토글
+  const toggleDayOffChannel = (channel: string) => {
+    setDayOffSaveStatus('idle'); // 변경 시 상태 리셋
+    if (channel === 'all') {
+      // All Channels 토글: 이미 all이면 해제, 아니면 all 선택
+      setDayOffSelectedChannels(prev => {
+        if (prev.includes('all')) {
+          return []; // 전체 해제
+        } else {
+          return ['all']; // 전체 선택
+        }
+      });
+    } else {
+      setDayOffSelectedChannels(prev => {
+        const newChannels = prev.filter(c => c !== 'all');
+        if (newChannels.includes(channel)) {
+          return newChannels.filter(c => c !== channel);
+        } else {
+          return [...newChannels, channel];
+        }
+      });
+    }
+  };
+
+  // Day Off 저장 (선택된 날짜들 저장) - Firebase 동기화 포함
+  const saveDayOffs = async () => {
+    // 저장할 날짜가 없거나 이미 저장 중이면 무시
+    if (dayOffSelectedDates.length === 0) {
+      console.log('[Day Off] No dates selected');
+      return;
+    }
+    if (dayOffSaveStatus === 'saving') {
+      console.log('[Day Off] Already saving...');
+      return;
+    }
+
+    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    console.log('[Day Off] Saving...', dayOffSelectedDates, dayOffSelectedChannels, 'restaurantId:', restaurantId);
+    setDayOffSaveStatus('saving');
+    
+    const channelsStr = dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes('all')
+      ? 'all'
+      : dayOffSelectedChannels.join(',');
+
+    try {
+      const res = await fetch(`${API_URL}/online-orders/day-off/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dates: dayOffSelectedDates,
+          channels: channelsStr,
+          restaurantId: restaurantId || undefined
+        })
+      });
+      
+      const data = await res.json();
+      console.log('[Day Off] Response:', data);
+      
+      if (res.ok && data.success) {
+        await loadDayOffDates();
+        // 저장 후 선택된 날짜 유지 (사라지지 않음)
+        setDayOffSaveStatus('saved');
+        console.log('[Day Off] Save successful! (synced to Firebase)');
+      } else {
+        console.error('[Day Off] Save failed:', data);
+        setDayOffSaveStatus('idle');
+      }
+    } catch (err) {
+      console.error('[Day Off] Save error:', err);
+      setDayOffSaveStatus('idle');
+    }
+  };
+
+  // Day Off 삭제 - Firebase 동기화 포함
+  const removeDayOff = async (dateStr: string) => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const url = restaurantId 
+        ? `${API_URL}/online-orders/day-off/${dateStr}?restaurantId=${restaurantId}`
+        : `${API_URL}/online-orders/day-off/${dateStr}`;
+      
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.ok) {
+        setDayOffDates(prev => prev.filter(d => d.date !== dateStr));
+        setDayOffSaveStatus('idle'); // 삭제 시 상태 리셋
+        console.log('[Day Off] Removed:', dateStr, '(synced to Firebase)');
+      }
+    } catch (err) {
+      console.error('Day off remove error:', err);
+    }
+  };
 
   // SSE 실시간 푸시 연결 - 새 주문 즉시 감지
   useEffect(() => {
@@ -3304,11 +3441,23 @@ const SalesPage: React.FC = () => {
         footer: { message: 'Thank you for dining with us!' }
       };
 
-      // 9. 프린터로 출력
-      const printResponse = await fetch(`${API_URL}/printers/print`, { 
+      // 9. 프린터로 출력 (print-bill API 사용 - billLayout 적용)
+      const printResponse = await fetch(`${API_URL}/printers/print-bill`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ printerGroupId: 'RECEIPT', items: fullReceipt }) 
+        body: JSON.stringify({ 
+          billData: {
+            header: fullReceipt.header,
+            orderInfo: fullReceipt.orderInfo,
+            guestSections: fullReceipt.body.guestSections,
+            subtotal: fullReceipt.body.subtotal,
+            adjustments: fullReceipt.body.adjustments,
+            taxLines: fullReceipt.body.taxLines,
+            taxesTotal: fullReceipt.body.taxesTotal,
+            total: fullReceipt.body.total,
+            footer: fullReceipt.footer
+          }
+        }) 
       });
 
       if (printResponse.ok) {
@@ -3367,6 +3516,117 @@ const SalesPage: React.FC = () => {
       console.error('Failed to fetch order details:', error);
     }
   };
+
+  // Live Order 로드 - 테이블별 미결제 주문
+  const fetchLiveOrders = useCallback(async () => {
+    try {
+      // 먼저 테이블 데이터를 최신 상태로 가져오기 (모든 층)
+      let currentTableElements = tableElements;
+      try {
+        const tableRes = await fetch(`${API_URL}/table-map/elements`);
+        if (tableRes.ok) {
+          const tableData = await tableRes.json();
+          currentTableElements = tableData.elements || tableData || [];
+        }
+      } catch (e) {
+        console.warn('[Live Order] Failed to fetch latest table data:', e);
+      }
+
+      // 테이블에 연결된 주문 ID 가져오기
+      const tableOrdersMap: { tableId: string; tableLabel: string; orderId: string }[] = [];
+      
+      currentTableElements
+        .filter((t: any) => t.type === 'rounded-rectangle' || t.type === 'circle')
+        .forEach((table: any) => {
+          // 1. DB에서 가져온 current_order_id 우선 확인
+          // 2. localStorage의 lastOrderIdByTable_ 키 확인 (OrderPage와 동일)
+          const dbOrderId = table.current_order_id;
+          const localOrderId = localStorage.getItem(`lastOrderIdByTable_${table.id}`);
+          const orderId = dbOrderId || localOrderId;
+          
+          console.log(`[Live Order] Table ${table.id}: DB orderId=${dbOrderId}, Local orderId=${localOrderId}`);
+          
+          if (orderId && orderId !== 'null' && orderId !== '' && String(orderId) !== '0') {
+            tableOrdersMap.push({
+              tableId: table.id,
+              tableLabel: table.text || `Table ${table.id}`,
+              orderId: String(orderId)
+            });
+          }
+        });
+
+      console.log('[Live Order] Tables with orders:', tableOrdersMap);
+
+      // 각 주문의 상세 정보 가져오기
+      const ordersWithDetails = await Promise.all(
+        tableOrdersMap.map(async (tableOrder) => {
+          try {
+            const response = await fetch(`${API_URL}/orders/${tableOrder.orderId}`);
+            const data = await response.json();
+            console.log(`[Live Order] Order ${tableOrder.orderId} data:`, data);
+            
+            if (data.success && data.order) {
+              // PENDING, UNPAID, 또는 빈 상태만 포함 (결제 완료된 주문 제외)
+              const status = (data.order.status || '').toUpperCase();
+              const isPaid = status === 'PAID' || status === 'CLOSED' || status === 'COMPLETED';
+              
+              if (!isPaid) {
+                return {
+                  ...tableOrder,
+                  order: data.order,
+                  items: (data.items || []).map((item: any) => ({
+                    ...item,
+                    modifiers: item.modifiers_json ? JSON.parse(item.modifiers_json) : [],
+                    memo: item.memo_json ? JSON.parse(item.memo_json) : null
+                  }))
+                };
+              } else {
+                console.log(`[Live Order] Order ${tableOrder.orderId} is paid, skipping`);
+              }
+            }
+          } catch (err) {
+            console.error(`Failed to fetch order ${tableOrder.orderId}:`, err);
+          }
+          return null;
+        })
+      );
+
+      setLiveOrders(ordersWithDetails.filter(Boolean));
+    } catch (error) {
+      console.error('Failed to fetch live orders:', error);
+    }
+  }, [tableElements, API_URL]);
+
+  // Live Order 탭 선택 시 초기 로드
+  useEffect(() => {
+    if (orderListTab === 'live' && showOrderListModal) {
+      fetchLiveOrders();
+    }
+  }, [orderListTab, showOrderListModal, fetchLiveOrders]);
+
+  // 주문 생성/결제 이벤트 리스너 - Live Order 실시간 업데이트
+  useEffect(() => {
+    const handleOrderChange = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      console.log('[Live Order] Event received:', e.type, detail);
+      
+      // Live Order 탭이 열려있으면 즉시 새로고침
+      if (orderListTab === 'live' && showOrderListModal) {
+        fetchLiveOrders();
+      }
+    };
+
+    // 커스텀 이벤트 리스너 등록
+    window.addEventListener('orderCreated', handleOrderChange);
+    window.addEventListener('orderPaid', handleOrderChange);
+    window.addEventListener('orderUpdated', handleOrderChange);
+
+    return () => {
+      window.removeEventListener('orderCreated', handleOrderChange);
+      window.removeEventListener('orderPaid', handleOrderChange);
+      window.removeEventListener('orderUpdated', handleOrderChange);
+    };
+  }, [orderListTab, showOrderListModal, fetchLiveOrders]);
 
   const handleOrderListDateChange = (days: number) => {
     const current = new Date(orderListDate);
@@ -3447,10 +3707,23 @@ const SalesPage: React.FC = () => {
         footer: { message: 'Thank you for dining with us!' }
       };
 
-      await fetch(`${API_URL}/printers/print`, { 
+      // print-bill API 사용 - billLayout 적용
+      await fetch(`${API_URL}/printers/print-bill`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ printerGroupId: 'RECEIPT', items: fullReceipt }) 
+        body: JSON.stringify({ 
+          billData: {
+            header: fullReceipt.header,
+            orderInfo: fullReceipt.orderInfo,
+            guestSections: fullReceipt.body.guestSections,
+            subtotal: fullReceipt.body.subtotal,
+            adjustments: fullReceipt.body.adjustments,
+            taxLines: fullReceipt.body.taxLines,
+            taxesTotal: fullReceipt.body.taxesTotal,
+            total: fullReceipt.body.total,
+            footer: fullReceipt.footer
+          }
+        }) 
       });
       
       alert('Bill printed successfully!');
@@ -3466,37 +3739,43 @@ const SalesPage: React.FC = () => {
     try {
       // 아이템별 프린터 그룹 설정에 따라 분기 출력
       const kitchenItems = orderListSelectedItems.map((item: any) => ({
-        item_id: item.item_id, // 프린터 그룹 조회를 위해 item_id 포함
+        id: item.item_id, // 프린터 그룹 조회를 위해 item_id 포함
         name: item.name || 'Unknown Item',
         quantity: item.quantity || 1,
+        guestNumber: item.guest_number || 1,
         modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
         memo: item.memo_json ? (typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json) : null
       }));
 
-      const response = await fetch(`${API_URL}/printers/print-kitchen-by-group`, { 
+      // 주문 타입 결정 (Dine-In, Togo, Online, Delivery 등)
+      const orderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      
+      const response = await fetch(`${API_URL}/printers/print-order`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
-          orderId: orderListSelectedOrder.id,
           items: kitchenItems,
           orderInfo: {
             orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id,
-            table: orderListSelectedOrder.table_id,
-            orderType: orderListSelectedOrder.order_type
-          }
+            table: orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '',
+            orderType: orderType,
+            channel: orderType,
+            server: orderListSelectedOrder.server_name || '',
+            customerName: orderListSelectedOrder.customer_name || '',
+            customerPhone: orderListSelectedOrder.customer_phone || '',
+            externalOrderNumber: orderListSelectedOrder.external_order_number || ''
+          },
+          isReprint: true, // Reprint 표시 추가
+          isPaid: orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'PAID' || orderListSelectedOrder.status === 'closed'
         }) 
       });
       
       const result = await response.json();
       
       if (result.success) {
-        let message = 'Sent to kitchen!';
-        if (result.unassignedItems && result.unassignedItems.length > 0) {
-          message += `\n\n⚠️ Warning: ${result.unassignedItems.length} items have no printer group:\n${result.unassignedItems.join(', ')}`;
-        }
-        alert(message);
+        alert('🔄 Reprint sent to kitchen!');
       } else {
-        alert(`Print result: ${result.message || 'Partial success'}`);
+        alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
       }
     } catch (error: any) {
       console.error('Print kitchen error:', error);
@@ -5592,19 +5871,6 @@ const SalesPage: React.FC = () => {
                 </button>
               ))}
             </div>
-            {/* Clock In/Out Buttons (오른쪽) */}
-            <div className="flex justify-end items-center">
-              <button
-                onClick={() => {
-                  console.log('테스트 버튼 클릭됨!');
-                  alert('버튼이 작동합니다!');
-                }}
-                className="h-9 px-3 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded mr-2"
-              >
-                테스트
-              </button>
-              <ClockInOutButtons compact />
-            </div>
           </div>
 
           {/* 2. 중앙 영역 (프레임 높이에서 헤더/푸터 제외) */}
@@ -6346,10 +6612,213 @@ const SalesPage: React.FC = () => {
                 
                 {/* Day Off Tab */}
                 {onlineModalTab === 'dayoff' && (
-                  <div className="flex flex-col items-center justify-center h-full py-12">
-                    <div className="text-5xl mb-4">📅</div>
-                    <div className="text-lg font-semibold text-gray-700 mb-2">Day Off Settings</div>
-                    <div className="text-sm text-gray-500">Coming soon...</div>
+                  <div className="flex h-full gap-3">
+                    {/* 왼쪽: 캘린더 (70%) */}
+                    <div className="flex flex-col bg-gray-50 rounded-lg p-3" style={{ width: '70%' }}>
+                      {/* 캘린더 헤더 */}
+                      <div className="flex items-center justify-between mb-2">
+                        <button
+                          onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() - 1, 1))}
+                          className="p-1.5 hover:bg-gray-200 rounded-lg transition"
+                        >
+                          <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                        </button>
+                        <div className="text-base font-bold text-gray-800">
+                          {dayOffCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                        </div>
+                        <button
+                          onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() + 1, 1))}
+                          className="p-1.5 hover:bg-gray-200 rounded-lg transition"
+                        >
+                          <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      </div>
+                      
+                      {/* 요일 헤더 */}
+                      <div className="grid grid-cols-7 gap-1 mb-1">
+                        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, idx) => (
+                          <div key={idx} className="text-center text-xs font-semibold text-gray-500 py-1">
+                            {day}
+                          </div>
+                        ))}
+                      </div>
+                      
+                      {/* 캘린더 그리드 */}
+                      <div className="grid grid-cols-7 gap-1 flex-1">
+                        {(() => {
+                          const year = dayOffCalendarMonth.getFullYear();
+                          const month = dayOffCalendarMonth.getMonth();
+                          const firstDay = new Date(year, month, 1).getDay();
+                          const daysInMonth = new Date(year, month + 1, 0).getDate();
+                          const today = new Date().toISOString().split('T')[0];
+                          const cells = [];
+                          
+                          // 빈 셀 (이전 달)
+                          for (let i = 0; i < firstDay; i++) {
+                            cells.push(<div key={`empty-${i}`} className="h-9" />);
+                          }
+                          
+                          // 날짜 셀
+                          for (let day = 1; day <= daysInMonth; day++) {
+                            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                            const isSavedDayOff = dayOffDates.some(d => d.date === dateStr);
+                            const isSelected = dayOffSelectedDates.includes(dateStr);
+                            const isToday = dateStr === today;
+                            const isPast = dateStr < today;
+                            
+                            cells.push(
+                              <button
+                                key={dateStr}
+                                onClick={() => !isPast && toggleDayOffSelection(dateStr)}
+                                disabled={isPast}
+                                className={`
+                                  h-9 rounded-lg text-sm font-semibold transition-all
+                                  ${isPast ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-white cursor-pointer'}
+                                  ${isSavedDayOff ? 'bg-red-500 text-white' : ''}
+                                  ${isSelected && !isSavedDayOff ? 'bg-blue-500 text-white' : ''}
+                                  ${isToday && !isSavedDayOff && !isSelected ? 'ring-2 ring-blue-400' : ''}
+                                `}
+                              >
+                                {day}
+                              </button>
+                            );
+                          }
+                          
+                          return cells;
+                        })()}
+                      </div>
+                      
+                      {/* 선택된 날짜 표시 - 항상 표시 */}
+                      <div className="mt-2 p-2 bg-blue-50 rounded-lg min-h-[52px]">
+                        <div className="text-xs text-blue-700 font-medium">
+                          Selected: {dayOffSelectedDates.length} date(s)
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {dayOffSelectedDates.slice(0, 5).map(d => (
+                            <span key={d} className="text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">
+                              {new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          ))}
+                          {dayOffSelectedDates.length > 5 && (
+                            <span className="text-xs text-blue-600">+{dayOffSelectedDates.length - 5} more</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* 저장된 Day Off 목록 */}
+                      {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-gray-200">
+                          <div className="flex flex-wrap gap-1">
+                            {dayOffDates
+                              .filter(d => d.date >= new Date().toISOString().split('T')[0])
+                              .sort((a, b) => a.date.localeCompare(b.date))
+                              .slice(0, 6)
+                              .map((d) => (
+                                <span
+                                  key={d.date}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium"
+                                >
+                                  {new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  <button onClick={() => removeDayOff(d.date)} className="hover:text-red-900 font-bold">×</button>
+                                </span>
+                              ))}
+                            {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length > 6 && (
+                              <span className="text-xs text-gray-500">+{dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length - 6} more</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* 오른쪽: 채널 선택 (30%) */}
+                    <div className="flex flex-col bg-slate-100 rounded-lg p-3" style={{ width: '30%' }}>
+                      <div className="text-sm font-bold text-gray-700 mb-2">Order Channels</div>
+                      <div className="space-y-2">
+                        {[
+                          { id: 'all', name: 'All Channels' },
+                          { id: 'thezoneorder', name: 'TheZoneOrder' },
+                          { id: 'ubereats', name: 'UberEats' },
+                          { id: 'doordash', name: 'DoorDash' },
+                          { id: 'skipthedishes', name: 'SkipTheDishes' },
+                        ].map((channel) => {
+                          const isAllSelected = dayOffSelectedChannels.includes('all');
+                          const isSelected = channel.id === 'all' 
+                            ? isAllSelected
+                            : isAllSelected || dayOffSelectedChannels.includes(channel.id);
+                          return (
+                            <button
+                              key={channel.id}
+                              onClick={() => toggleDayOffChannel(channel.id)}
+                              className={`
+                                w-full py-2 px-3 rounded-lg text-sm font-semibold text-center transition-all
+                                ${isSelected 
+                                  ? 'bg-blue-600 text-white ring-2 ring-blue-400' 
+                                  : 'bg-white text-gray-600 hover:bg-gray-200 border border-gray-300'}
+                              `}
+                            >
+                              {channel.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      
+                      {/* 저장 버튼 - 고정 높이로 위치 유지 */}
+                      <div className="mt-auto pt-3" style={{ minHeight: '90px' }}>
+                        {/* 저장 완료 상태 표시 */}
+                        {dayOffSaveStatus === 'saved' && (
+                          <div className="w-full h-12 rounded-lg bg-green-500 text-white font-bold text-sm flex items-center justify-center gap-2 mb-2">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Saved
+                          </div>
+                        )}
+                        
+                        {/* 저장 버튼 (저장 완료 상태가 아닐 때만) */}
+                        {dayOffSaveStatus !== 'saved' && (
+                          <button
+                            onClick={saveDayOffs}
+                            disabled={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0}
+                            className={`
+                              w-full h-12 rounded-lg font-bold text-sm transition-all flex items-center justify-center gap-2
+                              ${dayOffSaveStatus === 'saving'
+                                ? 'bg-gray-400 text-white cursor-wait'
+                                : dayOffSelectedDates.length > 0
+                                ? 'bg-red-500 hover:bg-red-600 text-white'
+                                : 'bg-gray-300 text-gray-500 cursor-not-allowed'}
+                            `}
+                          >
+                            {dayOffSaveStatus === 'saving'
+                              ? 'Saving...'
+                              : dayOffSelectedDates.length > 0
+                              ? `Set ${dayOffSelectedDates.length} Day(s) Off`
+                              : 'Select Dates'}
+                          </button>
+                        )}
+
+                        {/* 선택 해제 버튼 */}
+                        {dayOffSelectedDates.length > 0 && (
+                          <button
+                            onClick={() => {
+                              setDayOffSelectedDates([]);
+                              setDayOffSaveStatus('idle');
+                            }}
+                            className={`
+                              w-full mt-2 py-2 text-sm rounded-lg transition-all
+                              ${dayOffSaveStatus === 'saved'
+                                ? 'bg-gray-200 text-gray-700 hover:bg-gray-300 font-medium'
+                                : 'text-gray-500 hover:text-gray-700 hover:underline'}
+                            `}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -6364,8 +6833,28 @@ const SalesPage: React.FC = () => {
                 </button>
                 {onlineModalTab === 'preptime' && (
                   <button
-                    onClick={() => {
+                    onClick={async () => {
+                      // 로컬 저장
                       localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                      
+                      // Firebase 동기화
+                      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+                      if (restaurantId) {
+                        try {
+                          const res = await fetch(`${API_URL}/online-orders/prep-time/${restaurantId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ settings: prepTimeSettings })
+                          });
+                          const data = await res.json();
+                          if (data.success) {
+                            console.log('[Prep Time] Synced to Firebase');
+                          }
+                        } catch (err) {
+                          console.error('[Prep Time] Firebase sync error:', err);
+                        }
+                      }
+                      
                       setShowPrepTimeModal(false);
                     }}
                     className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
@@ -6535,29 +7024,56 @@ const SalesPage: React.FC = () => {
               >
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0">
-                  <h2 className="text-lg sm:text-xl font-bold text-white">Order History</h2>
+                  {/* 탭 버튼: Order History / Live Order */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { setOrderListTab('history'); setLiveOrderHighlightItem(null); }}
+                      className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                        orderListTab === 'history'
+                          ? 'bg-white text-slate-700'
+                          : 'bg-slate-600 text-white hover:bg-slate-500'
+                      }`}
+                    >
+                      Order History
+                    </button>
+                    <button
+                      onClick={() => setOrderListTab('live')}
+                      className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                        orderListTab === 'live'
+                          ? 'bg-green-500 text-white'
+                          : 'bg-slate-600 text-white hover:bg-slate-500'
+                      }`}
+                    >
+                      🟢 Live Order
+                    </button>
+                  </div>
                   <div className="flex items-center gap-2 sm:gap-3 relative">
-                    <button
-                      onClick={() => handleOrderListDateChange(-1)}
-                      className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
-                    >
-                      ◀
-                    </button>
-                    <button
-                      onClick={() => {
-                        setOrderListCalendarMonth(new Date(orderListDate));
-                        setShowOrderListCalendar(!showOrderListCalendar);
-                      }}
-                      className="px-3 sm:px-5 py-2 sm:py-3 bg-white hover:bg-gray-50 border-2 border-gray-300 rounded-lg text-sm sm:text-base font-bold min-w-[150px] sm:min-w-[200px] text-center active:bg-gray-100"
-                    >
-                      📅 {orderListFormatDate(orderListDate)}
-                    </button>
-                    <button
-                      onClick={() => handleOrderListDateChange(1)}
-                      className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
-                    >
-                      ▶
-                    </button>
+                    {/* 날짜 선택은 Order History 탭에서만 표시 */}
+                    {orderListTab === 'history' && (
+                      <>
+                        <button
+                          onClick={() => handleOrderListDateChange(-1)}
+                          className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                        >
+                          ◀
+                        </button>
+                        <button
+                          onClick={() => {
+                            setOrderListCalendarMonth(new Date(orderListDate));
+                            setShowOrderListCalendar(!showOrderListCalendar);
+                          }}
+                          className="px-3 sm:px-5 py-2 sm:py-3 bg-white hover:bg-gray-50 border-2 border-gray-300 rounded-lg text-sm sm:text-base font-bold min-w-[150px] sm:min-w-[200px] text-center active:bg-gray-100"
+                        >
+                          📅 {orderListFormatDate(orderListDate)}
+                        </button>
+                        <button
+                          onClick={() => handleOrderListDateChange(1)}
+                          className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                        >
+                          ▶
+                        </button>
+                      </>
+                    )}
 
                     {/* Calendar Dropdown */}
                     {showOrderListCalendar && (
@@ -6610,6 +7126,7 @@ const SalesPage: React.FC = () => {
                       setShowOrderListCalendar(false);
                       setOrderListSelectedOrder(null);
                       setOrderListSelectedItems([]);
+                      setLiveOrderHighlightItem(null);
                     }}
                     className="px-4 sm:px-6 py-2 sm:py-3 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-lg text-base sm:text-lg font-bold"
                   >
@@ -6617,7 +7134,8 @@ const SalesPage: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Content - 6:4 Split */}
+                {/* Content - Order History Tab */}
+                {orderListTab === 'history' && (
                 <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
                   {/* Left Panel - Order List (60%) */}
                   <div className="w-full md:w-[60%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
@@ -6696,7 +7214,7 @@ const SalesPage: React.FC = () => {
                             onClick={handleOrderListPrintKitchen}
                             className="flex-1 py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
                           >
-                            🍳 Print to Kitchen
+                            🔄 Reprint Kitchen
                           </button>
                         </div>
 
@@ -6845,6 +7363,189 @@ const SalesPage: React.FC = () => {
                     )}
                   </div>
                 </div>
+                )}
+
+                {/* Content - Live Order Tab */}
+                {orderListTab === 'live' && (
+                <div className="flex-1 p-3 overflow-auto flex flex-col">
+                  {/* 하이라이트된 아이템이 있는 테이블 목록 표시 */}
+                  {liveOrderHighlightItem && (() => {
+                    const tablesWithItem = liveOrders
+                      .filter((order: any) => 
+                        order.items?.some((item: any) => item.name === liveOrderHighlightItem)
+                      )
+                      .map((order: any) => order.tableLabel)
+                      .sort((a: string, b: string) => {
+                        const numA = parseInt((a || '').replace(/\D/g, '') || '9999');
+                        const numB = parseInt((b || '').replace(/\D/g, '') || '9999');
+                        return numA - numB;
+                      });
+                    
+                    if (tablesWithItem.length <= 1) return null;
+                    
+                    return (
+                      <div className="mb-3 p-3 bg-red-50 border-2 border-red-300 rounded-xl flex items-center gap-3 flex-shrink-0">
+                        <span className="text-red-600 font-bold text-sm">🔍 "{liveOrderHighlightItem}"</span>
+                        <span className="text-gray-600 text-sm">found in:</span>
+                        <div className="flex flex-wrap gap-2">
+                          {tablesWithItem.map((tableLabel: string) => (
+                            <button
+                              key={tableLabel}
+                              onClick={() => {
+                                // 해당 테이블로 스크롤
+                                const order = liveOrders.find((o: any) => o.tableLabel === tableLabel);
+                                if (order) {
+                                  const cardEl = liveOrderCardRefs.current[order.tableId];
+                                  if (cardEl) {
+                                    cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                  }
+                                }
+                              }}
+                              className="px-3 py-1 bg-red-500 text-white text-sm font-bold rounded-lg hover:bg-red-600 transition-all"
+                            >
+                              {tableLabel}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => setLiveOrderHighlightItem(null)}
+                          className="ml-auto text-gray-500 hover:text-gray-700 text-lg"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    );
+                  })()}
+                  
+                  <div className="grid grid-cols-4 gap-3 auto-rows-[minmax(200px,1fr)] flex-1">
+                    {/* 결제 완료되지 않은 테이블 주문 표시 - 테이블 번호 오름차순 */}
+                    {liveOrders
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        // 테이블 라벨에서 숫자 추출하여 정렬 (T1, T2, Table 1, Table 2 등)
+                        const numA = parseInt((a.tableLabel || '').replace(/\D/g, '') || '9999');
+                        const numB = parseInt((b.tableLabel || '').replace(/\D/g, '') || '9999');
+                        return numA - numB;
+                      })
+                      .map((liveOrder: any) => {
+                        // 이 테이블에 하이라이트된 아이템이 있는지 확인
+                        const hasHighlightedItem = liveOrderHighlightItem && 
+                          liveOrder.items?.some((item: any) => item.name === liveOrderHighlightItem);
+                        
+                        return (
+                      <div
+                        key={liveOrder.tableId}
+                        ref={(el) => { liveOrderCardRefs.current[liveOrder.tableId] = el; }}
+                        className={`bg-white rounded-xl border-2 shadow-lg p-3 flex flex-col overflow-hidden transition-all ${
+                          hasHighlightedItem ? 'border-red-400 ring-2 ring-red-200' : 'border-gray-300'
+                        }`}
+                      >
+                        {/* 테이블 번호 헤더 */}
+                        <div className={`mb-2 flex-shrink-0 border-b pb-2 ${
+                          hasHighlightedItem ? 'border-red-200' : 'border-gray-200'
+                        }`}>
+                          <span className={`text-xl font-bold ${
+                            hasHighlightedItem ? 'text-red-600' : 'text-slate-700'
+                          }`}>
+                            {liveOrder.tableLabel}
+                            {hasHighlightedItem && <span className="ml-2 text-sm">🔴</span>}
+                          </span>
+                        </div>
+                        
+                        {/* 주문 내역 - 스크롤 가능, 알파벳 오름차순 정렬 */}
+                        <div
+                          className="flex-1 overflow-y-auto text-sm space-y-2 pr-1" 
+                          style={{ minHeight: 0 }}
+                        >
+                          {liveOrder.items && liveOrder.items.length > 0 ? (
+                            liveOrder.items
+                              .slice()
+                              .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))
+                              .map((item: any, idx: number) => {
+                                const isHighlighted = liveOrderHighlightItem === item.name;
+                                return (
+                              <div 
+                                key={idx} 
+                                data-item-name={item.name}
+                                className={`border-b border-gray-100 pb-1.5 cursor-pointer hover:bg-gray-50 rounded px-1 -mx-1 transition-all ${
+                                  isHighlighted ? 'bg-red-50 border-red-200' : ''
+                                }`}
+                                onClick={() => {
+                                  // 같은 아이템 클릭 시 해제, 다른 아이템 클릭 시 하이라이트
+                                  if (liveOrderHighlightItem === item.name) {
+                                    setLiveOrderHighlightItem(null);
+                                  } else {
+                                    setLiveOrderHighlightItem(item.name);
+                                    // 다른 테이블 카드에서 같은 아이템으로 스크롤
+                                    setTimeout(() => {
+                                      liveOrders.forEach((order: any) => {
+                                        if (order.tableId === liveOrder.tableId) return;
+                                        const cardEl = liveOrderCardRefs.current[order.tableId];
+                                        if (cardEl) {
+                                          const itemEl = cardEl.querySelector(`[data-item-name="${item.name}"]`);
+                                          if (itemEl) {
+                                            itemEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                          }
+                                        }
+                                      });
+                                    }, 50);
+                                  }
+                                }}
+                              >
+                                {/* 메뉴 이름 & 수량 */}
+                                <div className="flex justify-between items-start">
+                                  <span className={`leading-snug flex-1 ${
+                                    isHighlighted ? 'text-red-600 font-bold' : 'font-semibold text-gray-800'
+                                  }`}>{item.name}</span>
+                                  <span className={`ml-2 ${
+                                    isHighlighted ? 'text-red-600 font-bold' : 'text-gray-700 font-bold'
+                                  }`}>x{item.quantity || 1}</span>
+                                </div>
+                                
+                                {/* 모디파이어 */}
+                                {item.modifiers && item.modifiers.length > 0 && (
+                                  <div className={`ml-3 text-xs leading-snug ${isHighlighted ? 'text-red-500' : 'text-blue-600'}`}>
+                                    {item.modifiers.map((mod: any, mIdx: number) => (
+                                      <div key={mIdx}>+ {mod.name || mod}</div>
+                                    ))}
+                                  </div>
+                                )}
+                                
+                                {/* Note (Memo) */}
+                                {item.memo && (
+                                  <div className={`ml-3 text-xs italic leading-snug ${isHighlighted ? 'text-red-500' : 'text-orange-600'}`}>
+                                    📝 {typeof item.memo === 'string' ? item.memo : item.memo.text || JSON.stringify(item.memo)}
+                                  </div>
+                                )}
+                              </div>
+                              );
+                            })
+                          ) : (
+                            <div className="text-gray-400 italic text-center py-2">No items</div>
+                          )}
+                        </div>
+                        
+                        {/* 총액 */}
+                        <div className="mt-2 pt-2 border-t border-gray-200 flex justify-between items-center flex-shrink-0">
+                          <span className="text-xs text-gray-500">Total</span>
+                          <span className="text-sm font-bold text-slate-800">
+                            ${liveOrder.order?.total?.toFixed(2) || liveOrder.items?.reduce((sum: number, item: any) => sum + (item.price || 0) * (item.quantity || 1), 0).toFixed(2) || '0.00'}
+                          </span>
+                        </div>
+                      </div>
+                      );
+                    })}
+                    
+                    {/* 주문이 없을 때 안내 메시지 */}
+                    {liveOrders.length === 0 && (
+                      <div className="col-span-4 flex items-center justify-center h-48">
+                        <span className="text-gray-400 text-lg">No active orders</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                )}
+
               </div>
             </div>
           );
@@ -9010,5 +9711,3 @@ const SalesPage: React.FC = () => {
 };
 
 export default SalesPage;
-
-export {};

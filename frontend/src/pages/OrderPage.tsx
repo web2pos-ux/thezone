@@ -1023,6 +1023,8 @@ const handleVoidPinClear = useCallback(() => {
   const openedFromSplitRef = useRef<boolean>(false);
   // Lock ALL mode when Pay in Full is chosen (from Split or inside PaymentModal)
   const allModeStickyRef = useRef<boolean>(false);
+  // Track whether receipt has been printed for this payment session (prevent duplicate prints)
+  const receiptPrintedRef = useRef<boolean>(false);
   // Persisted PAID locks from DB (order_guest_status) to ensure UI remains locked across navigation
   const [persistedPaidGuests, setPersistedPaidGuests] = useState<number[]>([]);
 
@@ -1300,6 +1302,11 @@ const handleVoidPinClear = useCallback(() => {
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
+    
+    // Live Order 실시간 업데이트를 위한 이벤트 발생
+    const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
+    window.dispatchEvent(new CustomEvent('orderCreated', { detail: { orderId: saved.orderId, tableId: tableIdForOrder } }));
+    
     return saved.orderId;
   };
 
@@ -1503,6 +1510,10 @@ const handleVoidPinClear = useCallback(() => {
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
+        
+        // Live Order 실시간 업데이트를 위한 이벤트 발생
+        const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
+        window.dispatchEvent(new CustomEvent('orderCreated', { detail: { orderId: saved.orderId, tableId: tableIdForOrder } }));
       }
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
@@ -1621,10 +1632,83 @@ const handleVoidPinClear = useCallback(() => {
           await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/current-order`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId: null }) });
         }
       } catch {}
-    // 저장되지 않은 변경사항이 있으면 물어볼 수도 있으나,
-    // 여기서는 단순히 뒤로가기 시 상태를 어떻게 할지 결정.
-    // 단순 조회만 하고 나가는 경우, Payment Pending 상태를 유지해야 함.
-    // Occupied로 강제 변경하지 않음.
+
+      // Live Order 실시간 업데이트를 위한 이벤트 발생
+      window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
+
+      // Open Cash Drawer (Till) after payment completion
+      try {
+        console.log('💰 Opening cash drawer after payment completion...');
+        await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+        console.log('💰 Cash drawer opened successfully');
+      } catch (drawerErr) {
+        console.warn('Cash drawer open failed (ignored):', drawerErr);
+      }
+
+      // Print Receipt after payment completion (only once per payment session)
+      if (!receiptPrintedRef.current) {
+        receiptPrintedRef.current = true; // Mark as printed to prevent duplicates
+        try {
+          // Build receipt data
+        const guestSections = guestIds.map((g: number) => {
+          const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === g);
+          return {
+            guestNumber: g,
+            items: guestItems.map(item => ({
+              name: item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: item.totalPrice || item.price || 0,
+              modifiers: item.modifiers || [],
+              memo: item.memo
+            }))
+          };
+        }).filter(s => s.items.length > 0);
+
+        const receiptData = {
+          header: {
+            orderNumber: orderId || '',
+            channel: orderType || 'Dine-in',
+            tableName: resolvedTableName || '',
+            serverName: selectedServer?.name || ''
+          },
+          orderInfo: {
+            channel: orderType || 'Dine-in',
+            tableName: resolvedTableName || '',
+            serverName: selectedServer?.name || ''
+          },
+          items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
+            name: item.name,
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            totalPrice: item.totalPrice || item.price || 0,
+            modifiers: item.modifiers || [],
+            memo: item.memo
+          })),
+          guestSections,
+          subtotal: baseSubtotal,
+          adjustments: [],
+          taxLines: totals.taxLines || [],
+          taxesTotal: taxTotal,
+          total: expectedGrand,
+          payments: sessionPayments.map(p => ({
+            method: p.method || 'Unknown',
+            amount: p.amount || 0
+          })),
+          change: 0,
+          footer: {}
+        };
+
+        await fetch(`${API_URL}/printers/print-receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ receiptData })
+        });
+        console.log('Receipt printed successfully');
+        } catch (printErr) {
+          console.warn('Receipt print failed (ignored):', printErr);
+        }
+      } // End of receiptPrintedRef guard
     
     clearServerAssignmentForContext();
     setSelectedServer(null);
@@ -4019,18 +4103,69 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             },
             footer: { message: 'Thank you for dining with us!' }
           };
-          await fetch(`${API_URL}/printers/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printerGroupId: 'RECEIPT', items: fullReceipt }) });
+          // Use new print-bill API with billLayout settings
+          await fetch(`${API_URL}/printers/print-bill`, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ 
+              billData: {
+                header: fullReceipt.header,
+                orderInfo: fullReceipt.orderInfo,
+                guestSections: fullReceipt.body.guestSections,
+                subtotal: fullReceipt.body.subtotal,
+                adjustments: fullReceipt.body.adjustments,
+                taxLines: fullReceipt.body.taxLines,
+                taxesTotal: fullReceipt.body.taxesTotal,
+                total: fullReceipt.body.total,
+                footer: fullReceipt.footer
+              }
+            }) 
+          });
 
       } else if (mode === 'INDIVIDUAL_GUEST' && targetGuestId) {
          const receipt = buildReceipt([targetGuestId], true);
-         await fetch(`${API_URL}/printers/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printerGroupId: 'RECEIPT', items: receipt }) });
+         // Use new print-bill API with billLayout settings
+         await fetch(`${API_URL}/printers/print-bill`, { 
+           method: 'POST', 
+           headers: { 'Content-Type': 'application/json' }, 
+           body: JSON.stringify({ 
+             billData: {
+               header: receipt.header,
+               orderInfo: receipt.orderInfo,
+               guestSections: receipt.body.guestSections,
+               subtotal: receipt.body.subtotal,
+               adjustments: receipt.body.adjustments,
+               taxLines: receipt.body.taxLines,
+               taxesTotal: receipt.body.taxesTotal,
+               total: receipt.body.total,
+               footer: receipt.footer
+             }
+           }) 
+         });
 
       } else if (mode === 'ALL_SEPARATE') {
          const allGuestIds = Object.keys(byGuest).map(Number).sort((a,b)=>a-b);
          // Sequentially print each guest bill
          for (const guestId of allGuestIds) {
             const receipt = buildReceipt([guestId], true);
-            await fetch(`${API_URL}/printers/print`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ printerGroupId: 'RECEIPT', items: receipt }) });
+            // Use new print-bill API with billLayout settings
+            await fetch(`${API_URL}/printers/print-bill`, { 
+              method: 'POST', 
+              headers: { 'Content-Type': 'application/json' }, 
+              body: JSON.stringify({ 
+                billData: {
+                  header: receipt.header,
+                  orderInfo: receipt.orderInfo,
+                  guestSections: receipt.body.guestSections,
+                  subtotal: receipt.body.subtotal,
+                  adjustments: receipt.body.adjustments,
+                  taxLines: receipt.body.taxLines,
+                  taxesTotal: receipt.body.taxesTotal,
+                  total: receipt.body.total,
+                  footer: receipt.footer
+                }
+              }) 
+            });
             // Small delay to prevent printer buffer overflow if needed, or let backend handle queue
          }
       }
@@ -4379,6 +4514,74 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           console.log(`🖨️ Kitchen print complete: ${result.message}`);
         } else {
           console.error('❌ Print-order failed:', result.error);
+        }
+
+        // TOGO 또는 ONLINE 주문일 경우 Receipt Printer에 Bill도 함께 출력
+        if ((orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'ONLINE') && !wasUpdateMode) {
+          try {
+            console.log(`🧾 ${orderTypeDisplay} order - printing Bill to receipt printer`);
+            
+            // Calculate totals for bill
+            const totals = computeGuestTotals('ALL');
+            const billSubtotal = Number((totals.subtotal || 0).toFixed(2));
+            const billTaxLines = totals.taxLines || [];
+            const billTaxTotal = billTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+            let billTotal = Number((billSubtotal + billTaxTotal).toFixed(2));
+
+            // Apply TOGO discount/bag fee if configured
+            const adjustments: any[] = [];
+            if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+              const discountValue = Number(togoSettings.discountValue || 0);
+              const discountAmt = togoSettings.discountMode === 'percent'
+                ? Number(((billSubtotal * discountValue) / 100).toFixed(2))
+                : Number(discountValue.toFixed(2));
+              adjustments.push({ label: `Discount (${togoSettings.discountMode === 'percent' ? discountValue + '%' : '$' + discountValue})`, amount: -discountAmt });
+              billTotal = Number((billTotal - discountAmt).toFixed(2));
+            }
+            if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+              const bagFee = Number(togoSettings.bagFeeValue || 0);
+              adjustments.push({ label: 'Bag Fee', amount: bagFee });
+              billTotal = Number((billTotal + bagFee).toFixed(2));
+            }
+
+            const billData = {
+              header: {
+                orderNumber: printOrderNumber,
+                channel: orderTypeDisplay,
+                tableName: printTableName || orderTypeDisplay,
+                serverName: printServerName
+              },
+              orderInfo: {
+                channel: orderTypeDisplay,
+                tableName: printTableName || orderTypeDisplay,
+                serverName: printServerName
+              },
+              items: items.map((item: any) => ({
+                name: item.name,
+                quantity: item.quantity || 1,
+                price: item.price || 0,
+                totalPrice: item.totalPrice || item.price || 0,
+                modifiers: item.modifiers || [],
+                memo: item.memo
+              })),
+              guestSections: [],
+              subtotal: billSubtotal,
+              adjustments,
+              taxLines: billTaxLines,
+              taxesTotal: billTaxTotal,
+              total: billTotal,
+              footer: {}
+            };
+
+            await fetch(`${API_URL}/printers/print-bill`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ billData })
+            });
+            console.log(`🧾 ${orderTypeDisplay} Bill printed successfully`);
+          } catch (billErr) {
+            console.warn(`🧾 ${orderTypeDisplay} Bill print failed (ignored):`, billErr);
+          }
         }
       } catch (err) {
         console.error('❌ Print-order error:', err);
@@ -7563,6 +7766,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       payInFullFromSplitRef.current = false;
                       openedFromSplitRef.current = false;
                       allModeStickyRef.current = false;
+                      receiptPrintedRef.current = false; // Reset receipt print flag for next payment
                     },
                     onCreateAdhocGuests: (n: number) => {
                       setAdhocSplitCount(n);

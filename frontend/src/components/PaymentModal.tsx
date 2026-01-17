@@ -602,7 +602,7 @@ const addQuick = async (q: number) => {
 
 	return (
 		<div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
-			<div className="bg-white rounded-2xl shadow-2xl w-[100%] md:w-[50.4%] p-0 overflow-hidden max-h-[90vh] md:max-h-[90vh] relative" onClick={(e) => e.stopPropagation()} style={{ transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
+			<div className="bg-white rounded-2xl shadow-2xl p-0 overflow-hidden max-h-[90vh] relative" onClick={(e) => e.stopPropagation()} style={{ width: '720px', minWidth: '720px', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
 				<div className="px-3 pt-3">
 					<div className="flex items-center gap-2 bg-white border rounded-full shadow px-3 py-2 overflow-x-auto whitespace-nowrap min-h-[60px]">
 						{Array.from({ length: isSplitActive ? maxGuestButtons : 0 }, (_, i) => i + 1).map((n) => {
@@ -620,9 +620,9 @@ const addQuick = async (q: number) => {
             })}
 					</div>
 				</div>
-				<div className="grid grid-cols-1 md:[grid-template-columns:30%_40%_30%]">
+				<div className="grid" style={{ gridTemplateColumns: '30% 40% 30%' }}>
 					{/* Middle (first column): Totals / Inputs */}
-											<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+											<div className={`p-3 space-y-3 order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 							<div className="space-y-1.5 text-sm">
 								<div className="flex justify-between"><span>Items</span><span>${formatMoney(subtotal)}</span></div>
 								<div className="flex justify-between"><span>Tax</span><span>${formatMoney(taxTotal)}</span></div>
@@ -640,7 +640,7 @@ const addQuick = async (q: number) => {
                                 >
                                     <div className="flex flex-col items-center -translate-y-[10px] translate-x-[20px]">
                                         <span className={`text-xl font-bold text-red-700`}>Change $</span>
-                                        <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney((proceedArmed && lastChange != null) ? lastChange : change)}</span>
+                                        <span className={`font-extrabold leading-none tracking-tight text-[4.60625rem] text-red-600`}>{formatMoney((proceedArmed && lastChange != null) ? lastChange : change)}</span>
                                     </div>
                                 </div>
 								<div className="h-2" />
@@ -688,7 +688,7 @@ const addQuick = async (q: number) => {
 
 								</div>
 						{/* Right: Keypad & Quick */}
-						<div className="p-3 md:order-2 bg-gray-300 h-full flex flex-col">
+						<div className="p-3 order-2 bg-gray-300 h-full flex flex-col">
 							{/* Customer info moved here */}
                             <div className={`mb-2 flex items-center ${isCenterHeader ? 'justify-center' : 'justify-between'} text-lg rounded-md px-4 py-2 bg-gray-300 border border-gray-400`}>
                                 <span className="text-gray-800 font-extrabold text-lg">{headerLeftLabel}</span>
@@ -752,7 +752,7 @@ const addQuick = async (q: number) => {
 					</div>
 
 					{/* Methods (right column) */}
-					<div className={`bg-gray-100 border-l p-3 md:order-3 flex flex-col h-full space-y-1 duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+					<div className={`bg-gray-100 border-l p-3 order-3 flex flex-col h-full space-y-1 duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 						{methods.filter(m => m.key !== 'GIFT' && m.key !== 'OTHER').map(m => (
 							<button key={m.key} onClick={() => commitDraft(m.key)} className={`w-full flex items-center justify-between px-4 py-[0.71rem] rounded-lg border transition active:bg-red-600 active:text-white active:border-red-600 ${method===m.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'}`}>
 								<span className="flex items-center font-bold">{m.label}</span>

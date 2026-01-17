@@ -364,6 +364,170 @@ async function updateRestaurantPause(restaurantId, pauseUntil, channels = ['thez
   }
 }
 
+// Day Off 설정 동기화 (POS → Firebase)
+async function syncDayOff(restaurantId, dayOffDates) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    // 기존 문서 확인
+    const settingsDoc = await settingsRef.get();
+    
+    // dayOffSettings 객체 생성
+    const dayOffSettings = {
+      dates: dayOffDates.map(d => ({
+        date: d.date,
+        channels: d.channels || 'all',
+        updatedAt: new Date().toISOString()
+      })),
+      updatedAt: new Date()
+    };
+    
+    if (settingsDoc.exists) {
+      // 기존 문서가 있으면 dayOffSettings만 업데이트
+      await settingsRef.update({
+        dayOffSettings,
+        dayOffUpdatedAt: new Date()
+      });
+    } else {
+      // 문서가 없으면 새로 생성
+      await settingsRef.set({
+        restaurantId,
+        dayOffSettings,
+        dayOffUpdatedAt: new Date(),
+        createdAt: new Date()
+      });
+    }
+    
+    console.log(`✅ Day Off 동기화 완료 (${restaurantId}): ${dayOffDates.length}개 날짜`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
+// Day Off 단일 날짜 추가
+async function addDayOff(restaurantId, date, channels = 'all') {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    let dayOffDates = [];
+    
+    if (settingsDoc.exists) {
+      const data = settingsDoc.data();
+      dayOffDates = data.dayOffSettings?.dates || [];
+    }
+    
+    // 이미 존재하는 날짜인지 확인
+    const existingIndex = dayOffDates.findIndex(d => d.date === date);
+    if (existingIndex >= 0) {
+      // 업데이트
+      dayOffDates[existingIndex] = { date, channels, updatedAt: new Date().toISOString() };
+    } else {
+      // 새로 추가
+      dayOffDates.push({ date, channels, updatedAt: new Date().toISOString() });
+    }
+    
+    // 날짜순 정렬
+    dayOffDates.sort((a, b) => a.date.localeCompare(b.date));
+    
+    const dayOffSettings = {
+      dates: dayOffDates,
+      updatedAt: new Date()
+    };
+    
+    if (settingsDoc.exists) {
+      await settingsRef.update({ dayOffSettings, dayOffUpdatedAt: new Date() });
+    } else {
+      await settingsRef.set({
+        restaurantId,
+        dayOffSettings,
+        dayOffUpdatedAt: new Date(),
+        createdAt: new Date()
+      });
+    }
+    
+    console.log(`✅ Day Off 추가 완료 (${restaurantId}): ${date}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 추가 실패:', error.message);
+    throw error;
+  }
+}
+
+// Day Off 날짜 삭제
+async function removeDayOff(restaurantId, date) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    
+    if (!settingsDoc.exists) {
+      console.log(`[Day Off] No settings found for ${restaurantId}`);
+      return true;
+    }
+    
+    const data = settingsDoc.data();
+    let dayOffDates = data.dayOffSettings?.dates || [];
+    
+    // 해당 날짜 제거
+    dayOffDates = dayOffDates.filter(d => d.date !== date);
+    
+    const dayOffSettings = {
+      dates: dayOffDates,
+      updatedAt: new Date()
+    };
+    
+    await settingsRef.update({ dayOffSettings, dayOffUpdatedAt: new Date() });
+    
+    console.log(`✅ Day Off 삭제 완료 (${restaurantId}): ${date}`);
+    return true;
+  } catch (error) {
+    console.error('❌ Day Off 삭제 실패:', error.message);
+    throw error;
+  }
+}
+
+// Prep Time 설정 동기화 (POS → Firebase)
+async function syncPrepTimeSettings(restaurantId, prepTimeSettings) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    
+    const settingsDoc = await settingsRef.get();
+    
+    // prepTimeSettings 저장
+    const prepTimeData = {
+      settings: prepTimeSettings,
+      updatedAt: new Date()
+    };
+    
+    if (settingsDoc.exists) {
+      await settingsRef.update({
+        prepTimeSettings: prepTimeData,
+        prepTimeUpdatedAt: new Date()
+      });
+    } else {
+      await settingsRef.set({
+        restaurantId,
+        prepTimeSettings: prepTimeData,
+        prepTimeUpdatedAt: new Date(),
+        createdAt: new Date()
+      });
+    }
+    
+    console.log(`✅ Prep Time 설정 동기화 완료 (${restaurantId}):`, prepTimeSettings);
+    return true;
+  } catch (error) {
+    console.error('❌ Prep Time 설정 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -376,6 +540,10 @@ module.exports = {
   syncMenuCategories,
   syncMenuItems,
   uploadOrder,
-  updateRestaurantPause
+  updateRestaurantPause,
+  syncDayOff,
+  addDayOff,
+  removeDayOff,
+  syncPrepTimeSettings
 };
 

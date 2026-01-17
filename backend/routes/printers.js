@@ -46,6 +46,9 @@ const ESCPOS = {
   FEED_LINES: (n) => ESC + 'd' + String.fromCharCode(n),
   LINE: '================================',
   DASHED_LINE: '- - - - - - - - - - - - - - - -',
+  // Cash drawer kick command: ESC p m t1 t2
+  // m=0 (pin 2), t1=25 (50ms on), t2=250 (500ms off)
+  DRAWER_KICK: ESC + 'p' + '\x00' + '\x19' + '\xFA',
 };
 
 // ============ IMAGE-BASED PRINTING (High Quality) ============
@@ -2051,6 +2054,68 @@ module.exports = (db) => {
     }
   });
 
+  // POST /api/printers/open-drawer - Open cash drawer (Till)
+  router.post('/open-drawer', async (req, res) => {
+    try {
+      console.log('🔓 Opening cash drawer...');
+      
+      // Get the front/receipt printer from database
+      // Look for a printer with type 'receipt' or name containing 'front', 'receipt', 'counter'
+      let printer = await dbGet(`
+        SELECT id, name, selected_printer 
+        FROM printers 
+        WHERE is_active = 1 
+          AND (
+            LOWER(type) = 'receipt' 
+            OR LOWER(name) LIKE '%front%' 
+            OR LOWER(name) LIKE '%receipt%'
+            OR LOWER(name) LIKE '%counter%'
+          )
+        LIMIT 1
+      `);
+      
+      // If no receipt printer found, get any active printer
+      if (!printer) {
+        printer = await dbGet(`
+          SELECT id, name, selected_printer 
+          FROM printers 
+          WHERE is_active = 1 AND selected_printer IS NOT NULL
+          LIMIT 1
+        `);
+      }
+      
+      if (!printer || !printer.selected_printer) {
+        console.error('❌ No printer configured for cash drawer');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a receipt printer in Back Office.' 
+        });
+      }
+      
+      const printerName = printer.selected_printer;
+      console.log(`🖨️ Using printer: ${printerName}`);
+      
+      // Send cash drawer kick command
+      const drawerCommand = ESCPOS.INIT + ESCPOS.DRAWER_KICK;
+      
+      await printEscPosToWindows(printerName, drawerCommand);
+      
+      console.log('✅ Cash drawer opened successfully');
+      res.json({ 
+        success: true, 
+        message: 'Cash drawer opened',
+        printer: printerName 
+      });
+      
+    } catch (err) {
+      console.error('❌ Failed to open cash drawer:', err);
+      res.status(500).json({ 
+        success: false, 
+        error: err.message || 'Failed to open cash drawer' 
+      });
+    }
+  });
+
   // ============ PRINTER LAYOUT SETTINGS ============
 
   // Initialize printer_layout_settings table
@@ -3065,6 +3130,124 @@ module.exports = (db) => {
       }
 
       const successCount = results.filter(r => r.success).length;
+
+      // ============ 배달 주문(Delivery) Bill + Receipt 자동 출력 ============
+      // tryotter, Urban Piper를 통한 배달 주문 (UberEats, DoorDash, SkipTheDishes 등)
+      // 이미 결제가 완료된 상태이므로 Bill과 Receipt를 함께 출력
+      const deliveryChannels = ['DOORDASH', 'UBEREATS', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB', 'DELIVERY'];
+      const currentOrderSource = (orderInfo.orderSource || orderInfo.deliveryChannel || orderInfo.channel || '').toUpperCase();
+      const currentOrderType = (orderInfo.orderType || '').toUpperCase();
+      const isDeliveryOrder = deliveryChannels.includes(currentOrderSource) || 
+                              deliveryChannels.includes(currentOrderType) ||
+                              currentOrderType === 'DELIVERY';
+
+      if (isDeliveryOrder && !isReprint) {
+        console.log(`🚚 Delivery order detected (${currentOrderSource || currentOrderType}) - printing Bill and Receipt`);
+        
+        try {
+          const http = require('http');
+          
+          // Bill/Receipt 데이터 구성
+          const subtotal = items.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+          const taxLines = orderInfo.taxBreakdown || [];
+          const taxTotal = orderInfo.tax || taxLines.reduce((sum, t) => sum + (t.amount || 0), 0);
+          const total = orderInfo.total || (subtotal + taxTotal);
+
+          const billData = {
+            header: {
+              orderNumber: orderInfo.orderNumber || orderInfo.externalOrderNumber || '',
+              channel: currentOrderSource || currentOrderType || 'DELIVERY',
+              tableName: currentOrderSource || 'DELIVERY',
+              serverName: ''
+            },
+            orderInfo: {
+              channel: currentOrderSource || currentOrderType || 'DELIVERY',
+              tableName: currentOrderSource || 'DELIVERY',
+              serverName: '',
+              customerName: orderInfo.customerName || '',
+              customerPhone: orderInfo.customerPhone || ''
+            },
+            items: items.map(item => ({
+              name: item.name || 'Unknown',
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: (item.price || 0) * (item.quantity || 1),
+              modifiers: (item.modifiers || []).map(mod => ({
+                name: mod.name || '',
+                price: mod.price || 0
+              }))
+            })),
+            guestSections: [],
+            subtotal: subtotal,
+            adjustments: [],
+            taxLines: taxLines,
+            taxesTotal: taxTotal,
+            total: total,
+            footer: {}
+          };
+
+          // Print Bill via internal API
+          const billPrintData = JSON.stringify({ billData });
+          const billReq = http.request({
+            hostname: 'localhost',
+            port: 3177,
+            path: '/api/printers/print-bill',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(billPrintData)
+            }
+          }, (billRes) => {
+            let responseData = '';
+            billRes.on('data', chunk => { responseData += chunk; });
+            billRes.on('end', () => {
+              console.log(`🧾 Delivery Bill printed: ${orderInfo.orderNumber}`);
+            });
+          });
+          billReq.on('error', (err) => {
+            console.error('🧾 Delivery Bill print error:', err.message);
+          });
+          billReq.write(billPrintData);
+          billReq.end();
+
+          // Print Receipt via internal API (with payment info)
+          const receiptData = {
+            ...billData,
+            payments: [{
+              method: orderInfo.paymentMethod || 'Online Payment',
+              amount: total
+            }],
+            change: 0
+          };
+          
+          const receiptPrintData = JSON.stringify({ receiptData });
+          const receiptReq = http.request({
+            hostname: 'localhost',
+            port: 3177,
+            path: '/api/printers/print-receipt',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(receiptPrintData)
+            }
+          }, (receiptRes) => {
+            let responseData = '';
+            receiptRes.on('data', chunk => { responseData += chunk; });
+            receiptRes.on('end', () => {
+              console.log(`🧾 Delivery Receipt printed: ${orderInfo.orderNumber}`);
+            });
+          });
+          receiptReq.on('error', (err) => {
+            console.error('🧾 Delivery Receipt print error:', err.message);
+          });
+          receiptReq.write(receiptPrintData);
+          receiptReq.end();
+
+        } catch (deliveryPrintErr) {
+          console.error('🧾 Delivery Bill/Receipt print error (ignored):', deliveryPrintErr.message);
+        }
+      }
+
       res.json({
         success: successCount > 0,
         message: `Printed to ${successCount}/${results.length} printers`,
@@ -3075,6 +3258,1304 @@ module.exports = (db) => {
     } catch (err) {
       console.error('Print-order error:', err);
       res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============ PRINT BILL ============
+  
+  // POST /api/printers/print-bill - Print bill/pre-bill using billLayout settings
+  // copies: 출력 매수 (기본값 2장)
+  router.post('/print-bill', async (req, res) => {
+    try {
+      const { billData, copies = 2 } = req.body;
+      
+      if (!billData) {
+        return res.status(400).json({ success: false, error: 'billData is required' });
+      }
+
+      const numCopies = Math.max(1, Math.min(5, copies)); // 1~5장 제한
+      console.log(`📄 Print Bill request received (${numCopies} copies)`);
+
+      // Load layout settings
+      let layoutSettings = null;
+      try {
+        const settingsRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (settingsRow && settingsRow.settings) {
+          layoutSettings = JSON.parse(settingsRow.settings);
+        }
+      } catch (e) {
+        console.warn('Could not load layout settings:', e.message);
+      }
+
+      const billLayout = layoutSettings?.billLayout || {};
+      const printMode = billLayout.printMode || 'text';
+      const paperWidth = billLayout.paperWidth || 80;
+
+      // Get business profile from Back Office -> Business Info
+      let businessProfile = null;
+      try {
+        businessProfile = await dbGet('SELECT * FROM business_profile WHERE id = 1');
+      } catch (e) {
+        console.warn('Could not load business profile:', e.message);
+      }
+
+      // Build store info from business profile (fallback to billLayout text if not set)
+      const storeInfo = {
+        name: businessProfile?.business_name || billLayout.storeName?.text || 'Restaurant',
+        address: [
+          businessProfile?.address_line1,
+          businessProfile?.address_line2,
+          businessProfile?.city,
+          businessProfile?.state,
+          businessProfile?.zip
+        ].filter(Boolean).join(', ') || billLayout.storeAddress?.text || '',
+        phone: businessProfile?.phone || billLayout.storePhone?.text || ''
+      };
+
+      console.log('📋 Store Info:', storeInfo);
+
+      // Get receipt/front printer
+      let printer = await dbGet(`
+        SELECT id, name, selected_printer 
+        FROM printers 
+        WHERE is_active = 1 
+          AND (
+            LOWER(type) = 'receipt' 
+            OR LOWER(name) LIKE '%front%' 
+            OR LOWER(name) LIKE '%receipt%'
+            OR LOWER(name) LIKE '%counter%'
+          )
+        LIMIT 1
+      `);
+      
+      if (!printer) {
+        printer = await dbGet(`
+          SELECT id, name, selected_printer 
+          FROM printers 
+          WHERE is_active = 1 AND selected_printer IS NOT NULL
+          LIMIT 1
+        `);
+      }
+      
+      if (!printer || !printer.selected_printer) {
+        console.error('❌ No printer configured for bill printing');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a receipt printer in Back Office.' 
+        });
+      }
+
+      const printerName = printer.selected_printer;
+      console.log(`🖨️ Using printer: ${printerName}`);
+
+      // Extract bill data
+      const {
+        header = {},
+        orderInfo = {},
+        items = [],
+        guestSections = [],
+        subtotal = 0,
+        adjustments = [],
+        taxLines = [],
+        taxesTotal = 0,
+        total = 0,
+        footer = {}
+      } = billData;
+
+      // Build ESC/POS content for text mode (or as fallback)
+      // 80mm = 42 chars (normal), 58mm = 32 chars (normal)
+      // DOUBLE_SIZE uses 2x width, so effective chars = LINE_WIDTH / 2
+      const LINE_WIDTH = paperWidth === 80 ? 42 : 32;
+      const buildTextBill = () => {
+        let content = '';
+        
+        const centerText = (text, useDouble = false) => {
+          const effectiveWidth = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          const truncatedText = text.length > effectiveWidth ? text.substring(0, effectiveWidth - 2) + '..' : text;
+          const padding = Math.max(0, Math.floor((effectiveWidth - truncatedText.length) / 2));
+          return ' '.repeat(padding) + truncatedText;
+        };
+        
+        const leftRightText = (left, right, useDouble = false) => {
+          const effectiveWidth = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          const rightLen = right.length;
+          // Minimum 1 space between left and right
+          const maxLeftLen = effectiveWidth - rightLen - 1;
+          const truncatedLeft = left.length > maxLeftLen ? left.substring(0, maxLeftLen - 2) + '..' : left;
+          // Use exactly 1 space between truncated left and right (no extra padding)
+          const spaces = Math.max(1, effectiveWidth - truncatedLeft.length - rightLen);
+          // Ensure we don't exceed effective width
+          const totalLen = truncatedLeft.length + spaces + rightLen;
+          const finalSpaces = totalLen > effectiveWidth ? 1 : spaces;
+          return truncatedLeft + ' '.repeat(finalSpaces) + right;
+        };
+        
+        const getSeparator = (style, useDouble = false) => {
+          const width = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          if (style === 'dashed') return '-'.repeat(width);
+          if (style === 'dotted') return '.'.repeat(width);
+          return '='.repeat(width);
+        };
+        
+        // Helper to apply font size/weight from billLayout
+        // Returns { prefix, suffix, isDoubleWidth } to help with text width calculations
+        const applyFontStyle = (element) => {
+          let prefix = '';
+          let suffix = '';
+          let isDoubleWidth = false;
+          const fontSize = element?.fontSize || 12;
+          const fontWeight = element?.fontWeight || 'normal';
+          
+          // Use DOUBLE_SIZE for larger fonts (>= 14) - this doubles width
+          if (fontSize >= 14) {
+            prefix += ESCPOS.DOUBLE_SIZE;
+            suffix = ESCPOS.NORMAL_SIZE + suffix;
+            isDoubleWidth = true;
+          } else if (fontSize >= 12) {
+            // DOUBLE_HEIGHT only - width stays the same
+            prefix += ESCPOS.DOUBLE_HEIGHT;
+            suffix = ESCPOS.NORMAL_SIZE + suffix;
+          }
+          
+          // Apply bold
+          if (fontWeight === 'bold') {
+            prefix += ESCPOS.BOLD_ON;
+            suffix = ESCPOS.BOLD_OFF + suffix;
+          }
+          
+          return { prefix, suffix, isDoubleWidth };
+        };
+
+        // Initialize
+        content += ESCPOS.INIT;
+        
+        // Header - Store Info (from Business Profile) - use billLayout fontSize
+        if (billLayout.storeName?.visible !== false && storeInfo.name) {
+          const style = applyFontStyle(billLayout.storeName);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        if (billLayout.storeAddress?.visible !== false && storeInfo.address) {
+          const style = applyFontStyle(billLayout.storeAddress);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.address, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        if (billLayout.storePhone?.visible !== false && storeInfo.phone) {
+          const style = applyFontStyle(billLayout.storePhone);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.phone, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        // Separator 1
+        if (billLayout.separator1?.visible !== false) {
+          content += getSeparator(billLayout.separator1?.style || 'solid') + '\n';
+        }
+        
+        content += ESCPOS.ALIGN_LEFT;
+        
+        // Order Info - use billLayout fontSize
+        if (billLayout.orderNumber?.visible !== false && header.orderNumber) {
+          const style = applyFontStyle(billLayout.orderNumber);
+          content += style.prefix + `Order#: ${header.orderNumber}\n` + style.suffix;
+        }
+        
+        if (billLayout.orderChannel?.visible !== false) {
+          const style = applyFontStyle(billLayout.orderChannel);
+          const channelInfo = orderInfo.channel || 'POS';
+          const tableInfo = orderInfo.table ? ` / Table: ${orderInfo.table}` : '';
+          content += style.prefix + `${channelInfo}${tableInfo}\n` + style.suffix;
+        }
+        
+        if (billLayout.serverName?.visible !== false && orderInfo.server) {
+          const style = applyFontStyle(billLayout.serverName);
+          content += style.prefix + `Server: ${orderInfo.server}\n` + style.suffix;
+        }
+        
+        if (billLayout.dateTime?.visible !== false) {
+          const style = applyFontStyle(billLayout.dateTime);
+          const now = header.dateTime ? new Date(header.dateTime) : new Date();
+          content += style.prefix + `${now.toLocaleDateString()} ${now.toLocaleTimeString()}\n` + style.suffix;
+        }
+        
+        // Separator 2
+        if (billLayout.separator2?.visible !== false) {
+          content += getSeparator(billLayout.separator2?.style || 'dashed') + '\n';
+        }
+        
+        // Items - by guest sections if available - use billLayout fontSize
+        const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
+        const itemsStyle = applyFontStyle(billLayout.items);
+        const modifiersStyle = applyFontStyle(billLayout.modifiers);
+        const itemNoteStyle = applyFontStyle(billLayout.itemNote);
+        
+        sectionsToRender.forEach((section, idx) => {
+          if (sectionsToRender.length > 1) {
+            const guestLabel = `--- GUEST ${section.guestNumber} ---`;
+            content += centerText(guestLabel) + '\n';
+          }
+          
+          (section.items || []).forEach(item => {
+            const qty = item.qty || item.quantity || 1;
+            const name = item.name || 'Unknown';
+            const lineTotal = item.lineTotal || item.total || (item.unitPrice * qty) || 0;
+            
+            content += itemsStyle.prefix + leftRightText(`${name} x${qty}`, `$${lineTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
+            
+            // Modifiers
+            if (billLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
+              const modPrefix = billLayout.modifiers?.prefix || '>>';
+              item.modifiers.forEach(mod => {
+                const modName = typeof mod === 'string' ? mod : (mod.name || mod);
+                const effectiveWidth = modifiersStyle.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+                const truncatedMod = modName.length > effectiveWidth - 4 ? modName.substring(0, effectiveWidth - 6) + '..' : modName;
+                content += modifiersStyle.prefix + `  ${modPrefix} ${truncatedMod}\n` + modifiersStyle.suffix;
+              });
+            }
+            
+            // Item Note/Memo
+            if (billLayout.itemNote?.visible !== false && item.memo) {
+              const notePrefix = billLayout.itemNote?.prefix || '->';
+              const memoText = typeof item.memo === 'string' ? item.memo : (item.memo.text || '');
+              if (memoText) {
+                const effectiveWidth = itemNoteStyle.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+                const truncatedMemo = memoText.length > effectiveWidth - 4 ? memoText.substring(0, effectiveWidth - 6) + '..' : memoText;
+                content += itemNoteStyle.prefix + `  ${notePrefix} ${truncatedMemo}\n` + itemNoteStyle.suffix;
+              }
+            }
+          });
+        });
+        
+        // Separator 3
+        if (billLayout.separator3?.visible !== false) {
+          content += getSeparator(billLayout.separator3?.style || 'solid') + '\n';
+        }
+        
+        // Totals - use billLayout fontSize
+        if (billLayout.subtotal?.visible !== false) {
+          const style = applyFontStyle(billLayout.subtotal);
+          content += style.prefix + leftRightText('Subtotal:', `$${subtotal.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        // Adjustments (discounts, fees) - use billLayout fontSize
+        if (billLayout.discount?.visible !== false && adjustments.length > 0) {
+          const style = applyFontStyle(billLayout.discount);
+          adjustments.forEach(adj => {
+            content += style.prefix + leftRightText(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+          });
+        }
+        
+        // Tax lines - use billLayout fontSize
+        const taxStyle = applyFontStyle(billLayout.taxGST || billLayout.taxPST);
+        taxLines.forEach(tax => {
+          if (tax.name && (billLayout.taxGST?.visible !== false || billLayout.taxPST?.visible !== false)) {
+            const taxLabel = tax.name.includes('%') ? tax.name : `${tax.name}:`;
+            content += taxStyle.prefix + leftRightText(taxLabel, `$${(tax.amount || 0).toFixed(2)}`, taxStyle.isDoubleWidth) + '\n' + taxStyle.suffix;
+          }
+        });
+        
+        // Separator 4
+        if (billLayout.separator4?.visible !== false) {
+          content += getSeparator(billLayout.separator4?.style || 'solid') + '\n';
+        }
+        
+        // Total - use billLayout fontSize
+        if (billLayout.total?.visible !== false) {
+          const style = applyFontStyle(billLayout.total);
+          content += style.prefix + leftRightText('TOTAL:', `$${total.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        // Footer - use billLayout fontSize
+        content += '\n';
+        if (billLayout.greeting?.visible !== false) {
+          const style = applyFontStyle(billLayout.greeting);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix + centerText(billLayout.greeting?.text || footer.message || 'Thank you!', style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        // Feed and cut
+        content += ESCPOS.FEED_LINES(4);
+        content += ESCPOS.CUT;
+        
+        return content;
+      };
+
+      // Render and print (multiple copies)
+      let printedMode = 'text';
+      for (let copyNum = 1; copyNum <= numCopies; copyNum++) {
+        console.log(`📄 Printing Bill copy ${copyNum}/${numCopies}...`);
+        
+        if (printMode === 'graphic' && createCanvas) {
+          try {
+            // Build graphic bill using Canvas
+            const billImage = renderBillImage(billData, billLayout, paperWidth, storeInfo);
+            if (billImage) {
+              await printEscPosToWindows(printerName, billImage);
+              printedMode = 'graphic';
+              continue; // Successfully printed this copy
+            }
+          } catch (graphicErr) {
+            console.warn('Graphic mode failed, falling back to text:', graphicErr.message);
+          }
+        }
+
+        // Text mode (or fallback)
+        const textContent = buildTextBill();
+        await printEscPosToWindows(printerName, textContent);
+        printedMode = 'text';
+      }
+      
+      console.log(`✅ Bill printed successfully (${numCopies} copies, ${printedMode} mode)`);
+      res.json({ success: true, message: `Bill printed (${numCopies} copies)`, mode: printedMode, copies: numCopies });
+
+    } catch (err) {
+      console.error('❌ Print bill error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Helper function to render bill as image using Canvas
+  function renderBillImage(billData, billLayout, paperWidth, storeInfo = {}) {
+    if (!createCanvas) return null;
+
+    const {
+      header = {},
+      orderInfo = {},
+      items = [],
+      guestSections = [],
+      subtotal = 0,
+      adjustments = [],
+      taxLines = [],
+      total = 0,
+      footer = {}
+    } = billData;
+
+    // 80mm = 576px, 58mm = 384px at 203 DPI
+    const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
+    // Minimal margins to maximize content width - only 4px minimum
+    const MARGIN = Math.max(4, Math.min(12, Math.round((billLayout.leftMargin || 0) * 2.835) + 4));
+    const TOP_MARGIN = Math.round((billLayout.topMargin || 0) * 2.835) + 12;
+    const CONTENT_WIDTH = PAPER_WIDTH_PX - (MARGIN * 2);
+
+    // Calculate height
+    let totalHeight = TOP_MARGIN + 40;
+    
+    // Store info
+    if (billLayout.storeName?.visible !== false) totalHeight += 35;
+    if (billLayout.storeAddress?.visible !== false) totalHeight += 20;
+    if (billLayout.storePhone?.visible !== false) totalHeight += 20;
+    
+    // Order info
+    totalHeight += 100;
+    
+    // Items
+    const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
+    sectionsToRender.forEach(section => {
+      if (sectionsToRender.length > 1) totalHeight += 30;
+      (section.items || []).forEach(item => {
+        totalHeight += 25;
+        if (item.modifiers) totalHeight += item.modifiers.length * 18;
+        if (item.memo) totalHeight += 18;
+      });
+    });
+    
+    // Totals
+    totalHeight += 120;
+    
+    // Footer
+    totalHeight += 60;
+
+    const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
+    const ctx = canvas.getContext('2d');
+
+    // White background
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, PAPER_WIDTH_PX, totalHeight);
+
+    let y = TOP_MARGIN;
+    const centerX = PAPER_WIDTH_PX / 2;
+
+    // Helper functions
+    const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center') => {
+      ctx.font = `${fontWeight} ${fontSize}px Arial`;
+      ctx.fillStyle = '#000000';
+      ctx.textAlign = align;
+      
+      // Truncate text if it's too wide for the content area
+      let displayText = text;
+      const maxWidth = CONTENT_WIDTH - 10; // Leave some padding
+      const textWidth = ctx.measureText(text).width;
+      
+      if (textWidth > maxWidth && align === 'center') {
+        // Truncate center-aligned text
+        while (ctx.measureText(displayText + '..').width > maxWidth && displayText.length > 5) {
+          displayText = displayText.substring(0, displayText.length - 1);
+        }
+        displayText = displayText + '..';
+      }
+      
+      ctx.fillText(displayText, x, yPos);
+    };
+    
+    // Helper to draw left-right aligned text (for items with prices)
+    // Minimized gap between left text and right amount
+    const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal') => {
+      ctx.font = `${fontWeight} ${fontSize}px Arial`;
+      ctx.fillStyle = '#000000';
+      
+      const rightWidth = ctx.measureText(rightText).width;
+      // Only 2 pixel gap between left text and right amount
+      const minGap = 2;
+      const maxLeftWidth = CONTENT_WIDTH - rightWidth - minGap;
+      
+      // Truncate left text if needed
+      let displayLeft = leftText;
+      while (ctx.measureText(displayLeft).width > maxLeftWidth && displayLeft.length > 5) {
+        displayLeft = displayLeft.substring(0, displayLeft.length - 1);
+      }
+      if (displayLeft !== leftText) {
+        displayLeft = displayLeft + '..';
+      }
+      
+      ctx.textAlign = 'left';
+      ctx.fillText(displayLeft, MARGIN, yPos);
+      ctx.textAlign = 'right';
+      ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN, yPos);
+    };
+
+    const drawLine = (yPos, style = 'solid') => {
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      if (style === 'dashed') {
+        ctx.setLineDash([8, 4]);
+      } else if (style === 'dotted') {
+        ctx.setLineDash([2, 2]);
+      } else {
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(MARGIN, yPos);
+      ctx.lineTo(PAPER_WIDTH_PX - MARGIN, yPos);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
+    // Header (from Business Profile) - use billLayout fontSize settings
+    if (billLayout.storeName?.visible !== false && storeInfo.name) {
+      const fontSize = billLayout.storeName?.fontSize || 16;
+      const fontWeight = billLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(storeInfo.name, centerX, y, fontSize * 1.5, fontWeight);
+      y += fontSize * 2;
+    }
+    if (billLayout.storeAddress?.visible !== false && storeInfo.address) {
+      const fontSize = billLayout.storeAddress?.fontSize || 10;
+      const fontWeight = billLayout.storeAddress?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(storeInfo.address, centerX, y, fontSize * 1.4, fontWeight);
+      y += fontSize * 1.8;
+    }
+    if (billLayout.storePhone?.visible !== false && storeInfo.phone) {
+      const fontSize = billLayout.storePhone?.fontSize || 10;
+      const fontWeight = billLayout.storePhone?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(storeInfo.phone, centerX, y, fontSize * 1.4, fontWeight);
+      y += fontSize * 1.8;
+    }
+
+    // Separator 1
+    if (billLayout.separator1?.visible !== false) {
+      y += 8;
+      drawLine(y, billLayout.separator1?.style || 'solid');
+      y += 12;
+    }
+
+    // Order info - use billLayout fontSize settings
+    ctx.textAlign = 'left';
+    if (billLayout.orderNumber?.visible !== false && header.orderNumber) {
+      const fontSize = (billLayout.orderNumber?.fontSize || 12) * 1.4;
+      const fontWeight = billLayout.orderNumber?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(`Order#: ${header.orderNumber}`, MARGIN, y, fontSize, fontWeight, 'left');
+      y += fontSize * 1.5;
+    }
+    if (billLayout.orderChannel?.visible !== false) {
+      const fontSize = (billLayout.orderChannel?.fontSize || 12) * 1.4;
+      const fontWeight = billLayout.orderChannel?.fontWeight === 'bold' ? 'bold' : 'normal';
+      const channelInfo = orderInfo.channel || 'POS';
+      const tableInfo = orderInfo.table ? ` / Table: ${orderInfo.table}` : '';
+      drawText(`${channelInfo}${tableInfo}`, MARGIN, y, fontSize, fontWeight, 'left');
+      y += fontSize * 1.5;
+    }
+    if (billLayout.serverName?.visible !== false && orderInfo.server) {
+      const fontSize = (billLayout.serverName?.fontSize || 11) * 1.4;
+      const fontWeight = billLayout.serverName?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(`Server: ${orderInfo.server}`, MARGIN, y, fontSize, fontWeight, 'left');
+      y += fontSize * 1.5;
+    }
+    if (billLayout.dateTime?.visible !== false) {
+      const fontSize = (billLayout.dateTime?.fontSize || 11) * 1.4;
+      const fontWeight = billLayout.dateTime?.fontWeight === 'bold' ? 'bold' : 'normal';
+      const now = header.dateTime ? new Date(header.dateTime) : new Date();
+      drawText(`${now.toLocaleDateString()} ${now.toLocaleTimeString()}`, MARGIN, y, fontSize, fontWeight, 'left');
+      y += fontSize * 1.5;
+    }
+
+    // Separator 2
+    if (billLayout.separator2?.visible !== false) {
+      y += 8;
+      drawLine(y, billLayout.separator2?.style || 'dashed');
+      y += 12;
+    }
+
+    // Items - use billLayout fontSize settings
+    const itemsFontSize = (billLayout.items?.fontSize || 12) * 1.4;
+    const itemsFontWeight = billLayout.items?.fontWeight === 'bold' ? 'bold' : 'normal';
+    const modifiersFontSize = (billLayout.modifiers?.fontSize || 10) * 1.4;
+    const modifiersFontWeight = billLayout.modifiers?.fontWeight === 'bold' ? 'bold' : 'normal';
+    
+    sectionsToRender.forEach(section => {
+      if (sectionsToRender.length > 1) {
+        drawText(`--- GUEST ${section.guestNumber} ---`, centerX, y, 14, 'bold', 'center');
+        y += 22;
+      }
+
+      (section.items || []).forEach(item => {
+        const qty = item.qty || item.quantity || 1;
+        const name = item.name || 'Unknown';
+        const lineTotal = item.lineTotal || item.total || 0;
+
+        // Use drawLeftRight for proper text truncation
+        drawLeftRight(`${name} x${qty}`, `$${lineTotal.toFixed(2)}`, y, itemsFontSize, itemsFontWeight);
+        y += itemsFontSize * 1.5;
+
+        // Modifiers
+        if (billLayout.modifiers?.visible !== false && item.modifiers) {
+          const modPrefix = billLayout.modifiers?.prefix || '>>';
+          item.modifiers.forEach(mod => {
+            const modName = typeof mod === 'string' ? mod : (mod.name || mod);
+            drawText(`  ${modPrefix} ${modName}`, MARGIN, y, modifiersFontSize, modifiersFontWeight, 'left');
+            y += modifiersFontSize * 1.4;
+          });
+        }
+      });
+    });
+
+    // Separator 3
+    if (billLayout.separator3?.visible !== false) {
+      y += 8;
+      drawLine(y, billLayout.separator3?.style || 'solid');
+      y += 12;
+    }
+
+    // Totals - use billLayout fontSize settings with drawLeftRight
+    if (billLayout.subtotal?.visible !== false) {
+      const fontSize = (billLayout.subtotal?.fontSize || 12) * 1.4;
+      const fontWeight = billLayout.subtotal?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawLeftRight('Subtotal:', `$${subtotal.toFixed(2)}`, y, fontSize, fontWeight);
+      y += fontSize * 1.5;
+    }
+
+    // Adjustments (Discount)
+    if (billLayout.discount?.visible !== false) {
+      const fontSize = (billLayout.discount?.fontSize || 11) * 1.4;
+      const fontWeight = billLayout.discount?.fontWeight === 'bold' ? 'bold' : 'normal';
+      adjustments.forEach(adj => {
+        drawLeftRight(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, y, fontSize, fontWeight);
+        y += fontSize * 1.4;
+      });
+    }
+
+    // Tax - use billLayout fontSize settings (taxGST/taxPST) with drawLeftRight
+    const taxFontSize = (billLayout.taxGST?.fontSize || billLayout.taxPST?.fontSize || 11) * 1.4;
+    const taxFontWeight = (billLayout.taxGST?.fontWeight === 'bold' || billLayout.taxPST?.fontWeight === 'bold') ? 'bold' : 'normal';
+    taxLines.forEach(tax => {
+      if (tax.name) {
+        drawLeftRight(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, y, taxFontSize, taxFontWeight);
+        y += taxFontSize * 1.4;
+      }
+    });
+
+    // Separator 4
+    if (billLayout.separator4?.visible !== false) {
+      y += 8;
+      drawLine(y, billLayout.separator4?.style || 'solid');
+      y += 12;
+    }
+
+    // Total - use billLayout fontSize settings with drawLeftRight
+    if (billLayout.total?.visible !== false) {
+      const fontSize = (billLayout.total?.fontSize || 14) * 1.4;
+      const fontWeight = billLayout.total?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawLeftRight('TOTAL:', `$${total.toFixed(2)}`, y, fontSize, fontWeight);
+      y += fontSize * 1.6;
+    }
+
+    // Footer - use billLayout fontSize settings
+    y += 10;
+    if (billLayout.greeting?.visible !== false) {
+      const fontSize = (billLayout.greeting?.fontSize || 11) * 1.4;
+      const fontWeight = billLayout.greeting?.fontWeight === 'bold' ? 'bold' : 'normal';
+      drawText(billLayout.greeting?.text || footer.message || 'Thank you!', centerX, y, fontSize, fontWeight, 'center');
+      y += fontSize * 1.5;
+    }
+
+    // Convert to ESC/POS
+    return canvasToEscPosBitmap(canvas);
+  }
+
+  // ============ PRINT RECEIPT (결제 완료 후) ============
+  
+  // POST /api/printers/print-receipt - Print receipt after payment completion
+  router.post('/print-receipt', async (req, res) => {
+    try {
+      const { receiptData, copies = 2 } = req.body;
+      
+      if (!receiptData) {
+        return res.status(400).json({ success: false, error: 'receiptData is required' });
+      }
+
+      const numCopies = Math.max(1, Math.min(5, copies)); // 1~5장 제한
+      console.log(`📄 Print Receipt request received (${numCopies} copies)`);
+
+      // Load layout settings
+      let layoutSettings = null;
+      try {
+        const row = await dbGet(`SELECT settings FROM printer_layout_settings WHERE id = 1`);
+        if (row && row.settings) {
+          layoutSettings = JSON.parse(row.settings);
+        }
+      } catch (e) {
+        console.warn('Could not load layout settings:', e.message);
+      }
+
+      const receiptLayout = layoutSettings?.receiptLayout || {};
+      const printMode = receiptLayout.printMode || 'graphic';
+      const paperWidth = receiptLayout.paperWidth || 80;
+
+      // Load business profile for store info
+      let businessProfile = null;
+      try {
+        businessProfile = await dbGet('SELECT * FROM business_profile WHERE id = 1');
+      } catch (e) {
+        console.warn('Could not load business profile:', e.message);
+      }
+
+      const storeInfo = {
+        name: businessProfile?.business_name || receiptLayout.storeName?.text || 'Restaurant',
+        address: [
+          businessProfile?.address_line1,
+          businessProfile?.address_line2,
+          businessProfile?.city,
+          businessProfile?.state,
+          businessProfile?.zip
+        ].filter(Boolean).join(', ') || receiptLayout.storeAddress?.text || '',
+        phone: businessProfile?.phone || receiptLayout.storePhone?.text || ''
+      };
+
+      // Find receipt printer
+      let printer = await dbGet(`
+        SELECT id, name, selected_printer 
+        FROM printers 
+        WHERE is_active = 1 
+          AND (
+            LOWER(type) = 'receipt' 
+            OR LOWER(name) LIKE '%front%' 
+            OR LOWER(name) LIKE '%receipt%'
+            OR LOWER(name) LIKE '%counter%'
+          )
+        LIMIT 1
+      `);
+      
+      if (!printer) {
+        printer = await dbGet(`
+          SELECT id, name, selected_printer 
+          FROM printers 
+          WHERE is_active = 1 AND selected_printer IS NOT NULL
+          LIMIT 1
+        `);
+      }
+      
+      if (!printer || !printer.selected_printer) {
+        console.error('❌ No printer configured for receipt printing');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a receipt printer in Back Office.' 
+        });
+      }
+
+      const printerName = printer.selected_printer;
+      console.log(`🖨️ Using printer for receipt: ${printerName}`);
+
+      // Extract receipt data
+      const {
+        header = {},
+        orderInfo = {},
+        items = [],
+        guestSections = [],
+        subtotal = 0,
+        adjustments = [],
+        taxLines = [],
+        taxesTotal = 0,
+        total = 0,
+        payments = [],
+        change = 0,
+        footer = {}
+      } = receiptData;
+
+      // Build ESC/POS content for text mode
+      const LINE_WIDTH = paperWidth === 80 ? 42 : 32;
+      const buildTextReceipt = () => {
+        let content = '';
+        
+        const centerText = (text, useDouble = false) => {
+          const effectiveWidth = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          const truncatedText = text.length > effectiveWidth ? text.substring(0, effectiveWidth - 2) + '..' : text;
+          const padding = Math.max(0, Math.floor((effectiveWidth - truncatedText.length) / 2));
+          return ' '.repeat(padding) + truncatedText;
+        };
+        
+        const leftRightText = (left, right, useDouble = false) => {
+          const effectiveWidth = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          const rightLen = right.length;
+          const maxLeftLen = effectiveWidth - rightLen - 1;
+          const truncatedLeft = left.length > maxLeftLen ? left.substring(0, maxLeftLen - 2) + '..' : left;
+          const spaces = Math.max(1, effectiveWidth - truncatedLeft.length - rightLen);
+          const totalLen = truncatedLeft.length + spaces + rightLen;
+          const finalSpaces = totalLen > effectiveWidth ? 1 : spaces;
+          return truncatedLeft + ' '.repeat(finalSpaces) + right;
+        };
+        
+        const getSeparator = (style, useDouble = false) => {
+          const width = useDouble ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+          if (style === 'dashed') return '-'.repeat(width);
+          if (style === 'dotted') return '.'.repeat(width);
+          return '='.repeat(width);
+        };
+        
+        const applyFontStyle = (element) => {
+          let prefix = '';
+          let suffix = '';
+          let isDoubleWidth = false;
+          const fontSize = element?.fontSize || 12;
+          const fontWeight = element?.fontWeight || 'normal';
+          
+          if (fontSize >= 14) {
+            prefix += ESCPOS.DOUBLE_SIZE;
+            suffix = ESCPOS.NORMAL_SIZE + suffix;
+            isDoubleWidth = true;
+          } else if (fontSize >= 12) {
+            prefix += ESCPOS.DOUBLE_HEIGHT;
+            suffix = ESCPOS.NORMAL_SIZE + suffix;
+          }
+          
+          if (fontWeight === 'bold') {
+            prefix += ESCPOS.BOLD_ON;
+            suffix = ESCPOS.BOLD_OFF + suffix;
+          }
+          
+          return { prefix, suffix, isDoubleWidth };
+        };
+
+        // Initialize
+        content += ESCPOS.INIT;
+        
+        // Header - Store Info
+        if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
+          const style = applyFontStyle(receiptLayout.storeName);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        if (receiptLayout.storeAddress?.visible !== false && storeInfo.address) {
+          const style = applyFontStyle(receiptLayout.storeAddress);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.address, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        if (receiptLayout.storePhone?.visible !== false && storeInfo.phone) {
+          const style = applyFontStyle(receiptLayout.storePhone);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(storeInfo.phone, style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        // Separator 1
+        if (receiptLayout.separator1?.visible !== false) {
+          content += getSeparator(receiptLayout.separator1?.style || 'solid') + '\n';
+        }
+        
+        content += ESCPOS.ALIGN_LEFT;
+        
+        // Order Info
+        if (receiptLayout.orderNumber?.visible !== false && header.orderNumber) {
+          const style = applyFontStyle(receiptLayout.orderNumber);
+          content += style.prefix + `Order#: ${header.orderNumber}\n` + style.suffix;
+        }
+        
+        if (receiptLayout.orderChannel?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.orderChannel);
+          const channelInfo = header.channel || orderInfo.channel || '';
+          const tableInfo = header.tableName || orderInfo.tableName || '';
+          if (channelInfo || tableInfo) {
+            content += style.prefix + `${channelInfo}${tableInfo ? ' - ' + tableInfo : ''}\n` + style.suffix;
+          }
+        }
+        
+        if (receiptLayout.serverName?.visible !== false && (header.serverName || orderInfo.serverName)) {
+          const style = applyFontStyle(receiptLayout.serverName);
+          content += style.prefix + `Server: ${header.serverName || orderInfo.serverName}\n` + style.suffix;
+        }
+        
+        if (receiptLayout.dateTime?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.dateTime);
+          const now = new Date();
+          const dateStr = now.toLocaleDateString('en-CA');
+          const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+          content += style.prefix + `${dateStr} ${timeStr}\n` + style.suffix;
+        }
+        
+        // Separator 2
+        if (receiptLayout.separator2?.visible !== false) {
+          content += getSeparator(receiptLayout.separator2?.style || 'dashed') + '\n';
+        }
+        
+        // Items
+        const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
+        sectionsToRender.forEach((section, sIdx) => {
+          if (sectionsToRender.length > 1) {
+            content += `--- Guest ${section.guestNumber || sIdx + 1} ---\n`;
+          }
+          (section.items || []).forEach(item => {
+            if (receiptLayout.items?.visible !== false) {
+              const style = applyFontStyle(receiptLayout.items);
+              const qtyName = `${item.quantity || 1}x ${item.name}`;
+              const price = `$${(item.totalPrice || item.price || 0).toFixed(2)}`;
+              content += style.prefix + leftRightText(qtyName, price, style.isDoubleWidth) + '\n' + style.suffix;
+            }
+            
+            if (receiptLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
+              const style = applyFontStyle(receiptLayout.modifiers);
+              const prefix = receiptLayout.modifiers?.prefix || '>>';
+              item.modifiers.forEach(mod => {
+                const modText = `  ${prefix} ${mod.name || mod}`;
+                const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
+                content += style.prefix + leftRightText(modText, modPrice, style.isDoubleWidth) + '\n' + style.suffix;
+              });
+            }
+            
+            if (receiptLayout.itemNote?.visible !== false && item.memo) {
+              const style = applyFontStyle(receiptLayout.itemNote);
+              const prefix = receiptLayout.itemNote?.prefix || '->';
+              content += style.prefix + `  ${prefix} ${item.memo.text || item.memo}\n` + style.suffix;
+            }
+          });
+        });
+        
+        // Separator 3
+        if (receiptLayout.separator3?.visible !== false) {
+          content += getSeparator(receiptLayout.separator3?.style || 'solid') + '\n';
+        }
+        
+        // Subtotal
+        if (receiptLayout.subtotal?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.subtotal);
+          content += style.prefix + leftRightText('Subtotal:', `$${subtotal.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        // Adjustments (Discount)
+        if (receiptLayout.discount?.visible !== false && adjustments.length > 0) {
+          const style = applyFontStyle(receiptLayout.discount);
+          adjustments.forEach(adj => {
+            content += style.prefix + leftRightText(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+          });
+        }
+        
+        // Tax
+        taxLines.forEach(tax => {
+          if (tax.name) {
+            const style = applyFontStyle(receiptLayout.taxGST);
+            content += style.prefix + leftRightText(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+          }
+        });
+        
+        // Separator 4
+        if (receiptLayout.separator4?.visible !== false) {
+          content += getSeparator(receiptLayout.separator4?.style || 'solid') + '\n';
+        }
+        
+        // Total
+        if (receiptLayout.total?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.total);
+          content += style.prefix + leftRightText('TOTAL:', `$${total.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        content += '\n';
+        
+        // Payment Info (Receipt specific)
+        if (receiptLayout.paymentMethod?.visible !== false && payments.length > 0) {
+          const style = applyFontStyle(receiptLayout.paymentMethod);
+          content += style.prefix + '--- Payment ---\n' + style.suffix;
+          payments.forEach(p => {
+            const method = p.method || 'Unknown';
+            const amount = `$${(p.amount || 0).toFixed(2)}`;
+            content += style.prefix + leftRightText(method, amount, style.isDoubleWidth) + '\n' + style.suffix;
+          });
+        }
+        
+        // Change
+        if (receiptLayout.changeAmount?.visible !== false && change > 0) {
+          const style = applyFontStyle(receiptLayout.changeAmount);
+          content += style.prefix + leftRightText('Change:', `$${change.toFixed(2)}`, style.isDoubleWidth) + '\n' + style.suffix;
+        }
+        
+        content += '\n';
+        
+        // Footer
+        if (receiptLayout.greeting?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.greeting);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(receiptLayout.greeting?.text || footer.message || 'Thank you!', style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        if (receiptLayout.thankYouMessage?.visible !== false) {
+          const style = applyFontStyle(receiptLayout.thankYouMessage);
+          content += ESCPOS.ALIGN_CENTER;
+          content += style.prefix;
+          content += centerText(receiptLayout.thankYouMessage?.text || '*** THANK YOU ***', style.isDoubleWidth) + '\n';
+          content += style.suffix;
+        }
+        
+        content += '\n\n\n';
+        content += ESCPOS.CUT;
+        
+        return content;
+      };
+
+      // Render receipt image for graphic mode
+      function renderReceiptImage(receiptData, receiptLayout, paperWidth, storeInfo = {}, payments = [], change = 0) {
+        const { header = {}, orderInfo = {}, items = [], guestSections = [], subtotal = 0, adjustments = [], taxLines = [], total = 0, footer = {} } = receiptData;
+
+        const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
+        const MARGIN = Math.max(4, Math.min(12, Math.round((receiptLayout.leftMargin || 0) * 2.835) + 4));
+        const TOP_MARGIN = Math.round((receiptLayout.topMargin || 0) * 2.835) + 12;
+        const CONTENT_WIDTH = PAPER_WIDTH_PX - (MARGIN * 2);
+
+        // Calculate height
+        let totalHeight = TOP_MARGIN + 40;
+        if (receiptLayout.storeName?.visible !== false) totalHeight += 35;
+        if (receiptLayout.storeAddress?.visible !== false) totalHeight += 20;
+        if (receiptLayout.storePhone?.visible !== false) totalHeight += 20;
+        totalHeight += 100; // Order info
+        
+        const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
+        sectionsToRender.forEach(section => {
+          if (sectionsToRender.length > 1) totalHeight += 30;
+          (section.items || []).forEach(item => {
+            totalHeight += 25;
+            if (item.modifiers) totalHeight += item.modifiers.length * 18;
+            if (item.memo) totalHeight += 18;
+          });
+        });
+        
+        totalHeight += 150; // Subtotal, tax, total
+        totalHeight += payments.length * 25 + 50; // Payment info
+        totalHeight += 80; // Footer
+        totalHeight += 30; // Extra padding
+
+        const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
+        const ctx = canvas.getContext('2d');
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, PAPER_WIDTH_PX, totalHeight);
+
+        let y = TOP_MARGIN;
+        const centerX = PAPER_WIDTH_PX / 2;
+
+        const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center') => {
+          ctx.font = `${fontWeight} ${fontSize}px Arial`;
+          ctx.fillStyle = '#000000';
+          ctx.textAlign = align;
+          
+          let displayText = text;
+          if (align === 'center') {
+            while (ctx.measureText(displayText).width > CONTENT_WIDTH && displayText.length > 5) {
+              displayText = displayText.substring(0, displayText.length - 1);
+            }
+            if (displayText !== text) {
+              displayText = displayText + '..';
+            }
+          }
+          
+          ctx.fillText(displayText, x, yPos);
+        };
+        
+        const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal') => {
+          ctx.font = `${fontWeight} ${fontSize}px Arial`;
+          ctx.fillStyle = '#000000';
+          
+          const rightWidth = ctx.measureText(rightText).width;
+          const minGap = 2;
+          const maxLeftWidth = CONTENT_WIDTH - rightWidth - minGap;
+          
+          let displayLeft = leftText;
+          while (ctx.measureText(displayLeft).width > maxLeftWidth && displayLeft.length > 5) {
+            displayLeft = displayLeft.substring(0, displayLeft.length - 1);
+          }
+          if (displayLeft !== leftText) {
+            displayLeft = displayLeft + '..';
+          }
+          
+          ctx.textAlign = 'left';
+          ctx.fillText(displayLeft, MARGIN, yPos);
+          ctx.textAlign = 'right';
+          ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN, yPos);
+        };
+
+        const drawLine = (yPos, style = 'solid') => {
+          ctx.strokeStyle = '#000000';
+          ctx.lineWidth = 1;
+          if (style === 'dashed') {
+            ctx.setLineDash([8, 4]);
+          } else if (style === 'dotted') {
+            ctx.setLineDash([2, 2]);
+          } else {
+            ctx.setLineDash([]);
+          }
+          ctx.beginPath();
+          ctx.moveTo(MARGIN, yPos);
+          ctx.lineTo(PAPER_WIDTH_PX - MARGIN, yPos);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        };
+
+        // Store Name
+        if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
+          const fontSize = (receiptLayout.storeName?.fontSize || 16) * 1.5;
+          const fontWeight = receiptLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
+          drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center');
+          y += fontSize * 1.3;
+        }
+
+        // Store Address
+        if (receiptLayout.storeAddress?.visible !== false && storeInfo.address) {
+          const fontSize = (receiptLayout.storeAddress?.fontSize || 10) * 1.4;
+          drawText(storeInfo.address, centerX, y, fontSize, 'normal', 'center');
+          y += fontSize * 1.4;
+        }
+
+        // Store Phone
+        if (receiptLayout.storePhone?.visible !== false && storeInfo.phone) {
+          const fontSize = (receiptLayout.storePhone?.fontSize || 10) * 1.4;
+          drawText(storeInfo.phone, centerX, y, fontSize, 'normal', 'center');
+          y += fontSize * 1.4;
+        }
+
+        // Separator 1
+        if (receiptLayout.separator1?.visible !== false) {
+          y += 8;
+          drawLine(y, receiptLayout.separator1?.style || 'solid');
+          y += 12;
+        }
+
+        // Order Info
+        ctx.textAlign = 'left';
+        if (receiptLayout.orderNumber?.visible !== false && header.orderNumber) {
+          const fontSize = (receiptLayout.orderNumber?.fontSize || 12) * 1.4;
+          drawText(`Order#: ${header.orderNumber}`, MARGIN, y, fontSize, 'normal', 'left');
+          y += fontSize * 1.4;
+        }
+
+        if (receiptLayout.orderChannel?.visible !== false) {
+          const fontSize = (receiptLayout.orderChannel?.fontSize || 12) * 1.4;
+          const channelInfo = header.channel || orderInfo.channel || '';
+          const tableInfo = header.tableName || orderInfo.tableName || '';
+          if (channelInfo || tableInfo) {
+            drawText(`${channelInfo}${tableInfo ? ' - ' + tableInfo : ''}`, MARGIN, y, fontSize, 'normal', 'left');
+            y += fontSize * 1.4;
+          }
+        }
+
+        if (receiptLayout.serverName?.visible !== false && (header.serverName || orderInfo.serverName)) {
+          const fontSize = (receiptLayout.serverName?.fontSize || 11) * 1.4;
+          drawText(`Server: ${header.serverName || orderInfo.serverName}`, MARGIN, y, fontSize, 'normal', 'left');
+          y += fontSize * 1.4;
+        }
+
+        if (receiptLayout.dateTime?.visible !== false) {
+          const fontSize = (receiptLayout.dateTime?.fontSize || 11) * 1.4;
+          const now = new Date();
+          const dateStr = now.toLocaleDateString('en-CA');
+          const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+          drawText(`${dateStr} ${timeStr}`, MARGIN, y, fontSize, 'normal', 'left');
+          y += fontSize * 1.4;
+        }
+
+        // Separator 2
+        if (receiptLayout.separator2?.visible !== false) {
+          y += 8;
+          drawLine(y, receiptLayout.separator2?.style || 'dashed');
+          y += 12;
+        }
+
+        // Items
+        sectionsToRender.forEach((section, sIdx) => {
+          if (sectionsToRender.length > 1) {
+            const guestFontSize = 14;
+            drawText(`--- Guest ${section.guestNumber || sIdx + 1} ---`, centerX, y, guestFontSize, 'bold', 'center');
+            y += 20;
+          }
+
+          (section.items || []).forEach(item => {
+            if (receiptLayout.items?.visible !== false) {
+              const fontSize = (receiptLayout.items?.fontSize || 12) * 1.4;
+              const fontWeight = receiptLayout.items?.fontWeight === 'bold' ? 'bold' : 'normal';
+              const qtyName = `${item.quantity || 1}x ${item.name}`;
+              const price = `$${(item.totalPrice || item.price || 0).toFixed(2)}`;
+              drawLeftRight(qtyName, price, y, fontSize, fontWeight);
+              y += fontSize * 1.4;
+            }
+
+            if (receiptLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
+              const fontSize = (receiptLayout.modifiers?.fontSize || 10) * 1.4;
+              const prefix = receiptLayout.modifiers?.prefix || '>>';
+              item.modifiers.forEach(mod => {
+                const modText = `  ${prefix} ${mod.name || mod}`;
+                const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
+                drawLeftRight(modText, modPrice, y, fontSize, 'normal');
+                y += fontSize * 1.3;
+              });
+            }
+
+            if (receiptLayout.itemNote?.visible !== false && item.memo) {
+              const fontSize = (receiptLayout.itemNote?.fontSize || 10) * 1.4;
+              const prefix = receiptLayout.itemNote?.prefix || '->';
+              drawText(`  ${prefix} ${item.memo.text || item.memo}`, MARGIN, y, fontSize, 'italic', 'left');
+              y += fontSize * 1.3;
+            }
+          });
+        });
+
+        // Separator 3
+        if (receiptLayout.separator3?.visible !== false) {
+          y += 8;
+          drawLine(y, receiptLayout.separator3?.style || 'solid');
+          y += 12;
+        }
+
+        // Subtotal
+        if (receiptLayout.subtotal?.visible !== false) {
+          const fontSize = (receiptLayout.subtotal?.fontSize || 12) * 1.4;
+          const fontWeight = receiptLayout.subtotal?.fontWeight === 'bold' ? 'bold' : 'normal';
+          drawLeftRight('Subtotal:', `$${subtotal.toFixed(2)}`, y, fontSize, fontWeight);
+          y += fontSize * 1.5;
+        }
+
+        // Adjustments
+        if (receiptLayout.discount?.visible !== false) {
+          const fontSize = (receiptLayout.discount?.fontSize || 11) * 1.4;
+          adjustments.forEach(adj => {
+            drawLeftRight(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, y, fontSize, 'normal');
+            y += fontSize * 1.4;
+          });
+        }
+
+        // Tax
+        const taxFontSize = (receiptLayout.taxGST?.fontSize || 11) * 1.4;
+        taxLines.forEach(tax => {
+          if (tax.name) {
+            drawLeftRight(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, y, taxFontSize, 'normal');
+            y += taxFontSize * 1.4;
+          }
+        });
+
+        // Separator 4
+        if (receiptLayout.separator4?.visible !== false) {
+          y += 8;
+          drawLine(y, receiptLayout.separator4?.style || 'solid');
+          y += 12;
+        }
+
+        // Total
+        if (receiptLayout.total?.visible !== false) {
+          const fontSize = (receiptLayout.total?.fontSize || 14) * 1.4;
+          const fontWeight = receiptLayout.total?.fontWeight === 'bold' ? 'bold' : 'normal';
+          drawLeftRight('TOTAL:', `$${total.toFixed(2)}`, y, fontSize, fontWeight);
+          y += fontSize * 1.6;
+        }
+
+        y += 10;
+
+        // Payment Info
+        if (receiptLayout.paymentMethod?.visible !== false && payments.length > 0) {
+          const fontSize = (receiptLayout.paymentMethod?.fontSize || 12) * 1.4;
+          drawText('--- Payment ---', centerX, y, fontSize, 'bold', 'center');
+          y += fontSize * 1.4;
+          
+          payments.forEach(p => {
+            const method = p.method || 'Unknown';
+            const amount = `$${(p.amount || 0).toFixed(2)}`;
+            drawLeftRight(method, amount, y, fontSize, 'normal');
+            y += fontSize * 1.3;
+          });
+        }
+
+        // Change
+        if (receiptLayout.changeAmount?.visible !== false && change > 0) {
+          const fontSize = (receiptLayout.changeAmount?.fontSize || 12) * 1.4;
+          const fontWeight = receiptLayout.changeAmount?.fontWeight === 'bold' ? 'bold' : 'normal';
+          drawLeftRight('Change:', `$${change.toFixed(2)}`, y, fontSize, fontWeight);
+          y += fontSize * 1.5;
+        }
+
+        y += 15;
+
+        // Footer
+        if (receiptLayout.greeting?.visible !== false) {
+          const fontSize = (receiptLayout.greeting?.fontSize || 11) * 1.4;
+          drawText(receiptLayout.greeting?.text || footer.message || 'Thank you!', centerX, y, fontSize, 'normal', 'center');
+          y += fontSize * 1.5;
+        }
+
+        if (receiptLayout.thankYouMessage?.visible !== false) {
+          const fontSize = (receiptLayout.thankYouMessage?.fontSize || 12) * 1.4;
+          const fontWeight = receiptLayout.thankYouMessage?.fontWeight === 'bold' ? 'bold' : 'normal';
+          drawText(receiptLayout.thankYouMessage?.text || '*** THANK YOU ***', centerX, y, fontSize, fontWeight, 'center');
+          y += fontSize * 1.5;
+        }
+
+        return canvasToEscPosBitmap(canvas);
+      }
+
+      // Print based on mode (multiple copies)
+      for (let copyNum = 1; copyNum <= numCopies; copyNum++) {
+        console.log(`📄 Printing Receipt copy ${copyNum}/${numCopies}...`);
+        
+        if (printMode === 'text') {
+          const textContent = buildTextReceipt();
+          await printEscPosToWindows(printerName, textContent);
+        } else {
+          const graphicContent = renderReceiptImage(receiptData, receiptLayout, paperWidth, storeInfo, payments, change);
+          await printEscPosToWindows(printerName, graphicContent);
+        }
+      }
+
+      console.log(`✅ Receipt printed successfully (${numCopies} copies)`);
+      res.json({ success: true, message: `Receipt printed (${numCopies} copies)`, printer: printerName, copies: numCopies });
+
+    } catch (err) {
+      console.error('❌ Print-receipt error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Failed to print receipt' });
     }
   });
 

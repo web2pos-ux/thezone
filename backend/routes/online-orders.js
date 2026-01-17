@@ -291,6 +291,112 @@ function startOrderListener(restaurantId) {
 
             printReq.write(printData);
             printReq.end();
+
+            // 🧾 온라인 결제 완료 시 Bill과 Receipt도 출력
+            if (orderIsPaid) {
+              console.log(`💳 온라인 결제 완료 주문 - Bill 및 Receipt 출력: ${localOrderNumber}`);
+              
+              // Bill 데이터 구성
+              const taxLines = [];
+              if (order.taxBreakdown && Array.isArray(order.taxBreakdown)) {
+                order.taxBreakdown.forEach(tax => {
+                  taxLines.push({ name: tax.name || 'Tax', amount: tax.amount || 0 });
+                });
+              } else if (order.tax) {
+                taxLines.push({ name: 'Tax', amount: order.tax });
+              }
+              
+              const subtotal = (order.subtotal || order.total - (order.tax || 0)) || 0;
+              const billData = {
+                header: {
+                  orderNumber: localOrderNumber,
+                  channel: 'ONLINE',
+                  tableName: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
+                  serverName: ''
+                },
+                orderInfo: {
+                  channel: 'ONLINE',
+                  tableName: order.orderType === 'pickup' ? 'PICKUP' : 'ONLINE',
+                  serverName: '',
+                  customerName: order.customerName || '',
+                  customerPhone: order.customerPhone || ''
+                },
+                items: (order.items || []).map(item => ({
+                  name: item.name || 'Unknown',
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  totalPrice: (item.price || 0) * (item.quantity || 1),
+                  modifiers: (item.options || []).map(opt => ({
+                    name: opt.choiceName || opt.name || '',
+                    price: opt.price || 0
+                  }))
+                })),
+                guestSections: [],
+                subtotal: subtotal,
+                adjustments: [],
+                taxLines: taxLines,
+                taxesTotal: order.tax || 0,
+                total: order.total || 0,
+                footer: {}
+              };
+
+              // Bill 출력
+              const billPrintData = JSON.stringify({ billData });
+              const billReq = http.request({
+                hostname: 'localhost',
+                port: 3177,
+                path: '/api/printers/print-bill',
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(billPrintData)
+                }
+              }, (billRes) => {
+                let billResponseData = '';
+                billRes.on('data', chunk => { billResponseData += chunk; });
+                billRes.on('end', () => {
+                  console.log(`🧾 온라인 주문 Bill 출력 완료: ${localOrderNumber}`);
+                });
+              });
+              billReq.on('error', (err) => {
+                console.error('🧾 온라인 주문 Bill 출력 오류:', err.message);
+              });
+              billReq.write(billPrintData);
+              billReq.end();
+
+              // Receipt 출력 (결제 정보 포함)
+              const receiptData = {
+                ...billData,
+                payments: [{
+                  method: order.paymentMethod || 'Credit Card',
+                  amount: order.total || 0
+                }],
+                change: 0
+              };
+
+              const receiptPrintData = JSON.stringify({ receiptData });
+              const receiptReq = http.request({
+                hostname: 'localhost',
+                port: 3177,
+                path: '/api/printers/print-receipt',
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(receiptPrintData)
+                }
+              }, (receiptRes) => {
+                let receiptResponseData = '';
+                receiptRes.on('data', chunk => { receiptResponseData += chunk; });
+                receiptRes.on('end', () => {
+                  console.log(`🧾 온라인 주문 Receipt 출력 완료: ${localOrderNumber}`);
+                });
+              });
+              receiptReq.on('error', (err) => {
+                console.error('🧾 온라인 주문 Receipt 출력 오류:', err.message);
+              });
+              receiptReq.write(receiptPrintData);
+              receiptReq.end();
+            }
           } catch (printError) {
             console.error('🖨️ 자동 출력 중 오류:', printError.message);
           }
@@ -990,6 +1096,224 @@ router.post('/resume/:restaurantId', async (req, res) => {
     res.json({ success: true, message: 'Resumed successfully', channels });
   } catch (error) {
     console.error('[RESUME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== PREP TIME 설정 =====
+
+// Prep Time 설정 저장 및 Firebase 동기화
+router.post('/prep-time/:restaurantId', async (req, res) => {
+  const { restaurantId } = req.params;
+  const { settings } = req.body;
+
+  console.log(`[PREP TIME] 레스토랑 ${restaurantId} Prep Time 설정:`, settings);
+
+  if (!ensureFirebaseInit()) {
+    return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+  }
+
+  try {
+    // Firebase에 Prep Time 설정 동기화
+    await firebaseService.syncPrepTimeSettings(restaurantId, settings);
+    
+    res.json({ 
+      success: true, 
+      message: 'Prep Time settings saved',
+      settings
+    });
+  } catch (error) {
+    console.error('[PREP TIME] Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== DAY OFF 설정 =====
+
+// Day Off 테이블 재생성 (기존 테이블 문제 해결)
+const initializeDayOffTable = async () => {
+  try {
+    // 기존 테이블 스키마 확인
+    const tableExists = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='online_day_off'");
+    
+    if (tableExists) {
+      // 기존 데이터 백업
+      const existingData = await dbAll('SELECT * FROM online_day_off');
+      
+      // 기존 테이블 삭제
+      await dbRun('DROP TABLE online_day_off');
+      console.log('[DAY OFF] Old table dropped');
+      
+      // 새 테이블 생성
+      await dbRun(`
+        CREATE TABLE online_day_off (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT NOT NULL UNIQUE,
+          channels TEXT DEFAULT 'all',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[DAY OFF] New table created');
+      
+      // 기존 데이터 복원
+      for (const row of existingData) {
+        const channels = row.channels || row.channel || 'all';
+        try {
+          await dbRun(
+            'INSERT OR IGNORE INTO online_day_off (date, channels, created_at, updated_at) VALUES (?, ?, ?, ?)',
+            [row.date, channels, row.created_at || new Date().toISOString(), row.updated_at || new Date().toISOString()]
+          );
+        } catch (e) {
+          // 중복 무시
+        }
+      }
+      console.log(`[DAY OFF] Migrated ${existingData.length} existing records`);
+    } else {
+      // 테이블이 없으면 새로 생성
+      await dbRun(`
+        CREATE TABLE online_day_off (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT NOT NULL UNIQUE,
+          channels TEXT DEFAULT 'all',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('[DAY OFF] Table created');
+    }
+  } catch (error) {
+    console.error('[DAY OFF] Table init error:', error);
+  }
+};
+
+// 초기화 실행
+initializeDayOffTable();
+
+// Day Off 목록 조회
+router.get('/day-off', async (req, res) => {
+  try {
+    const dayOffs = await dbAll(
+      'SELECT id, date, channels, created_at, updated_at FROM online_day_off ORDER BY date ASC'
+    );
+    console.log(`[DAY OFF] Get: ${dayOffs.length} records`);
+    res.json({ success: true, dayOffs });
+  } catch (error) {
+    console.error('[DAY OFF] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 추가 (단일)
+router.post('/day-off', async (req, res) => {
+  try {
+    const { date, channels = 'all', restaurantId } = req.body;
+    
+    if (!date) {
+      return res.status(400).json({ success: false, error: 'Date is required' });
+    }
+
+    // 로컬 DB에 저장
+    await dbRun(
+      `INSERT OR REPLACE INTO online_day_off (date, channels, updated_at) 
+       VALUES (?, ?, CURRENT_TIMESTAMP)`,
+      [date, channels]
+    );
+
+    // Firebase 동기화
+    if (restaurantId) {
+      try {
+        await firebaseService.addDayOff(restaurantId, date, channels);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+      }
+    }
+
+    console.log(`[DAY OFF] Added: ${date}, channels: ${channels}`);
+    res.json({ success: true, message: 'Day off added', date });
+  } catch (error) {
+    console.error('[DAY OFF] Add error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 삭제
+router.delete('/day-off/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { restaurantId } = req.query;
+    
+    // 로컬 DB에서 삭제
+    await dbRun('DELETE FROM online_day_off WHERE date = ?', [date]);
+    
+    // Firebase에서 삭제
+    if (restaurantId) {
+      try {
+        await firebaseService.removeDayOff(restaurantId, date);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase delete error:', fbErr.message);
+      }
+    }
+    
+    console.log(`[DAY OFF] Removed: ${date}`);
+    res.json({ success: true, message: 'Day off removed', date });
+  } catch (error) {
+    console.error('[DAY OFF] Delete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 여러 날짜 일괄 설정
+router.post('/day-off/bulk', async (req, res) => {
+  try {
+    const { dates, channels = 'all', restaurantId } = req.body;
+    
+    console.log(`[DAY OFF] Bulk request: dates=${JSON.stringify(dates)}, channels=${channels}, restaurantId=${restaurantId}`);
+    
+    if (!dates || !Array.isArray(dates) || dates.length === 0) {
+      return res.status(400).json({ success: false, error: 'Dates array is required' });
+    }
+
+    // 로컬 DB에 저장
+    for (const date of dates) {
+      await dbRun(
+        `INSERT OR REPLACE INTO online_day_off (date, channels, updated_at) 
+         VALUES (?, ?, CURRENT_TIMESTAMP)`,
+        [date, channels]
+      );
+    }
+
+    // Firebase 동기화 - 전체 Day Off 목록 조회 후 동기화
+    if (restaurantId) {
+      try {
+        const allDayOffs = await dbAll('SELECT date, channels FROM online_day_off ORDER BY date ASC');
+        await firebaseService.syncDayOff(restaurantId, allDayOffs);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+      }
+    }
+
+    console.log(`[DAY OFF] Bulk added: ${dates.length} dates with channels: ${channels}`);
+    res.json({ success: true, message: `${dates.length} day offs added`, dates });
+  } catch (error) {
+    console.error('[DAY OFF] Bulk add error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 특정 날짜가 Day Off인지 확인
+router.get('/day-off/check/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const dayOff = await dbGet('SELECT * FROM online_day_off WHERE date = ?', [date]);
+    
+    res.json({ 
+      success: true, 
+      isDayOff: !!dayOff,
+      dayOff: dayOff || null
+    });
+  } catch (error) {
+    console.error('[DAY OFF] Check error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
