@@ -1,5 +1,17 @@
 const express = require('express');
 
+// Firebase Admin SDK (optional - for sync)
+let firebaseAdmin = null;
+let firebaseDb = null;
+try {
+  firebaseAdmin = require('firebase-admin');
+  if (firebaseAdmin.apps.length > 0) {
+    firebaseDb = firebaseAdmin.firestore();
+  }
+} catch (e) {
+  console.log('Firebase Admin not available for promotions sync');
+}
+
 module.exports = function(db) {
   const router = express.Router();
 
@@ -204,6 +216,115 @@ module.exports = function(db) {
       try { await exec('ROLLBACK'); } catch {}
       console.error('PUT /promotions/free failed:', e);
       res.status(500).json({ error: 'failed_to_save_free_promotions' });
+    }
+  });
+
+  // --- Firebase Sync ---
+  // Get Firebase promotions (for display in POS)
+  router.get('/firebase', async (req, res) => {
+    try {
+      // Get restaurantId from business_profile
+      const profile = await new Promise((resolve, reject) => {
+        db.get('SELECT firebase_restaurant_id FROM business_profile LIMIT 1', [], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      
+      const restaurantId = profile?.firebase_restaurant_id;
+      if (!restaurantId) {
+        return res.json({ promotions: [], message: 'No Firebase restaurant ID configured' });
+      }
+      
+      if (!firebaseDb) {
+        return res.json({ promotions: [], message: 'Firebase not initialized' });
+      }
+      
+      // Fetch promotions from Firebase
+      const snapshot = await firebaseDb
+        .collection('restaurants')
+        .doc(restaurantId)
+        .collection('promotions')
+        .get();
+      
+      const promotions = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        promotions.push({
+          id: doc.id,
+          ...data,
+          createdAt: data.createdAt?.toMillis() || null,
+          updatedAt: data.updatedAt?.toMillis() || null
+        });
+      });
+      
+      res.json({ promotions, restaurantId });
+    } catch (e) {
+      console.error('GET /promotions/firebase failed:', e);
+      res.status(500).json({ error: 'failed_to_load_firebase_promotions', message: e.message });
+    }
+  });
+
+  // Sync POS promotion to Firebase
+  router.post('/sync-to-firebase', async (req, res) => {
+    try {
+      const { promotion, type } = req.body; // type: 'discount' or 'free'
+      
+      // Get restaurantId from business_profile
+      const profile = await new Promise((resolve, reject) => {
+        db.get('SELECT firebase_restaurant_id FROM business_profile LIMIT 1', [], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      
+      const restaurantId = profile?.firebase_restaurant_id;
+      if (!restaurantId) {
+        return res.status(400).json({ error: 'No Firebase restaurant ID configured' });
+      }
+      
+      if (!firebaseDb) {
+        return res.status(400).json({ error: 'Firebase not initialized' });
+      }
+      
+      // Convert POS promotion format to Firebase format
+      const firebasePromo = {
+        type: type === 'free' ? 
+          (promotion.kind === 'BOGO' ? 'bogo' : 'free_item') : 
+          (promotion.mode === 'percent' ? 'percent_cart' : 'fixed_discount'),
+        name: promotion.name || 'Unnamed Promotion',
+        description: promotion.code ? `Code: ${promotion.code}` : '',
+        active: promotion.enabled !== false,
+        minOrderAmount: promotion.minSubtotal || 0,
+        discountPercent: promotion.mode === 'percent' ? promotion.value : null,
+        discountAmount: promotion.mode === 'amount' ? promotion.value : null,
+        selectedItems: promotion.eligibleItemIds || [],
+        channels: ['online', 'dine-in', 'togo', 'delivery', 'table-order', 'kiosk'],
+        validFrom: promotion.startDate || null,
+        validUntil: promotion.endDate || null,
+        updatedAt: firebaseAdmin.firestore.FieldValue.serverTimestamp()
+      };
+      
+      // Remove null values
+      Object.keys(firebasePromo).forEach(key => {
+        if (firebasePromo[key] === null || firebasePromo[key] === undefined) {
+          delete firebasePromo[key];
+        }
+      });
+      
+      // Save to Firebase
+      const promoRef = firebaseDb
+        .collection('restaurants')
+        .doc(restaurantId)
+        .collection('promotions')
+        .doc(promotion.id);
+      
+      await promoRef.set(firebasePromo, { merge: true });
+      
+      res.json({ ok: true, promotionId: promotion.id });
+    } catch (e) {
+      console.error('POST /promotions/sync-to-firebase failed:', e);
+      res.status(500).json({ error: 'failed_to_sync_promotion', message: e.message });
     }
   });
 
