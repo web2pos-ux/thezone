@@ -360,9 +360,33 @@ const SalesPage: React.FC = () => {
   const [isBillPrintMode, setIsBillPrintMode] = useState<boolean>(false);
   const [billPrintStatus, setBillPrintStatus] = useState<string>('');
 
-  // Online Settings modal state (Prep Time, Pause, Day Off tabs)
+  // Online Settings modal state (Prep Time, Pause, Day Off, Menu Hide tabs)
   const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
-  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff'>('preptime');
+  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide'>('preptime');
+  
+  // Menu Hide tab state
+  const [menuHideCategories, setMenuHideCategories] = useState<Array<{
+    category_id: string;
+    name: string;
+    item_count: number;
+    hidden_online_count: number;
+    hidden_delivery_count: number;
+  }>>([]);
+  const [menuHideItems, setMenuHideItems] = useState<Array<{
+    item_id: string;
+    name: string;
+    price: number;
+    online_visible: number;
+    delivery_visible: number;
+    online_hide_type: 'visible' | 'permanent' | 'time_limited';
+    online_available_until: string | null;
+    delivery_hide_type: 'visible' | 'permanent' | 'time_limited';
+    delivery_available_until: string | null;
+  }>>([]);
+  const [menuHideSelectedCategory, setMenuHideSelectedCategory] = useState<string | null>(null);
+  const [menuHideLoading, setMenuHideLoading] = useState<boolean>(false);
+  const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
+  const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
   
   // Pause 설정 state (각 채널별 pause 상태와 남은 시간)
   const [pauseSettings, setPauseSettings] = useState<{
@@ -402,10 +426,12 @@ const SalesPage: React.FC = () => {
   });
 
   // Day Off 설정 state
-  const [dayOffDates, setDayOffDates] = useState<{ date: string; reason: string | null; channels: string }[]>([]);
+  const [dayOffDates, setDayOffDates] = useState<{ date: string; channels: string; type: string }[]>([]);
   const [dayOffCalendarMonth, setDayOffCalendarMonth] = useState<Date>(new Date());
   const [dayOffSelectedDates, setDayOffSelectedDates] = useState<string[]>([]);
   const [dayOffSelectedChannels, setDayOffSelectedChannels] = useState<string[]>(['all']);
+  const [dayOffType, setDayOffType] = useState<'closed' | 'extended' | 'early' | 'late'>('closed');
+  const [dayOffTime, setDayOffTime] = useState<{ start: string; end: string }>({ start: '09:00', end: '21:00' });
   const [dayOffSaveStatus, setDayOffSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // 새 온라인 주문 알림 모달 상태
@@ -1442,8 +1468,8 @@ const SalesPage: React.FC = () => {
         if (data.success && Array.isArray(data.dayOffs)) {
           setDayOffDates(data.dayOffs.map((d: any) => ({ 
             date: d.date, 
-            reason: d.reason,
-            channels: d.channels || 'all'
+            channels: d.channels || 'all',
+            type: d.type || 'closed'
           })));
         }
       }
@@ -1505,7 +1531,7 @@ const SalesPage: React.FC = () => {
     }
 
     const restaurantId = localStorage.getItem('firebaseRestaurantId');
-    console.log('[Day Off] Saving...', dayOffSelectedDates, dayOffSelectedChannels, 'restaurantId:', restaurantId);
+    console.log('[Day Off] Saving...', dayOffSelectedDates, dayOffSelectedChannels, dayOffType, 'restaurantId:', restaurantId);
     setDayOffSaveStatus('saving');
     
     const channelsStr = dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes('all')
@@ -1519,6 +1545,7 @@ const SalesPage: React.FC = () => {
         body: JSON.stringify({
           dates: dayOffSelectedDates,
           channels: channelsStr,
+          type: dayOffType,
           restaurantId: restaurantId || undefined
         })
       });
@@ -1528,9 +1555,12 @@ const SalesPage: React.FC = () => {
       
       if (res.ok && data.success) {
         await loadDayOffDates();
-        // 저장 후 선택된 날짜 유지 (사라지지 않음)
+        // 저장 후 선택된 날짜 초기화 (달력에 저장된 상태로 표시)
+        setDayOffSelectedDates([]);
         setDayOffSaveStatus('saved');
         console.log('[Day Off] Save successful! (synced to Firebase)');
+        // 3초 후 saved 상태 초기화
+        setTimeout(() => setDayOffSaveStatus('idle'), 3000);
       } else {
         console.error('[Day Off] Save failed:', data);
         setDayOffSaveStatus('idle');
@@ -1559,6 +1589,121 @@ const SalesPage: React.FC = () => {
       console.error('Day off remove error:', err);
     }
   };
+
+  // ===== Menu Hide 탭 기능 =====
+  // 카테고리 목록 로드
+  const loadMenuHideCategories = useCallback(async () => {
+    try {
+      setMenuHideLoading(true);
+      // defaultMenu에서 menuId 가져오기
+      const menuId = defaultMenu.menuId || localStorage.getItem('menuId') || '200005';
+      const response = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${menuId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setMenuHideCategories(data.categories);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load menu hide categories:', error);
+    } finally {
+      setMenuHideLoading(false);
+    }
+  }, [API_URL, defaultMenu.menuId]);
+
+  // 카테고리별 아이템 로드
+  const loadMenuHideItems = useCallback(async (categoryId: string) => {
+    try {
+      setMenuHideLoading(true);
+      const response = await fetch(`${API_URL}/menu-visibility/items/${categoryId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setMenuHideItems(data.items);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load menu hide items:', error);
+    } finally {
+      setMenuHideLoading(false);
+    }
+  }, [API_URL]);
+
+  // 아이템 visibility 토글
+  const toggleItemVisibility = async (itemId: string, field: 'online_visible' | 'delivery_visible') => {
+    const item = menuHideItems.find(i => i.item_id === itemId);
+    if (!item) return;
+    
+    const newValue = field === 'online_visible' 
+      ? (item.online_visible === 1 ? 0 : 1)
+      : (item.delivery_visible === 1 ? 0 : 1);
+    
+    // Optimistic update
+    setMenuHideItems(prev => prev.map(i => 
+      i.item_id === itemId ? { ...i, [field]: newValue } : i
+    ));
+    
+    try {
+      const response = await fetch(`${API_URL}/menu-visibility/item/${itemId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: newValue })
+      });
+      
+      if (response.ok) {
+        // 카테고리 목록 새로고침 (hidden count 업데이트)
+        loadMenuHideCategories();
+      } else {
+        // Rollback on failure
+        setMenuHideItems(prev => prev.map(i => 
+          i.item_id === itemId ? { ...i, [field]: item[field] } : i
+        ));
+      }
+    } catch (error) {
+      console.error('Failed to toggle item visibility:', error);
+      // Rollback on error
+      setMenuHideItems(prev => prev.map(i => 
+        i.item_id === itemId ? { ...i, [field]: item[field] } : i
+      ));
+    }
+  };
+
+  // 카테고리 전체 토글
+  const toggleCategoryVisibility = async (categoryId: string, field: 'online_visible' | 'delivery_visible', value: number) => {
+    try {
+      const response = await fetch(`${API_URL}/menu-visibility/category/${categoryId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: value })
+      });
+      
+      if (response.ok) {
+        // 현재 카테고리가 선택되어 있으면 아이템 리스트 새로고침
+        if (menuHideSelectedCategory === categoryId) {
+          loadMenuHideItems(categoryId);
+        }
+        loadMenuHideCategories();
+      }
+    } catch (error) {
+      console.error('Failed to toggle category visibility:', error);
+    }
+  };
+
+  // Menu Hide 탭 열릴 때 카테고리 로드
+  useEffect(() => {
+    if (onlineModalTab === 'menuhide' && showPrepTimeModal) {
+      loadMenuHideCategories();
+      setMenuHideSelectedCategory(null);
+      setMenuHideItems([]);
+    }
+  }, [onlineModalTab, showPrepTimeModal, loadMenuHideCategories]);
+
+  // 카테고리 선택 시 아이템 로드
+  useEffect(() => {
+    if (menuHideSelectedCategory) {
+      loadMenuHideItems(menuHideSelectedCategory);
+    }
+  }, [menuHideSelectedCategory, loadMenuHideItems]);
 
   // SSE 실시간 푸시 연결 - 새 주문 즉시 감지
   useEffect(() => {
@@ -6275,11 +6420,11 @@ const SalesPage: React.FC = () => {
           </div>
         <TogoOrderModal />
         
-        {/* Online Settings Modal (Prep Time, Pause, Day Off) */}
+        {/* Online Settings Modal (Prep Time, Pause, Day Off, Order Type) */}
         {showPrepTimeModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div 
-              className="bg-white rounded-xl shadow-2xl w-[560px]"
+              className="bg-white rounded-xl shadow-2xl w-[644px]"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
@@ -6307,13 +6452,20 @@ const SalesPage: React.FC = () => {
                 >
                   Day Off
                 </button>
+                <button
+                  onClick={() => setOnlineModalTab('menuhide')}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'menuhide' ? 'bg-white text-purple-700 shadow-md border-2 border-purple-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                >
+                  Menu Hide
+                </button>
               </div>
               
-              {/* Tab Content - 고정 높이 */}
-              <div className="p-4 h-[380px] overflow-auto">
+              {/* Tab Content - 고정 높이 (15% 증가) */}
+              <div className="p-4 h-[437px] overflow-auto">
                 {/* Prep Time Tab */}
                 {onlineModalTab === 'preptime' && (
-                <table className="w-full border-collapse">
+                <div className="flex flex-col h-full">
+                <table className="w-full border-collapse flex-1">
                   <thead>
                     <tr className="text-xs text-gray-500 border-b">
                       <th className="text-left py-2 font-medium">Service</th>
@@ -6484,6 +6636,33 @@ const SalesPage: React.FC = () => {
                     </tr>
                   </tbody>
                 </table>
+                {/* Save Button */}
+                <div className="mt-2 pt-2 border-t border-gray-200">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const response = await fetch(`${API_URL}/online-orders/prep-time-settings`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ settings: prepTimeSettings })
+                        });
+                        const data = await response.json();
+                        if (data.success) {
+                          alert('Prep Time settings saved successfully!');
+                        } else {
+                          alert('Failed to save: ' + (data.error || 'Unknown error'));
+                        }
+                      } catch (error) {
+                        console.error('Prep Time save error:', error);
+                        alert('Failed to save settings');
+                      }
+                    }}
+                    className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all"
+                  >
+                    Save
+                  </button>
+                </div>
+                </div>
                 )}
                 
                 {/* Pause Tab */}
@@ -6612,223 +6791,722 @@ const SalesPage: React.FC = () => {
                         ))}
                       </div>
                     </div>
+                    {/* Save Button */}
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const response = await fetch(`${API_URL}/online-orders/pause-settings`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ 
+                                settings: {
+                                  thezoneorder: { paused: pauseSettings.thezoneorder.paused, pausedUntil: pauseSettings.thezoneorder.pauseUntil?.toISOString() || null },
+                                  ubereats: { paused: pauseSettings.ubereats.paused, pausedUntil: pauseSettings.ubereats.pauseUntil?.toISOString() || null },
+                                  doordash: { paused: pauseSettings.doordash.paused, pausedUntil: pauseSettings.doordash.pauseUntil?.toISOString() || null },
+                                  skipthedishes: { paused: pauseSettings.skipthedishes.paused, pausedUntil: pauseSettings.skipthedishes.pauseUntil?.toISOString() || null },
+                                }
+                              })
+                            });
+                            const data = await response.json();
+                            if (data.success) {
+                              alert('Pause settings saved successfully!');
+                            } else {
+                              alert('Failed to save: ' + (data.error || 'Unknown error'));
+                            }
+                          } catch (error) {
+                            console.error('Pause save error:', error);
+                            alert('Failed to save settings');
+                          }
+                        }}
+                        className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all"
+                      >
+                        Save
+                      </button>
+                    </div>
                   </div>
                 )}
                 
-                {/* Day Off Tab */}
+                {/* Day Off Tab - Firebase 스타일 레이아웃 */}
                 {onlineModalTab === 'dayoff' && (
-                  <div className="flex h-full gap-3">
-                    {/* 왼쪽: 캘린더 (70%) */}
-                    <div className="flex flex-col bg-gray-50 rounded-lg p-3" style={{ width: '70%' }}>
-                      {/* 캘린더 헤더 */}
-                      <div className="flex items-center justify-between mb-2">
-                        <button
-                          onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() - 1, 1))}
-                          className="p-1.5 hover:bg-gray-200 rounded-lg transition"
-                        >
-                          <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                          </svg>
-                        </button>
-                        <div className="text-base font-bold text-gray-800">
-                          {dayOffCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                        </div>
-                        <button
-                          onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() + 1, 1))}
-                          className="p-1.5 hover:bg-gray-200 rounded-lg transition"
-                        >
-                          <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </button>
-                      </div>
-                      
-                      {/* 요일 헤더 */}
-                      <div className="grid grid-cols-7 gap-1 mb-1">
-                        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, idx) => (
-                          <div key={idx} className="text-center text-xs font-semibold text-gray-500 py-1">
-                            {day}
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {/* 캘린더 그리드 */}
-                      <div className="grid grid-cols-7 gap-1 flex-1">
-                        {(() => {
-                          const year = dayOffCalendarMonth.getFullYear();
-                          const month = dayOffCalendarMonth.getMonth();
-                          const firstDay = new Date(year, month, 1).getDay();
-                          const daysInMonth = new Date(year, month + 1, 0).getDate();
-                          const today = new Date().toISOString().split('T')[0];
-                          const cells = [];
-                          
-                          // 빈 셀 (이전 달)
-                          for (let i = 0; i < firstDay; i++) {
-                            cells.push(<div key={`empty-${i}`} className="h-9" />);
-                          }
-                          
-                          // 날짜 셀
-                          for (let day = 1; day <= daysInMonth; day++) {
-                            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                            const isSavedDayOff = dayOffDates.some(d => d.date === dateStr);
-                            const isSelected = dayOffSelectedDates.includes(dateStr);
-                            const isToday = dateStr === today;
-                            const isPast = dateStr < today;
-                            
-                            cells.push(
+                  <div className="flex flex-col h-full">
+                    {/* 상단: 3-column 레이아웃 */}
+                    <div className="flex gap-3 flex-1">
+                      {/* 왼쪽: Channels (16%) */}
+                      <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '16%' }}>
+                        <div className="text-sm font-bold text-orange-500 mb-2">Channels</div>
+                        <div className="space-y-2">
+                          {[
+                            { id: 'all', name: 'All' },
+                            { id: 'thezoneorder', name: 'TZO' },
+                            { id: 'ubereats', name: 'Uber' },
+                            { id: 'doordash', name: 'Door' },
+                            { id: 'skipthedishes', name: 'Skip' },
+                          ].map((channel) => {
+                            const isAllSelected = dayOffSelectedChannels.includes('all');
+                            const isSelected = channel.id === 'all' 
+                              ? isAllSelected
+                              : isAllSelected || dayOffSelectedChannels.includes(channel.id);
+                            return (
                               <button
-                                key={dateStr}
-                                onClick={() => !isPast && toggleDayOffSelection(dateStr)}
-                                disabled={isPast}
+                                key={channel.id}
+                                onClick={() => toggleDayOffChannel(channel.id)}
                                 className={`
-                                  h-9 rounded-lg text-sm font-semibold transition-all
-                                  ${isPast ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-white cursor-pointer'}
-                                  ${isSavedDayOff ? 'bg-red-500 text-white' : ''}
-                                  ${isSelected && !isSavedDayOff ? 'bg-blue-500 text-white' : ''}
-                                  ${isToday && !isSavedDayOff && !isSelected ? 'ring-2 ring-blue-400' : ''}
+                                  w-full py-2 px-2 rounded-lg text-sm font-semibold text-center transition-all border-2
+                                  ${isSelected 
+                                    ? 'bg-orange-500 text-white border-orange-600' 
+                                    : 'bg-white text-gray-600 hover:bg-gray-100 border-orange-300'}
                                 `}
                               >
-                                {day}
+                                {channel.name}
                               </button>
                             );
-                          }
-                          
-                          return cells;
-                        })()}
-                      </div>
-                      
-                      {/* 선택된 날짜 표시 - 항상 표시 */}
-                      <div className="mt-2 p-2 bg-blue-50 rounded-lg min-h-[52px]">
-                        <div className="text-xs text-blue-700 font-medium">
-                          Selected: {dayOffSelectedDates.length} date(s)
-                        </div>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {dayOffSelectedDates.slice(0, 5).map(d => (
-                            <span key={d} className="text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">
-                              {new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </span>
-                          ))}
-                          {dayOffSelectedDates.length > 5 && (
-                            <span className="text-xs text-blue-600">+{dayOffSelectedDates.length - 5} more</span>
-                          )}
+                          })}
                         </div>
                       </div>
                       
-                      {/* 저장된 Day Off 목록 */}
-                      {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-gray-200">
-                          <div className="flex flex-wrap gap-1">
-                            {dayOffDates
-                              .filter(d => d.date >= new Date().toISOString().split('T')[0])
-                              .sort((a, b) => a.date.localeCompare(b.date))
-                              .slice(0, 6)
-                              .map((d) => (
-                                <span
-                                  key={d.date}
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium"
-                                >
-                                  {new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                  <button onClick={() => removeDayOff(d.date)} className="hover:text-red-900 font-bold">×</button>
-                                </span>
-                              ))}
-                            {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length > 6 && (
-                              <span className="text-xs text-gray-500">+{dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length - 6} more</span>
-                            )}
+                      {/* 중앙: 캘린더 (54%) */}
+                      <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '54%' }}>
+                        {/* 캘린더 헤더 */}
+                        <div className="flex items-center justify-between mb-2">
+                          <button
+                            onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() - 1, 1))}
+                            className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                            </svg>
+                          </button>
+                          <div className="text-base font-bold text-gray-800">
+                            {dayOffCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                           </div>
+                          <button
+                            onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() + 1, 1))}
+                            className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </button>
                         </div>
-                      )}
-                    </div>
-                    
-                    {/* 오른쪽: 채널 선택 (30%) */}
-                    <div className="flex flex-col bg-slate-100 rounded-lg p-3" style={{ width: '30%' }}>
-                      <div className="text-sm font-bold text-gray-700 mb-2">Order Channels</div>
-                      <div className="space-y-2">
-                        {[
-                          { id: 'all', name: 'All Channels' },
-                          { id: 'thezoneorder', name: 'TheZoneOrder' },
-                          { id: 'ubereats', name: 'UberEats' },
-                          { id: 'doordash', name: 'DoorDash' },
-                          { id: 'skipthedishes', name: 'SkipTheDishes' },
-                        ].map((channel) => {
-                          const isAllSelected = dayOffSelectedChannels.includes('all');
-                          const isSelected = channel.id === 'all' 
-                            ? isAllSelected
-                            : isAllSelected || dayOffSelectedChannels.includes(channel.id);
-                          return (
+                        
+                        {/* 요일 헤더 */}
+                        <div className="grid grid-cols-7 gap-1 mb-1">
+                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+                            <div key={idx} className="text-center text-xs font-semibold text-gray-500 py-1">
+                              {day}
+                            </div>
+                          ))}
+                        </div>
+                        
+                        {/* 캘린더 그리드 */}
+                        <div className="grid grid-cols-7 gap-1 flex-1">
+                          {(() => {
+                            const year = dayOffCalendarMonth.getFullYear();
+                            const month = dayOffCalendarMonth.getMonth();
+                            const firstDay = new Date(year, month, 1).getDay();
+                            const daysInMonth = new Date(year, month + 1, 0).getDate();
+                            const today = new Date().toISOString().split('T')[0];
+                            const cells = [];
+                            
+                            // 빈 셀 (이전 달)
+                            for (let i = 0; i < firstDay; i++) {
+                              cells.push(<div key={`empty-${i}`} className="h-8" />);
+                            }
+                            
+                            // 날짜 셀
+                            for (let day = 1; day <= daysInMonth; day++) {
+                              const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                              const savedDayOff = dayOffDates.find(d => d.date === dateStr);
+                              const isSavedDayOff = !!savedDayOff;
+                              const isSelected = dayOffSelectedDates.includes(dateStr);
+                              const isToday = dateStr === today;
+                              const isPast = dateStr < today;
+                              
+                              cells.push(
+                                <button
+                                  key={dateStr}
+                                  onClick={() => !isPast && toggleDayOffSelection(dateStr)}
+                                  disabled={isPast}
+                                  className={`
+                                    h-8 rounded-lg text-sm font-semibold transition-all
+                                    ${isPast ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-white cursor-pointer'}
+                                    ${isSavedDayOff ? (savedDayOff?.type === 'closed' ? 'bg-red-500 text-white' : savedDayOff?.type === 'extended' ? 'bg-green-500 text-white' : savedDayOff?.type === 'early' ? 'bg-yellow-500 text-white' : 'bg-purple-500 text-white') : ''}
+                                    ${isSelected && !isSavedDayOff ? 'bg-blue-500 text-white' : ''}
+                                    ${isToday && !isSavedDayOff && !isSelected ? 'ring-2 ring-blue-400' : ''}
+                                  `}
+                                >
+                                  {day}
+                                </button>
+                              );
+                            }
+                            
+                            return cells;
+                          })()}
+                        </div>
+                      </div>
+                      
+                      {/* 오른쪽: Type + Add Schedule (30%) */}
+                      <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '30%' }}>
+                        <div className="text-xs font-bold text-gray-700 mb-1">Type</div>
+                        {/* Type 선택 - 2x2 그리드 (터치 친화적) */}
+                        <div className="grid grid-cols-2 gap-1.5 mb-2">
+                          {[
+                            { id: 'closed', name: 'Closed', color: 'red' },
+                            { id: 'extended', name: 'Ext Open', color: 'green' },
+                            { id: 'early', name: 'Early Close', color: 'yellow' },
+                            { id: 'late', name: 'Late Open', color: 'purple' },
+                          ].map((type) => (
                             <button
-                              key={channel.id}
-                              onClick={() => toggleDayOffChannel(channel.id)}
+                              key={type.id}
+                              onClick={() => setDayOffType(type.id as 'closed' | 'extended' | 'early' | 'late')}
                               className={`
-                                w-full py-2 px-3 rounded-lg text-sm font-semibold text-center transition-all
-                                ${isSelected 
-                                  ? 'bg-blue-600 text-white ring-2 ring-blue-400' 
-                                  : 'bg-white text-gray-600 hover:bg-gray-200 border border-gray-300'}
+                                py-2.5 px-1 rounded-lg text-xs font-bold text-center transition-all min-h-[40px]
+                                ${dayOffType === type.id 
+                                  ? type.id === 'closed' ? 'bg-red-500 text-white shadow-md' 
+                                    : type.id === 'extended' ? 'bg-green-500 text-white shadow-md'
+                                    : type.id === 'early' ? 'bg-yellow-500 text-white shadow-md'
+                                    : 'bg-purple-500 text-white shadow-md'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-300 active:bg-gray-300'}
                               `}
                             >
-                              {channel.name}
+                              {type.name}
                             </button>
-                          );
-                        })}
-                      </div>
-                      
-                      {/* 저장 버튼 - 고정 높이로 위치 유지 */}
-                      <div className="mt-auto pt-3" style={{ minHeight: '90px' }}>
-                        {/* 저장 완료 상태 표시 */}
-                        {dayOffSaveStatus === 'saved' && (
-                          <div className="w-full h-12 rounded-lg bg-green-500 text-white font-bold text-sm flex items-center justify-center gap-2 mb-2">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            Saved
+                          ))}
+                        </div>
+                        
+                        {/* 시간 선택 (Closed가 아닐 때만 표시) */}
+                        {dayOffType !== 'closed' && (
+                          <div className="mb-2 p-2 bg-white rounded-lg border border-gray-200">
+                            <div className="text-xs text-gray-500 mb-1 font-medium">
+                              {dayOffType === 'extended' ? 'Open Until' : dayOffType === 'early' ? 'Close At' : 'Open At'}
+                            </div>
+                            <select
+                              value={dayOffType === 'late' ? dayOffTime.start : dayOffTime.end}
+                              onChange={(e) => setDayOffTime(prev => 
+                                dayOffType === 'late' 
+                                  ? { ...prev, start: e.target.value }
+                                  : { ...prev, end: e.target.value }
+                              )}
+                              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm font-medium"
+                            >
+                              {Array.from({ length: 24 }, (_, i) => {
+                                const hour = i.toString().padStart(2, '0');
+                                return <option key={hour} value={`${hour}:00`}>{hour}:00</option>;
+                              })}
+                            </select>
                           </div>
                         )}
                         
-                        {/* 저장 버튼 (저장 완료 상태가 아닐 때만) */}
-                        {dayOffSaveStatus !== 'saved' && (
+                        {/* 선택 정보 표시 */}
+                        <div className="text-xs text-gray-500 mb-2 text-center">
+                          {dayOffSelectedDates.length} dates, {dayOffSelectedChannels.includes('all') ? 'All' : dayOffSelectedChannels.length} channels
+                        </div>
+                        
+                        {/* Save 버튼 */}
+                        <div className="pt-2 border-t border-gray-200">
                           <button
                             onClick={saveDayOffs}
                             disabled={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0}
                             className={`
-                              w-full h-12 rounded-lg font-bold text-sm transition-all flex items-center justify-center gap-2
+                              w-full py-3 rounded-lg font-bold text-lg transition-all shadow-md
                               ${dayOffSaveStatus === 'saving'
                                 ? 'bg-gray-400 text-white cursor-wait'
                                 : dayOffSelectedDates.length > 0
-                                ? 'bg-red-500 hover:bg-red-600 text-white'
-                                : 'bg-gray-300 text-gray-500 cursor-not-allowed'}
+                                ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                                : 'bg-gray-200 text-gray-400 cursor-not-allowed'}
                             `}
                           >
-                            {dayOffSaveStatus === 'saving'
-                              ? 'Saving...'
-                              : dayOffSelectedDates.length > 0
-                              ? `Set ${dayOffSelectedDates.length} Day(s) Off`
-                              : 'Select Dates'}
+                            {dayOffSaveStatus === 'saving' ? 'Saving...' : 'Save'}
                           </button>
+                        </div>
+                        
+                        {/* 저장 완료 상태 표시 */}
+                        {dayOffSaveStatus === 'saved' && (
+                          <div className="mt-2 text-center text-sm text-green-600 font-medium flex items-center justify-center gap-1">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Saved!
+                          </div>
                         )}
-
-                        {/* 선택 해제 버튼 */}
+                        
+                        {/* Clear 버튼 */}
                         {dayOffSelectedDates.length > 0 && (
                           <button
                             onClick={() => {
                               setDayOffSelectedDates([]);
                               setDayOffSaveStatus('idle');
                             }}
-                            className={`
-                              w-full mt-2 py-2 text-sm rounded-lg transition-all
-                              ${dayOffSaveStatus === 'saved'
-                                ? 'bg-gray-200 text-gray-700 hover:bg-gray-300 font-medium'
-                                : 'text-gray-500 hover:text-gray-700 hover:underline'}
-                            `}
+                            className="mt-2 w-full py-2 text-sm text-gray-500 hover:text-gray-700 hover:underline"
                           >
-                            Clear
+                            Clear Selection
                           </button>
                         )}
                       </div>
                     </div>
+                    
+                    {/* 하단: Scheduled 목록 */}
+                    <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-200">
+                      <div className="text-sm font-bold text-gray-700 mb-2">
+                        Scheduled ({dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length})
+                      </div>
+                      {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length === 0 ? (
+                        <div className="text-sm text-gray-400 text-center py-2">No scheduled day offs</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                          {dayOffDates
+                            .filter(d => d.date >= new Date().toISOString().split('T')[0])
+                            .sort((a, b) => a.date.localeCompare(b.date))
+                            .map((d) => {
+                              const typeColor = d.type === 'closed' ? 'bg-red-100 text-red-700 border-red-300' 
+                                : d.type === 'extended' ? 'bg-green-100 text-green-700 border-green-300'
+                                : d.type === 'early' ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+                                : 'bg-purple-100 text-purple-700 border-purple-300';
+                              return (
+                                <div
+                                  key={`${d.date}-${d.channels}`}
+                                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border ${typeColor}`}
+                                >
+                                  <span className="font-bold">
+                                    {new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  </span>
+                                  <span className="text-xs opacity-75">
+                                    {d.channels === 'all' ? 'All' : d.channels}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 rounded text-xs bg-white bg-opacity-50">
+                                    {d.type === 'closed' ? 'Closed' : d.type === 'extended' ? 'Ext' : d.type === 'early' ? 'Early' : 'Late'}
+                                  </span>
+                                  <button 
+                                    onClick={() => removeDayOff(d.date)} 
+                                    className="hover:opacity-70 font-bold ml-1"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
+                
+                {/* Menu Hide Tab */}
+                {onlineModalTab === 'menuhide' && (
+                  <div className="flex flex-col h-full">
+                    <div className="text-sm text-gray-500 mb-2">
+                      Hide menu items or set time limits for Online/Delivery orders.
+                    </div>
+                    
+                    <div className="flex gap-3 flex-1 min-h-0">
+                      {/* 카테고리 목록 (좌측 1/3) */}
+                      <div className="w-1/3 bg-gray-50 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                        <div className="bg-gray-700 text-white text-sm font-bold px-3 py-2 text-center">
+                          Categories
+                        </div>
+                        <div className="flex-1 overflow-y-auto">
+                          {menuHideLoading && menuHideCategories.length === 0 ? (
+                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                              Loading...
+                            </div>
+                          ) : menuHideCategories.length === 0 ? (
+                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                              No categories
+                            </div>
+                          ) : (
+                            menuHideCategories.map((cat) => (
+                              <button
+                                key={cat.category_id}
+                                onClick={() => {
+                                  setMenuHideSelectedCategory(cat.category_id);
+                                  setMenuHideSelectedItem(null);
+                                }}
+                                className={`w-full text-left px-3 py-2 border-b border-gray-200 transition-all ${
+                                  menuHideSelectedCategory === cat.category_id 
+                                    ? 'bg-blue-100 text-blue-700 font-bold' 
+                                    : 'hover:bg-gray-100'
+                                }`}
+                              >
+                                <div className="text-sm">{cat.name}</div>
+                                {(cat.hidden_online_count > 0 || cat.hidden_delivery_count > 0) && (
+                                  <div className="flex gap-2 mt-1 text-[10px]">
+                                    {cat.hidden_online_count > 0 && (
+                                      <span className="text-orange-600 font-semibold">O:{cat.hidden_online_count} hidden</span>
+                                    )}
+                                    {cat.hidden_delivery_count > 0 && (
+                                      <span className="text-red-600 font-semibold">D:{cat.hidden_delivery_count} hidden</span>
+                                    )}
+                                  </div>
+                                )}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* 메뉴 아이템 목록 (중앙 1/3) */}
+                      <div className="w-1/3 bg-gray-50 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                        <div className="bg-gray-700 text-white text-sm font-bold px-3 py-2 text-center">
+                          Menu Items
+                        </div>
+                        <div className="flex-1 overflow-y-auto">
+                          {!menuHideSelectedCategory ? (
+                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                              Select a category
+                            </div>
+                          ) : menuHideLoading && menuHideItems.length === 0 ? (
+                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                              Loading...
+                            </div>
+                          ) : menuHideItems.length === 0 ? (
+                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                              No items
+                            </div>
+                          ) : (
+                            <>
+                              {/* 아이템 리스트 */}
+                              {menuHideItems.map((item) => {
+                                const getStatusLabel = (channel: 'online' | 'delivery') => {
+                                  const hideType = channel === 'online' ? item.online_hide_type : item.delivery_hide_type;
+                                  const availableUntil = channel === 'online' ? item.online_available_until : item.delivery_available_until;
+                                  const label = channel === 'online' ? 'O' : 'D';
+                                  
+                                  if (hideType === 'permanent') {
+                                    return <span className={`${channel === 'online' ? 'text-orange-600' : 'text-red-600'} font-semibold`}>{label}:Hidden</span>;
+                                  } else if (hideType === 'time_limited' && availableUntil) {
+                                    return <span className="text-amber-600 font-semibold">{label}:~{availableUntil}</span>;
+                                  }
+                                  return <span className="text-emerald-600 font-semibold">{label}:Visible</span>;
+                                };
+                                
+                                return (
+                                  <div 
+                                    key={item.item_id}
+                                    onClick={() => setMenuHideSelectedItem(item.item_id === menuHideSelectedItem ? null : item.item_id)}
+                                    className={`px-3 py-2 border-b border-gray-200 cursor-pointer transition-all ${
+                                      menuHideSelectedItem === item.item_id 
+                                        ? 'bg-blue-50 border-l-4 border-l-blue-500' 
+                                        : 'hover:bg-gray-100'
+                                    }`}
+                                  >
+                                    <div className="text-sm font-medium leading-tight">{item.name}</div>
+                                    <div className="flex gap-2 mt-1 text-[10px]">
+                                      {getStatusLabel('online')}
+                                      {getStatusLabel('delivery')}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* 설정 패널 (우측 1/3) - Modern Design */}
+                      <div className="w-1/3 bg-gradient-to-b from-slate-50 to-slate-100 rounded-xl border border-slate-200 overflow-hidden flex flex-col shadow-lg">
+                        <div className="bg-gradient-to-r from-slate-700 to-slate-800 text-white text-sm font-semibold px-4 py-3 flex items-center gap-2">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          Visibility Settings
+                        </div>
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                          {!menuHideSelectedItem ? (
+                            <div className="flex-1 flex flex-col items-center justify-center p-3 text-slate-400 text-sm text-center gap-3">
+                              <svg className="w-12 h-12 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                              </svg>
+                              <div>
+                                <div className="font-medium text-slate-500">No item selected</div>
+                                <div className="text-xs text-slate-400 mt-1">Click a menu item to configure</div>
+                              </div>
+                            </div>
+                          ) : (() => {
+                            const selectedItem = menuHideItems.find(i => i.item_id === menuHideSelectedItem);
+                            if (!selectedItem) return null;
+                            
+                            const updateItemHideType = async (
+                              channel: 'online' | 'delivery',
+                              hideType: 'visible' | 'permanent' | 'time_limited',
+                              availableUntil?: string
+                            ) => {
+                              try {
+                                const updateData: any = {};
+                                if (channel === 'online') {
+                                  updateData.online_hide_type = hideType;
+                                  updateData.online_available_until = hideType === 'time_limited' ? availableUntil : null;
+                                } else {
+                                  updateData.delivery_hide_type = hideType;
+                                  updateData.delivery_available_until = hideType === 'time_limited' ? availableUntil : null;
+                                }
+                                
+                                await fetch(`${API_URL}/menu-visibility/item/${selectedItem.item_id}`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(updateData)
+                                });
+                                
+                                setMenuHideItems(prev => prev.map(item => {
+                                  if (item.item_id === selectedItem.item_id) {
+                                    return {
+                                      ...item,
+                                      ...(channel === 'online' ? {
+                                        online_hide_type: hideType,
+                                        online_available_until: hideType === 'time_limited' ? (availableUntil || null) : null,
+                                        online_visible: hideType === 'permanent' ? 0 : 1
+                                      } : {
+                                        delivery_hide_type: hideType,
+                                        delivery_available_until: hideType === 'time_limited' ? (availableUntil || null) : null,
+                                        delivery_visible: hideType === 'permanent' ? 0 : 1
+                                      })
+                                    };
+                                  }
+                                  return item;
+                                }));
+                              } catch (error) {
+                                console.error('Failed to update hide type:', error);
+                              }
+                            };
+                            
+                            const timeOptions = [
+                              '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', 
+                              '14:00', '14:30', '15:00', '15:30', '16:00', '16:30',
+                              '17:00', '17:30', '18:00', '18:30', '19:00', '19:30',
+                              '20:00', '20:30', '21:00', '21:30', '22:00'
+                            ];
+                            
+                            // 토글 버튼 컴포넌트: 클릭하면 활성화, 다시 클릭하면 visible로
+                            const ToggleButton = ({ 
+                              active, onClick, icon, label, activeColor, hoverColor 
+                            }: { 
+                              active: boolean; onClick: () => void; icon: string; label: string; 
+                              activeColor: string; hoverColor: string;
+                            }) => (
+                              <button
+                                onClick={onClick}
+                                className={`w-full py-2.5 px-3 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-2 ${
+                                  active
+                                    ? `${activeColor} text-white shadow-md transform scale-[1.02]`
+                                    : `bg-white border border-slate-200 text-slate-600 ${hoverColor} hover:border-slate-300 hover:shadow-sm`
+                                }`}
+                              >
+                                <span className="text-sm">{icon}</span>
+                                <span>{label}</span>
+                                {active && (
+                                  <svg className="w-4 h-4 ml-auto" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                )}
+                              </button>
+                            );
+                            
+                            // 토글 핸들러: 이미 활성화된 상태면 visible로, 아니면 해당 타입으로
+                            const handleToggle = (channel: 'online' | 'delivery', targetType: 'permanent' | 'time_limited') => {
+                              const currentType = channel === 'online' ? selectedItem.online_hide_type : selectedItem.delivery_hide_type;
+                              const currentUntil = channel === 'online' ? selectedItem.online_available_until : selectedItem.delivery_available_until;
+                              
+                              if (currentType === targetType) {
+                                // 이미 활성화 → visible로 토글
+                                updateItemHideType(channel, 'visible');
+                              } else {
+                                // 다른 상태 → 해당 타입으로 변경
+                                if (targetType === 'time_limited') {
+                                  updateItemHideType(channel, 'time_limited', currentUntil || '15:00');
+                                } else {
+                                  updateItemHideType(channel, 'permanent');
+                                }
+                              }
+                            };
+                            
+                            return (
+                              <div className="flex flex-col h-full">
+                                {/* Item Name Header - Fixed */}
+                                <div className="flex-shrink-0 bg-white border-b border-slate-200 px-3 py-3">
+                                  <div className="text-sm font-bold text-slate-900 truncate">{selectedItem.name}</div>
+                                </div>
+                                
+                                {/* Scrollable Content */}
+                                <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                                  {/* Online Settings */}
+                                  <div className="bg-white rounded-xl p-3 shadow-sm border border-slate-200 relative overflow-hidden">
+                                  <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-orange-400 to-orange-600"></div>
+                                  <div className="flex items-center justify-between mb-3 pl-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded-full bg-orange-100 flex items-center justify-center">
+                                        <svg className="w-3.5 h-3.5 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                        </svg>
+                                      </div>
+                                      <span className="text-xs font-bold text-slate-700">Online</span>
+                                    </div>
+                                    {selectedItem.online_hide_type === 'visible' && (
+                                      <span className="text-[10px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-medium">Active</span>
+                                    )}
+                                  </div>
+                                  <div className="space-y-2 pl-2">
+                                    <ToggleButton
+                                      active={selectedItem.online_hide_type === 'permanent'}
+                                      onClick={() => handleToggle('online', 'permanent')}
+                                      icon={selectedItem.online_hide_type === 'permanent' ? "✕" : "🚫"}
+                                      label={selectedItem.online_hide_type === 'permanent' ? "Hidden" : "Permanent Hide"}
+                                      activeColor="bg-gradient-to-r from-orange-500 to-orange-600"
+                                      hoverColor="hover:bg-orange-50"
+                                    />
+                                    <div className={`rounded-lg overflow-hidden transition-all duration-200 ${
+                                      selectedItem.online_hide_type === 'time_limited'
+                                        ? 'ring-2 ring-amber-400 shadow-md'
+                                        : 'border border-slate-200'
+                                    }`}>
+                                      <button
+                                        onClick={() => handleToggle('online', 'time_limited')}
+                                        className={`w-full py-2.5 px-3 text-xs font-semibold transition-all flex items-center gap-2 ${
+                                          selectedItem.online_hide_type === 'time_limited'
+                                            ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-white'
+                                            : 'bg-white text-slate-600 hover:bg-amber-50'
+                                        }`}
+                                      >
+                                        <span className="text-sm">⏰</span>
+                                        <span>{selectedItem.online_hide_type === 'time_limited' ? 'Limited' : 'Available Until'}</span>
+                                        {selectedItem.online_hide_type === 'time_limited' && (
+                                          <svg className="w-4 h-4 ml-auto" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                          </svg>
+                                        )}
+                                      </button>
+                                      {selectedItem.online_hide_type === 'time_limited' && (
+                                        <select
+                                          value={selectedItem.online_available_until || '15:00'}
+                                          onChange={(e) => updateItemHideType('online', 'time_limited', e.target.value)}
+                                          className="w-full px-3 py-2 text-xs bg-amber-50 border-t border-amber-200 font-medium text-amber-800 focus:outline-none"
+                                        >
+                                          {timeOptions.map(t => (
+                                            <option key={t} value={t}>{t}</option>
+                                          ))}
+                                        </select>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                {/* Delivery Settings */}
+                                <div className="bg-white rounded-xl p-3 shadow-sm border border-slate-200 relative overflow-hidden">
+                                  <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-rose-400 to-rose-600"></div>
+                                  <div className="flex items-center justify-between mb-3 pl-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded-full bg-rose-100 flex items-center justify-center">
+                                        <svg className="w-3.5 h-3.5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+                                        </svg>
+                                      </div>
+                                      <span className="text-xs font-bold text-slate-700">Delivery</span>
+                                    </div>
+                                    {selectedItem.delivery_hide_type === 'visible' && (
+                                      <span className="text-[10px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-medium">Active</span>
+                                    )}
+                                  </div>
+                                  <div className="space-y-2 pl-2">
+                                    <ToggleButton
+                                      active={selectedItem.delivery_hide_type === 'permanent'}
+                                      onClick={() => handleToggle('delivery', 'permanent')}
+                                      icon={selectedItem.delivery_hide_type === 'permanent' ? "✕" : "🚫"}
+                                      label={selectedItem.delivery_hide_type === 'permanent' ? "Hidden" : "Permanent Hide"}
+                                      activeColor="bg-gradient-to-r from-rose-500 to-rose-600"
+                                      hoverColor="hover:bg-rose-50"
+                                    />
+                                    <div className={`rounded-lg overflow-hidden transition-all duration-200 ${
+                                      selectedItem.delivery_hide_type === 'time_limited'
+                                        ? 'ring-2 ring-amber-400 shadow-md'
+                                        : 'border border-slate-200'
+                                    }`}>
+                                      <button
+                                        onClick={() => handleToggle('delivery', 'time_limited')}
+                                        className={`w-full py-2.5 px-3 text-xs font-semibold transition-all flex items-center gap-2 ${
+                                          selectedItem.delivery_hide_type === 'time_limited'
+                                            ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-white'
+                                            : 'bg-white text-slate-600 hover:bg-amber-50'
+                                        }`}
+                                      >
+                                        <span className="text-sm">⏰</span>
+                                        <span>{selectedItem.delivery_hide_type === 'time_limited' ? 'Limited' : 'Available Until'}</span>
+                                        {selectedItem.delivery_hide_type === 'time_limited' && (
+                                          <svg className="w-4 h-4 ml-auto" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                          </svg>
+                                        )}
+                                      </button>
+                                      {selectedItem.delivery_hide_type === 'time_limited' && (
+                                        <select
+                                          value={selectedItem.delivery_available_until || '15:00'}
+                                          onChange={(e) => updateItemHideType('delivery', 'time_limited', e.target.value)}
+                                          className="w-full px-3 py-2 text-xs bg-amber-50 border-t border-amber-200 font-medium text-amber-800 focus:outline-none"
+                                        >
+                                          {timeOptions.map(t => (
+                                            <option key={t} value={t}>{t}</option>
+                                          ))}
+                                        </select>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                    {/* Save Button */}
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                      <button
+                        onClick={async () => {
+                          if (!menuHideSelectedItem) {
+                            alert('Please select a menu item first');
+                            return;
+                          }
+                          const selectedItem = menuHideItems.find(i => i.item_id === menuHideSelectedItem);
+                          if (!selectedItem) return;
+                          
+                          try {
+                            const response = await fetch(`${API_URL}/menu-visibility/item/${selectedItem.item_id}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                online_hide_type: selectedItem.online_hide_type,
+                                online_available_until: selectedItem.online_available_until,
+                                delivery_hide_type: selectedItem.delivery_hide_type,
+                                delivery_available_until: selectedItem.delivery_available_until,
+                              })
+                            });
+                            const data = await response.json();
+                            if (data.success) {
+                              alert('Menu Hide settings saved successfully!');
+                              loadMenuHideCategories();
+                            } else {
+                              alert('Failed to save: ' + (data.error || 'Unknown error'));
+                            }
+                          } catch (error) {
+                            console.error('Menu Hide save error:', error);
+                            alert('Failed to save settings');
+                          }
+                        }}
+                        disabled={!menuHideSelectedItem}
+                        className={`w-full py-3 rounded-lg text-lg font-bold shadow-md transition-all ${
+                          menuHideSelectedItem
+                            ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                            : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                        }`}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
               </div>
               
-              {/* Footer - 모든 탭 공통 */}
+              {/* Footer - Close 버튼만 */}
               <div className="flex justify-end gap-2 px-4 py-3 bg-gray-100 rounded-b-xl border-t">
                 <button
                   onClick={() => setShowPrepTimeModal(false)}
@@ -6836,59 +7514,6 @@ const SalesPage: React.FC = () => {
                 >
                   Close
                 </button>
-                {onlineModalTab === 'preptime' && (
-                  <button
-                    onClick={async () => {
-                      // 로컬 저장
-                      localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
-                      
-                      // Firebase 동기화
-                      const restaurantId = localStorage.getItem('firebaseRestaurantId');
-                      if (restaurantId) {
-                        try {
-                          const res = await fetch(`${API_URL}/online-orders/prep-time/${restaurantId}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ settings: prepTimeSettings })
-                          });
-                          const data = await res.json();
-                          if (data.success) {
-                            console.log('[Prep Time] Synced to Firebase');
-                          }
-                        } catch (err) {
-                          console.error('[Prep Time] Firebase sync error:', err);
-                        }
-                      }
-                      
-                      setShowPrepTimeModal(false);
-                    }}
-                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold"
-                  >
-                    Save
-                  </button>
-                )}
-                {onlineModalTab === 'pause' && (
-                  <button
-                    onClick={async () => {
-                      const restaurantId = localStorage.getItem('firebaseRestaurantId');
-                      if (!restaurantId) { alert('Restaurant ID not found'); return; }
-                      const selectedChannels = (['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).filter(ch => pauseSettings[ch].paused);
-                      if (selectedChannels.length === 0 || !selectedPauseDuration) { return; }
-                      const durationMap: { [key: string]: number } = { '15m': 15, '30m': 30, '1h': 60, '2h': 120, '3h': 180, '4h': 240, '5h': 300, 'Today': -1 };
-                      const min = durationMap[selectedPauseDuration];
-                      const pauseUntil = min === -1 ? new Date(new Date().setHours(23, 59, 59, 999)).toISOString() : new Date(Date.now() + min * 60000).toISOString();
-                      try {
-                        const response = await fetch(`${API_URL}/online-orders/pause/${restaurantId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pauseUntil, channels: selectedChannels }) });
-                        const result = await response.json();
-                        if (result.success) { setShowPrepTimeModal(false); }
-                        else { alert('Pause failed: ' + result.error); }
-                      } catch (error) { console.error('Pause failed:', error); alert('Pause failed'); }
-                    }}
-                    className="px-5 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-semibold"
-                  >
-                    Save & Pause
-                  </button>
-                )}
               </div>
             </div>
           </div>

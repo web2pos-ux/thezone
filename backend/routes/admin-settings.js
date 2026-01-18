@@ -89,6 +89,7 @@ async function initBusinessProfile() {
       zip TEXT,
       logo_url TEXT,
       firebase_restaurant_id TEXT,
+      service_type TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     // Ensure singleton row exists
@@ -101,6 +102,10 @@ async function initBusinessProfile() {
     const colNames = cols.map(c => String(c.name));
     if (!colNames.includes('firebase_restaurant_id')) {
       await dbRun("ALTER TABLE business_profile ADD COLUMN firebase_restaurant_id TEXT");
+    }
+    // Add service_type column if not exists (QSR or FSR)
+    if (!colNames.includes('service_type')) {
+      await dbRun("ALTER TABLE business_profile ADD COLUMN service_type TEXT");
     }
   } catch (e) {
     try { console.warn('initBusinessProfile warning:', e && e.message ? e.message : e); } catch {}
@@ -186,6 +191,60 @@ router.post('/business-profile/logo', requireManager, logoUpload.single('logo'),
     `, [imageUrl]);
     const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
     res.json({ success: true, imageUrl, profile: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== SERVICE TYPE (QSR/FSR) =====
+// Check if initial setup is needed (service_type not set)
+router.get('/initial-setup-status', async (req, res) => {
+  try {
+    const row = await dbGet('SELECT service_type, business_name FROM business_profile WHERE id = 1');
+    const needsSetup = !row || !row.service_type;
+    res.json({ 
+      needsSetup, 
+      serviceType: row?.service_type || null,
+      businessName: row?.business_name || null
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get service type
+router.get('/service-type', async (req, res) => {
+  try {
+    const row = await dbGet('SELECT service_type FROM business_profile WHERE id = 1');
+    res.json({ serviceType: row?.service_type || null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Set service type (QSR or FSR) - Initial setup
+router.post('/service-type', async (req, res) => {
+  try {
+    const { serviceType, businessName } = req.body;
+    
+    // Validate service type
+    if (!serviceType || !['QSR', 'FSR'].includes(serviceType.toUpperCase())) {
+      return res.status(400).json({ error: 'Invalid service type. Must be QSR or FSR.' });
+    }
+    
+    const type = serviceType.toUpperCase();
+    const name = businessName ? String(businessName).trim() : '';
+    
+    await dbRun(`INSERT INTO business_profile (id, service_type, business_name, updated_at)
+      VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET 
+        service_type = excluded.service_type,
+        business_name = CASE WHEN excluded.business_name != '' THEN excluded.business_name ELSE business_name END,
+        updated_at = CURRENT_TIMESTAMP
+    `, [type, name]);
+    
+    const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
+    res.json({ success: true, serviceType: type, profile: saved });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

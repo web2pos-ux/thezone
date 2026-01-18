@@ -481,6 +481,175 @@ function formatOrderForFrontend(order) {
 // REST API 엔드포인트
 // ============================================
 
+// ===== DAY OFF 라우트 (/:restaurantId 보다 먼저 정의해야 함) =====
+
+// Day Off 목록 조회
+router.get('/day-off', async (req, res) => {
+  try {
+    const dayOffs = await dbAll(
+      'SELECT id, date, channels, type, created_at, updated_at FROM online_day_off ORDER BY date ASC'
+    );
+    console.log(`[DAY OFF] Get: ${dayOffs.length} records`);
+    res.json({ success: true, dayOffs });
+  } catch (error) {
+    console.error('[DAY OFF] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 추가 (단일)
+router.post('/day-off', async (req, res) => {
+  try {
+    const { date, channels = 'all', type = 'closed', restaurantId: reqRestaurantId } = req.body;
+    
+    if (!date) {
+      return res.status(400).json({ success: false, error: 'Date is required' });
+    }
+
+    await dbRun(
+      `INSERT OR REPLACE INTO online_day_off (date, channels, type, updated_at) 
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+      [date, channels, type]
+    );
+
+    // Firebase 동기화 - 요청에서 restaurantId가 없으면 business_profile에서 가져옴
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+    
+    if (restaurantId) {
+      try {
+        await firebaseService.addDayOff(restaurantId, date, channels, type);
+        console.log(`[DAY OFF] Firebase sync success: ${date}`);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+      }
+    }
+
+    console.log(`[DAY OFF] Added: ${date}, channels: ${channels}, type: ${type}`);
+    res.json({ success: true, message: 'Day off added', date, type, firebaseSynced: !!restaurantId });
+  } catch (error) {
+    console.error('[DAY OFF] Add error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 여러 날짜 일괄 설정
+router.post('/day-off/bulk', async (req, res) => {
+  try {
+    const { dates, channels = 'all', type = 'closed', restaurantId: reqRestaurantId } = req.body;
+    
+    console.log(`[DAY OFF] Bulk request: dates=${JSON.stringify(dates)}, channels=${channels}, type=${type}`);
+    
+    if (!dates || !Array.isArray(dates) || dates.length === 0) {
+      return res.status(400).json({ success: false, error: 'Dates array is required' });
+    }
+
+    for (const date of dates) {
+      await dbRun(
+        `INSERT OR REPLACE INTO online_day_off (date, channels, type, updated_at) 
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+        [date, channels, type]
+      );
+    }
+
+    // Firebase 동기화 - 요청에서 restaurantId가 없으면 business_profile에서 가져옴
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+    
+    if (restaurantId) {
+      try {
+        const allDayOffs = await dbAll('SELECT date, channels, type FROM online_day_off ORDER BY date ASC');
+        await firebaseService.syncDayOff(restaurantId, allDayOffs);
+        console.log(`[DAY OFF] Firebase sync success: ${dates.length} dates`);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+      }
+    } else {
+      console.log('[DAY OFF] No restaurantId - Firebase sync skipped');
+    }
+
+    console.log(`[DAY OFF] Bulk added: ${dates.length} dates with channels: ${channels}, type: ${type}`);
+    res.json({ success: true, message: `${dates.length} day offs added`, dates, type, firebaseSynced: !!restaurantId });
+  } catch (error) {
+    console.error('[DAY OFF] Bulk add error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 특정 날짜가 Day Off인지 확인
+router.get('/day-off/check/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const dayOff = await dbGet('SELECT * FROM online_day_off WHERE date = ?', [date]);
+    
+    res.json({ 
+      success: true, 
+      isDayOff: !!dayOff,
+      dayOff: dayOff || null
+    });
+  } catch (error) {
+    console.error('[DAY OFF] Check error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Day Off 삭제
+router.delete('/day-off/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { restaurantId: reqRestaurantId } = req.query;
+    
+    await dbRun('DELETE FROM online_day_off WHERE date = ?', [date]);
+    
+    // Firebase 동기화 - 요청에서 restaurantId가 없으면 business_profile에서 가져옴
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+    
+    if (restaurantId) {
+      try {
+        await firebaseService.removeDayOff(restaurantId, date);
+        console.log(`[DAY OFF] Firebase delete success: ${date}`);
+      } catch (fbErr) {
+        console.error('[DAY OFF] Firebase delete error:', fbErr.message);
+      }
+    }
+    
+    console.log(`[DAY OFF] Removed: ${date}`);
+    res.json({ success: true, message: 'Day off removed', date, firebaseSynced: !!restaurantId });
+  } catch (error) {
+    console.error('[DAY OFF] Delete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== PAUSE 설정 API (라우트 순서 중요 - /:restaurantId 전에 정의) =====
+
+// Pause 설정 조회
+router.get('/pause-settings', async (req, res) => {
+  try {
+    const settings = await dbAll('SELECT * FROM online_pause_settings ORDER BY channel');
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('[PAUSE] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== PREP TIME 설정 API (라우트 순서 중요 - /:restaurantId 전에 정의) =====
+
+// Prep Time 설정 조회
+router.get('/prep-time-settings', async (req, res) => {
+  try {
+    const settings = await dbAll('SELECT * FROM online_prep_time_settings ORDER BY channel');
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('[PREP TIME] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== 온라인 주문 라우트 =====
+
 // 온라인 주문 목록 조회
 router.get('/:restaurantId', async (req, res) => {
   try {
@@ -1128,59 +1297,35 @@ router.post('/prep-time/:restaurantId', async (req, res) => {
   }
 });
 
-// ===== DAY OFF 설정 =====
+// ===== DAY OFF 테이블 초기화 =====
 
-// Day Off 테이블 재생성 (기존 테이블 문제 해결)
+// Day Off 테이블 초기화 - type 컬럼 추가 (closed, extended, early, late)
 const initializeDayOffTable = async () => {
   try {
-    // 기존 테이블 스키마 확인
     const tableExists = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='online_day_off'");
     
     if (tableExists) {
-      // 기존 데이터 백업
-      const existingData = await dbAll('SELECT * FROM online_day_off');
+      const columns = await dbAll("PRAGMA table_info(online_day_off)");
+      const hasTypeColumn = columns.some(col => col.name === 'type');
       
-      // 기존 테이블 삭제
-      await dbRun('DROP TABLE online_day_off');
-      console.log('[DAY OFF] Old table dropped');
-      
-      // 새 테이블 생성
-      await dbRun(`
-        CREATE TABLE online_day_off (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          date TEXT NOT NULL UNIQUE,
-          channels TEXT DEFAULT 'all',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-      console.log('[DAY OFF] New table created');
-      
-      // 기존 데이터 복원
-      for (const row of existingData) {
-        const channels = row.channels || row.channel || 'all';
-        try {
-          await dbRun(
-            'INSERT OR IGNORE INTO online_day_off (date, channels, created_at, updated_at) VALUES (?, ?, ?, ?)',
-            [row.date, channels, row.created_at || new Date().toISOString(), row.updated_at || new Date().toISOString()]
-          );
-        } catch (e) {
-          // 중복 무시
-        }
+      if (!hasTypeColumn) {
+        await dbRun("ALTER TABLE online_day_off ADD COLUMN type TEXT DEFAULT 'closed'");
+        console.log('[DAY OFF] Added type column');
       }
-      console.log(`[DAY OFF] Migrated ${existingData.length} existing records`);
+      console.log('[DAY OFF] Table ready with type column');
     } else {
-      // 테이블이 없으면 새로 생성
       await dbRun(`
         CREATE TABLE online_day_off (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          date TEXT NOT NULL UNIQUE,
+          date TEXT NOT NULL,
           channels TEXT DEFAULT 'all',
+          type TEXT DEFAULT 'closed',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(date, channels)
         )
       `);
-      console.log('[DAY OFF] Table created');
+      console.log('[DAY OFF] Table created with type column');
     }
   } catch (error) {
     console.error('[DAY OFF] Table init error:', error);
@@ -1190,130 +1335,165 @@ const initializeDayOffTable = async () => {
 // 초기화 실행
 initializeDayOffTable();
 
-// Day Off 목록 조회
-router.get('/day-off', async (req, res) => {
+// ===== PAUSE 테이블 초기화 =====
+const initializePauseTable = async () => {
   try {
-    const dayOffs = await dbAll(
-      'SELECT id, date, channels, created_at, updated_at FROM online_day_off ORDER BY date ASC'
-    );
-    console.log(`[DAY OFF] Get: ${dayOffs.length} records`);
-    res.json({ success: true, dayOffs });
-  } catch (error) {
-    console.error('[DAY OFF] Get error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Day Off 추가 (단일)
-router.post('/day-off', async (req, res) => {
-  try {
-    const { date, channels = 'all', restaurantId } = req.body;
+    const tableExists = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='online_pause_settings'");
     
-    if (!date) {
-      return res.status(400).json({ success: false, error: 'Date is required' });
-    }
-
-    // 로컬 DB에 저장
-    await dbRun(
-      `INSERT OR REPLACE INTO online_day_off (date, channels, updated_at) 
-       VALUES (?, ?, CURRENT_TIMESTAMP)`,
-      [date, channels]
-    );
-
-    // Firebase 동기화
-    if (restaurantId) {
-      try {
-        await firebaseService.addDayOff(restaurantId, date, channels);
-      } catch (fbErr) {
-        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+    if (!tableExists) {
+      await dbRun(`
+        CREATE TABLE online_pause_settings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          channel TEXT NOT NULL UNIQUE,
+          paused INTEGER DEFAULT 0,
+          paused_until TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      // 기본 채널 삽입
+      const channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
+      for (const channel of channels) {
+        await dbRun('INSERT OR IGNORE INTO online_pause_settings (channel, paused) VALUES (?, 0)', [channel]);
       }
+      console.log('[PAUSE] Table created');
+    } else {
+      console.log('[PAUSE] Table ready');
     }
-
-    console.log(`[DAY OFF] Added: ${date}, channels: ${channels}`);
-    res.json({ success: true, message: 'Day off added', date });
   } catch (error) {
-    console.error('[DAY OFF] Add error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('[PAUSE] Table init error:', error);
   }
-});
+};
 
-// Day Off 삭제
-router.delete('/day-off/:date', async (req, res) => {
+// ===== PREP TIME 테이블 초기화 =====
+const initializePrepTimeTable = async () => {
   try {
-    const { date } = req.params;
-    const { restaurantId } = req.query;
+    const tableExists = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='online_prep_time_settings'");
     
-    // 로컬 DB에서 삭제
-    await dbRun('DELETE FROM online_day_off WHERE date = ?', [date]);
-    
-    // Firebase에서 삭제
-    if (restaurantId) {
-      try {
-        await firebaseService.removeDayOff(restaurantId, date);
-      } catch (fbErr) {
-        console.error('[DAY OFF] Firebase delete error:', fbErr.message);
+    if (!tableExists) {
+      await dbRun(`
+        CREATE TABLE online_prep_time_settings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          channel TEXT NOT NULL UNIQUE,
+          mode TEXT DEFAULT 'auto',
+          time TEXT DEFAULT '15',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      // 기본 채널 삽입
+      const channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
+      for (const channel of channels) {
+        await dbRun('INSERT OR IGNORE INTO online_prep_time_settings (channel, mode, time) VALUES (?, ?, ?)', [channel, 'auto', '15']);
       }
+      console.log('[PREP TIME] Table created');
+    } else {
+      console.log('[PREP TIME] Table ready');
     }
-    
-    console.log(`[DAY OFF] Removed: ${date}`);
-    res.json({ success: true, message: 'Day off removed', date });
   } catch (error) {
-    console.error('[DAY OFF] Delete error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('[PREP TIME] Table init error:', error);
   }
-});
+};
 
-// Day Off 여러 날짜 일괄 설정
-router.post('/day-off/bulk', async (req, res) => {
+// 테이블 초기화 실행
+initializePauseTable();
+initializePrepTimeTable();
+
+// ===== PAUSE API (로컬 DB 저장 + Firebase 동기화) =====
+
+// Pause 설정 저장 (로컬 + Firebase)
+router.post('/pause-settings', async (req, res) => {
+  const { settings, restaurantId: reqRestaurantId } = req.body;
+  
   try {
-    const { dates, channels = 'all', restaurantId } = req.body;
-    
-    console.log(`[DAY OFF] Bulk request: dates=${JSON.stringify(dates)}, channels=${channels}, restaurantId=${restaurantId}`);
-    
-    if (!dates || !Array.isArray(dates) || dates.length === 0) {
-      return res.status(400).json({ success: false, error: 'Dates array is required' });
-    }
-
-    // 로컬 DB에 저장
-    for (const date of dates) {
+    // 로컬 DB 저장
+    for (const [channel, data] of Object.entries(settings)) {
       await dbRun(
-        `INSERT OR REPLACE INTO online_day_off (date, channels, updated_at) 
-         VALUES (?, ?, CURRENT_TIMESTAMP)`,
-        [date, channels]
+        `INSERT INTO online_pause_settings (channel, paused, paused_until, updated_at) 
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(channel) DO UPDATE SET 
+           paused = excluded.paused, 
+           paused_until = excluded.paused_until,
+           updated_at = CURRENT_TIMESTAMP`,
+        [channel, data.paused ? 1 : 0, data.pausedUntil || null]
       );
     }
-
-    // Firebase 동기화 - 전체 Day Off 목록 조회 후 동기화
-    if (restaurantId) {
+    
+    // Firebase 동기화 - 요청에서 restaurantId가 없으면 business_profile에서 가져옴
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+    
+    if (restaurantId && ensureFirebaseInit()) {
       try {
-        const allDayOffs = await dbAll('SELECT date, channels FROM online_day_off ORDER BY date ASC');
-        await firebaseService.syncDayOff(restaurantId, allDayOffs);
+        const pauseSettings = {};
+        for (const [channel, data] of Object.entries(settings)) {
+          pauseSettings[channel] = {
+            paused: data.paused || false,
+            pausedUntil: data.pausedUntil || null
+          };
+        }
+        await firebaseService.updateRestaurantPause(restaurantId, null, Object.keys(settings));
+        // 개별 채널 업데이트
+        for (const [channel, data] of Object.entries(settings)) {
+          if (data.paused) {
+            await firebaseService.updateRestaurantPause(restaurantId, data.pausedUntil, [channel]);
+          }
+        }
+        console.log('[PAUSE] Synced to Firebase');
       } catch (fbErr) {
-        console.error('[DAY OFF] Firebase sync error:', fbErr.message);
+        console.warn('[PAUSE] Firebase sync failed:', fbErr.message);
       }
+    } else {
+      console.log('[PAUSE] No restaurantId - Firebase sync skipped');
     }
-
-    console.log(`[DAY OFF] Bulk added: ${dates.length} dates with channels: ${channels}`);
-    res.json({ success: true, message: `${dates.length} day offs added`, dates });
+    
+    res.json({ success: true, message: 'Pause settings saved', firebaseSynced: !!restaurantId });
   } catch (error) {
-    console.error('[DAY OFF] Bulk add error:', error);
+    console.error('[PAUSE] Save error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 특정 날짜가 Day Off인지 확인
-router.get('/day-off/check/:date', async (req, res) => {
+// ===== PREP TIME API (로컬 DB 저장 + Firebase 동기화) =====
+
+// Prep Time 설정 저장 (로컬 + Firebase)
+router.post('/prep-time-settings', async (req, res) => {
+  const { settings, restaurantId: reqRestaurantId } = req.body;
+  
   try {
-    const { date } = req.params;
-    const dayOff = await dbGet('SELECT * FROM online_day_off WHERE date = ?', [date]);
+    // 로컬 DB 저장
+    for (const [channel, data] of Object.entries(settings)) {
+      await dbRun(
+        `INSERT INTO online_prep_time_settings (channel, mode, time, updated_at) 
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(channel) DO UPDATE SET 
+           mode = excluded.mode, 
+           time = excluded.time,
+           updated_at = CURRENT_TIMESTAMP`,
+        [channel, data.mode || 'auto', data.time || '15']
+      );
+    }
     
-    res.json({ 
-      success: true, 
-      isDayOff: !!dayOff,
-      dayOff: dayOff || null
-    });
+    // Firebase 동기화 - 요청에서 restaurantId가 없으면 business_profile에서 가져옴
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+    
+    if (restaurantId && ensureFirebaseInit()) {
+      try {
+        await firebaseService.syncPrepTimeSettings(restaurantId, settings);
+        console.log('[PREP TIME] Synced to Firebase');
+      } catch (fbErr) {
+        console.warn('[PREP TIME] Firebase sync failed:', fbErr.message);
+      }
+    } else {
+      console.log('[PREP TIME] No restaurantId - Firebase sync skipped');
+    }
+    
+    res.json({ success: true, message: 'Prep Time settings saved', firebaseSynced: !!restaurantId });
   } catch (error) {
-    console.error('[DAY OFF] Check error:', error);
+    console.error('[PREP TIME] Save error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -172,31 +172,69 @@ const QsrPage: React.FC = () => {
   
   // Load config or redirect to setup
   useEffect(() => {
-    const savedConfig = localStorage.getItem(STORAGE_KEY);
-    if (!savedConfig) {
-      // Use default config if not set
-      setConfig({
-        deviceName: 'QSR Counter',
-        menuId: 1,
-        taxRate: 8.25,
-        configured: true
-      });
-    } else {
-      try {
-        const parsed = JSON.parse(savedConfig);
-        setConfig(parsed);
-      } catch (e) {
-        setConfig({
-          deviceName: 'QSR Counter',
-          menuId: 1,
-          taxRate: 8.25,
-          configured: true
-        });
+    const initConfig = async () => {
+      const savedConfig = localStorage.getItem(STORAGE_KEY);
+      if (!savedConfig) {
+        // Fetch available menus to get a valid menu ID
+        try {
+          const menusRes = await fetch(`${API_URL}/menus`);
+          if (menusRes.ok) {
+            const menus = await menusRes.json();
+            const firstMenuId = menus.length > 0 ? menus[0].menu_id : 200000;
+            setConfig({
+              deviceName: 'QSR Counter',
+              menuId: firstMenuId,
+              taxRate: 8.25,
+              configured: true
+            });
+          } else {
+            // Fallback to common menu ID
+            setConfig({
+              deviceName: 'QSR Counter',
+              menuId: 200000,
+              taxRate: 8.25,
+              configured: true
+            });
+          }
+        } catch (e) {
+          setConfig({
+            deviceName: 'QSR Counter',
+            menuId: 200000,
+            taxRate: 8.25,
+            configured: true
+          });
+        }
+      } else {
+        try {
+          const parsed = JSON.parse(savedConfig);
+          // If menuId is 1 (old default), fetch the first valid menu
+          if (parsed.menuId === 1) {
+            try {
+              const menusRes = await fetch(`${API_URL}/menus`);
+              if (menusRes.ok) {
+                const menus = await menusRes.json();
+                parsed.menuId = menus.length > 0 ? menus[0].menu_id : 200000;
+              }
+            } catch (e) {
+              parsed.menuId = 200000;
+            }
+          }
+          setConfig(parsed);
+        } catch (e) {
+          setConfig({
+            deviceName: 'QSR Counter',
+            menuId: 200000,
+            taxRate: 8.25,
+            configured: true
+          });
+        }
       }
-    }
+      
+      // Load today's order number
+      loadOrderNumber();
+    };
     
-    // Load today's order number
-    loadOrderNumber();
+    initConfig();
   }, []);
   
   // Load menu when config is ready
@@ -530,16 +568,16 @@ const QsrPage: React.FC = () => {
     try {
       const menuId = config.menuId || 1;
       
-      // Load categories
-      const catRes = await fetch(`${API_URL}/categories?menu_id=${menuId}`);
+      // Load categories (correct API path: /api/menu/categories)
+      const catRes = await fetch(`${API_URL}/menu/categories?menu_id=${menuId}`);
       if (!catRes.ok) throw new Error('Failed to load categories');
       const catData = await catRes.json();
       
-      // Load items for each category
+      // Load items for each category (correct API path: /api/menu/items?categoryId=...)
       const categoriesWithItems: Category[] = [];
       
       for (const cat of catData) {
-        const itemsRes = await fetch(`${API_URL}/menu-items/by-category/${cat.category_id}`);
+        const itemsRes = await fetch(`${API_URL}/menu/items?categoryId=${cat.category_id}`);
         if (itemsRes.ok) {
           const items = await itemsRes.json();
           categoriesWithItems.push({
@@ -576,10 +614,12 @@ const QsrPage: React.FC = () => {
     setShowModifierModal(true);
     
     try {
-      const res = await fetch(`${API_URL}/menu-items/${item.item_id}/modifiers`);
+      // Correct API path: /api/menu/items/:id/options
+      const res = await fetch(`${API_URL}/menu/items/${item.item_id}/options`);
       if (res.ok) {
         const data = await res.json();
-        const groups: ModifierGroup[] = (data.modifierGroups || [])
+        // The API returns modifier_groups (not modifierGroups)
+        const groups: ModifierGroup[] = (data.modifier_groups || [])
           .filter((g: any) => g.modifiers && g.modifiers.length > 0)
           .map((g: any) => ({
             modifier_group_id: g.modifier_group_id,

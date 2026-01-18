@@ -373,11 +373,12 @@ async function syncDayOff(restaurantId, dayOffDates) {
     // 기존 문서 확인
     const settingsDoc = await settingsRef.get();
     
-    // dayOffSettings 객체 생성
+    // dayOffSettings 객체 생성 - type 필드 포함
     const dayOffSettings = {
       dates: dayOffDates.map(d => ({
         date: d.date,
         channels: d.channels || 'all',
+        type: d.type || 'closed',  // closed, extended, early, late
         updatedAt: new Date().toISOString()
       })),
       updatedAt: new Date()
@@ -407,8 +408,8 @@ async function syncDayOff(restaurantId, dayOffDates) {
   }
 }
 
-// Day Off 단일 날짜 추가
-async function addDayOff(restaurantId, date, channels = 'all') {
+// Day Off 단일 날짜 추가 - type 필드 포함
+async function addDayOff(restaurantId, date, channels = 'all', type = 'closed') {
   try {
     const firestore = getFirestore();
     const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
@@ -421,14 +422,14 @@ async function addDayOff(restaurantId, date, channels = 'all') {
       dayOffDates = data.dayOffSettings?.dates || [];
     }
     
-    // 이미 존재하는 날짜인지 확인
-    const existingIndex = dayOffDates.findIndex(d => d.date === date);
+    // 이미 존재하는 날짜인지 확인 (같은 date + channels 조합)
+    const existingIndex = dayOffDates.findIndex(d => d.date === date && d.channels === channels);
     if (existingIndex >= 0) {
       // 업데이트
-      dayOffDates[existingIndex] = { date, channels, updatedAt: new Date().toISOString() };
+      dayOffDates[existingIndex] = { date, channels, type, updatedAt: new Date().toISOString() };
     } else {
       // 새로 추가
-      dayOffDates.push({ date, channels, updatedAt: new Date().toISOString() });
+      dayOffDates.push({ date, channels, type, updatedAt: new Date().toISOString() });
     }
     
     // 날짜순 정렬
@@ -450,7 +451,7 @@ async function addDayOff(restaurantId, date, channels = 'all') {
       });
     }
     
-    console.log(`✅ Day Off 추가 완료 (${restaurantId}): ${date}`);
+    console.log(`✅ Day Off 추가 완료 (${restaurantId}): ${date}, type: ${type}`);
     return true;
   } catch (error) {
     console.error('❌ Day Off 추가 실패:', error.message);
@@ -528,6 +529,363 @@ async function syncPrepTimeSettings(restaurantId, prepTimeSettings) {
   }
 }
 
+// ===== Menu Visibility 동기화 =====
+// POS에서 Firebase로 메뉴 아이템 visibility 동기화
+// Firebase 구조: restaurants/{restaurantId}/menuItems/{itemId}
+// hide_type: 'visible' | 'permanent' | 'time_limited'
+// available_until: 'HH:MM' 형식 (time_limited인 경우)
+async function syncMenuItemVisibility(restaurantId, categoryId, itemId, visibilityData) {
+  if (!restaurantId || !itemId) {
+    throw new Error('restaurantId, itemId가 필요합니다');
+  }
+
+  const firestore = getFirestore();
+
+  try {
+    // menuItems는 별도 컬렉션 (categoryId로 연결)
+    const itemRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('menuItems')
+      .doc(itemId);
+
+    // 기존 호환성: visibilityData가 boolean이면 기존 방식
+    const updateData = {
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+    
+    if (typeof visibilityData === 'object') {
+      // 새 방식: 세부 필드 포함
+      if (visibilityData.onlineVisible !== undefined) {
+        updateData.onlineVisible = visibilityData.onlineVisible;
+      }
+      if (visibilityData.deliveryVisible !== undefined) {
+        updateData.deliveryVisible = visibilityData.deliveryVisible;
+      }
+      if (visibilityData.onlineHideType) {
+        updateData.onlineHideType = visibilityData.onlineHideType;
+      }
+      if (visibilityData.onlineAvailableUntil !== undefined) {
+        updateData.onlineAvailableUntil = visibilityData.onlineAvailableUntil;
+      }
+      if (visibilityData.deliveryHideType) {
+        updateData.deliveryHideType = visibilityData.deliveryHideType;
+      }
+      if (visibilityData.deliveryAvailableUntil !== undefined) {
+        updateData.deliveryAvailableUntil = visibilityData.deliveryAvailableUntil;
+      }
+    } else {
+      // 기존 호환성: boolean 값
+      updateData.onlineVisible = visibilityData !== false;
+      updateData.deliveryVisible = arguments[4] !== false; // deliveryVisible (5번째 인자)
+    }
+
+    await itemRef.update(updateData);
+
+    console.log(`✅ Menu visibility 동기화: ${itemId}`, updateData);
+    return true;
+  } catch (error) {
+    console.error('❌ Menu visibility 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
+// Firebase에서 POS로 메뉴 visibility 가져오기
+async function getMenuVisibilityFromFirebase(restaurantId, categoryFirebaseId) {
+  if (!restaurantId) {
+    throw new Error('restaurantId가 필요합니다');
+  }
+
+  const firestore = getFirestore();
+
+  try {
+    // 카테고리 정보
+    const categoriesRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('menuCategories');
+
+    const catsSnap = await categoriesRef.orderBy('sortOrder').get();
+    const categoriesMap = {};
+    catsSnap.docs.forEach(doc => {
+      categoriesMap[doc.id] = doc.data().name;
+    });
+
+    // 아이템은 menuItems 별도 컬렉션
+    const itemsRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('menuItems');
+
+    let itemsSnap;
+    if (categoryFirebaseId) {
+      // 특정 카테고리만
+      itemsSnap = await itemsRef.where('categoryId', '==', categoryFirebaseId).get();
+    } else {
+      // 전체 아이템
+      itemsSnap = await itemsRef.get();
+    }
+
+    const result = itemsSnap.docs.map(itemDoc => {
+      const data = itemDoc.data();
+      return {
+        firebaseCategoryId: data.categoryId,
+        categoryName: categoriesMap[data.categoryId] || 'Unknown',
+        firebaseItemId: itemDoc.id,
+        itemName: data.name,
+        onlineVisible: data.onlineVisible !== false,
+        deliveryVisible: data.deliveryVisible !== false
+      };
+    });
+
+    console.log(`📥 Firebase에서 visibility 정보 로드: ${result.length}개 아이템`);
+    return result;
+  } catch (error) {
+    console.error('❌ Firebase visibility 가져오기 실패:', error.message);
+    throw error;
+  }
+}
+
+// 카테고리 전체 아이템 visibility 업데이트
+async function syncCategoryVisibility(restaurantId, categoryId, onlineVisible, deliveryVisible) {
+  if (!restaurantId || !categoryId) {
+    throw new Error('restaurantId와 categoryId가 필요합니다');
+  }
+
+  const firestore = getFirestore();
+
+  try {
+    // menuItems 컬렉션에서 categoryId로 필터링
+    const itemsRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('menuItems');
+
+    const itemsSnap = await itemsRef.where('categoryId', '==', categoryId).get();
+    const batch = firestore.batch();
+
+    itemsSnap.docs.forEach(itemDoc => {
+      const updates = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+      if (typeof onlineVisible === 'boolean') updates.onlineVisible = onlineVisible;
+      if (typeof deliveryVisible === 'boolean') updates.deliveryVisible = deliveryVisible;
+      batch.update(itemDoc.ref, updates);
+    });
+
+    await batch.commit();
+    console.log(`✅ 카테고리 ${categoryId} visibility 일괄 동기화: ${itemsSnap.size}개 아이템`);
+    return itemsSnap.size;
+  } catch (error) {
+    console.error('❌ 카테고리 visibility 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
+// ===== Pause 실시간 리스너 (Firebase → POS) =====
+// Firebase에서 Pause 변경 감지하여 POS에 반영
+function listenToPauseChanges(restaurantId, onPauseChange) {
+  if (!restaurantId) {
+    console.error('❌ restaurantId가 필요합니다');
+    return null;
+  }
+
+  const firestore = getFirestore();
+  
+  console.log(`👂 Pause 리스너 시작 - Restaurant ID: ${restaurantId}`);
+
+  const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+  
+  let isInitial = true;
+  const unsubscribe = settingsRef.onSnapshot(
+    (docSnap) => {
+      if (!docSnap.exists) return;
+      
+      const data = docSnap.data();
+      const pauseSettings = data.pauseSettings;
+      
+      if (!pauseSettings) return;
+      
+      if (isInitial) {
+        isInitial = false;
+        console.log(`📦 Pause 초기 로드: ${Object.keys(pauseSettings).length}개 채널`);
+        if (onPauseChange) {
+          onPauseChange({ type: 'initial', settings: pauseSettings });
+        }
+        return;
+      }
+      
+      console.log(`🔄 Pause 변경 감지`);
+      if (onPauseChange) {
+        onPauseChange({ type: 'update', settings: pauseSettings });
+      }
+    },
+    (error) => {
+      console.error('❌ Pause 리스너 오류:', error);
+    }
+  );
+
+  return unsubscribe;
+}
+
+// ===== Prep Time 실시간 리스너 (Firebase → POS) =====
+// Firebase에서 Prep Time 변경 감지하여 POS에 반영
+function listenToPrepTimeChanges(restaurantId, onPrepTimeChange) {
+  if (!restaurantId) {
+    console.error('❌ restaurantId가 필요합니다');
+    return null;
+  }
+
+  const firestore = getFirestore();
+  
+  console.log(`👂 Prep Time 리스너 시작 - Restaurant ID: ${restaurantId}`);
+
+  const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+  
+  let isInitial = true;
+  const unsubscribe = settingsRef.onSnapshot(
+    (docSnap) => {
+      if (!docSnap.exists) return;
+      
+      const data = docSnap.data();
+      const prepTimeSettings = data.prepTimeSettings;
+      
+      if (!prepTimeSettings) return;
+      
+      if (isInitial) {
+        isInitial = false;
+        console.log(`📦 Prep Time 초기 로드`);
+        if (onPrepTimeChange) {
+          onPrepTimeChange({ type: 'initial', settings: prepTimeSettings.settings || prepTimeSettings });
+        }
+        return;
+      }
+      
+      console.log(`🔄 Prep Time 변경 감지`);
+      if (onPrepTimeChange) {
+        onPrepTimeChange({ type: 'update', settings: prepTimeSettings.settings || prepTimeSettings });
+      }
+    },
+    (error) => {
+      console.error('❌ Prep Time 리스너 오류:', error);
+    }
+  );
+
+  return unsubscribe;
+}
+
+// ===== Day Off 실시간 리스너 (Firebase → POS) =====
+// Firebase에서 Day Off 변경 감지하여 POS에 반영
+function listenToDayOffChanges(restaurantId, onDayOffChange) {
+  if (!restaurantId) {
+    console.error('❌ restaurantId가 필요합니다');
+    return null;
+  }
+
+  const firestore = getFirestore();
+  
+  console.log(`👂 Day Off 리스너 시작 - Restaurant ID: ${restaurantId}`);
+
+  const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+  
+  let isInitial = true;
+  const unsubscribe = settingsRef.onSnapshot(
+    (docSnap) => {
+      if (!docSnap.exists) return;
+      
+      const data = docSnap.data();
+      const dayOffSettings = data.dayOffSettings;
+      
+      if (!dayOffSettings) return;
+      
+      if (isInitial) {
+        isInitial = false;
+        console.log(`📦 Day Off 초기 로드: ${dayOffSettings.dates?.length || 0}개 날짜`);
+        // 초기 로드 시에도 콜백 호출하여 POS 동기화
+        if (onDayOffChange && dayOffSettings.dates) {
+          onDayOffChange({
+            type: 'initial',
+            dates: dayOffSettings.dates
+          });
+        }
+        return;
+      }
+      
+      // 변경 감지
+      console.log(`🔄 Day Off 변경 감지: ${dayOffSettings.dates?.length || 0}개 날짜`);
+      if (onDayOffChange && dayOffSettings.dates) {
+        onDayOffChange({
+          type: 'update',
+          dates: dayOffSettings.dates
+        });
+      }
+    },
+    (error) => {
+      console.error('❌ Day Off 리스너 오류:', error);
+    }
+  );
+
+  return unsubscribe;
+}
+
+// ===== Menu Visibility 실시간 리스너 (Firebase → POS) =====
+// Firebase에서 visibility 변경 감지하여 POS에 반영
+function listenToMenuVisibilityChanges(restaurantId, onVisibilityChange) {
+  if (!restaurantId) {
+    console.error('❌ restaurantId가 필요합니다');
+    return null;
+  }
+
+  const firestore = getFirestore();
+  
+  console.log(`👂 Menu Visibility 리스너 시작 - Restaurant ID: ${restaurantId}`);
+
+  let isInitial = true;
+  const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+  
+  const unsubscribe = restaurantRef
+    .collection('menuItems')
+    .onSnapshot(
+      (snapshot) => {
+        if (isInitial) {
+          isInitial = false;
+          console.log(`📦 Menu Visibility 초기 로드: ${snapshot.size}개 아이템`);
+          return;
+        }
+        
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'modified') {
+            const item = { id: change.doc.id, ...change.doc.data() };
+            
+            // visibility 관련 필드가 변경된 경우에만 콜백
+            const hasVisibilityFields = 'onlineVisible' in item || 'deliveryVisible' in item ||
+              'onlineHideType' in item || 'deliveryHideType' in item;
+            
+            if (hasVisibilityFields) {
+              console.log(`🔄 Menu visibility 변경 감지: ${item.name} (online: ${item.onlineVisible}, type: ${item.onlineHideType || 'visible'})`);
+              if (onVisibilityChange) {
+                onVisibilityChange({
+                  firebaseItemId: change.doc.id,
+                  itemName: item.name,
+                  categoryId: item.categoryId,
+                  onlineVisible: item.onlineVisible !== false,
+                  deliveryVisible: item.deliveryVisible !== false,
+                  onlineHideType: item.onlineHideType || 'visible',
+                  onlineAvailableUntil: item.onlineAvailableUntil || null,
+                  deliveryHideType: item.deliveryHideType || 'visible',
+                  deliveryAvailableUntil: item.deliveryAvailableUntil || null
+                });
+              }
+            }
+          }
+        });
+      },
+      (error) => {
+        console.error('❌ Menu visibility 리스너 오류:', error);
+      }
+    );
+
+  return unsubscribe;
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -544,6 +902,13 @@ module.exports = {
   syncDayOff,
   addDayOff,
   removeDayOff,
-  syncPrepTimeSettings
+  syncPrepTimeSettings,
+  syncMenuItemVisibility,
+  getMenuVisibilityFromFirebase,
+  syncCategoryVisibility,
+  listenToMenuVisibilityChanges,
+  listenToDayOffChanges,
+  listenToPauseChanges,
+  listenToPrepTimeChanges
 };
 

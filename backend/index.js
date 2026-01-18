@@ -236,6 +236,43 @@ const db = new sqlite3.Database(dbPath, async (err) => {
         console.log("Successfully added 'price_delta2' column to 'modifiers' table.");
       }
     };
+
+    // Add visibility columns to menu_items for online/delivery hide feature
+    const addVisibilityColumns = async () => {
+      const columns = await dbAll("PRAGMA table_info(menu_items)");
+      const hasOnlineVisible = columns.some(col => col.name === 'online_visible');
+      const hasDeliveryVisible = columns.some(col => col.name === 'delivery_visible');
+      const hasOnlineHideType = columns.some(col => col.name === 'online_hide_type');
+      const hasOnlineAvailableUntil = columns.some(col => col.name === 'online_available_until');
+      const hasDeliveryHideType = columns.some(col => col.name === 'delivery_hide_type');
+      const hasDeliveryAvailableUntil = columns.some(col => col.name === 'delivery_available_until');
+      
+      if (!hasOnlineVisible) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN online_visible INTEGER DEFAULT 1");
+        console.log("Successfully added 'online_visible' column to 'menu_items' table.");
+      }
+      if (!hasDeliveryVisible) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_visible INTEGER DEFAULT 1");
+        console.log("Successfully added 'delivery_visible' column to 'menu_items' table.");
+      }
+      // 새 컬럼: hide_type (visible, permanent, time_limited), available_until (HH:MM 형식)
+      if (!hasOnlineHideType) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN online_hide_type TEXT DEFAULT 'visible'");
+        console.log("Successfully added 'online_hide_type' column to 'menu_items' table.");
+      }
+      if (!hasOnlineAvailableUntil) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN online_available_until TEXT");
+        console.log("Successfully added 'online_available_until' column to 'menu_items' table.");
+      }
+      if (!hasDeliveryHideType) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_hide_type TEXT DEFAULT 'visible'");
+        console.log("Successfully added 'delivery_hide_type' column to 'menu_items' table.");
+      }
+      if (!hasDeliveryAvailableUntil) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_available_until TEXT");
+        console.log("Successfully added 'delivery_available_until' column to 'menu_items' table.");
+      }
+    };
     
     try {
       await addShortNameColumn();
@@ -245,6 +282,7 @@ const db = new sqlite3.Database(dbPath, async (err) => {
       await addIsOpenPriceColumn();
       await addSalesChannelsColumn();
       await addPriceDelta2Column();
+      await addVisibilityColumns();
       // Ensure Sold Out records table exists
       await dbExec(`
         CREATE TABLE IF NOT EXISTS sold_out_records (
@@ -436,6 +474,8 @@ const callServerRoutes = require('./routes/call-server');
 const reportsRoutes = require('./routes/reports');
 const reportsV2Routes = require('./routes/reports-v2');
 const salesDashboardRoutes = require('./routes/sales-dashboard');
+const deliveryChannelsRoutes = require('./routes/delivery-channels')(db);
+const menuVisibilityRoutes = require('./routes/menu-visibility')(db);
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -472,6 +512,8 @@ app.use('/api/call-server', callServerRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/reports-v2', reportsV2Routes);
 app.use('/api/sales-dashboard', salesDashboardRoutes);
+app.use('/api/delivery-channels', deliveryChannelsRoutes);
+app.use('/api/menu-visibility', menuVisibilityRoutes);
 
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
@@ -595,6 +637,8 @@ server.listen(PORT, async () => {
   // Auto-initialize Remote Sync Service and Online Order Listener if restaurantId exists in DB
   try {
     const remoteSyncService = require('./services/remoteSyncService');
+    const { listenToMenuVisibilityChanges, listenToDayOffChanges, listenToPauseChanges, listenToPrepTimeChanges } = require('./services/firebaseService');
+    
     db.get('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1', [], async (err, row) => {
       if (!err && row && row.firebase_restaurant_id) {
         const restaurantId = row.firebase_restaurant_id;
@@ -607,6 +651,138 @@ server.listen(PORT, async () => {
         if (typeof startOrderListener === 'function') {
           startOrderListener(restaurantId);
         }
+        
+        // 3. Menu Visibility Listener (Firebase → POS 실시간 동기화)
+        const IdMapperService = require('./services/idMapperService');
+        listenToMenuVisibilityChanges(restaurantId, async (change) => {
+          try {
+            // 1차: IdMapperService로 Firebase ID → POS ID 매핑 시도
+            let posItemId = await IdMapperService.firebaseToLocal('menu_item', change.firebaseItemId);
+            
+            // 2차: ID 매핑 실패 시 아이템 이름으로 폴백
+            if (!posItemId && change.itemName) {
+              const posItem = await new Promise((resolve, reject) => {
+                db.get(
+                  'SELECT item_id FROM menu_items WHERE name = ?',
+                  [change.itemName],
+                  (err, row) => err ? reject(err) : resolve(row)
+                );
+              });
+              posItemId = posItem?.item_id;
+            }
+            
+            if (posItemId) {
+              await new Promise((resolve, reject) => {
+                db.run(
+                  `UPDATE menu_items SET 
+                    online_visible = ?, delivery_visible = ?,
+                    online_hide_type = ?, online_available_until = ?,
+                    delivery_hide_type = ?, delivery_available_until = ?
+                  WHERE item_id = ?`,
+                  [
+                    change.onlineVisible ? 1 : 0, 
+                    change.deliveryVisible ? 1 : 0, 
+                    change.onlineHideType || 'visible',
+                    change.onlineAvailableUntil || null,
+                    change.deliveryHideType || 'visible',
+                    change.deliveryAvailableUntil || null,
+                    posItemId
+                  ],
+                  (err) => err ? reject(err) : resolve()
+                );
+              });
+              console.log(`✅ POS visibility 동기화: ${change.itemName} [${change.firebaseItemId} → ${posItemId}] (type: ${change.onlineHideType}, until: ${change.onlineAvailableUntil})`);
+            } else {
+              console.warn(`⚠️ POS visibility 동기화 건너뜀: ${change.itemName} - 매핑된 POS 아이템 없음`);
+            }
+          } catch (syncErr) {
+            console.warn(`⚠️ POS visibility 동기화 실패: ${change.itemName}`, syncErr.message);
+          }
+        });
+        console.log(`👂 Menu Visibility 리스너 활성화 - Firebase → POS 실시간 동기화 (IdMapper 사용)`);
+        
+        // 4. Day Off Listener (Firebase → POS 실시간 동기화)
+        listenToDayOffChanges(restaurantId, async (change) => {
+          try {
+            if (!change.dates || !Array.isArray(change.dates)) return;
+            
+            // POS의 online_day_off 테이블과 동기화
+            // 먼저 기존 데이터 삭제 후 Firebase 데이터로 교체
+            await new Promise((resolve, reject) => {
+              db.run('DELETE FROM online_day_off', [], (err) => err ? reject(err) : resolve());
+            });
+            
+            // Firebase 데이터 삽입
+            for (const dayOff of change.dates) {
+              await new Promise((resolve, reject) => {
+                db.run(
+                  'INSERT INTO online_day_off (date, channels, type) VALUES (?, ?, ?)',
+                  [dayOff.date, dayOff.channels || 'all', dayOff.scheduleType || dayOff.type || 'closed'],
+                  (err) => err ? reject(err) : resolve()
+                );
+              });
+            }
+            
+            console.log(`✅ POS Day Off 동기화: ${change.dates.length}개 날짜 (${change.type})`);
+          } catch (syncErr) {
+            console.warn(`⚠️ POS Day Off 동기화 실패:`, syncErr.message);
+          }
+        });
+        console.log(`👂 Day Off 리스너 활성화 - Firebase → POS 실시간 동기화`);
+        
+        // 5. Pause Listener (Firebase → POS 실시간 동기화)
+        listenToPauseChanges(restaurantId, async (change) => {
+          try {
+            if (!change.settings) return;
+            
+            for (const [channel, data] of Object.entries(change.settings)) {
+              await new Promise((resolve, reject) => {
+                db.run(
+                  `INSERT INTO online_pause_settings (channel, paused, paused_until, updated_at) 
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(channel) DO UPDATE SET 
+                     paused = excluded.paused, 
+                     paused_until = excluded.paused_until,
+                     updated_at = CURRENT_TIMESTAMP`,
+                  [channel, data.paused ? 1 : 0, data.pausedUntil || null],
+                  (err) => err ? reject(err) : resolve()
+                );
+              });
+            }
+            
+            console.log(`✅ POS Pause 동기화: ${Object.keys(change.settings).length}개 채널 (${change.type})`);
+          } catch (syncErr) {
+            console.warn(`⚠️ POS Pause 동기화 실패:`, syncErr.message);
+          }
+        });
+        console.log(`👂 Pause 리스너 활성화 - Firebase → POS 실시간 동기화`);
+        
+        // 6. Prep Time Listener (Firebase → POS 실시간 동기화)
+        listenToPrepTimeChanges(restaurantId, async (change) => {
+          try {
+            if (!change.settings) return;
+            
+            for (const [channel, data] of Object.entries(change.settings)) {
+              await new Promise((resolve, reject) => {
+                db.run(
+                  `INSERT INTO online_prep_time_settings (channel, mode, time, updated_at) 
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(channel) DO UPDATE SET 
+                     mode = excluded.mode, 
+                     time = excluded.time,
+                     updated_at = CURRENT_TIMESTAMP`,
+                  [channel, data.mode || 'auto', data.time || '15'],
+                  (err) => err ? reject(err) : resolve()
+                );
+              });
+            }
+            
+            console.log(`✅ POS Prep Time 동기화: ${Object.keys(change.settings).length}개 채널 (${change.type})`);
+          } catch (syncErr) {
+            console.warn(`⚠️ POS Prep Time 동기화 실패:`, syncErr.message);
+          }
+        });
+        console.log(`👂 Prep Time 리스너 활성화 - Firebase → POS 실시간 동기화`);
       }
     });
   } catch (syncErr) {
