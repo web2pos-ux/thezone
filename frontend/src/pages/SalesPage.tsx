@@ -3918,7 +3918,8 @@ const SalesPage: React.FC = () => {
       const result = await response.json();
       
       if (result.success) {
-        alert('🔄 Reprint sent to kitchen!');
+        // 성공 시 조용히 처리 (alert 제거)
+        console.log('Reprint sent to kitchen');
       } else {
         alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
       }
@@ -3983,15 +3984,32 @@ const SalesPage: React.FC = () => {
 
   const orderListCalculateTotals = () => {
       const subtotal = orderListSelectedItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
-      const adjustments = orderListSelectedOrder?.adjustments || [];
+      
+      // adjustments_json 또는 adjustments 배열에서 할인 정보 가져오기
+      let adjustments = orderListSelectedOrder?.adjustments || [];
+      if (orderListSelectedOrder?.adjustments_json) {
+        try {
+          const parsed = typeof orderListSelectedOrder.adjustments_json === 'string' 
+            ? JSON.parse(orderListSelectedOrder.adjustments_json) 
+            : orderListSelectedOrder.adjustments_json;
+          if (Array.isArray(parsed)) {
+            adjustments = [...adjustments, ...parsed];
+          }
+        } catch (e) { /* ignore */ }
+      }
+      
+      // DISCOUNT 또는 PROMOTION 타입 할인 합산
       const discountTotal = adjustments
-        .filter((a: any) => String(a.kind).toUpperCase() === 'DISCOUNT')
-        .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || 0)), 0);
+        .filter((a: any) => String(a.kind).toUpperCase() === 'DISCOUNT' || String(a.kind).toUpperCase() === 'PROMOTION')
+        .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || a.amountApplied || a.value || 0)), 0);
       const subtotalAfterDiscount = subtotal - discountTotal;
       const tax = orderListSelectedOrder?.total ? (Number(orderListSelectedOrder.total) - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
       const total = orderListSelectedOrder?.total || (subtotalAfterDiscount + tax);
       
-      return { subtotal, discountTotal, subtotalAfterDiscount, tax, total };
+      // 프로모션 이름 추출
+      const promotionName = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
+      
+      return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName };
     };
 
   const orderListGetDaysInMonth = (date: Date) => {
@@ -7931,8 +7949,22 @@ const SalesPage: React.FC = () => {
                                             ))}
                                           </div>
                                         )}
+                                        {item.discountPercent && item.discountPercent > 0 && (
+                                          <div className="text-xs text-green-600 ml-2 font-medium">
+                                            🎁 {item.discountPercent}% off {item.promotionName && `(${item.promotionName})`}
+                                          </div>
+                                        )}
                                       </td>
-                                      <td className="py-0.5 text-right font-medium text-sm">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</td>
+                                      <td className="py-0.5 text-right font-medium text-sm">
+                                        {item.discountAmount && item.discountAmount > 0 ? (
+                                          <div>
+                                            <span className="line-through text-gray-400 text-xs">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</span>
+                                            <div className="text-green-600">${(((item.price || 0) * (item.quantity || 1)) - item.discountAmount).toFixed(2)}</div>
+                                          </div>
+                                        ) : (
+                                          `$${((item.price || 0) * (item.quantity || 1)).toFixed(2)}`
+                                        )}
+                                      </td>
                                     </tr>
                                   );
                                 })}
@@ -7949,8 +7981,8 @@ const SalesPage: React.FC = () => {
                               </div>
                               {totals.discountTotal > 0 && (
                                 <>
-                                  <div className="flex justify-between py-0.5 text-red-600">
-                                    <span className="font-medium text-xs">Discount:</span>
+                                  <div className="flex justify-between py-0.5 text-green-600">
+                                    <span className="font-medium text-xs">🎁 {totals.promotionName || 'Discount'}:</span>
                                     <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between py-0.5">
@@ -8274,6 +8306,41 @@ const SalesPage: React.FC = () => {
               } else {
                 console.error('Failed to update online order status');
               }
+              
+              // Receipt 2장 출력 (Online Order) - Receipt 프린터에만 출력
+              try {
+                // 온라인 주문 정보로 Receipt 데이터 구성
+                const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
+                const receiptData = {
+                  orderInfo: {
+                    orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
+                    orderType: 'ONLINE',
+                    customerName: onlineTogoPaymentOrder.name || '',
+                    customerPhone: onlineTogoPaymentOrder.phone || '',
+                  },
+                  items: orderData?.items?.map((item: any) => ({
+                    name: item.name,
+                    quantity: item.quantity || 1,
+                    unitPrice: item.price || 0,
+                    totalPrice: (item.price || 0) * (item.quantity || 1)
+                  })) || [],
+                  subtotal: onlineTogoPaymentOrder.subtotal || 0,
+                  taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
+                  taxesTotal: onlineTogoPaymentOrder.tax || 0,
+                  total: onlineTogoPaymentOrder.total || 0,
+                  payments: [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }],
+                  change: 0
+                };
+                
+                await fetch(`${API_URL}/printers/print-receipt`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ receiptData, copies: 2 })
+                });
+                console.log('Receipt printed 2 copies');
+              } catch (printErr) {
+                console.error('Receipt print error:', printErr);
+              }
             } else if (selectedOrderType === 'togo' && onlineTogoPaymentOrder?.id) {
               // Togo 주문: 로컬 DB 상태를 PAID로 업데이트
               const response = await fetch(`${API_URL}/orders/${onlineTogoPaymentOrder.id}/close`, {
@@ -8285,35 +8352,55 @@ const SalesPage: React.FC = () => {
               } else {
                 console.error('Failed to update Togo order status');
               }
+              
+              // Receipt 2장 출력 (Togo Order) - Receipt 프린터에만 출력
+              try {
+                const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
+                const receiptData = {
+                  orderInfo: {
+                    orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
+                    orderType: 'TOGO',
+                    customerName: onlineTogoPaymentOrder.name || '',
+                    customerPhone: onlineTogoPaymentOrder.phone || '',
+                  },
+                  items: orderData?.items?.map((item: any) => ({
+                    name: item.name,
+                    quantity: item.quantity || 1,
+                    unitPrice: item.price || 0,
+                    totalPrice: (item.price || 0) * (item.quantity || 1)
+                  })) || [],
+                  subtotal: onlineTogoPaymentOrder.subtotal || 0,
+                  taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
+                  taxesTotal: onlineTogoPaymentOrder.tax || 0,
+                  total: onlineTogoPaymentOrder.total || 0,
+                  payments: [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }],
+                  change: 0
+                };
+                
+                await fetch(`${API_URL}/printers/print-receipt`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ receiptData, copies: 2 })
+                });
+                console.log('Receipt printed 2 copies');
+              } catch (printErr) {
+                console.error('Receipt print error:', printErr);
+              }
             }
           } catch (error) {
             console.error('Payment status update error:', error);
           }
           
-          // 현재 선택된 주문의 상태를 paid로 업데이트 (UI 즉시 반영)
+          // 결제 완료 후 주문 목록에서 즉시 제거
           if (selectedOrderDetail && onlineTogoPaymentOrder) {
-            const updatedOrder = {
-              ...selectedOrderDetail,
-              status: 'paid',
-              fullOrder: selectedOrderDetail.fullOrder 
-                ? { ...selectedOrderDetail.fullOrder, status: 'completed' }
-                : { status: 'completed' }
-            };
-            setSelectedOrderDetail(updatedOrder);
+            // 선택된 주문 초기화
+            setSelectedOrderDetail(null);
             
-            // 주문 목록에서도 상태 업데이트
+            // 주문 목록에서 제거
             if (selectedOrderType === 'online') {
-              setOnlineQueueCards(prev => prev.map(card => 
-                card.id === onlineTogoPaymentOrder.id 
-                  ? { ...card, status: 'PAID', fullOrder: { ...card.fullOrder, status: 'completed' } }
-                  : card
-              ));
+              setOnlineQueueCards(prev => prev.filter(card => card.id !== onlineTogoPaymentOrder.id));
             } else if (selectedOrderType === 'togo') {
-              setTogoOrders(prev => prev.map(order => 
-                order.id === onlineTogoPaymentOrder.id 
-                  ? { ...order, status: 'paid' }
-                  : order
-              ));
+              setTogoOrders(prev => prev.filter(order => order.id !== onlineTogoPaymentOrder.id));
             }
           }
           

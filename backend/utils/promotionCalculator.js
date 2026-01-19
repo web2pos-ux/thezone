@@ -1,49 +1,33 @@
-import { PromotionSettings, PromotionAdjustmentRecord, PromotionRule, PromotionChannel } from '../types/promotion';
-
-export interface LineItemLike {
-  id: string | number;
-  totalPrice: number;
-  quantity: number;
-  memo?: { price?: number } | null;
-  type?: string;
-}
-
 /**
- * Check if a rule is applicable to the given channel
- * If rule has no channels defined, it applies to all channels
+ * Backend promotion calculator
+ * Mirrors frontend logic for consistency
  */
-function isRuleForChannel(rule: PromotionRule, channel?: PromotionChannel): boolean {
-  if (!channel) return true; // No channel specified = apply to all
-  if (!rule.channels) return true; // No channel restriction = apply to all
-  
-  // Check if the specific channel is enabled in the rule
-  return !!rule.channels[channel];
+
+function toLocalDate(t) {
+  return new Date(t.getFullYear(), t.getMonth(), t.getDate());
 }
 
-function toLocalDate(t: Date) { return new Date(t.getFullYear(), t.getMonth(), t.getDate()); }
-function parseYmd(v?: string): Date | null {
+function parseYmd(v) {
   if (!v) return null;
-  const [y, m, d] = v.split('-').map(n => parseInt(n, 10));
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
+  const parts = v.split('-').map(n => parseInt(n, 10));
+  if (parts.length < 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
 }
 
-function getEligibleSubtotal(items: LineItemLike[], eligibleItemIds: Array<string|number>): number {
+function getEligibleSubtotal(items, eligibleItemIds) {
   const eligibleIds = new Set((eligibleItemIds || []).map(String));
   return (items || [])
     .filter(it => it && it.type !== 'separator')
     .reduce((sum, it) => {
+      const price = Number(it.totalPrice || it.price || 0);
       const memoPrice = (it.memo && typeof it.memo.price === 'number') ? it.memo.price : 0;
-      const isEligible = eligibleIds.size > 0 ? eligibleIds.has(String(it.id)) : true;
-      return isEligible ? sum + ((Number(it.totalPrice) + Number(memoPrice)) * Number(it.quantity || 1)) : sum;
+      const isEligible = eligibleIds.size > 0 ? eligibleIds.has(String(it.id || it.item_id || it.menuItemId)) : true;
+      return isEligible ? sum + ((price + memoPrice) * Number(it.quantity || 1)) : sum;
     }, 0);
 }
 
-function isRuleActiveNow(rule: PromotionRule, now: Date): boolean {
-  // Date range policy:
-  // - If both startDate and endDate empty => always (dateAlways covers this but also enforce default)
-  // - If only startDate present => apply from that day forward (no limit)
-  // - If both present => within inclusive range
+function isRuleActiveNow(rule, now) {
+  // Date range check
   if (!rule.dateAlways) {
     const s = parseYmd(rule.startDate);
     const e = parseYmd(rule.endDate);
@@ -53,25 +37,19 @@ function isRuleActiveNow(rule: PromotionRule, now: Date): boolean {
       const ed = toLocalDate(e);
       if (today < sd || today > ed) return false;
     } else if (s && !e) {
-      const sd = toLocalDate(s);
-      if (today < sd) return false;
+      if (today < toLocalDate(s)) return false;
     } else if (!s && e) {
-      const ed = toLocalDate(e);
-      if (today > ed) return false;
+      if (today > toLocalDate(e)) return false;
     }
   }
 
-  // Day-of-week policy: Sun=0..Sat=6
+  // Day-of-week check
   if (rule.daysOfWeek && rule.daysOfWeek.length > 0) {
-    const dow = now.getDay(); // 0..6 Sun..Sat
+    const dow = now.getDay();
     if (!rule.daysOfWeek.includes(dow)) return false;
   }
 
-  // Time window policy:
-  // - If timeAlways true or both empty: always
-  // - If only start set: apply from start to end of day
-  // - If only end set: apply from start of day to end
-  // - If both set and end < start: overnight window allowed (e.g., 22:00~02:00)
+  // Time window check
   if (!rule.timeAlways) {
     const st = (rule.startTime || '').trim();
     const et = (rule.endTime || '').trim();
@@ -84,7 +62,6 @@ function isRuleActiveNow(rule: PromotionRule, now: Date): boolean {
       if (endMin >= startMin) {
         if (!(minutesNow >= startMin && minutesNow <= endMin)) return false;
       } else {
-        // overnight: valid if now >= start OR now <= end
         if (!(minutesNow >= startMin || minutesNow <= endMin)) return false;
       }
     }
@@ -93,43 +70,55 @@ function isRuleActiveNow(rule: PromotionRule, now: Date): boolean {
   return true;
 }
 
-function normalizeCodeInput(code?: string): string {
-  // trim only, case-sensitive match
+function isRuleForChannel(rule, channel) {
+  if (!channel) return true;
+  if (!rule.channels) return true;
+  return !!rule.channels[channel];
+}
+
+function normalizeCodeInput(code) {
   return (code || '').trim();
 }
 
-function computeAmountApplied(subtotal: number, rule: PromotionRule): number {
+function computeAmountApplied(subtotal, rule) {
   const v = Number(rule.value) || 0;
   if (v <= 0 || subtotal <= 0) return 0;
   const raw = rule.mode === 'percent' ? (subtotal * v / 100) : v;
-  // Round with 3rd decimal rounding, then show 2 decimals
-  const rounded = Math.round(raw * 1000) / 1000; // round to 3 decimals
-  return Number((Math.round(rounded * 100) / 100).toFixed(2)); // to 2 decimals
+  const rounded = Math.round(raw * 1000) / 1000;
+  return Number((Math.round(rounded * 100) / 100).toFixed(2));
 }
 
-export function computePromotionAdjustment(items: LineItemLike[], settings: PromotionSettings): PromotionAdjustmentRecord | null {
+/**
+ * Compute promotion adjustment for given items and settings
+ * @param {Array} items - Order items
+ * @param {Object} settings - Promotion settings
+ * @param {boolean} settings.enabled - Whether promotions are enabled
+ * @param {string} settings.type - 'percent' or 'amount'
+ * @param {number} settings.value - Discount value
+ * @param {Array} settings.eligibleItemIds - Eligible item IDs
+ * @param {string} settings.codeInput - User entered promo code
+ * @param {Array} settings.rules - Promotion rules
+ * @param {string} settings.channel - Current channel ('table', 'togo', 'online', 'tableOrder', 'kiosk', 'delivery')
+ * @returns {Object|null} Promotion adjustment record
+ */
+function computePromotionAdjustment(items, settings) {
   if (!settings.enabled) return null;
 
-  // If rules are provided, evaluate them; otherwise fall back to simple percent/amount on eligible items
   const rules = Array.isArray(settings.rules) ? settings.rules : [];
   const now = new Date();
   const userCode = normalizeCodeInput(settings.codeInput);
-
   const currentChannel = settings.channel;
 
   if (rules.length > 0) {
-    // Build candidates that pass filters
     const candidates = rules.filter(r => {
       if (r.enabled === false) return false;
-      // Channel filter: check if rule applies to current channel
       if (!isRuleForChannel(r, currentChannel)) return false;
-      // code policy: if r.code non-empty, require exact match; if empty, ignore code
       const ruleCode = normalizeCodeInput(r.code);
       if (ruleCode && ruleCode !== userCode) return false;
       if (!isRuleActiveNow(r, now)) return false;
       const eligibleSubtotal = getEligibleSubtotal(items, r.eligibleItemIds || []);
       if (eligibleSubtotal <= 0) return false;
-      if ((Number(r.minSubtotal) || 0) > eligibleSubtotal) return false; // min order on eligible subtotal
+      if ((Number(r.minSubtotal) || 0) > eligibleSubtotal) return false;
       const amount = computeAmountApplied(eligibleSubtotal, r);
       if (amount <= 0) return false;
       return true;
@@ -137,26 +126,25 @@ export function computePromotionAdjustment(items: LineItemLike[], settings: Prom
 
     if (candidates.length === 0) return null;
 
-    // pick best benefit (max discount amount). If tie, use latest (createdAt desc, else keep as is)
     const withAmounts = candidates.map(r => {
       const eligibleSubtotal = getEligibleSubtotal(items, r.eligibleItemIds || []);
       const amount = computeAmountApplied(eligibleSubtotal, r);
       return { r, amount, createdAt: r.createdAt || 0 };
     });
+
     if (userCode) {
-      // When user explicitly entered a code, prefer the latest rule for that code
       withAmounts.sort((a, b) => {
         if ((b.createdAt || 0) !== (a.createdAt || 0)) return (b.createdAt || 0) - (a.createdAt || 0);
         if (b.amount !== a.amount) return b.amount - a.amount;
         return 0;
       });
     } else {
-      // Otherwise, pick maximum benefit; tie-breaker: latest
       withAmounts.sort((a, b) => {
         if (b.amount !== a.amount) return b.amount - a.amount;
         return (b.createdAt || 0) - (a.createdAt || 0);
       });
     }
+
     const best = withAmounts[0];
     return {
       kind: 'PROMOTION',
@@ -177,6 +165,7 @@ export function computePromotionAdjustment(items: LineItemLike[], settings: Prom
   const rounded = Math.round(amountApplied * 1000) / 1000;
   const amount2 = Number((Math.round(rounded * 100) / 100).toFixed(2));
   if (amount2 <= 0) return null;
+
   return {
     kind: 'PROMOTION',
     mode: settings.type,
@@ -186,8 +175,9 @@ export function computePromotionAdjustment(items: LineItemLike[], settings: Prom
   };
 }
 
-export function buildPromotionReceiptLine(adj: PromotionAdjustmentRecord | null): { label: string; amount: number } | null {
-  if (!adj) return null;
-  const label = `Discount (${adj.mode === 'percent' ? `${adj.value.toFixed(2)}%` : `$${adj.value.toFixed(2)}`})`;
-  return { label, amount: -Math.abs(Number(adj.amountApplied.toFixed(2))) };
-} 
+module.exports = {
+  computePromotionAdjustment,
+  getEligibleSubtotal,
+  isRuleActiveNow,
+  isRuleForChannel
+};

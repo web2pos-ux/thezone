@@ -4063,31 +4063,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          
          // Recalculate full adjustments/tax for accuracy
          const recAdjustments: Array<{ label: string; amount: number }> = [];
-         // ... (Copy adjustment logic from original handlePrintBill) ...
-          if ((orderType||'').toLowerCase()==='togo') {
-            if (togoSettings.discountEnabled && togoSettings.discountValue>0) {
-              const dv = Number(togoSettings.discountValue)||0;
-              const amountApplied = togoSettings.discountMode==='percent' ? (subtotal*dv/100) : dv;
-              recAdjustments.push({ label: `Discount (${togoSettings.discountMode==='percent'?dv+'%':'$'+dv})`, amount: -Number(amountApplied.toFixed(2)) });
-            }
-            if (togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
-              const bv = Number(togoSettings.bagFeeValue)||0;
-              const amountApplied = bv;
-              recAdjustments.push({ label: `Bag Fee ($${bv})`, amount: Number(amountApplied.toFixed(2)) });
-            }
-          } else {
-             // ... (Promo logic) ...
-             const tableIdForMap = (location.state && (location.state as any).tableId) || null;
-             const customerName = (location.state && (location.state as any).customerName) || null;
-             const todayKey = new Date().toISOString().slice(0,10);
-             const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
-             const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
-             const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
-             const promoAdj = computePromotionAdjustment(items as any, { enabled: promotionEnabled && !alreadyUsedToday, type: promotionType as any, value: (typeof promotionValue === 'number' ? promotionValue : 0), eligibleItemIds: promotionEligibleItemIds, codeInput: '', rules: promotionRules });
-             const line = buildPromotionReceiptLine(promoAdj);
-             if (line) recAdjustments.push(line);
-             // ... (BOGO logic) ...
-          }
+         
+         // Determine channel for promotion filtering
+         const isTogo = (orderType||'').toLowerCase()==='togo';
+         const promoChannel = isTogo ? 'togo' : 'table';
+         
+         // Apply promotions (works for both Dine-In and Togo with channel filtering)
+         const tableIdForMap = (location.state && (location.state as any).tableId) || null;
+         const customerName = (location.state && (location.state as any).customerName) || null;
+         const todayKey = new Date().toISOString().slice(0,10);
+         const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
+         const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
+         const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
+         const promoAdj = computePromotionAdjustment(items as any, { 
+            enabled: promotionEnabled && !alreadyUsedToday, 
+            type: promotionType as any, 
+            value: (typeof promotionValue === 'number' ? promotionValue : 0), 
+            eligibleItemIds: promotionEligibleItemIds, 
+            codeInput: '', 
+            rules: promotionRules,
+            channel: promoChannel as any
+         });
+         const line = buildPromotionReceiptLine(promoAdj);
+         if (line) recAdjustments.push(line);
+         
+         // Bag fee for Togo orders only
+         if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
+            const bv = Number(togoSettings.bagFeeValue)||0;
+            recAdjustments.push({ label: `Bag Fee ($${bv})`, amount: Number(bv.toFixed(2)) });
+         }
           const adjustmentsTotal = recAdjustments.reduce((s,a)=>s+a.amount,0);
           const fullReceipt = {
             type: 'prebill',
@@ -4240,52 +4244,52 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     
     let adjustedTotal = Math.max(0, Number(baseTotal.toFixed(2)));
 
-    if ((orderType||'').toLowerCase()==='togo') {
-        if (togoSettings.discountEnabled && togoSettings.discountValue>0) {
-          const dv = Number(togoSettings.discountValue)||0;
-          const amountApplied = togoSettings.discountMode==='percent' ? (baseTotal*dv/100) : dv;
-          adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
-          adjustments.push({
-            kind:'DISCOUNT',
-            mode: togoSettings.discountMode,
-            value: dv,
-            amountApplied: Number(amountApplied.toFixed(2)),
-            label: 'Togo Discount'
-          });
-        }
-        if (togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
-          const bv = Number(togoSettings.bagFeeValue)||0;
-          const amountApplied = bv;
-          adjustedTotal = Number((adjustedTotal + amountApplied).toFixed(2));
-          adjustments.push({
+    // Determine channel for promotion filtering
+    const isTogo = (orderType||'').toLowerCase()==='togo';
+    const promoChannel = isTogo ? 'togo' : 'table';
+    
+    // Apply promotions (works for both Dine-In and Togo with channel filtering)
+    const todayKey = new Date().toISOString().slice(0,10);
+    const usageKey = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
+    const alreadyUsedToday = usageKey ? (localStorage.getItem(usageKey) === '1') : false;
+    const promoAdj = computePromotionAdjustment(items as any, { 
+        enabled: promotionEnabled && !alreadyUsedToday, 
+        type: promotionType as any, 
+        value: (typeof promotionValue === 'number' ? promotionValue : 0), 
+        eligibleItemIds: promotionEligibleItemIds, 
+        codeInput: '', 
+        rules: promotionRules,
+        channel: promoChannel as any
+    });
+    if (promoAdj) {
+        const amountApplied = promoAdj.amountApplied;
+        adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
+        adjustments.push({
+            kind:'PROMOTION',
+            mode: promoAdj.mode,
+            value: promoAdj.value,
+            amountApplied,
+            label: promoAdj.label || 'Promotion'
+        });
+        try {
+            if (usageKey) localStorage.setItem(usageKey, '1');
+            const customerName = (location.state && (location.state as any).customerName) || null;
+            if (customerName) localStorage.setItem(`promo_used_customer_${customerName}_${todayKey}`, '1');
+        } catch {}
+    }
+    
+    // Bag fee for Togo orders only
+    if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
+        const bv = Number(togoSettings.bagFeeValue)||0;
+        const amountApplied = bv;
+        adjustedTotal = Number((adjustedTotal + amountApplied).toFixed(2));
+        adjustments.push({
             kind:'BAG_FEE',
             mode: 'amount',
             value: bv,
             amountApplied: Number(amountApplied.toFixed(2)),
             label: 'Bag Fee'
-          });
-        }
-    } else {
-        const todayKey = new Date().toISOString().slice(0,10);
-        const usageKey = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
-        const alreadyUsedToday = usageKey ? (localStorage.getItem(usageKey) === '1') : false;
-        const promoAdj = computePromotionAdjustment(items as any, { enabled: promotionEnabled && !alreadyUsedToday, type: promotionType as any, value: (typeof promotionValue === 'number' ? promotionValue : 0), eligibleItemIds: promotionEligibleItemIds, codeInput: '', rules: promotionRules });
-        if (promoAdj) {
-            const amountApplied = promoAdj.amountApplied;
-            adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
-            adjustments.push({
-                kind:'PROMOTION',
-                mode: promoAdj.mode,
-                value: promoAdj.value,
-                amountApplied,
-                label: promoAdj.label || 'Promotion'
-            });
-            try {
-                if (usageKey) localStorage.setItem(usageKey, '1');
-                const customerName = (location.state && (location.state as any).customerName) || null;
-                if (customerName) localStorage.setItem(`promo_used_customer_${customerName}_${todayKey}`, '1');
-            } catch {}
-        }
+        });
     }
 
     const itemsWithLineId = items.map((it:any) => {

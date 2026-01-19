@@ -19,7 +19,6 @@ const tableSubMenus = [
 
 const orderSubMenus = [
   { path: '/backoffice/order-setup', label: 'Order Screen Setup', icon: '⚙️' },
-  { path: '/backoffice/togo-settings', label: 'Promotion', icon: '🎁' },
 ];
 
 const employeeSubMenus = [

@@ -5,12 +5,23 @@ const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const { dbRun, dbGet, dbAll } = require('../db');
+const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
 
 // 연결된 SSE 클라이언트들
 const sseClients = new Map();
+
+// orders 테이블에 adjustments_json 컬럼 추가 (마이그레이션)
+(async () => {
+  try {
+    await dbRun('ALTER TABLE orders ADD COLUMN adjustments_json TEXT');
+    console.log('✅ orders 테이블에 adjustments_json 컬럼 추가됨');
+  } catch (e) {
+    // 이미 존재하면 무시
+  }
+})();
 
 // Firebase 초기화 상태 확인
 let firebaseInitialized = false;
@@ -112,9 +123,23 @@ function startOrderListener(restaurantId) {
           const taxRate = order.taxRate || 0;
           const taxBreakdown = order.taxBreakdown ? JSON.stringify(order.taxBreakdown) : null;
           
+          // 프로모션 정보 추출 (Firebase에서 온 주문에 포함됨)
+          const adjustments = [];
+          if (order.discountAmount && order.discountAmount > 0) {
+            adjustments.push({
+              kind: 'PROMOTION',
+              mode: order.promotionType || 'percent',
+              value: order.discountAmount,
+              amountApplied: order.discountAmount,
+              label: order.promotionName || 'Promotion',
+              promotionId: order.promotionId || null
+            });
+          }
+          const adjustmentsJson = adjustments.length > 0 ? JSON.stringify(adjustments) : null;
+          
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, adjustments_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderNumber,
               'ONLINE',
@@ -126,10 +151,11 @@ function startOrderListener(restaurantId) {
               firebaseOrderId,
               taxAmount,
               taxRate,
-              taxBreakdown
+              taxBreakdown,
+              adjustmentsJson
             ]
           );
-          localOrder = { id: result.lastID };
+          localOrder = { id: result.lastID, adjustments };
           
           // 주문 아이템도 저장 (모디파이어 포함)
           if (Array.isArray(order.items)) {
@@ -244,6 +270,18 @@ function startOrderListener(restaurantId) {
                                order.paymentStatus === 'COMPLETED' ||
                                order.paid === true;
             
+            // 프로모션 adjustments 생성 (출력용)
+            const printAdjustments = [];
+            if (order.discountAmount && order.discountAmount > 0) {
+              printAdjustments.push({
+                kind: 'PROMOTION',
+                mode: order.promotionType || 'percent',
+                value: order.discountAmount,
+                amountApplied: order.discountAmount,
+                label: order.promotionName || 'Promotion'
+              });
+            }
+            
             const printData = JSON.stringify({
               orderInfo: {
                 orderNumber: localOrderNumber,
@@ -263,6 +301,7 @@ function startOrderListener(restaurantId) {
                 pickupTime: pickupTimeStr // 계산된 Pickup 시간
               },
               items: printItems,
+              adjustments: printAdjustments, // 프로모션 할인 정보
               isAdditionalOrder: false,
               isPaid: orderIsPaid, // Firebase 결제 상태에 따라 PAID/UNPAID 출력
               isReprint: false
@@ -307,6 +346,19 @@ function startOrderListener(restaurantId) {
               }
               
               const subtotal = (order.subtotal || order.total - (order.tax || 0)) || 0;
+              
+              // Bill용 adjustments 구성 (프로모션 할인 포함)
+              const billAdjustments = [];
+              if (order.discountAmount && order.discountAmount > 0) {
+                billAdjustments.push({
+                  kind: 'PROMOTION',
+                  label: order.promotionName || 'Promotion',
+                  mode: order.promotionType || 'amount',
+                  value: order.discountAmount,
+                  amount: -order.discountAmount // 마이너스로 표시
+                });
+              }
+              
               const billData = {
                 header: {
                   orderNumber: localOrderNumber,
@@ -333,7 +385,7 @@ function startOrderListener(restaurantId) {
                 })),
                 guestSections: [],
                 subtotal: subtotal,
-                adjustments: [],
+                adjustments: billAdjustments,
                 taxLines: taxLines,
                 taxesTotal: order.tax || 0,
                 total: order.total || 0,
@@ -460,6 +512,15 @@ function broadcastToClients(restaurantId, data) {
 
 // 주문 데이터 포맷팅 (프론트엔드용)
 function formatOrderForFrontend(order) {
+  // items에 프로모션 관련 필드 포함
+  const formattedItems = (order.items || []).map(item => ({
+    ...item,
+    discountAmount: item.discountAmount || 0,
+    discountPercent: item.discountPercent || 0,
+    promotionName: item.promotionName || null,
+    priceAfterDiscount: item.priceAfterDiscount || item.subtotal || item.price
+  }));
+
   return {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -467,13 +528,22 @@ function formatOrderForFrontend(order) {
     customerPhone: order.customerPhone,
     orderType: order.orderType, // pickup, delivery, dine_in
     status: order.status,
-    items: order.items || [],
+    items: formattedItems,
     subtotal: order.subtotal,
+    subtotalAfterDiscount: order.subtotalAfterDiscount || order.subtotal,
     tax: order.tax,
     total: order.total,
     notes: order.notes,
     createdAt: order.createdAt?.toDate?.() || order.createdAt,
-    updatedAt: order.updatedAt?.toDate?.() || order.updatedAt
+    updatedAt: order.updatedAt?.toDate?.() || order.updatedAt,
+    // 프로모션 관련 필드
+    discountAmount: order.discountAmount || 0,
+    promotionId: order.promotionId || null,
+    promotionName: order.promotionName || null,
+    promotionType: order.promotionType || null,
+    promotionPercent: order.promotionPercent || order.discountPercent || null,
+    taxBreakdown: order.taxBreakdown || null,
+    deliveryFee: order.deliveryFee || 0
   };
 }
 
@@ -915,7 +985,17 @@ router.post('/order/:orderId/pickup', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const result = await firebaseService.updateOrderStatus(orderId, 'picked_up');
+    
+    // restaurantId를 요청 본문에서 받거나 business_profile에서 가져오기
+    let restaurantId = req.body.restaurantId;
+    if (!restaurantId) {
+      const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile LIMIT 1');
+      restaurantId = profile?.firebase_restaurant_id;
+    }
+    
+    console.log(`[PICKUP] orderId: ${orderId}, restaurantId: ${restaurantId}`);
+    
+    const result = await firebaseService.updateOrderStatus(orderId, 'picked_up', restaurantId);
 
     res.json({
       success: true,
@@ -1494,6 +1574,191 @@ router.post('/prep-time-settings', async (req, res) => {
     res.json({ success: true, message: 'Prep Time settings saved', firebaseSynced: !!restaurantId });
   } catch (error) {
     console.error('[PREP TIME] Save error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// Promotion API for Online/Table Orders
+// ============================================
+
+// Calculate promotion for online order
+router.post('/calculate-promotion', async (req, res) => {
+  try {
+    const { items, channel = 'online', promoCode = '' } = req.body;
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: 'Items array is required' });
+    }
+    
+    // Load promotion rules
+    const promoRows = await dbAll('SELECT * FROM discount_promotions WHERE enabled = 1 ORDER BY created_at DESC');
+    const promotionRules = promoRows.map(r => ({
+      id: r.id,
+      name: r.name || '',
+      code: r.code || '',
+      startDate: r.start_date || '',
+      endDate: r.end_date || '',
+      startTime: r.start_time || '',
+      endTime: r.end_time || '',
+      mode: (r.mode === 'amount' ? 'amount' : 'percent'),
+      value: Number(r.value || 0),
+      minSubtotal: Number(r.min_subtotal || 0),
+      eligibleItemIds: (()=>{ try { return JSON.parse(r.eligible_item_ids||'[]'); } catch { return []; } })(),
+      daysOfWeek: (()=>{ try { return JSON.parse(r.days_of_week||'[]'); } catch { return []; } })(),
+      dateAlways: !!r.date_always,
+      timeAlways: !!r.time_always,
+      enabled: true,
+      createdAt: Number(r.created_at || 0),
+      channels: (()=>{ try { return JSON.parse(r.channels_json||'{}'); } catch { return {}; } })()
+    }));
+    
+    // Prepare items for calculation
+    const promoItems = items.map(it => ({
+      id: it.menuItemId || it.posItemId || it.id,
+      totalPrice: it.price || it.subtotal || 0,
+      quantity: it.quantity || 1
+    }));
+    
+    // Calculate subtotal
+    const subtotal = promoItems.reduce((sum, it) => sum + (it.totalPrice * it.quantity), 0);
+    
+    // Calculate promotion
+    const promotionAdjustment = computePromotionAdjustment(promoItems, {
+      enabled: promotionRules.length > 0,
+      type: 'percent',
+      value: 0,
+      eligibleItemIds: [],
+      codeInput: promoCode,
+      rules: promotionRules,
+      channel: channel
+    });
+    
+    if (promotionAdjustment) {
+      res.json({
+        success: true,
+        hasPromotion: true,
+        promotion: {
+          id: promotionAdjustment.ruleId,
+          name: promotionAdjustment.label,
+          mode: promotionAdjustment.mode,
+          value: promotionAdjustment.value,
+          discountAmount: promotionAdjustment.amountApplied
+        },
+        subtotal,
+        subtotalAfterDiscount: Math.max(0, subtotal - promotionAdjustment.amountApplied)
+      });
+    } else {
+      res.json({
+        success: true,
+        hasPromotion: false,
+        promotion: null,
+        subtotal,
+        subtotalAfterDiscount: subtotal
+      });
+    }
+  } catch (error) {
+    console.error('[ONLINE ORDER] Calculate promotion error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get available promotions for a channel
+router.get('/promotions/:channel', async (req, res) => {
+  try {
+    const { channel } = req.params;
+    
+    // Load promotion rules
+    const promoRows = await dbAll('SELECT * FROM discount_promotions WHERE enabled = 1 ORDER BY created_at DESC');
+    const allRules = promoRows.map(r => ({
+      id: r.id,
+      name: r.name || '',
+      code: r.code || '',
+      startDate: r.start_date || '',
+      endDate: r.end_date || '',
+      startTime: r.start_time || '',
+      endTime: r.end_time || '',
+      mode: (r.mode === 'amount' ? 'amount' : 'percent'),
+      value: Number(r.value || 0),
+      minSubtotal: Number(r.min_subtotal || 0),
+      dateAlways: !!r.date_always,
+      timeAlways: !!r.time_always,
+      enabled: true,
+      channels: (()=>{ try { return JSON.parse(r.channels_json||'{}'); } catch { return {}; } })()
+    }));
+    
+    // Channel mapping
+    const channelMap = {
+      'online': 'online',
+      'table-order': 'tableOrder',
+      'togo': 'togo',
+      'dine-in': 'table',
+      'delivery': 'delivery',
+      'kiosk': 'kiosk'
+    };
+    const posChannel = channelMap[channel] || channel;
+    
+    // Filter by channel
+    const filteredRules = allRules.filter(r => {
+      if (!r.channels || Object.keys(r.channels).length === 0) return true;
+      return !!r.channels[posChannel];
+    });
+    
+    // Check which promotions are currently active
+    const now = new Date();
+    const activePromotions = filteredRules.filter(r => {
+      // Date check
+      if (!r.dateAlways) {
+        if (r.startDate) {
+          const [y, m, d] = r.startDate.split('-').map(n => parseInt(n, 10));
+          const startDate = new Date(y, m - 1, d);
+          if (now < startDate) return false;
+        }
+        if (r.endDate) {
+          const [y, m, d] = r.endDate.split('-').map(n => parseInt(n, 10));
+          const endDate = new Date(y, m - 1, d);
+          endDate.setHours(23, 59, 59, 999);
+          if (now > endDate) return false;
+        }
+      }
+      
+      // Time check
+      if (!r.timeAlways && (r.startTime || r.endTime)) {
+        const [sh, sm] = (r.startTime || '00:00').split(':').map(n => parseInt(n || '0', 10));
+        const [eh, em] = (r.endTime || '23:59').split(':').map(n => parseInt(n || '0', 10));
+        const minutesNow = now.getHours() * 60 + now.getMinutes();
+        const startMin = sh * 60 + sm;
+        const endMin = eh * 60 + em;
+        if (endMin >= startMin) {
+          if (!(minutesNow >= startMin && minutesNow <= endMin)) return false;
+        } else {
+          if (!(minutesNow >= startMin || minutesNow <= endMin)) return false;
+        }
+      }
+      
+      return true;
+    });
+    
+    // Return promotions (hide code for non-code promotions)
+    const publicPromotions = activePromotions.map(p => ({
+      id: p.id,
+      name: p.name,
+      hasCode: !!p.code,
+      mode: p.mode,
+      value: p.value,
+      minSubtotal: p.minSubtotal,
+      description: p.mode === 'percent' 
+        ? `${p.value}% off${p.minSubtotal > 0 ? ` (min $${p.minSubtotal})` : ''}`
+        : `$${p.value} off${p.minSubtotal > 0 ? ` (min $${p.minSubtotal})` : ''}`
+    }));
+    
+    res.json({
+      success: true,
+      channel,
+      promotions: publicPromotions
+    });
+  } catch (error) {
+    console.error('[ONLINE ORDER] Get promotions error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

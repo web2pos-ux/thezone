@@ -35,6 +35,27 @@ export async function getFirebasePromotions(): Promise<{ promotions: FirebasePro
 }
 
 /**
+ * Sync promotions from Firebase to POS (download and save to local DB)
+ */
+export async function syncPromotionsFromFirebase(): Promise<{ ok: boolean; synced: number; total: number; message: string }> {
+  try {
+    const res = await fetch(`${API_URL}/api/promotions/sync-from-firebase`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      console.error('Failed to sync promotions from Firebase:', res.status, errorData);
+      return { ok: false, synced: 0, total: 0, message: errorData.message || 'Sync failed' };
+    }
+    return await res.json();
+  } catch (error) {
+    console.error('Error syncing promotions from Firebase:', error);
+    return { ok: false, synced: 0, total: 0, message: String(error) };
+  }
+}
+
+/**
  * Sync a POS promotion to Firebase
  */
 export async function syncPromotionToFirebase(promotion: any, type: 'discount' | 'free'): Promise<boolean> {

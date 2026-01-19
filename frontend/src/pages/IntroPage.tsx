@@ -182,19 +182,28 @@ const IntroPage: React.FC = () => {
           </div>
         </div>
 
-        {/* 안내 메시지 */}
-        <div className="mt-8 text-white/80 text-sm space-y-2">
-          <p>Enter PIN to continue</p>
-          {serviceType && (
-            <p className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${
-              serviceType === 'QSR' 
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
-                : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-            }`}>
-              <span className="w-2 h-2 rounded-full bg-current"></span>
-              {serviceType === 'QSR' ? 'Quick Service Mode' : 'Full Service Mode'}
-            </p>
-          )}
+        {/* 빠른 접근 버튼 - 너비 줄임 */}
+        <div className="mt-6 flex gap-3 justify-center">
+          <button
+            onClick={() => handleNavigate('sales')}
+            className="px-5 py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-105 active:scale-95 shadow-lg border border-blue-400/30 backdrop-blur-sm flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+            <span>Sales</span>
+          </button>
+          
+          <button
+            onClick={() => handleNavigate('backoffice')}
+            className="px-5 py-3 bg-gradient-to-r from-slate-500 to-slate-600 hover:from-slate-600 hover:to-slate-700 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-105 active:scale-95 shadow-lg border border-slate-400/30 backdrop-blur-sm flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <span>BackOffice</span>
+          </button>
         </div>
       </div>
 

@@ -1,5 +1,7 @@
 export type PromotionMode = 'percent' | 'amount';
 
+export type PromotionChannel = 'table' | 'togo' | 'online' | 'tableOrder' | 'kiosk' | 'delivery';
+
 export interface PromotionSettings {
   enabled: boolean;
   type: PromotionMode;
@@ -7,6 +9,7 @@ export interface PromotionSettings {
   eligibleItemIds: Array<string|number>;
   codeInput?: string; // user-entered code (trimmed), case-sensitive match policy
   rules?: PromotionRule[]; // full rules list to evaluate
+  channel?: PromotionChannel; // current channel for filtering rules
 }
 
 export interface PromotionAdjustmentRecord {

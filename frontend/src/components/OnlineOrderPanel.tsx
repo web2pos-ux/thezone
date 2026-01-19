@@ -32,6 +32,10 @@ interface OnlineOrder {
     quantity: number;
     price: number;
     subtotal: number;
+    discountAmount?: number;
+    discountPercent?: number;
+    promotionName?: string;
+    priceAfterDiscount?: number;
     options?: Array<{
       optionName: string;
       choiceName: string;
@@ -39,10 +43,22 @@ interface OnlineOrder {
     }>;
   }>;
   subtotal: number;
+  subtotalAfterDiscount?: number;
   tax: number;
   total: number;
   notes?: string;
   createdAt: string;
+  // Promotion fields
+  discountAmount?: number;
+  promotionId?: string;
+  promotionName?: string;
+  promotionType?: string;
+  promotionPercent?: number;
+  taxBreakdown?: Array<{
+    name: string;
+    rate: number;
+    amount: number;
+  }>;
 }
 
 interface OnlineOrderPanelProps {
@@ -470,21 +486,72 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
 
           {/* 주문 아이템 */}
           <div className="bg-white rounded-lg p-3 mb-3">
-            {selectedOrder.items?.map((item, idx) => (
+            {selectedOrder.items?.map((item: any, idx: number) => (
               <div key={idx} className="py-1 border-b last:border-0">
                 <div className="flex justify-between text-sm">
                   <span>{item.name} x{item.quantity}</span>
-                  <span>${item.subtotal?.toFixed(2)}</span>
+                  <span>
+                    {item.discountAmount && item.discountAmount > 0 ? (
+                      <>
+                        <span className="line-through text-gray-400 mr-1">${item.subtotal?.toFixed(2)}</span>
+                        <span className="text-green-600">${item.priceAfterDiscount?.toFixed(2) || (item.subtotal - item.discountAmount).toFixed(2)}</span>
+                      </>
+                    ) : (
+                      `$${item.subtotal?.toFixed(2)}`
+                    )}
+                  </span>
                 </div>
-                {item.options?.map((opt, optIdx) => (
+                {item.options?.map((opt: any, optIdx: number) => (
                   <div key={optIdx} className="text-xs text-gray-500 pl-2">
                     + {opt.choiceName} {opt.price > 0 && `($${opt.price.toFixed(2)})`}
                   </div>
                 ))}
+                {item.discountPercent && item.discountPercent > 0 && (
+                  <div className="text-xs text-green-600 pl-2 font-medium">
+                    🎁 {item.discountPercent}% off ({item.promotionName || 'Promotion'})
+                  </div>
+                )}
               </div>
             ))}
+            
+            {/* Subtotal */}
+            <div className="flex justify-between text-sm pt-2 mt-2 border-t">
+              <span>Subtotal</span>
+              <span>${selectedOrder.subtotal?.toFixed(2) || (selectedOrder.items?.reduce((sum: number, it: any) => sum + (it.subtotal || 0), 0) || 0).toFixed(2)}</span>
+            </div>
+            
+            {/* Discount */}
+            {selectedOrder.discountAmount && selectedOrder.discountAmount > 0 && (
+              <>
+                <div className="flex justify-between text-sm text-green-600">
+                  <span>🎁 {selectedOrder.promotionName || 'Discount'}</span>
+                  <span>-${selectedOrder.discountAmount.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm font-medium">
+                  <span>After Discount</span>
+                  <span>${((selectedOrder.subtotal || 0) - selectedOrder.discountAmount).toFixed(2)}</span>
+                </div>
+              </>
+            )}
+            
+            {/* Tax */}
+            {selectedOrder.taxBreakdown && Array.isArray(selectedOrder.taxBreakdown) ? (
+              selectedOrder.taxBreakdown.map((tax: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-sm text-gray-600">
+                  <span>{tax.name} ({tax.rate}%)</span>
+                  <span>${tax.amount?.toFixed(2)}</span>
+                </div>
+              ))
+            ) : selectedOrder.tax ? (
+              <div className="flex justify-between text-sm text-gray-600">
+                <span>Tax</span>
+                <span>${selectedOrder.tax?.toFixed(2)}</span>
+              </div>
+            ) : null}
+            
+            {/* Total */}
             <div className="flex justify-between font-bold pt-2 mt-2 border-t">
-              <span>총액</span>
+              <span>Total</span>
               <span className="text-blue-600">${selectedOrder.total?.toFixed(2)}</span>
             </div>
           </div>

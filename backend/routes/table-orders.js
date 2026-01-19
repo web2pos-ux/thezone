@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 
 module.exports = (db) => {
   // Helper functions
@@ -260,6 +261,57 @@ module.exports = (db) => {
           mSum + (mod.price_adjustment || 0) * (item.quantity || 1), 0);
         return sum + itemTotal + modifiersTotal;
       }, 0);
+      
+      // 프로모션 계산
+      let promotionDiscount = 0;
+      let promotionAdjustment = null;
+      try {
+        // 프로모션 규칙 로드
+        const promoRows = await dbAll('SELECT * FROM discount_promotions WHERE enabled = 1 ORDER BY created_at DESC');
+        const promotionRules = promoRows.map(r => ({
+          id: r.id,
+          name: r.name || '',
+          code: r.code || '',
+          startDate: r.start_date || '',
+          endDate: r.end_date || '',
+          startTime: r.start_time || '',
+          endTime: r.end_time || '',
+          mode: (r.mode === 'amount' ? 'amount' : 'percent'),
+          value: Number(r.value || 0),
+          minSubtotal: Number(r.min_subtotal || 0),
+          eligibleItemIds: (()=>{ try { return JSON.parse(r.eligible_item_ids||'[]'); } catch { return []; } })(),
+          daysOfWeek: (()=>{ try { return JSON.parse(r.days_of_week||'[]'); } catch { return []; } })(),
+          dateAlways: !!r.date_always,
+          timeAlways: !!r.time_always,
+          enabled: true,
+          createdAt: Number(r.created_at || 0),
+          channels: (()=>{ try { return JSON.parse(r.channels_json||'{}'); } catch { return {}; } })()
+        }));
+        
+        // 프로모션 계산 (tableOrder 채널)
+        const promoItems = items.map(it => ({
+          id: it.item_id || it.id,
+          totalPrice: it.price || 0,
+          quantity: it.quantity || 1
+        }));
+        
+        promotionAdjustment = computePromotionAdjustment(promoItems, {
+          enabled: promotionRules.length > 0,
+          type: 'percent',
+          value: 0,
+          eligibleItemIds: [],
+          codeInput: '',
+          rules: promotionRules,
+          channel: 'tableOrder'
+        });
+        
+        if (promotionAdjustment) {
+          promotionDiscount = promotionAdjustment.amountApplied;
+          console.log(`[TABLE_ORDER] Promotion applied: ${promotionAdjustment.label} - $${promotionDiscount}`);
+        }
+      } catch (e) {
+        console.log('[TABLE_ORDER] Could not apply promotion:', e.message);
+      }
 
       // 1. 해당 테이블에 이미 열린 주문이 있는지 확인
       const existingOrder = await dbGet(`
@@ -277,8 +329,8 @@ module.exports = (db) => {
         posOrderId = existingOrder.id;
         orderId = existingOrder.order_number || `TO-${table_id}-${existingOrder.id}`;
         
-        // 기존 주문 총액 업데이트
-        const newTotal = (existingOrder.total || 0) + itemsSubtotal * 1.05; // 세금 포함
+        // 기존 주문 총액 업데이트 (프로모션 할인 적용)
+        const newTotal = (existingOrder.total || 0) + (itemsSubtotal - promotionDiscount) * 1.05; // 세금 포함
         await dbRun(`UPDATE orders SET total = ?, order_source = COALESCE(order_source, '') || ',${orderSource}' WHERE id = ?`, [newTotal, posOrderId]);
         
         console.log(`[${orderSource}] Adding items to existing order #${posOrderId} for table ${table_id}${server_name ? ` by ${server_name}` : ''}`);
@@ -287,7 +339,8 @@ module.exports = (db) => {
         isNewOrder = true;
         const orderNumber = Math.floor(Math.random() * 900) + 100;
         orderId = source === 'HANDHELD' ? `HH-${table_id}-${orderNumber}` : `TO-${table_id}-${orderNumber}`;
-        const total = itemsSubtotal * 1.05; // 세금 포함
+        const subtotalAfterDiscount = itemsSubtotal - promotionDiscount;
+        const total = subtotalAfterDiscount * 1.05; // 세금 포함
         
         const posOrderResult = await dbRun(`
           INSERT INTO orders (order_number, order_type, total, status, created_at, table_id, order_source, guest_count, server_name)
@@ -311,17 +364,21 @@ module.exports = (db) => {
       }
 
       // 3. table_orders 테이블에도 저장 (로그/히스토리용)
+      const subtotalAfterPromo = itemsSubtotal - promotionDiscount;
+      const taxTotal = subtotalAfterPromo * 0.05;
+      const orderTotal = subtotalAfterPromo + taxTotal;
+      
       if (isNewOrder) {
         await dbRun(`
-          INSERT INTO table_orders (order_id, store_id, table_id, table_label, items_json, subtotal, tax_total, total, customer_note, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted')
-        `, [orderId, store_id, table_id, table_label || table_id, JSON.stringify(items), itemsSubtotal, itemsSubtotal * 0.05, itemsSubtotal * 1.05, customer_note]);
+          INSERT INTO table_orders (order_id, store_id, table_id, table_label, items_json, subtotal, tax_total, total, customer_note, status, promotion_discount)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)
+        `, [orderId, store_id, table_id, table_label || table_id, JSON.stringify(items), itemsSubtotal, taxTotal, orderTotal, customer_note, promotionDiscount]);
       } else {
         const logOrderId = `${orderId}-${Date.now()}`;
         await dbRun(`
-          INSERT INTO table_orders (order_id, store_id, table_id, table_label, items_json, subtotal, tax_total, total, customer_note, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted')
-        `, [logOrderId, store_id, table_id, table_label || table_id, JSON.stringify(items), itemsSubtotal, itemsSubtotal * 0.05, itemsSubtotal * 1.05, customer_note]);
+          INSERT INTO table_orders (order_id, store_id, table_id, table_label, items_json, subtotal, tax_total, total, customer_note, status, promotion_discount)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)
+        `, [logOrderId, store_id, table_id, table_label || table_id, JSON.stringify(items), itemsSubtotal, taxTotal, orderTotal, customer_note, promotionDiscount]);
       }
 
       // 4. table_map_elements 업데이트 (테이블 상태를 Occupied로)
