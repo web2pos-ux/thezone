@@ -19,6 +19,7 @@ import { SimplePartialSelectionModal } from '../components/SimplePartialSelectio
 import { PartialSelectionPayload } from '../types/MoveMergeTypes';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import TablePaymentModal from '../components/PaymentModal';
+import DayClosingModal from '../components/DayClosingModal';
 
 interface TableElement {
   id: string;
@@ -295,6 +296,105 @@ const SalesPage: React.FC = () => {
   const [showClockInOutMenu, setShowClockInOutMenu] = useState<boolean>(false);
   const [showClockInModal, setShowClockInModal] = useState<boolean>(false);
   const [showClockOutModal, setShowClockOutModal] = useState<boolean>(false);
+
+  // Opening/Closing modal state
+  const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
+  const [showClosingModal, setShowClosingModal] = useState<boolean>(false);
+  const [closingStep, setClosingStep] = useState<'report' | 'cash'>('report'); // 'report' = Z-Report 보기, 'cash' = 현금 입력
+  const [zReportData, setZReportData] = useState<any>(null);
+  const [isLoadingZReport, setIsLoadingZReport] = useState<boolean>(false);
+  
+  // Cash denomination counts for Opening
+  const [openingCashCounts, setOpeningCashCounts] = useState({
+    cent1: 0, cent5: 0, cent10: 0, cent25: 0,
+    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+  });
+  
+  // Cash denomination counts for Closing
+  const [closingCashCounts, setClosingCashCounts] = useState({
+    cent1: 0, cent5: 0, cent10: 0, cent25: 0,
+    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+  });
+  
+  // Cash denomination definitions
+  const cashDenominations = [
+    { key: 'cent1', label: '1¢', value: 0.01 },
+    { key: 'cent5', label: '5¢', value: 0.05 },
+    { key: 'cent10', label: '10¢', value: 0.10 },
+    { key: 'cent25', label: '25¢', value: 0.25 },
+    { key: 'dollar1', label: '$1', value: 1 },
+    { key: 'dollar5', label: '$5', value: 5 },
+    { key: 'dollar10', label: '$10', value: 10 },
+    { key: 'dollar20', label: '$20', value: 20 },
+    { key: 'dollar50', label: '$50', value: 50 },
+    { key: 'dollar100', label: '$100', value: 100 },
+  ];
+  
+  // Calculate total from cash counts
+  const calculateCashTotal = (counts: typeof openingCashCounts) => {
+    return cashDenominations.reduce((sum, denom) => {
+      return sum + (counts[denom.key as keyof typeof counts] * denom.value);
+    }, 0);
+  };
+  
+  const openingCashTotal = calculateCashTotal(openingCashCounts);
+  const closingCashTotal = calculateCashTotal(closingCashCounts);
+  
+  // Reset cash counts
+  const resetOpeningCashCounts = () => {
+    setOpeningCashCounts({
+      cent1: 0, cent5: 0, cent10: 0, cent25: 0,
+      dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    });
+  };
+  
+  const resetClosingCashCounts = () => {
+    setClosingCashCounts({
+      cent1: 0, cent5: 0, cent10: 0, cent25: 0,
+      dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    });
+  };
+  
+  // Currently focused denomination for number pad
+  const [focusedOpeningDenom, setFocusedOpeningDenom] = useState<string>('dollar1');
+  const [focusedClosingDenom, setFocusedClosingDenom] = useState<string>('dollar1');
+  
+  // Number pad handler for Opening
+  const handleOpeningNumPad = (num: string) => {
+    if (!focusedOpeningDenom) return;
+    const currentValue = openingCashCounts[focusedOpeningDenom as keyof typeof openingCashCounts];
+    let newValue: number;
+    
+    if (num === 'C') {
+      newValue = 0;
+    } else if (num === '⌫') {
+      newValue = Math.floor(currentValue / 10);
+    } else {
+      newValue = currentValue * 10 + parseInt(num);
+      if (newValue > 9999) newValue = 9999;
+    }
+    
+    setOpeningCashCounts(prev => ({ ...prev, [focusedOpeningDenom]: newValue }));
+  };
+  
+  // Number pad handler for Closing
+  const handleClosingNumPad = (num: string) => {
+    if (!focusedClosingDenom) return;
+    const currentValue = closingCashCounts[focusedClosingDenom as keyof typeof closingCashCounts];
+    let newValue: number;
+    
+    if (num === 'C') {
+      newValue = 0;
+    } else if (num === '⌫') {
+      newValue = Math.floor(currentValue / 10);
+    } else {
+      newValue = currentValue * 10 + parseInt(num);
+      if (newValue > 9999) newValue = 9999;
+    }
+    
+    setClosingCashCounts(prev => ({ ...prev, [focusedClosingDenom]: newValue }));
+  };
+  
   const [clockError, setClockError] = useState<string>('');
   const [isClockLoading, setIsClockLoading] = useState<boolean>(false);
   const [selectedEmployee, setSelectedEmployee] = useState<{ id: string; name: string; } | null>(null);
@@ -344,6 +444,14 @@ const SalesPage: React.FC = () => {
   const [showRefundCalendar, setShowRefundCalendar] = useState(false);
   const [refundCalendarMonth, setRefundCalendarMonth] = useState(new Date());
   const [refundTaxRate, setRefundTaxRate] = useState<number>(0);
+
+  // Day Opening/Closing state
+  const [isDayClosed, setIsDayClosed] = useState<boolean>(() => {
+    // Check localStorage for today's closing status on initial load
+    const today = new Date().toISOString().split('T')[0];
+    const closedDate = localStorage.getItem('pos_last_closed_date');
+    return closedDate === today;
+  });
 
   // Move/Merge mode state (Restored from Backup)
   const [isMoveMergeMode, setIsMoveMergeMode] = useState<boolean>(false);
@@ -2158,6 +2266,8 @@ const SalesPage: React.FC = () => {
               // fullOrder 형태로 변환하여 저장
               const fullOrder = {
                 ...order,
+                status: data.order?.status || order.status,
+                paymentStatus: data.order?.paymentStatus || order.paymentStatus,
                 items: data.items.map((item: any) => ({
                   name: item.name,
                   quantity: item.quantity || 1,
@@ -3601,7 +3711,8 @@ const SalesPage: React.FC = () => {
             taxesTotal: fullReceipt.body.taxesTotal,
             total: fullReceipt.body.total,
             footer: fullReceipt.footer
-          }
+          },
+          copies: 1
         }) 
       });
 
@@ -3852,7 +3963,7 @@ const SalesPage: React.FC = () => {
         footer: { message: 'Thank you for dining with us!' }
       };
 
-      // print-bill API 사용 - billLayout 적용
+      // print-bill API 사용 - billLayout 적용 (1장만 출력)
       await fetch(`${API_URL}/printers/print-bill`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
@@ -3867,11 +3978,12 @@ const SalesPage: React.FC = () => {
             taxesTotal: fullReceipt.body.taxesTotal,
             total: fullReceipt.body.total,
             footer: fullReceipt.footer
-          }
+          },
+          copies: 1
         }) 
       });
       
-      alert('Bill printed successfully!');
+      console.log('Bill printed successfully');
     } catch (error: any) {
       console.error('Print bill error:', error);
       alert(`Print failed: ${error.message}`);
@@ -3882,35 +3994,104 @@ const SalesPage: React.FC = () => {
     if (!orderListSelectedOrder || orderListSelectedItems.length === 0) return;
     
     try {
-      // 아이템별 프린터 그룹 설정에 따라 분기 출력
-      const kitchenItems = orderListSelectedItems.map((item: any) => ({
-        id: item.item_id, // 프린터 그룹 조회를 위해 item_id 포함
-        name: item.name || 'Unknown Item',
-        quantity: item.quantity || 1,
-        guestNumber: item.guest_number || 1,
-        modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
-        memo: item.memo_json ? (typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json) : null
-      }));
+      // OrderPage의 printKitchenOrders와 동일한 형식으로 아이템 구성
+      const printItems = orderListSelectedItems.map((item: any) => {
+        // modifiers 파싱
+        let modifiers: any[] = [];
+        if (item.modifiers_json) {
+          try {
+            const parsed = typeof item.modifiers_json === 'string' 
+              ? JSON.parse(item.modifiers_json) 
+              : item.modifiers_json;
+            if (Array.isArray(parsed)) {
+              modifiers = parsed;
+            }
+          } catch {}
+        }
+        
+        // memo 파싱
+        let memo: string | null = null;
+        if (item.memo_json) {
+          try {
+            const parsed = typeof item.memo_json === 'string' 
+              ? JSON.parse(item.memo_json) 
+              : item.memo_json;
+            memo = parsed?.text || (typeof parsed === 'string' ? parsed : null);
+          } catch {}
+        }
+        
+        return {
+          id: item.item_id || 0, // 프린터 그룹 조회를 위해 item_id 포함
+          name: item.name || 'Unknown Item',
+          qty: item.quantity || 1, // OrderPage와 동일하게 qty 사용
+          guestNumber: item.guest_number || 1,
+          modifiers: modifiers,
+          memo: memo
+        };
+      });
 
       // 주문 타입 결정 (Dine-In, Togo, Online, Delivery 등)
-      const orderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const rawOrderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const orderSource = (orderListSelectedOrder.order_source || '').toUpperCase();
+      
+      // 배달앱/온라인 주문인지 확인
+      const isOnlineOrDelivery = ['ONLINE', 'TOGO', 'DELIVERY'].includes(rawOrderType) ||
+                                  ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'].includes(orderSource);
+      
+      // 채널명 결정 (order_source 우선 사용)
+      const channelDisplay = orderSource || rawOrderType;
+      const deliveryChannel = ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'].includes(orderSource) 
+                              ? orderSource 
+                              : (rawOrderType === 'ONLINE' ? 'THEZONE' : rawOrderType);
+      
+      // Pickup 시간 계산 (ready_time 또는 pickup_minutes 사용)
+      let pickupTimeStr = '';
+      let pickupMinutes = orderListSelectedOrder.pickup_minutes || 0;
+      
+      if (orderListSelectedOrder.ready_time) {
+        const readyDate = new Date(orderListSelectedOrder.ready_time);
+        pickupTimeStr = readyDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      } else if (pickupMinutes > 0) {
+        const createdAt = new Date(orderListSelectedOrder.created_at);
+        const pickupDate = new Date(createdAt.getTime() + pickupMinutes * 60000);
+        pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      } else if (isOnlineOrDelivery) {
+        // 온라인/Togo 주문인데 pickup_minutes가 없으면 created_at + 20분 기본값 사용
+        pickupMinutes = 20;
+        const createdAt = new Date(orderListSelectedOrder.created_at);
+        const pickupDate = new Date(createdAt.getTime() + pickupMinutes * 60000);
+        pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      }
+      
+      // 테이블 표시 (온라인/Togo는 PICKUP/DELIVERY, Dine-In은 테이블 번호)
+      const tableDisplay = isOnlineOrDelivery 
+        ? (orderListSelectedOrder.fulfillment_mode === 'delivery' ? 'DELIVERY' : 'PICKUP')
+        : (orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '');
       
       const response = await fetch(`${API_URL}/printers/print-order`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
-          items: kitchenItems,
+          items: printItems,
           orderInfo: {
-            orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id,
-            table: orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '',
-            orderType: orderType,
-            channel: orderType,
+            // 주문번호: 로컬 ID 형식 (#912) 사용
+            orderNumber: `#${orderListSelectedOrder.id}`,
+            externalOrderNumber: `#${orderListSelectedOrder.id}`, // TZO/Online은 POS 주문번호 사용
+            table: tableDisplay,
+            orderType: rawOrderType,
+            channel: deliveryChannel,                    // 출력물에 표시될 채널명 (THEZONE, UBEREATS 등)
+            deliveryChannel: deliveryChannel,            // 배달 채널명
+            orderSource: orderSource || rawOrderType,    // 원본 주문 소스
             server: orderListSelectedOrder.server_name || '',
             customerName: orderListSelectedOrder.customer_name || '',
             customerPhone: orderListSelectedOrder.customer_phone || '',
-            externalOrderNumber: orderListSelectedOrder.external_order_number || ''
+            notes: orderListSelectedOrder.notes || '',
+            specialInstructions: orderListSelectedOrder.kitchen_note || '', // Footer에 출력될 Special Instructions
+            kitchenNote: orderListSelectedOrder.kitchen_note || '',
+            pickupMinutes: pickupMinutes,                // 계산된 pickup_minutes
+            pickupTime: pickupTimeStr                    // 계산된 Pickup 시간
           },
-          isReprint: true, // Reprint 표시 추가
+          isReprint: true, // Reprint 표시 (** REPRINT ** 배너 출력)
           isPaid: orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'PAID' || orderListSelectedOrder.status === 'closed'
         }) 
       });
@@ -3919,7 +4100,7 @@ const SalesPage: React.FC = () => {
       
       if (result.success) {
         // 성공 시 조용히 처리 (alert 제거)
-        console.log('Reprint sent to kitchen');
+        console.log('Reprint sent to kitchen:', result.message);
       } else {
         alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
       }
@@ -4673,9 +4854,123 @@ const SalesPage: React.FC = () => {
         console.log('QSR/Cafe 버튼 클릭됨');
         navigate('/qsr');
         break;
+      case 'Closing':
+        console.log('Closing button clicked');
+        setShowClosingModal(true);
+        break;
+      case 'Opening':
+        console.log('Opening button clicked');
+        setShowOpeningModal(true);
+        resetOpeningCashCounts();
+        break;
       default:
         console.log(`${buttonName} 버튼이 클릭되었습니다.`);
         break;
+    }
+  };
+
+  // ============ Opening/Closing Functions ============
+  const fetchZReportData = async () => {
+    setIsLoadingZReport(true);
+    try {
+      const response = await fetch(`${API_URL}/daily-closings/z-report`);
+      const result = await response.json();
+      if (result.success) {
+        setZReportData(result.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch Z-Report:', error);
+    } finally {
+      setIsLoadingZReport(false);
+    }
+  };
+
+  const handleOpening = async () => {
+    try {
+      const response = await fetch(`${API_URL}/daily-closings/opening`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          openingCash: openingCashTotal, 
+          cashBreakdown: openingCashCounts,
+          openedBy: '' 
+        })
+      });
+      const result = await response.json();
+      
+      if (result.success) {
+        // Print opening report (also opens cash drawer)
+        await fetch(`${API_URL}/daily-closings/print-opening`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            openingCash: openingCashTotal, 
+            cashBreakdown: openingCashCounts 
+          })
+        });
+        
+        localStorage.removeItem('pos_last_closed_date');
+        setIsDayClosed(false);
+        setShowOpeningModal(false);
+        resetOpeningCashCounts();
+      } else {
+        alert(result.error || 'Opening failed');
+      }
+    } catch (error: any) {
+      console.error('Opening error:', error);
+      alert('Opening failed: ' + error.message);
+    }
+  };
+
+  // Print Z-Report function
+  const handlePrintZReport = async () => {
+    try {
+      await fetch(`${API_URL}/daily-closings/print-z-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          zReportData, 
+          closingCash: closingCashTotal, 
+          cashBreakdown: closingCashCounts 
+        })
+      });
+    } catch (error: any) {
+      console.error('Print Z-Report error:', error);
+    }
+  };
+
+  const handleClosing = async () => {
+    console.log('handleClosing called!', { closingCashTotal, closingCashCounts });
+    try {
+      const response = await fetch(`${API_URL}/daily-closings/closing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          closingCash: closingCashTotal, 
+          cashBreakdown: closingCashCounts,
+          closedBy: '' 
+        })
+      });
+      const result = await response.json();
+      console.log('Closing API result:', result);
+      
+      if (result.success) {
+        // Print Z-Report when closing
+        await handlePrintZReport();
+        
+        const today = new Date().toISOString().split('T')[0];
+        localStorage.setItem('pos_last_closed_date', today);
+        setIsDayClosed(true);
+        setShowClosingModal(false);
+        resetClosingCashCounts();
+        setZReportData(null);
+        setClosingStep('report');
+      } else {
+        alert(result.error || 'Closing failed');
+      }
+    } catch (error: any) {
+      console.error('Closing error:', error);
+      alert('Closing failed: ' + error.message);
     }
   };
 
@@ -5297,19 +5592,17 @@ const SalesPage: React.FC = () => {
     }
   };
 
-  // 버튼 데이터
+  // 버튼 데이터 (Opening/Closing은 상태에 따라 동적으로 변경)
   const buttonData = [
     'Open Till',
-    'Refund',
-    'Order History',
     'Move/Merge',
     'Reservation',
     'Waiting List',
     'Gift Card',
     'Online',
-    'QSR/Cafe',
+    'Order History',
     'Clock In/Out',
-    'Closing'
+    isDayClosed ? 'Opening' : 'Closing'
   ];
 
   // 그라데이션 색상 생성 함수 (백오피스와 동일)
@@ -6369,7 +6662,7 @@ const SalesPage: React.FC = () => {
           </div>
           {/* 3. 하단 액션 바 (프레임 내부) */}
           <div className="bg-gray-200 border-t border-gray-300 py-1.5 pl-3 pr-3" style={{ height: '70px' }}>
-            <div className="grid grid-cols-10 h-full w-full gap-1">
+            <div className="grid grid-cols-9 h-full w-full gap-1">
               {buttonData.map((buttonName, index) => {
                 const isMoveMergeActive = buttonName === 'Move/Merge' && isMoveMergeMode;
                 const isBillPrintActive = buttonName === 'Online' && isBillPrintMode;
@@ -7853,16 +8146,51 @@ const SalesPage: React.FC = () => {
                         {/* Action Buttons - 맨 위로 이동 */}
                         <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
                           <button
-                            onClick={handleOrderListPrintBill}
-                            className="flex-1 py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-base font-bold"
+                            onClick={async () => {
+                              // Check if order is paid
+                              const status = (orderListSelectedOrder.status || '').toLowerCase();
+                              const isPaid = status === 'paid' || status === 'closed' || status === 'completed';
+                              if (!isPaid) {
+                                alert('Only paid orders can be refunded.');
+                                return;
+                              }
+                              // Open refund modal with this order pre-selected
+                              setShowRefundModal(true);
+                              setRefundStep('list');
+                              setRefundSelectedOrder(null);
+                              setRefundOrderItems([]);
+                              setRefundPayments([]);
+                              setRefundSelectedItems({});
+                              setRefundType('FULL');
+                              setRefundPin('');
+                              setRefundPinError('');
+                              setRefundReason('');
+                              setRefundResult(null);
+                              setRefundCardNumber('');
+                              setRefundApprovalNumber('');
+                              setRefundGiftCardNumber('');
+                              setRefundPendingData(null);
+                              // Pre-select the order for refund
+                              await selectOrderForRefund(orderListSelectedOrder);
+                            }}
+                            style={{ flex: 3 }}
+                            className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-base font-bold"
                           >
-                            🧾 Print Bill
+                            Refund
+                          </button>
+                          <button
+                            onClick={handleOrderListPrintBill}
+                            style={{ flex: 4 }}
+                            className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-base font-bold"
+                          >
+                            Print Bill
                           </button>
                           <button
                             onClick={handleOrderListPrintKitchen}
-                            className="flex-1 py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
+                            style={{ flex: 4 }}
+                            className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
                           >
-                            🔄 Reprint Kitchen
+                            Reprint
                           </button>
                         </div>
 
@@ -7883,9 +8211,11 @@ const SalesPage: React.FC = () => {
                               #{orderListSelectedOrder.id}
                             </span>
                           </div>
-                          <div className="text-xs text-gray-500 truncate" title={orderListSelectedOrder.order_number || '-'}>
-                            {orderListSelectedOrder.order_number || '-'}
-                          </div>
+                          {(orderListSelectedOrder.customer_name || orderListSelectedOrder.customer_phone) && (
+                            <div className="text-xs text-gray-700 font-bold truncate">
+                              Customer: {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' • ')}
+                            </div>
+                          )}
                           <div className="text-gray-600 text-xs">
                             {orderListFormatDate(orderListSelectedOrder.created_at)} {orderListFormatTime(orderListSelectedOrder.created_at)}
                           </div>
@@ -7903,13 +8233,13 @@ const SalesPage: React.FC = () => {
                             maxHeight: '100%'
                           }}
                         >
-                          <div className="px-4 py-2">
-                            <table className="w-full text-sm">
+                          <div className="px-4 py-1">
+                            <table className="w-full text-sm" style={{ lineHeight: 1.2 }}>
                               <thead>
                                 <tr className="border-b-2 border-gray-300 text-gray-700">
-                                  <th className="text-left py-1 w-10 font-bold text-xs">Qty</th>
-                                  <th className="text-left py-1 font-bold text-xs">Item</th>
-                                  <th className="text-right py-1 w-16 font-bold text-xs">Price</th>
+                                  <th className="text-left py-0.5 w-10 font-bold text-xs">Qty</th>
+                                  <th className="text-left py-0.5 font-bold text-xs">Item</th>
+                                  <th className="text-right py-0.5 w-16 font-bold text-xs">Price</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -7939,25 +8269,25 @@ const SalesPage: React.FC = () => {
                                   }
                                   return (
                                     <tr key={idx} className="border-b border-gray-100">
-                                      <td className="py-0.5 text-center font-medium text-sm">{item.quantity || 1}</td>
-                                      <td className="py-0.5">
-                                        <div className="font-medium text-sm">{item.name}</div>
+                                      <td className="text-center font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>{item.quantity || 1}</td>
+                                      <td style={{ paddingTop: 2, paddingBottom: 2 }}>
+                                        <div className="font-medium text-sm" style={{ lineHeight: 1.15 }}>{item.name}</div>
                                         {modifierNames.length > 0 && (
-                                          <div className="text-xs text-gray-500 ml-2">
+                                          <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
                                             {modifierNames.map((name: string, mi: number) => (
                                               <div key={mi}>• {name}</div>
                                             ))}
                                           </div>
                                         )}
                                         {item.discountPercent && item.discountPercent > 0 && (
-                                          <div className="text-xs text-green-600 ml-2 font-medium">
+                                          <div className="text-xs text-green-600 ml-2 font-medium" style={{ lineHeight: 1.1 }}>
                                             🎁 {item.discountPercent}% off {item.promotionName && `(${item.promotionName})`}
                                           </div>
                                         )}
                                       </td>
-                                      <td className="py-0.5 text-right font-medium text-sm">
+                                      <td className="text-right font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>
                                         {item.discountAmount && item.discountAmount > 0 ? (
-                                          <div>
+                                          <div style={{ lineHeight: 1.1 }}>
                                             <span className="line-through text-gray-400 text-xs">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</span>
                                             <div className="text-green-600">${(((item.price || 0) * (item.quantity || 1)) - item.discountAmount).toFixed(2)}</div>
                                           </div>
@@ -7974,50 +8304,44 @@ const SalesPage: React.FC = () => {
 
                           {/* Totals - 아이템과 함께 스크롤 */}
                           {totals && (
-                            <div className="px-4 py-2 bg-slate-100 border-t-2 border-gray-300 text-sm mt-1">
-                              <div className="flex justify-between py-0.5">
+                            <div className="px-4 py-1 bg-slate-100 border-t-2 border-gray-300 text-sm">
+                              <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                 <span className="font-medium text-xs">Sub Total:</span>
                                 <span className="font-medium text-xs">${totals.subtotal.toFixed(2)}</span>
                               </div>
                               {totals.discountTotal > 0 && (
                                 <>
-                                  <div className="flex justify-between py-0.5 text-green-600">
+                                  <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                     <span className="font-medium text-xs">🎁 {totals.promotionName || 'Discount'}:</span>
                                     <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
                                   </div>
-                                  <div className="flex justify-between py-0.5">
+                                  <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                     <span className="font-medium text-xs">After Discount:</span>
                                     <span className="font-medium text-xs">${totals.subtotalAfterDiscount.toFixed(2)}</span>
                                   </div>
                                 </>
                               )}
-                              <div className="flex justify-between py-0.5">
+                              <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                 <span className="font-medium text-xs">Tax:</span>
                                 <span className="font-medium text-xs">${totals.tax.toFixed(2)}</span>
                               </div>
-                              <div className="flex justify-between py-1 font-bold text-base border-t-2 border-gray-400 mt-1">
+                              <div className="flex justify-between py-0.5 font-bold text-base border-t-2 border-gray-400 mt-0.5">
                                 <span>Total:</span>
                                 <span>${totals.total.toFixed(2)}</span>
                               </div>
-                              <div className="flex justify-center py-1.5">
+                              <div className="flex justify-center py-1">
                                 <span className={`px-5 py-1.5 rounded-lg text-sm font-bold ${
-                                  orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID'
+                                  orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID' ||
+                                  orderListSelectedOrder.paymentStatus === 'PAID' || orderListSelectedOrder.paymentStatus === 'paid' || orderListSelectedOrder.paymentStatus === 'completed' || orderListSelectedOrder.paymentStatus === 'COMPLETED' ||
+                                  orderListSelectedOrder.paid === true
                                     ? 'bg-green-500 text-white' 
                                     : 'bg-yellow-400 text-gray-800'
                                 }`}>
-                                  {orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID' ? 'PAID' : 'UNPAID'}
+                                  {orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID' ||
+                                  orderListSelectedOrder.paymentStatus === 'PAID' || orderListSelectedOrder.paymentStatus === 'paid' || orderListSelectedOrder.paymentStatus === 'completed' || orderListSelectedOrder.paymentStatus === 'COMPLETED' ||
+                                  orderListSelectedOrder.paid === true ? 'PAID' : 'UNPAID'}
                                 </span>
                               </div>
-                            </div>
-                          )}
-
-                          {/* Customer Info - 스크롤 영역 안에 포함 */}
-                          {(orderListSelectedOrder.customer_name || orderListSelectedOrder.customer_phone) && (
-                            <div className="px-4 py-3 bg-blue-100 border-t-2 border-blue-300 text-sm">
-                              <span className="font-bold text-blue-800">Customer: </span>
-                              <span className="text-blue-700 font-medium">
-                                {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' • ')}
-                              </span>
                             </div>
                           )}
                         </div>
@@ -8686,6 +9010,8 @@ const SalesPage: React.FC = () => {
                                 if (data.success && data.items) {
                                   const fullOrder = {
                                     ...order,
+                                    status: data.order?.status || order.status,
+                                    paymentStatus: data.order?.paymentStatus || order.paymentStatus,
                                     items: data.items.map((item: any) => ({
                                       name: item.name,
                                       quantity: item.quantity || 1,
@@ -8996,10 +9322,21 @@ const SalesPage: React.FC = () => {
                       {(selectedOrderDetail.fullOrder?.status === 'paid' || 
                         selectedOrderDetail.fullOrder?.status === 'completed' || 
                         selectedOrderDetail.fullOrder?.status === 'closed' ||
+                        selectedOrderDetail.fullOrder?.status === 'PAID' ||
+                        selectedOrderDetail.fullOrder?.paymentStatus === 'PAID' ||
+                        selectedOrderDetail.fullOrder?.paymentStatus === 'paid' ||
+                        selectedOrderDetail.fullOrder?.paymentStatus === 'completed' ||
+                        selectedOrderDetail.fullOrder?.paymentStatus === 'COMPLETED' ||
+                        selectedOrderDetail.fullOrder?.paid === true ||
                         selectedOrderDetail.status === 'PAID' || 
                         selectedOrderDetail.status === 'paid' ||
                         selectedOrderDetail.status === 'completed' ||
-                        selectedOrderDetail.status === 'closed') ? (
+                        selectedOrderDetail.status === 'closed' ||
+                        selectedOrderDetail.paymentStatus === 'PAID' ||
+                        selectedOrderDetail.paymentStatus === 'paid' ||
+                        selectedOrderDetail.paymentStatus === 'completed' ||
+                        selectedOrderDetail.paymentStatus === 'COMPLETED' ||
+                        selectedOrderDetail.paid === true) ? (
                         <div className="flex items-center justify-center py-1.5 bg-green-100 rounded">
                           <span className="text-green-700 font-bold">PAID</span>
                         </div>
@@ -9080,6 +9417,112 @@ const SalesPage: React.FC = () => {
         />
       )}
       
+      {/* Opening Modal */}
+      {showOpeningModal && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-[700px]">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 text-center flex items-center justify-center gap-2">
+              🌅 Day Opening
+            </h2>
+            <p className="text-sm text-gray-500 text-center mb-4">Count your starting cash</p>
+            
+            <div className="flex gap-4">
+              {/* Left: Cash Denomination Grid */}
+              <div className="flex-1 bg-gray-50 rounded-lg p-3">
+                <div className="space-y-1">
+                  {cashDenominations.map((denom) => {
+                    const count = openingCashCounts[denom.key as keyof typeof openingCashCounts];
+                    const subtotal = count * denom.value;
+                    const isFocused = focusedOpeningDenom === denom.key;
+                    return (
+                      <div 
+                        key={denom.key} 
+                        className={`flex items-center gap-2 p-1 rounded cursor-pointer ${isFocused ? 'bg-blue-100 ring-2 ring-blue-500' : 'hover:bg-gray-100'}`}
+                        onClick={() => setFocusedOpeningDenom(denom.key)}
+                      >
+                        <div className={`w-16 px-2 py-1 border rounded text-center text-lg font-bold ${isFocused ? 'border-blue-500 bg-white' : 'border-gray-300 bg-gray-50'}`}>
+                          {count || 0}
+                        </div>
+                        <span className="text-gray-500 text-sm">×</span>
+                        <span className="w-14 text-right font-medium text-gray-700 text-sm">{denom.label}</span>
+                        <span className="text-gray-500 text-sm">=</span>
+                        <span className="flex-1 text-right font-bold text-green-600 text-sm">
+                          ${subtotal.toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {/* Total */}
+                <div className="border-t-2 border-gray-300 mt-2 pt-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-lg font-bold text-gray-700">Total:</span>
+                    <span className="text-xl font-bold text-green-600">
+                      ${openingCashTotal.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Right: Number Pad */}
+              <div className="w-48">
+                <div className="grid grid-cols-3 gap-2">
+                  {['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '⌫'].map((num) => (
+                    <button
+                      key={num}
+                      onClick={() => handleOpeningNumPad(num)}
+                      className={`h-14 text-2xl font-bold rounded-lg transition-colors ${
+                        num === 'C' 
+                          ? 'bg-red-100 hover:bg-red-200 text-red-600' 
+                          : num === '⌫' 
+                            ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
+                      }`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+                
+                {/* Selected denomination indicator */}
+                <div className="mt-3 p-2 bg-blue-50 rounded-lg text-center">
+                  <span className="text-xs text-gray-500">Selected:</span>
+                  <div className="font-bold text-blue-600">
+                    {cashDenominations.find(d => d.key === focusedOpeningDenom)?.label || '-'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={() => {
+                  setShowOpeningModal(false);
+                  resetOpeningCashCounts();
+                }}
+                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleOpening}
+                className="flex-1 px-4 py-3 bg-green-500 hover:bg-green-600 rounded-lg font-semibold text-white transition-colors"
+              >
+                Open Day
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Day Closing Modal */}
+      <DayClosingModal
+        isOpen={showClosingModal}
+        onClose={() => setShowClosingModal(false)}
+        onClosingComplete={() => setIsDayClosed(true)}
+      />
+
       {/* Clock In/Out Menu Modal */}
       {showClockInOutMenu && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
@@ -9097,7 +9540,7 @@ const SalesPage: React.FC = () => {
                 }}
                 className="w-full px-6 py-4 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
               >
-                ⏰ Clock In (출근)
+                ⏰ Clock In
               </button>
               
               <button
@@ -9108,7 +9551,7 @@ const SalesPage: React.FC = () => {
                 }}
                 className="w-full px-6 py-4 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
               >
-                🚪 Clock Out (퇴근)
+                🚪 Clock Out
               </button>
             </div>
 
@@ -9116,7 +9559,7 @@ const SalesPage: React.FC = () => {
               onClick={() => setShowClockInOutMenu(false)}
               className="mt-4 w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
             >
-              취소
+              Cancel
             </button>
           </div>
         </div>
@@ -9137,17 +9580,17 @@ const SalesPage: React.FC = () => {
             const { employee } = await clockInOutApi.verifyPin(pin);
             const response = await clockInOutApi.clockIn(employee.id, employee.name, pin);
             
-            alert(`${employee.name}님, 출근 처리되었습니다!\n시간: ${new Date(response.clockInTime).toLocaleTimeString('ko-KR')}`);
+            alert(`${employee.name}, you have clocked in!\nTime: ${new Date(response.clockInTime).toLocaleTimeString('en-US')}`);
             
             setShowClockInModal(false);
           } catch (error: any) {
-            setClockError(error.message || '출근 처리 실패');
+            setClockError(error.message || 'Clock in failed');
           } finally {
             setIsClockLoading(false);
           }
         }}
-        title="출근 (Clock In)"
-        message="PIN 번호를 입력하세요"
+        title="Clock In"
+        message="Enter your PIN"
         isLoading={isClockLoading}
         error={clockError}
       />
@@ -9179,17 +9622,17 @@ const SalesPage: React.FC = () => {
 
             const response = await clockInOutApi.clockOut(employee.id, pin);
             
-            alert(`${employee.name}님, 퇴근 처리되었습니다!\n근무 시간: ${response.totalHours}시간`);
+            alert(`${employee.name}, you have clocked out!\nTotal hours: ${response.totalHours} hours`);
             
             setShowClockOutModal(false);
           } catch (error: any) {
-            setClockError(error.message || '퇴근 처리 실패');
+            setClockError(error.message || 'Clock out failed');
           } finally {
             setIsClockLoading(false);
           }
         }}
-        title="퇴근 (Clock Out)"
-        message="PIN 번호를 입력하세요"
+        title="Clock Out"
+        message="Enter your PIN"
         isLoading={isClockLoading}
         error={clockError}
       />
@@ -9199,16 +9642,16 @@ const SalesPage: React.FC = () => {
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-96">
             <h2 className="text-2xl font-bold text-gray-800 mb-4">
-              ⚠️ 조기 퇴근 (Early Out)
+              ⚠️ Early Out
             </h2>
             
             <p className="text-gray-600 mb-4">
-              {selectedEmployee?.name}님의 조기 퇴근 사유를 입력하세요.
+              Please enter the reason for {selectedEmployee?.name}'s early out.
             </p>
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                조기 퇴근 사유 *
+                Early Out Reason *
               </label>
               <textarea
                 value={earlyOutReason}
@@ -9242,12 +9685,12 @@ const SalesPage: React.FC = () => {
                 }}
                 className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
               >
-                취소
+                Cancel
               </button>
               <button
                 onClick={async () => {
                   if (!selectedEmployee || !earlyOutReason.trim()) {
-                    alert('조기 퇴근 사유를 입력해주세요.');
+                    alert('Please enter a reason for early out.');
                     return;
                   }
 
@@ -9268,14 +9711,14 @@ const SalesPage: React.FC = () => {
                       approvedBy
                     );
 
-                    alert(`${selectedEmployee.name}님, 조기 퇴근 처리되었습니다.\n근무 시간: ${response.totalHours}시간`);
+                    alert(`${selectedEmployee.name}, early out processed.\nTotal hours: ${response.totalHours} hours`);
 
                     setShowEarlyOutModal(false);
                     setSelectedEmployee(null);
                     setEarlyOutReason('');
                     setApprovedBy('');
                   } catch (error: any) {
-                    alert(`조기 퇴근 처리 실패: ${error.message}`);
+                    alert(`Early out failed: ${error.message}`);
                   } finally {
                     setIsClockLoading(false);
                   }
@@ -9283,7 +9726,7 @@ const SalesPage: React.FC = () => {
                 disabled={!earlyOutReason.trim() || isClockLoading}
                 className="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isClockLoading ? '처리 중...' : '조기 퇴근 처리'}
+                {isClockLoading ? 'Processing...' : 'Process Early Out'}
               </button>
             </div>
           </div>
