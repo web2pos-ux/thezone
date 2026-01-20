@@ -54,7 +54,7 @@ const defaultSettings: LayoutSettings = {
   modifierAreaBgColor: '#f3f4f6',
   extraButtonPositions: {},
   keyboardLanguages: ['EN-US'],
-  selectServerOnEntry: true,
+  selectServerOnEntry: false,
   modifierLayoutByItem: {},
   modExtra1Enabled: false,
   modExtra1Name: 'Modifier Extra 1',
