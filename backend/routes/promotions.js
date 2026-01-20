@@ -1,15 +1,14 @@
 const express = require('express');
 
-// Firebase Admin SDK (optional - for sync)
-let firebaseAdmin = null;
-let firebaseDb = null;
-try {
-  firebaseAdmin = require('firebase-admin');
-  if (firebaseAdmin.apps.length > 0) {
-    firebaseDb = firebaseAdmin.firestore();
+// Helper to get Firestore instance (lazy load to ensure Firebase is initialized)
+function getFirestore() {
+  try {
+    const firebaseService = require('../services/firebaseService');
+    return firebaseService.getFirestore();
+  } catch (e) {
+    console.log('⚠️ promotions: getFirestore error:', e.message);
+    return null;
   }
-} catch (e) {
-  console.log('Firebase Admin not available for promotions sync');
 }
 
 module.exports = function(db) {
@@ -248,12 +247,13 @@ module.exports = function(db) {
         return res.json({ promotions: [], message: 'No Firebase restaurant ID configured' });
       }
       
-      if (!firebaseDb) {
+      const firestore = getFirestore();
+      if (!firestore) {
         return res.json({ promotions: [], message: 'Firebase not initialized' });
       }
       
       // Fetch promotions from Firebase
-      const snapshot = await firebaseDb
+      const snapshot = await firestore
         .collection('restaurants')
         .doc(restaurantId)
         .collection('promotions')
@@ -295,9 +295,12 @@ module.exports = function(db) {
         return res.status(400).json({ error: 'No Firebase restaurant ID configured' });
       }
       
-      if (!firebaseDb) {
+      const firestore = getFirestore();
+      if (!firestore) {
         return res.status(400).json({ error: 'Firebase not initialized' });
       }
+      
+      const admin = require('firebase-admin');
       
       // Convert POS promotion format to Firebase format
       const firebasePromo = {
@@ -314,7 +317,7 @@ module.exports = function(db) {
         channels: ['online', 'dine-in', 'togo', 'delivery', 'table-order', 'kiosk'],
         validFrom: promotion.startDate || null,
         validUntil: promotion.endDate || null,
-        updatedAt: firebaseAdmin.firestore.FieldValue.serverTimestamp()
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
       
       // Remove null values
@@ -325,7 +328,7 @@ module.exports = function(db) {
       });
       
       // Save to Firebase
-      const promoRef = firebaseDb
+      const promoRef = firestore
         .collection('restaurants')
         .doc(restaurantId)
         .collection('promotions')
@@ -356,12 +359,13 @@ module.exports = function(db) {
         return res.status(400).json({ error: 'No Firebase restaurant ID configured' });
       }
       
-      if (!firebaseDb) {
+      const firestore = getFirestore();
+      if (!firestore) {
         return res.status(400).json({ error: 'Firebase not initialized' });
       }
       
       // Fetch promotions from Firebase
-      const snapshot = await firebaseDb
+      const snapshot = await firestore
         .collection('restaurants')
         .doc(restaurantId)
         .collection('promotions')
