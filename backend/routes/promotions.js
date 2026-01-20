@@ -561,5 +561,404 @@ module.exports = function(db) {
     }
   });
 
+  // ============================================
+  // POS Firebase-style Promotions (pos_promotions)
+  // ============================================
+  
+  const ensurePosPromotionsTable = async () => {
+    await exec(`
+      CREATE TABLE IF NOT EXISTS pos_promotions (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        message TEXT,
+        description TEXT,
+        active INTEGER DEFAULT 1,
+        min_order_amount REAL,
+        discount_percent REAL,
+        discount_amount REAL,
+        valid_from TEXT,
+        valid_until TEXT,
+        channels TEXT,
+        selected_items TEXT,
+        selected_categories TEXT,
+        free_item_id TEXT,
+        free_item_name TEXT,
+        buy_quantity INTEGER,
+        get_quantity INTEGER,
+        created_at TEXT,
+        updated_at TEXT,
+        synced_from_firebase INTEGER DEFAULT 0
+      );
+    `);
+  };
+
+  // GET all POS promotions
+  router.get('/pos-promotions', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const rows = await all('SELECT * FROM pos_promotions ORDER BY created_at DESC');
+      const promotions = rows.map(r => ({
+        id: r.id,
+        type: r.type,
+        name: r.name,
+        message: r.message || '',
+        description: r.description || '',
+        active: !!r.active,
+        minOrderAmount: r.min_order_amount || 0,
+        discountPercent: r.discount_percent || 0,
+        discountAmount: r.discount_amount || 0,
+        validFrom: r.valid_from || '',
+        validUntil: r.valid_until || '',
+        channels: JSON.parse(r.channels || '[]'),
+        selectedItems: JSON.parse(r.selected_items || '[]'),
+        selectedCategories: JSON.parse(r.selected_categories || '[]'),
+        freeItemId: r.free_item_id || '',
+        freeItemName: r.free_item_name || '',
+        buyQuantity: r.buy_quantity || 1,
+        getQuantity: r.get_quantity || 1,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        syncedFromFirebase: !!r.synced_from_firebase
+      }));
+      res.json({ success: true, promotions });
+    } catch (e) {
+      console.error('GET /promotions/pos-promotions failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // GET single POS promotion by ID
+  router.get('/pos-promotions/:id', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const { id } = req.params;
+      const row = await new Promise((resolve, reject) => {
+        db.get('SELECT * FROM pos_promotions WHERE id = ?', [id], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      if (!row) {
+        return res.status(404).json({ success: false, error: 'Promotion not found' });
+      }
+      const promo = {
+        id: row.id,
+        type: row.type,
+        name: row.name,
+        message: row.message || '',
+        description: row.description || '',
+        active: !!row.active,
+        minOrderAmount: row.min_order_amount || 0,
+        discountPercent: row.discount_percent || 0,
+        discountAmount: row.discount_amount || 0,
+        validFrom: row.valid_from || '',
+        validUntil: row.valid_until || '',
+        channels: JSON.parse(row.channels || '[]'),
+        selectedItems: JSON.parse(row.selected_items || '[]'),
+        selectedCategories: JSON.parse(row.selected_categories || '[]'),
+        freeItemId: row.free_item_id || '',
+        freeItemName: row.free_item_name || '',
+        buyQuantity: row.buy_quantity || 1,
+        getQuantity: row.get_quantity || 1,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        syncedFromFirebase: !!row.synced_from_firebase
+      };
+      res.json({ success: true, promotion: promo });
+    } catch (e) {
+      console.error('GET /promotions/pos-promotions/:id failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // POST create new POS promotion
+  router.post('/pos-promotions', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const p = req.body;
+      const id = p.id || `promo_${Date.now()}`;
+      const now = new Date().toISOString();
+      
+      await run(`
+        INSERT INTO pos_promotions (
+          id, type, name, message, description, active,
+          min_order_amount, discount_percent, discount_amount,
+          valid_from, valid_until, channels,
+          selected_items, selected_categories,
+          free_item_id, free_item_name, buy_quantity, get_quantity,
+          created_at, updated_at, synced_from_firebase
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        id,
+        p.type || 'percent_cart',
+        p.name || 'Untitled Promotion',
+        p.message || '',
+        p.description || '',
+        p.active !== false ? 1 : 0,
+        p.minOrderAmount || 0,
+        p.discountPercent || 0,
+        p.discountAmount || 0,
+        p.validFrom || '',
+        p.validUntil || '',
+        JSON.stringify(p.channels || []),
+        JSON.stringify(p.selectedItems || []),
+        JSON.stringify(p.selectedCategories || []),
+        p.freeItemId || '',
+        p.freeItemName || '',
+        p.buyQuantity || 1,
+        p.getQuantity || 1,
+        now,
+        now,
+        p.syncedFromFirebase ? 1 : 0
+      ]);
+      
+      res.json({ success: true, id, message: 'Promotion created' });
+    } catch (e) {
+      console.error('POST /promotions/pos-promotions failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // PUT update POS promotion
+  router.put('/pos-promotions/:id', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const { id } = req.params;
+      const p = req.body;
+      const now = new Date().toISOString();
+      
+      await run(`
+        UPDATE pos_promotions SET
+          type = ?, name = ?, message = ?, description = ?, active = ?,
+          min_order_amount = ?, discount_percent = ?, discount_amount = ?,
+          valid_from = ?, valid_until = ?, channels = ?,
+          selected_items = ?, selected_categories = ?,
+          free_item_id = ?, free_item_name = ?, buy_quantity = ?, get_quantity = ?,
+          updated_at = ?
+        WHERE id = ?
+      `, [
+        p.type || 'percent_cart',
+        p.name || 'Untitled Promotion',
+        p.message || '',
+        p.description || '',
+        p.active !== false ? 1 : 0,
+        p.minOrderAmount || 0,
+        p.discountPercent || 0,
+        p.discountAmount || 0,
+        p.validFrom || '',
+        p.validUntil || '',
+        JSON.stringify(p.channels || []),
+        JSON.stringify(p.selectedItems || []),
+        JSON.stringify(p.selectedCategories || []),
+        p.freeItemId || '',
+        p.freeItemName || '',
+        p.buyQuantity || 1,
+        p.getQuantity || 1,
+        now,
+        id
+      ]);
+      
+      res.json({ success: true, message: 'Promotion updated' });
+    } catch (e) {
+      console.error('PUT /promotions/pos-promotions/:id failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // DELETE POS promotion
+  router.delete('/pos-promotions/:id', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const { id } = req.params;
+      await run('DELETE FROM pos_promotions WHERE id = ?', [id]);
+      res.json({ success: true, message: 'Promotion deleted' });
+    } catch (e) {
+      console.error('DELETE /promotions/pos-promotions/:id failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // Toggle POS promotion active status
+  router.patch('/pos-promotions/:id/toggle', async (req, res) => {
+    try {
+      await ensurePosPromotionsTable();
+      const { id } = req.params;
+      const { active } = req.body;
+      const now = new Date().toISOString();
+      
+      await run('UPDATE pos_promotions SET active = ?, updated_at = ? WHERE id = ?', [
+        active ? 1 : 0,
+        now,
+        id
+      ]);
+      
+      res.json({ success: true, active: !!active });
+    } catch (e) {
+      console.error('PATCH /promotions/pos-promotions/:id/toggle failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // Sync POS promotions to Firebase
+  router.post('/pos-promotions/sync-to-firebase', async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      if (!firestore) {
+        return res.status(400).json({ success: false, error: 'Firebase not initialized' });
+      }
+      
+      // Get restaurantId from business_profile
+      const profile = await new Promise((resolve, reject) => {
+        db.get('SELECT firebase_restaurant_id FROM business_profile LIMIT 1', [], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      
+      const restaurantId = profile?.firebase_restaurant_id;
+      if (!restaurantId) {
+        return res.status(400).json({ success: false, error: 'No Firebase restaurant ID configured' });
+      }
+      
+      await ensurePosPromotionsTable();
+      const rows = await all('SELECT * FROM pos_promotions WHERE active = 1');
+      
+      let synced = 0;
+      for (const row of rows) {
+        const promoData = {
+          type: row.type,
+          name: row.name,
+          message: row.message || '',
+          description: row.description || '',
+          active: !!row.active,
+          minOrderAmount: row.min_order_amount || 0,
+          discountPercent: row.discount_percent || 0,
+          discountAmount: row.discount_amount || 0,
+          validFrom: row.valid_from || null,
+          validUntil: row.valid_until || null,
+          channels: JSON.parse(row.channels || '[]'),
+          selectedItems: JSON.parse(row.selected_items || '[]'),
+          selectedCategories: JSON.parse(row.selected_categories || '[]'),
+          updatedAt: new Date()
+        };
+        
+        const promoRef = firestore.collection('restaurants').doc(restaurantId).collection('promotions').doc(row.id);
+        await promoRef.set(promoData, { merge: true });
+        synced++;
+      }
+      
+      res.json({ success: true, synced, message: `Synced ${synced} promotions to Firebase` });
+    } catch (e) {
+      console.error('POST /promotions/pos-promotions/sync-to-firebase failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // Sync Firebase promotions to POS
+  router.post('/pos-promotions/sync-from-firebase', async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      if (!firestore) {
+        return res.status(400).json({ success: false, error: 'Firebase not initialized' });
+      }
+      
+      // Get restaurantId from business_profile
+      const profile = await new Promise((resolve, reject) => {
+        db.get('SELECT firebase_restaurant_id FROM business_profile LIMIT 1', [], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      
+      const restaurantId = profile?.firebase_restaurant_id;
+      if (!restaurantId) {
+        return res.status(400).json({ success: false, error: 'No Firebase restaurant ID configured' });
+      }
+      
+      const snapshot = await firestore.collection('restaurants').doc(restaurantId).collection('promotions').get();
+      
+      await ensurePosPromotionsTable();
+      
+      let synced = 0;
+      for (const docSnap of snapshot.docs) {
+        const p = docSnap.data();
+        const id = docSnap.id;
+        const now = new Date().toISOString();
+        
+        // Check if promotion already exists
+        const existing = await new Promise((resolve, reject) => {
+          db.get('SELECT id FROM pos_promotions WHERE id = ?', [id], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        });
+        
+        if (existing) {
+          // Update
+          await run(`
+            UPDATE pos_promotions SET
+              type = ?, name = ?, message = ?, description = ?, active = ?,
+              min_order_amount = ?, discount_percent = ?, discount_amount = ?,
+              valid_from = ?, valid_until = ?, channels = ?,
+              selected_items = ?, selected_categories = ?,
+              updated_at = ?, synced_from_firebase = 1
+            WHERE id = ?
+          `, [
+            p.type || 'percent_cart',
+            p.name || '',
+            p.message || '',
+            p.description || '',
+            p.active ? 1 : 0,
+            p.minOrderAmount || 0,
+            p.discountPercent || 0,
+            p.discountAmount || 0,
+            p.validFrom || '',
+            p.validUntil || '',
+            JSON.stringify(p.channels || []),
+            JSON.stringify(p.selectedItems || []),
+            JSON.stringify(p.selectedCategories || []),
+            now,
+            id
+          ]);
+        } else {
+          // Insert
+          await run(`
+            INSERT INTO pos_promotions (
+              id, type, name, message, description, active,
+              min_order_amount, discount_percent, discount_amount,
+              valid_from, valid_until, channels,
+              selected_items, selected_categories,
+              created_at, updated_at, synced_from_firebase
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          `, [
+            id,
+            p.type || 'percent_cart',
+            p.name || '',
+            p.message || '',
+            p.description || '',
+            p.active ? 1 : 0,
+            p.minOrderAmount || 0,
+            p.discountPercent || 0,
+            p.discountAmount || 0,
+            p.validFrom || '',
+            p.validUntil || '',
+            JSON.stringify(p.channels || []),
+            JSON.stringify(p.selectedItems || []),
+            JSON.stringify(p.selectedCategories || []),
+            now,
+            now
+          ]);
+        }
+        synced++;
+      }
+      
+      res.json({ success: true, synced, message: `Synced ${synced} promotions from Firebase` });
+    } catch (e) {
+      console.error('POST /promotions/pos-promotions/sync-from-firebase failed:', e);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   return router;
 }; 

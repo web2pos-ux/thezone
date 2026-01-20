@@ -24,12 +24,12 @@ import { Keyboard as KeyboardIcon } from 'lucide-react';
 import { CSS } from '@dnd-kit/utilities';
 import { usePromotion } from '../hooks/usePromotion';
 import { computePromotionAdjustment, buildPromotionReceiptLine } from '../utils/promotionCalculator';
+import { getFirebasePromotions, FirebasePromotion, checkPromotionApplicable, calculatePromotionDiscount } from '../services/firebasePromotionsApi';
 import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { PrintBillModal } from '../components/PrintBillModal';
-export {};
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
 const CATALOG_SNAPSHOT_KEY = 'orderLayout:lastCatalogSnapshot';
@@ -1059,6 +1059,13 @@ const handleVoidPinClear = useCallback(() => {
       localStorage.setItem('togo_settings_v1', JSON.stringify(togoSettings));
     } catch {}
   }, [togoSettings]);
+
+  // POS promotions for Togo orders
+  const [togoFirebasePromotions, setTogoFirebasePromotions] = useState<FirebasePromotion[]>([]);
+  const [togoAppliedPromotion, setTogoAppliedPromotion] = useState<FirebasePromotion | null>(null);
+  
+  // POS promotions for Dine-in orders
+  const [dineInPromotions, setDineInPromotions] = useState<FirebasePromotion[]>([]);
 
   // Restore split guests only for tables with existing orders (run once per table)
   const loadExistingFromState = (location.state as any)?.loadExisting;
@@ -2416,30 +2423,119 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   const [togoExpandedCats, setTogoExpandedCats] = useState<Set<string>>(() => new Set());
 
-  // Auto-load TOGO settings from backend (override local) when entering TOGO channel
+  // Auto-load TOGO settings and Firebase promotions when entering TOGO channel
   useEffect(() => {
     const ch = (orderType || '').toLowerCase();
     if (ch !== 'togo') return;
     const load = async () => {
+      // Load TOGO channel settings
       try {
         const res = await fetch(`${API_URL}/admin-settings/channel-settings/TOGO`);
-        if (!res.ok) return;
-        const json = await res.json();
-        const s = json && json.settings ? json.settings : null;
-        if (!s) return;
-        setTogoSettings(prev => ({
-          discountEnabled: !!((s.discount_enabled ?? (prev.discountEnabled ? 1 : 0))),
-          discountMode: String((s.discount_mode ?? (prev.discountMode || 'percent'))) as any,
-          discountValue: Number((s.discount_value ?? (prev.discountValue || 0))),
-          bagFeeEnabled: !!((s.bag_fee_enabled ?? (prev.bagFeeEnabled ? 1 : 0))),
-          bagFeeValue: Number((s.bag_fee_value ?? (prev.bagFeeValue || 0))),
-          bagFeeTaxable: !!((s.bag_fee_taxable ?? (prev.bagFeeTaxable ? 1 : 0))),
-        }));
+        if (res.ok) {
+          const json = await res.json();
+          const s = json && json.settings ? json.settings : null;
+          if (s) {
+            setTogoSettings(prev => ({
+              discountEnabled: !!((s.discount_enabled ?? (prev.discountEnabled ? 1 : 0))),
+              discountMode: String((s.discount_mode ?? (prev.discountMode || 'percent'))) as any,
+              discountValue: Number((s.discount_value ?? (prev.discountValue || 0))),
+              bagFeeEnabled: !!((s.bag_fee_enabled ?? (prev.bagFeeEnabled ? 1 : 0))),
+              bagFeeValue: Number((s.bag_fee_value ?? (prev.bagFeeValue || 0))),
+              bagFeeTaxable: !!((s.bag_fee_taxable ?? (prev.bagFeeTaxable ? 1 : 0))),
+            }));
+          }
+        }
       } catch {}
+      
+      // Load promotions from POS database for Togo
+      try {
+        const promoRes = await fetch(`${API_URL}/promotions/pos-promotions`);
+        if (promoRes.ok) {
+          const promoData = await promoRes.json();
+          console.log('🎁 All POS promotions:', promoData.promotions?.length, promoData.promotions?.map((p: any) => ({ name: p.name, channels: p.channels, active: p.active })));
+          
+          // Check for various Togo channel names (togo, takeout, pick-up, pickup)
+          const togoChannelNames = ['togo', 'takeout', 'pick-up', 'pickup', 'to-go'];
+          const togoPromos = (promoData.promotions || []).filter(
+            (p: any) => p.active && p.channels?.some((ch: string) => togoChannelNames.includes(ch.toLowerCase()))
+          );
+          // Convert to FirebasePromotion format for compatibility
+          const convertedPromos: FirebasePromotion[] = togoPromos.map((p: any) => ({
+            id: p.id,
+            type: p.type,
+            name: p.name,
+            message: p.message || '',
+            description: p.description || '',
+            active: p.active,
+            minOrderAmount: p.minOrderAmount || 0,
+            discountPercent: p.discountPercent || 0,
+            discountAmount: p.discountAmount || 0,
+            validFrom: p.validFrom || '',
+            validUntil: p.validUntil || '',
+            channels: p.channels || [],
+            selectedItems: p.selectedItems || [],
+            selectedCategories: p.selectedCategories || []
+          }));
+          setTogoFirebasePromotions(convertedPromos);
+          console.log('🎁 Togo POS promotions loaded:', convertedPromos.length, convertedPromos.map(p => p.name));
+        }
+      } catch (e) {
+        console.warn('Failed to load Togo POS promotions:', e);
+      }
     };
     load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderType]);
+
+  // Load POS promotions for Dine-in orders (on component mount)
+  useEffect(() => {
+    const loadDineInPromotions = async () => {
+      try {
+        console.log('🎁 [DINE-IN PROMO] Loading POS promotions...');
+        const promoRes = await fetch(`${API_URL}/promotions/pos-promotions`);
+        if (promoRes.ok) {
+          const promoData = await promoRes.json();
+          console.log('🎁 [DINE-IN PROMO] All POS promotions:', promoData.promotions?.length, promoData.promotions?.map((p: any) => ({ name: p.name, channels: p.channels, active: p.active })));
+          
+          // Filter promotions for dine-in channel
+          const dineInChannelNames = ['dine-in', 'table', 'dinein'];
+          const dineInPromos = (promoData.promotions || []).filter(
+            (p: any) => {
+              const hasChannel = p.channels?.some((c: string) => dineInChannelNames.includes(c.toLowerCase()));
+              console.log(`🎁 [DINE-IN PROMO] Checking "${p.name}": active=${p.active}, channels=${JSON.stringify(p.channels)}, hasChannel=${hasChannel}`);
+              return p.active && hasChannel;
+            }
+          );
+          
+          // Convert to FirebasePromotion format
+          const convertedPromos: FirebasePromotion[] = dineInPromos.map((p: any) => ({
+            id: p.id,
+            type: p.type,
+            name: p.name,
+            message: p.message || '',
+            description: p.description || '',
+            active: p.active,
+            minOrderAmount: p.minOrderAmount || 0,
+            discountPercent: p.discountPercent || 0,
+            discountAmount: p.discountAmount || 0,
+            validFrom: p.validFrom || '',
+            validUntil: p.validUntil || '',
+            channels: p.channels || [],
+            selectedItems: p.selectedItems || [],
+            selectedCategories: p.selectedCategories || []
+          }));
+          setDineInPromotions(convertedPromos);
+          console.log('🎁 [DINE-IN PROMO] Final filtered promotions:', convertedPromos.length, convertedPromos.map(p => p.name));
+        } else {
+          console.warn('🎁 [DINE-IN PROMO] Failed to fetch, status:', promoRes.status);
+        }
+      } catch (e) {
+        console.warn('🎁 [DINE-IN PROMO] Error loading promotions:', e);
+      }
+    };
+    loadDineInPromotions();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 모디파이어 선택 처리
   const handleModifierSelection = (groupId: string, modifierId: string, selectionType: string) => {
@@ -4075,17 +4171,84 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
          const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
          const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
-         const promoAdj = computePromotionAdjustment(items as any, { 
-            enabled: promotionEnabled && !alreadyUsedToday, 
-            type: promotionType as any, 
-            value: (typeof promotionValue === 'number' ? promotionValue : 0), 
-            eligibleItemIds: promotionEligibleItemIds, 
-            codeInput: '', 
-            rules: promotionRules,
-            channel: promoChannel as any
-         });
-         const line = buildPromotionReceiptLine(promoAdj);
-         if (line) recAdjustments.push(line);
+         
+         let recPromoApplied = false;
+         
+         // For Togo orders, try POS promotions first
+         if (isTogo && togoFirebasePromotions.length > 0) {
+            const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+            const cartItemNames = items.map((it: any) => String(it.name || ''));
+            const cartItems = items.map((it: any) => ({
+                menuItemId: String(it.id || it.item_id || it.menuItemId),
+                name: String(it.name || ''),
+                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+                quantity: Number(it.quantity || 1)
+            }));
+            
+            // Find best applicable POS promotion
+            let bestPromo: FirebasePromotion | null = null;
+            let bestDiscount = 0;
+            
+            for (const promo of togoFirebasePromotions) {
+                if (checkPromotionApplicable(promo, 'togo', subtotal, cartItemIds, cartItemNames)) {
+                    const discount = calculatePromotionDiscount(promo, subtotal, cartItems, 0);
+                    if (discount > bestDiscount) {
+                        bestDiscount = discount;
+                        bestPromo = promo;
+                    }
+                }
+            }
+            
+            if (bestPromo && bestDiscount > 0) {
+                recAdjustments.push({ label: bestPromo.name || 'Promotion', amount: -Number(bestDiscount.toFixed(2)) });
+                recPromoApplied = true;
+            }
+         }
+         
+         // For Dine-in orders, try POS promotions
+         if (!isTogo && !recPromoApplied && dineInPromotions.length > 0) {
+            const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+            const cartItemNames = items.map((it: any) => String(it.name || ''));
+            const cartItems = items.map((it: any) => ({
+                menuItemId: String(it.id || it.item_id || it.menuItemId),
+                name: String(it.name || ''),
+                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+                quantity: Number(it.quantity || 1)
+            }));
+            
+            let bestPromo: FirebasePromotion | null = null;
+            let bestDiscount = 0;
+            
+            for (const promo of dineInPromotions) {
+                if (checkPromotionApplicable(promo, 'table', subtotal, cartItemIds, cartItemNames)) {
+                    const discount = calculatePromotionDiscount(promo, subtotal, cartItems, 0);
+                    if (discount > bestDiscount) {
+                        bestDiscount = discount;
+                        bestPromo = promo;
+                    }
+                }
+            }
+            
+            if (bestPromo && bestDiscount > 0) {
+                recAdjustments.push({ label: bestPromo.name || 'Promotion', amount: -Number(bestDiscount.toFixed(2)) });
+                recPromoApplied = true;
+            }
+         }
+         
+         // Fallback to local promotions if no POS promotion was applied
+         if (!recPromoApplied) {
+            const promoAdj = computePromotionAdjustment(items as any, { 
+               enabled: promotionEnabled && !alreadyUsedToday, 
+               type: promotionType as any, 
+               value: (typeof promotionValue === 'number' ? promotionValue : 0), 
+               eligibleItemIds: promotionEligibleItemIds, 
+               codeInput: '', 
+               rules: promotionRules,
+               channel: promoChannel as any
+            });
+            const line = buildPromotionReceiptLine(promoAdj);
+            if (line) recAdjustments.push(line);
+         }
          
          // Bag fee for Togo orders only
          if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
@@ -4107,7 +4270,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             },
             footer: { message: 'Thank you for dining with us!' }
           };
-          // Use new print-bill API with billLayout settings
+          // Use new print-bill API with billLayout settings (1장만 출력)
           await fetch(`${API_URL}/printers/print-bill`, { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
@@ -4122,13 +4285,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 taxesTotal: fullReceipt.body.taxesTotal,
                 total: fullReceipt.body.total,
                 footer: fullReceipt.footer
-              }
+              },
+              copies: 1
             }) 
           });
 
       } else if (mode === 'INDIVIDUAL_GUEST' && targetGuestId) {
          const receipt = buildReceipt([targetGuestId], true);
-         // Use new print-bill API with billLayout settings
+         // Use new print-bill API with billLayout settings (1장만 출력)
          await fetch(`${API_URL}/printers/print-bill`, { 
            method: 'POST', 
            headers: { 'Content-Type': 'application/json' }, 
@@ -4143,16 +4307,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                taxesTotal: receipt.body.taxesTotal,
                total: receipt.body.total,
                footer: receipt.footer
-             }
+             },
+             copies: 1
            }) 
          });
 
       } else if (mode === 'ALL_SEPARATE') {
          const allGuestIds = Object.keys(byGuest).map(Number).sort((a,b)=>a-b);
-         // Sequentially print each guest bill
+         // Sequentially print each guest bill (1장씩 출력)
          for (const guestId of allGuestIds) {
             const receipt = buildReceipt([guestId], true);
-            // Use new print-bill API with billLayout settings
+            // Use new print-bill API with billLayout settings (1장만 출력)
             await fetch(`${API_URL}/printers/print-bill`, { 
               method: 'POST', 
               headers: { 'Content-Type': 'application/json' }, 
@@ -4167,7 +4332,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   taxesTotal: receipt.body.taxesTotal,
                   total: receipt.body.total,
                   footer: receipt.footer
-                }
+                },
+                copies: 1
               }) 
             });
             // Small delay to prevent printer buffer overflow if needed, or let backend handle queue
@@ -4252,30 +4418,126 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const todayKey = new Date().toISOString().slice(0,10);
     const usageKey = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
     const alreadyUsedToday = usageKey ? (localStorage.getItem(usageKey) === '1') : false;
-    const promoAdj = computePromotionAdjustment(items as any, { 
-        enabled: promotionEnabled && !alreadyUsedToday, 
-        type: promotionType as any, 
-        value: (typeof promotionValue === 'number' ? promotionValue : 0), 
-        eligibleItemIds: promotionEligibleItemIds, 
-        codeInput: '', 
-        rules: promotionRules,
-        channel: promoChannel as any
-    });
-    if (promoAdj) {
-        const amountApplied = promoAdj.amountApplied;
-        adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
-        adjustments.push({
-            kind:'PROMOTION',
-            mode: promoAdj.mode,
-            value: promoAdj.value,
-            amountApplied,
-            label: promoAdj.label || 'Promotion'
+    
+    let promoApplied = false;
+    
+    // For Togo orders, try POS promotions first
+    if (isTogo && togoFirebasePromotions.length > 0) {
+        console.log('🎁 [Togo Promo] Checking promotions, count:', togoFirebasePromotions.length, 'subtotal:', adjustedTotal);
+        const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+        const cartItemNames = items.map((it: any) => String(it.name || ''));
+        const cartItems = items.map((it: any) => ({
+            menuItemId: String(it.id || it.item_id || it.menuItemId),
+            name: String(it.name || ''),
+            subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+            quantity: Number(it.quantity || 1)
+        }));
+        console.log('🎁 [Togo Promo] Cart item IDs:', cartItemIds, 'Names:', cartItemNames);
+        
+        // Find best applicable POS promotion
+        let bestPromo: FirebasePromotion | null = null;
+        let bestDiscount = 0;
+        
+        for (const promo of togoFirebasePromotions) {
+            const isApplicable = checkPromotionApplicable(promo, 'togo', adjustedTotal, cartItemIds, cartItemNames);
+            console.log(`🎁 [Togo Promo] Checking "${promo.name}": applicable=${isApplicable}, minOrder=${promo.minOrderAmount}, type=${promo.type}, selectedItems=${(promo as any).selectedItems?.join(',')}, selectedCategories=${(promo as any).selectedCategories?.join(',')}`);
+            if (isApplicable) {
+                const discount = calculatePromotionDiscount(promo, adjustedTotal, cartItems, 0);
+                console.log(`🎁 [Togo Promo] "${promo.name}" discount: $${discount.toFixed(2)}`);
+                if (discount > bestDiscount) {
+                    bestDiscount = discount;
+                    bestPromo = promo;
+                }
+            }
+        }
+        
+        if (bestPromo && bestDiscount > 0) {
+            const amountApplied = Number(bestDiscount.toFixed(2));
+            adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
+            adjustments.push({
+                kind: 'PROMOTION',
+                mode: bestPromo.type === 'fixed_discount' ? 'amount' : 'percent',
+                value: bestPromo.discountPercent || bestPromo.discountAmount || 0,
+                amountApplied,
+                label: bestPromo.name || 'Promotion'
+            });
+            setTogoAppliedPromotion(bestPromo);
+            promoApplied = true;
+            console.log(`🎁 Togo Firebase promotion applied: ${bestPromo.name} - $${amountApplied}`);
+        }
+    }
+    
+    // For Dine-in orders, try POS promotions
+    console.log('🎁 [DINE-IN CHECK] isTogo:', isTogo, 'promoApplied:', promoApplied, 'dineInPromotions.length:', dineInPromotions.length, 'orderType:', orderType);
+    if (!isTogo && !promoApplied && dineInPromotions.length > 0) {
+        console.log('🎁 [Dine-in Promo] Checking promotions, count:', dineInPromotions.length, 'subtotal:', adjustedTotal);
+        const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+        const cartItemNames = items.map((it: any) => String(it.name || ''));
+        const cartItems = items.map((it: any) => ({
+            menuItemId: String(it.id || it.item_id || it.menuItemId),
+            name: String(it.name || ''),
+            subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+            quantity: Number(it.quantity || 1)
+        }));
+        
+        let bestPromo: FirebasePromotion | null = null;
+        let bestDiscount = 0;
+        
+        for (const promo of dineInPromotions) {
+            const isApplicable = checkPromotionApplicable(promo, 'table', adjustedTotal, cartItemIds, cartItemNames);
+            console.log(`🎁 [Dine-in Promo] Checking "${promo.name}": applicable=${isApplicable}`);
+            if (isApplicable) {
+                const discount = calculatePromotionDiscount(promo, adjustedTotal, cartItems, 0);
+                console.log(`🎁 [Dine-in Promo] "${promo.name}" discount: $${discount.toFixed(2)}`);
+                if (discount > bestDiscount) {
+                    bestDiscount = discount;
+                    bestPromo = promo;
+                }
+            }
+        }
+        
+        if (bestPromo && bestDiscount > 0) {
+            const amountApplied = Number(bestDiscount.toFixed(2));
+            adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
+            adjustments.push({
+                kind: 'PROMOTION',
+                mode: bestPromo.type === 'fixed_discount' ? 'amount' : 'percent',
+                value: bestPromo.discountPercent || bestPromo.discountAmount || 0,
+                amountApplied,
+                label: bestPromo.name || 'Promotion'
+            });
+            promoApplied = true;
+            console.log(`🎁 Dine-in POS promotion applied: ${bestPromo.name} - $${amountApplied}`);
+        }
+    }
+    
+    // Fallback to local promotions if no POS promotion was applied
+    if (!promoApplied) {
+        const promoAdj = computePromotionAdjustment(items as any, { 
+            enabled: promotionEnabled && !alreadyUsedToday, 
+            type: promotionType as any, 
+            value: (typeof promotionValue === 'number' ? promotionValue : 0), 
+            eligibleItemIds: promotionEligibleItemIds, 
+            codeInput: '', 
+            rules: promotionRules,
+            channel: promoChannel as any
         });
-        try {
-            if (usageKey) localStorage.setItem(usageKey, '1');
-            const customerName = (location.state && (location.state as any).customerName) || null;
-            if (customerName) localStorage.setItem(`promo_used_customer_${customerName}_${todayKey}`, '1');
-        } catch {}
+        if (promoAdj) {
+            const amountApplied = promoAdj.amountApplied;
+            adjustedTotal = Math.max(0, Number((adjustedTotal - amountApplied).toFixed(2)));
+            adjustments.push({
+                kind:'PROMOTION',
+                mode: promoAdj.mode,
+                value: promoAdj.value,
+                amountApplied,
+                label: promoAdj.label || 'Promotion'
+            });
+            try {
+                if (usageKey) localStorage.setItem(usageKey, '1');
+                const customerName = (location.state && (location.state as any).customerName) || null;
+                if (customerName) localStorage.setItem(`promo_used_customer_${customerName}_${todayKey}`, '1');
+            } catch {}
+        }
     }
     
     // Bag fee for Togo orders only
@@ -4534,6 +4796,39 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
             // Apply TOGO discount/bag fee if configured
             const adjustments: any[] = [];
+            
+            // Apply POS Promotions for TOGO
+            if (orderTypeDisplay === 'TOGO' && togoFirebasePromotions.length > 0) {
+              const billCartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+              const billCartItemNames = items.map((it: any) => String(it.name || ''));
+              const billCartItems = items.map((it: any) => ({
+                menuItemId: String(it.id || it.item_id || it.menuItemId),
+                name: String(it.name || ''),
+                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+                quantity: Number(it.quantity || 1)
+              }));
+              
+              let bestBillPromo: FirebasePromotion | null = null;
+              let bestBillDiscount = 0;
+              
+              for (const promo of togoFirebasePromotions) {
+                if (checkPromotionApplicable(promo, 'togo', billSubtotal, billCartItemIds, billCartItemNames)) {
+                  const discount = calculatePromotionDiscount(promo, billSubtotal, billCartItems, 0);
+                  if (discount > bestBillDiscount) {
+                    bestBillDiscount = discount;
+                    bestBillPromo = promo;
+                  }
+                }
+              }
+              
+              if (bestBillPromo && bestBillDiscount > 0) {
+                const promoDiscount = Number(bestBillDiscount.toFixed(2));
+                adjustments.push({ label: `🎁 ${bestBillPromo.name}`, amount: -promoDiscount });
+                billTotal = Number((billTotal - promoDiscount).toFixed(2));
+                console.log(`🧾 Bill promotion applied: ${bestBillPromo.name} - $${promoDiscount}`);
+              }
+            }
+            
             if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
               const discountValue = Number(togoSettings.discountValue || 0);
               const discountAmt = togoSettings.discountMode === 'percent'
@@ -4580,9 +4875,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             await fetch(`${API_URL}/printers/print-bill`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ billData })
+              body: JSON.stringify({ billData, copies: 1 })
             });
-            console.log(`🧾 ${orderTypeDisplay} Bill printed successfully`);
+            console.log(`🧾 ${orderTypeDisplay} Bill printed successfully (1 copy)`);
           } catch (billErr) {
             console.warn(`🧾 ${orderTypeDisplay} Bill print failed (ignored):`, billErr);
           }
@@ -5825,93 +6120,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       {/* Left Panel - Layout Management */}
       <div className="w-80 bg-gray-800 text-white p-2 overflow-y-auto" style={{ display: isSalesOrder ? 'none' : undefined }}>
-        { isTogo ? (
-          <div className="bg-gray-800 rounded-lg p-3 mb-3 space-y-3">
-            <div className="mb-2 bg-gray-700 rounded-lg p-2">
-              <div className="flex items-center justify-between mb-2 bg-slate-400 rounded-t-lg p-2 -m-2 mb-3">
-                <h3 className="text-sm font-semibold text-white">Togo Settings</h3>
-              </div>
-              <div className="space-y-2 text-sm">
-                <div className="p-2 rounded bg-gray-600">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-gray-200">Auto Discount</span>
-                    <button onClick={() => setTogoSettings(s => ({ ...s, discountEnabled: !s.discountEnabled }))} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${togoSettings.discountEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}>
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${togoSettings.discountEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <select value={togoSettings.discountMode} onChange={e => setTogoSettings(s => ({ ...s, discountMode: e.target.value as any }))} className="bg-gray-700 text-white text-xs rounded px-2 py-1">
-                      <option value="percent">Percent %</option>
-                      <option value="amount">Amount</option>
-                    </select>
-                    <input type="number" min="0" step="0.01" value={togoSettings.discountValue} onChange={e => setTogoSettings(s => ({ ...s, discountValue: Number(e.target.value||0) }))} className="bg-gray-700 text-white text-xs rounded px-2 py-1" placeholder="Value" />
-                  </div>
-                </div>
-
-                {/* Eligible Items */}
-                <div className="mt-2 p-2 rounded bg-gray-700">
-                  <div className="text-xs text-gray-200 mb-1">Eligible Items</div>
-                  <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                    {(Array.isArray(categories)?categories:[]).map((cat:any) => {
-                      const catId = String(cat.category_id || cat.id || cat.name);
-                      const items = (Array.isArray(menuItems)?menuItems:[]).filter((it:any) => String(it.category) === cat.name || String(it.category_id) === String(cat.category_id) || String(it.categoryId) === String(catId));
-                      const selectedIds = new Set((togoSettings.discountItemIds||[]).map(String));
-                      const catSelectedCount = items.filter((it:any) => selectedIds.has(String(it.id))).length;
-                      const allChecked = items.length>0 && catSelectedCount===items.length;
-                      const indeterminate = catSelectedCount>0 && catSelectedCount<items.length;
-                      const expanded = togoExpandedCats.has(catId);
-                      return (
-                        <div key={`togo-cat-${catId}`} className="border border-gray-600 rounded">
-                          <div className="flex items-center justify-between px-2 py-1 bg-gray-650">
-                            <label className="flex items-center gap-2 text-xs text-gray-200">
-                              <input
-                                type="checkbox"
-                                checked={allChecked}
-                                ref={(el)=>{ if (el) el.indeterminate = indeterminate; }}
-                                onChange={(e)=>{
-                                  const nextIds = new Set((togoSettings.discountItemIds||[]).map(String));
-                                  if (e.target.checked) { items.forEach((it:any)=> nextIds.add(String(it.id))); }
-                                  else { items.forEach((it:any)=> nextIds.delete(String(it.id))); }
-                                  setTogoSettings(s=>({ ...s, discountItemIds: Array.from(nextIds) }));
-                                }}
-                              />
-                              <span>{cat.name || cat.title}</span>
-                            </label>
-                            <button onClick={()=> setTogoExpandedCats(prev=>{ const n=new Set(prev); if (n.has(catId)) n.delete(catId); else n.add(catId); return n; })} className="text-gray-300 text-xs">{expanded ? '▾' : '▸'}</button>
-                          </div>
-                          {expanded && (
-                            <div className="px-2 py-1">
-                              <div className="grid grid-cols-1 gap-1">
-                                {items.map((it:any) => (
-                                  <label key={`togo-it-${it.id}`} className="flex items-center gap-2 pl-4 text-xs text-gray-200">
-                                    <input
-                                      type="checkbox"
-                                      checked={(togoSettings.discountItemIds || []).map(String).includes(String(it.id))}
-                                      onChange={(e)=>{
-                                        const next = new Set((togoSettings.discountItemIds||[]).map(String));
-                                        if (e.target.checked) next.add(String(it.id)); else next.delete(String(it.id));
-                                        setTogoSettings(s=>({ ...s, discountItemIds: Array.from(next) }));
-                                      }}
-                                    />
-                                    <span className="truncate">{it.name}</span>
-                                  </label>
-                                ))}
-                                {items.length===0 && (
-                                  <div className="text-[10px] text-gray-400">No items</div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-{/* Global Soft Keyboard moved to root (after modals) */}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
+        { !isTogo && (
           <>
             <div className="bg-gray-800 rounded-lg p-3 mb-3">
               {/* Layout Tab */}
@@ -7685,15 +7894,50 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           adj.push({ label: `Bag Fee ($${bv})`, amount: Number(bv.toFixed(2)) });
                         }
                       } else {
+                        // Calculate alreadyUsedToday first (needed for both local promo and BOGO)
                         const tableIdForMap = (location.state && (location.state as any).tableId) || null;
                         const customerName = (location.state && (location.state as any).customerName) || null;
                         const todayKey = new Date().toISOString().slice(0,10);
                         const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
                         const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
                         const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
-                        const promoAdj = computePromotionAdjustment(items as any, { enabled: promotionEnabled && !alreadyUsedToday, type: promotionType as any, value: (typeof promotionValue === 'number' ? promotionValue : 0), eligibleItemIds: promotionEligibleItemIds, codeInput: '', rules: promotionRules });
-                        const line = buildPromotionReceiptLine(promoAdj);
-                        if (line) adj.push(line);
+                        
+                        // Check POS promotions for Dine-in first
+                        if (dineInPromotions.length > 0) {
+                          const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+                          const cartItemNames = items.map((it: any) => String(it.name || ''));
+                          const cartItems = items.map((it: any) => ({
+                            menuItemId: String(it.id || it.item_id || it.menuItemId),
+                            name: String(it.name || ''),
+                            subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+                            quantity: Number(it.quantity || 1)
+                          }));
+                          
+                          let bestPromo: typeof dineInPromotions[0] | null = null;
+                          let bestDiscount = 0;
+                          
+                          for (const promo of dineInPromotions) {
+                            const isApplicable = checkPromotionApplicable(promo, 'table', sub, cartItemIds, cartItemNames);
+                            if (isApplicable) {
+                              const discount = calculatePromotionDiscount(promo, sub, cartItems, 0);
+                              if (discount > bestDiscount) {
+                                bestDiscount = discount;
+                                bestPromo = promo;
+                              }
+                            }
+                          }
+                          
+                          if (bestPromo && bestDiscount > 0) {
+                            adj.push({ label: `🎁 ${bestPromo.name || 'Promotion'}`, amount: -Number(bestDiscount.toFixed(2)) });
+                          }
+                        }
+                        
+                        // Fallback to local promotions if no POS promotion was applied
+                        if (adj.length === 0) {
+                          const promoAdj = computePromotionAdjustment(items as any, { enabled: promotionEnabled && !alreadyUsedToday, type: promotionType as any, value: (typeof promotionValue === 'number' ? promotionValue : 0), eligibleItemIds: promotionEligibleItemIds, codeInput: '', rules: promotionRules });
+                          const line = buildPromotionReceiptLine(promoAdj);
+                          if (line) adj.push(line);
+                        }
 
                         // BOGO (same-item 1+1) preview line
                         try {

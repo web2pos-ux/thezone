@@ -51,6 +51,7 @@ import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
 import ReportsDashboardPage from './pages/ReportsDashboardPage';
+import PosPromotionsPage from './pages/PosPromotionsPage';
 
 // 🚀 OrderPage를 Lazy Loading으로 변경 (8,693줄 → 즉시 로딩 방지)
 const OrderPage = lazy(() => import('./pages/OrderPage'));
@@ -116,6 +117,7 @@ function App() {
             <Route path="screen-size" element={<ScreenSizePage />} />
             <Route path="orders" element={<OrderPageManagerPage />} />
             <Route path="order-setup" element={<OrderSetupPage />} />
+            <Route path="promotions" element={<PosPromotionsPage />} />
             <Route path="pin" element={<PosOrderPage />} />
             <Route path="online-order" element={<OnlineOrderPage />} />
             <Route path="qr-order" element={<QrOrderPage />} />

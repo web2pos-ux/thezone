@@ -640,7 +640,9 @@ function buildImageKitchenTicket(options) {
   const orderTypeEl = getEl('orderType', { fontSize: 28, fontWeight: 'bold', inverse: true });
   const tableNumberEl = getEl('tableNumber', { fontSize: 32, fontWeight: 'bold' });
   const posOrderNumberEl = getEl('posOrderNumber', { fontSize: 18 });
-  const externalOrderNumberEl = getEl('externalOrderNumber', { fontSize: 16 });
+  const externalOrderNumberEl = getEl('externalOrderNumber', { fontSize: 24, fontWeight: 'bold', inverse: true }); // Take-out용 크게 수정
+  const deliveryChannelEl = getEl('deliveryChannel', { fontSize: 24, fontWeight: 'bold', inverse: true }); // Take-out용 추가
+  const pickupTimeEl = getEl('pickupTime', { fontSize: 20, fontWeight: 'bold', inverse: true }); // Take-out용 추가
   const serverNameEl = getEl('serverName', { fontSize: 16 });
   const dateTimeEl = getEl('dateTime', { fontSize: 14 });
   const paidStatusEl = getEl('paidStatus', { fontSize: 20, inverse: true });
@@ -2116,6 +2118,78 @@ module.exports = (db) => {
     }
   });
 
+  // POST /api/printers/print-text - Print plain text to receipt printer
+  router.post('/print-text', async (req, res) => {
+    try {
+      const { text, openDrawer = false } = req.body;
+      
+      if (!text) {
+        return res.status(400).json({ success: false, error: 'Text is required' });
+      }
+      
+      console.log('📝 Printing text report...');
+      
+      // Get the front/receipt printer
+      let printer = await dbGet(`
+        SELECT id, name, selected_printer 
+        FROM printers 
+        WHERE is_active = 1 
+          AND (
+            LOWER(type) = 'receipt' 
+            OR LOWER(name) LIKE '%front%' 
+            OR LOWER(name) LIKE '%receipt%'
+            OR LOWER(name) LIKE '%counter%'
+          )
+        LIMIT 1
+      `);
+      
+      if (!printer) {
+        printer = await dbGet(`
+          SELECT id, name, selected_printer 
+          FROM printers 
+          WHERE is_active = 1 AND selected_printer IS NOT NULL
+          LIMIT 1
+        `);
+      }
+      
+      if (!printer || !printer.selected_printer) {
+        console.error('❌ No printer configured');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured' 
+        });
+      }
+      
+      const printerName = printer.selected_printer;
+      console.log(`🖨️ Printing to: ${printerName}`);
+      
+      // Build ESC/POS content - pass through text with embedded ESC/POS commands
+      let escPosContent = ESCPOS.INIT;
+      escPosContent += text;  // Text may contain ESC/POS commands for formatting
+      escPosContent += ESCPOS.CUT;
+      
+      if (openDrawer) {
+        escPosContent += ESCPOS.DRAWER_KICK;
+      }
+      
+      await printEscPosToWindows(printerName, escPosContent);
+      
+      console.log('✅ Text printed successfully');
+      res.json({ 
+        success: true, 
+        message: 'Text printed',
+        printer: printerName 
+      });
+      
+    } catch (err) {
+      console.error('❌ Print text error:', err);
+      res.status(500).json({ 
+        success: false, 
+        error: err.message || 'Failed to print text' 
+      });
+    }
+  });
+
   // ============ PRINTER LAYOUT SETTINGS ============
 
   // Initialize printer_layout_settings table
@@ -2521,7 +2595,7 @@ module.exports = (db) => {
       
       const isTakeout = ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'DELIVERY', 
                          'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'].includes(orderType)
-                     || ['SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
+                     || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
       
       console.log('isTakeout:', isTakeout);
       
@@ -2887,10 +2961,37 @@ module.exports = (db) => {
       console.log('=== PRINT-ORDER REQUEST ===');
       console.log('orderInfo:', JSON.stringify(orderInfo));
       console.log('items count:', items.length);
+      console.log('isReprint:', isReprint);
 
       // 1. 각 아이템의 프린터 그룹에서 실제 프린터 조회하여 프린터별로 그룹화
       const printerItemsMap = new Map(); // printerId -> { printer, items: [], printerGroupNames: Set }
       
+      // ============ Front 프린터 (Server Ticket): 모든 아이템 출력 ============
+      // Front 프린터를 먼저 찾아서 모든 아이템을 추가
+      const allActivePrinters = await dbAll(
+        `SELECT id, name, type, selected_printer FROM printers 
+         WHERE is_active = 1 AND selected_printer IS NOT NULL AND selected_printer != ''`
+      );
+      
+      for (const printer of allActivePrinters) {
+        const isFrontPrinter = (printer.name || '').toLowerCase().includes('front');
+        
+        if (isFrontPrinter) {
+          // Front 프린터에는 모든 아이템 추가
+          console.log(`📋 Front 프린터 "${printer.name}" - 모든 아이템 (${items.length}개) 추가`);
+          printerItemsMap.set(printer.id, {
+            printer,
+            items: items.map(item => ({
+              ...item,
+              guestNumber: item.guestNumber || 1,
+              printerGroupName: 'All Items'
+            })),
+            printerGroupNames: new Set(['All Items'])
+          });
+        }
+      }
+      
+      // ============ Kitchen/Bar 프린터: 프린터 그룹에 연결된 아이템만 출력 ============
       for (const item of items) {
         let printerGroupIds = Array.isArray(item.printerGroupIds) ? [...item.printerGroupIds] : 
                               Array.isArray(item.printer_groups) ? [...item.printer_groups] : [];
@@ -2950,8 +3051,12 @@ module.exports = (db) => {
               [link.printer_id]
             );
             if (!printer || !printer.selected_printer) continue;
+            
+            // Front 프린터는 이미 모든 아이템이 추가되었으므로 건너뜀
+            const isFrontPrinter = (printer.name || '').toLowerCase().includes('front');
+            if (isFrontPrinter) continue;
 
-            // 프린터별로 아이템 그룹화
+            // 프린터별로 아이템 그룹화 (Kitchen/Bar 등)
             if (!printerItemsMap.has(printer.id)) {
               printerItemsMap.set(printer.id, {
                 printer,
@@ -2982,7 +3087,10 @@ module.exports = (db) => {
         }
       }
 
-      console.log('Printers to print:', Array.from(printerItemsMap.keys()));
+      console.log('Printers to print:', Array.from(printerItemsMap.keys()).map(id => {
+        const data = printerItemsMap.get(id);
+        return `${data.printer.name} (${data.items.length} items)`;
+      }));
 
       if (printerItemsMap.size === 0) {
         return res.json({ success: true, message: 'No printers configured', printed: false });
@@ -3036,7 +3144,7 @@ module.exports = (db) => {
         const orderSource = (orderInfo.orderSource || '').toUpperCase();
         const isTakeout = ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'DELIVERY', 
                           'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'].includes(orderType)
-                      || ['SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
+                      || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
 
         // Server Ticket 여부 판단 (Front 프린터 = Server Ticket)
         const isServerTicket = (printer.name || '').toLowerCase().includes('front');

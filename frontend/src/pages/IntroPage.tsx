@@ -7,7 +7,7 @@ const IntroPage: React.FC = () => {
   const [message, setMessage] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [serviceType, setServiceType] = useState<string | null>(null);
-  const [showSelection, setShowSelection] = useState(false);
+  const [pinVerified, setPinVerified] = useState(false);
   const navigate = useNavigate();
 
   // Check if initial setup is needed
@@ -47,10 +47,12 @@ const IntroPage: React.FC = () => {
 
   const handlePinSubmit = (submittedPin: string) => {
     if (submittedPin === '0000') {
-      // Show selection modal
-      setShowSelection(true);
+      // PIN verified - enable selection buttons
+      setPinVerified(true);
+      setMessage('');
     } else {
-      setMessage('잘못된 PIN입니다. 다시 시도해주세요.');
+      setMessage('Invalid PIN. Please try again.');
+      setPinVerified(false);
       setTimeout(() => {
         setPin('');
         setMessage('');
@@ -59,6 +61,8 @@ const IntroPage: React.FC = () => {
   };
 
   const handleNavigate = (destination: 'sales' | 'backoffice') => {
+    if (!pinVerified) return;
+    
     if (destination === 'sales') {
       if (serviceType === 'QSR') {
         navigate('/qsr');
@@ -73,18 +77,16 @@ const IntroPage: React.FC = () => {
   const handleClear = () => {
     setPin('');
     setMessage('');
+    setPinVerified(false);
   };
 
   const handleBackspace = () => {
     setPin(prev => prev.slice(0, -1));
-  };
-
-  useEffect(() => {
-    // PIN이 4자리가 되면 자동으로 제출
-    if (pin.length === 4) {
-      handlePinSubmit(pin);
+    if (pinVerified) {
+      setPinVerified(false);
+      setMessage('');
     }
-  }, [pin]);
+  };
 
   // Show loading while checking setup status
   if (isLoading) {
@@ -131,14 +133,18 @@ const IntroPage: React.FC = () => {
                 key={index}
                 className={`w-4 h-4 rounded-full border-2 transition-all duration-200 ${
                   index < pin.length
-                    ? 'bg-white border-white'
+                    ? pinVerified 
+                      ? 'bg-green-400 border-green-400' 
+                      : 'bg-white border-white'
                     : 'border-white/50'
                 }`}
               />
             ))}
           </div>
           {message && (
-            <p className="text-red-300 text-lg font-medium">{message}</p>
+            <p className={`text-lg font-medium ${pinVerified ? 'text-green-300' : 'text-red-300'}`}>
+              {message}
+            </p>
           )}
         </div>
 
@@ -150,7 +156,12 @@ const IntroPage: React.FC = () => {
               <button
                 key={num}
                 onClick={() => handlePinInput(num.toString())}
-                className="w-16 h-16 bg-white/20 hover:bg-white/30 text-white text-2xl font-bold rounded-full border border-white/30 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
+                disabled={pinVerified}
+                className={`w-16 h-16 text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
+                  pinVerified 
+                    ? 'bg-white/10 border-white/20 opacity-50 cursor-not-allowed' 
+                    : 'bg-white/20 hover:bg-white/30 border-white/30 hover:scale-105 active:scale-95'
+                }`}
               >
                 {num}
               </button>
@@ -167,7 +178,12 @@ const IntroPage: React.FC = () => {
             {/* 0 버튼 */}
             <button
               onClick={() => handlePinInput('0')}
-              className="w-16 h-16 bg-white/20 hover:bg-white/30 text-white text-2xl font-bold rounded-full border border-white/30 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
+              disabled={pinVerified}
+              className={`w-16 h-16 text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
+                pinVerified 
+                  ? 'bg-white/10 border-white/20 opacity-50 cursor-not-allowed' 
+                  : 'bg-white/20 hover:bg-white/30 border-white/30 hover:scale-105 active:scale-95'
+              }`}
             >
               0
             </button>
@@ -180,82 +196,45 @@ const IntroPage: React.FC = () => {
               ←
             </button>
           </div>
-        </div>
 
-        {/* 빠른 접근 버튼 - 너비 줄임 */}
-        <div className="mt-6 flex gap-3 justify-center">
-          <button
-            onClick={() => handleNavigate('sales')}
-            className="px-5 py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-105 active:scale-95 shadow-lg border border-blue-400/30 backdrop-blur-sm flex items-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-            </svg>
-            <span>Sales</span>
-          </button>
-          
-          <button
-            onClick={() => handleNavigate('backoffice')}
-            className="px-5 py-3 bg-gradient-to-r from-slate-500 to-slate-600 hover:from-slate-600 hover:to-slate-700 text-white rounded-lg font-semibold text-sm transition-all transform hover:scale-105 active:scale-95 shadow-lg border border-slate-400/30 backdrop-blur-sm flex items-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <span>BackOffice</span>
-          </button>
-        </div>
-      </div>
+          {/* 구분선 */}
+          <div className="my-5 border-t border-white/20"></div>
 
-      {/* Selection Modal */}
-      {showSelection && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 transform animate-pulse-once">
-            <h2 className="text-2xl font-bold text-gray-800 text-center mb-6">
-              Select Destination
-            </h2>
-            
-            <div className="space-y-4">
-              {/* Sales Page Button */}
-              <button
-                onClick={() => handleNavigate('sales')}
-                className="w-full py-5 px-6 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-xl font-bold text-lg transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg flex items-center justify-center gap-3"
-              >
-                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                </svg>
-                <span>Sales Page</span>
-                <span className="text-blue-200 text-sm ml-auto">
-                  {serviceType === 'QSR' ? '(QSR)' : '(FSR)'}
-                </span>
-              </button>
-              
-              {/* Back Office Button */}
-              <button
-                onClick={() => handleNavigate('backoffice')}
-                className="w-full py-5 px-6 bg-gradient-to-r from-slate-600 to-slate-700 hover:from-slate-700 hover:to-slate-800 text-white rounded-xl font-bold text-lg transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg flex items-center justify-center gap-3"
-              >
-                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span>Back Office</span>
-              </button>
-            </div>
-            
-            {/* Cancel */}
+          {/* BackOffice / Sales 버튼 (4:6 비율) */}
+          <div className="flex gap-3 justify-center w-full">
             <button
-              onClick={() => {
-                setShowSelection(false);
-                setPin('');
-              }}
-              className="w-full mt-4 py-3 text-gray-500 hover:text-gray-700 font-medium transition-colors"
+              onClick={() => handleNavigate('backoffice')}
+              disabled={!pinVerified}
+              className={`w-2/5 py-3 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
+                pinVerified
+                  ? 'bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white border border-purple-400/50 hover:scale-[1.02] active:scale-95 animate-pulse'
+                  : 'bg-white/10 text-white/40 border border-white/10 cursor-not-allowed'
+              }`}
             >
-              Cancel
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <span>BackOffice</span>
+            </button>
+            
+            <button
+              onClick={() => handleNavigate('sales')}
+              disabled={!pinVerified}
+              className={`w-3/5 py-3 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
+                pinVerified
+                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border border-cyan-400/50 hover:scale-[1.02] active:scale-95 animate-pulse'
+                  : 'bg-white/10 text-white/40 border border-white/10 cursor-not-allowed'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+              </svg>
+              <span>Sales</span>
             </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

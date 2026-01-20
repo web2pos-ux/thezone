@@ -75,6 +75,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [zReportData, setZReportData] = useState<ZReportData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+  const [hasUnpaidOrders, setHasUnpaidOrders] = useState(false);
+  const [unpaidOrderCount, setUnpaidOrderCount] = useState(0);
   
   const [cashCounts, setCashCounts] = useState<CashCounts>({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
@@ -92,6 +94,21 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const expectedCash = zReportData?.expected_cash || 0;
   const cashDifference = closingCashTotal - expectedCash;
 
+  const checkUnpaidOrders = async () => {
+    try {
+      const response = await fetch(`${API_URL}/daily-closings/check-unpaid-orders`);
+      const result = await response.json();
+      if (result.success) {
+        setHasUnpaidOrders(result.hasUnpaidOrders);
+        setUnpaidOrderCount(result.count || 0);
+        return result.hasUnpaidOrders;
+      }
+    } catch (error) {
+      console.error('Failed to check unpaid orders:', error);
+    }
+    return false;
+  };
+
   useEffect(() => {
     if (isOpen) {
       setCashCounts({
@@ -100,6 +117,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       });
       setFocusedDenom('dollar1');
       fetchZReport();
+      checkUnpaidOrders();
     }
   }, [isOpen]);
 
@@ -152,6 +170,13 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   };
 
   const handleCloseDay = async () => {
+    // Re-check for unpaid orders before closing
+    const stillHasUnpaid = await checkUnpaidOrders();
+    if (stillHasUnpaid) {
+      alert('There are unpaid orders remaining. Please complete all payments before closing the day.');
+      return;
+    }
+    
     setIsClosing(true);
     try {
       const response = await fetch(`${API_URL}/daily-closings/closing`, {
@@ -303,17 +328,42 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-3 border-t bg-gray-50 flex gap-2 rounded-b-2xl">
-          <button onClick={onClose} className="flex-1 px-3 py-2.5 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 text-sm">
-            Cancel
-          </button>
-          <button 
-            onClick={handleCloseDay} 
-            disabled={isClosing || isLoading} 
-            className="flex-[2] px-3 py-2.5 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 rounded-lg font-bold text-white"
-          >
-            {isClosing ? 'Closing...' : '✓ Close Day & Print Z-Report'}
-          </button>
+        <div className="px-4 py-3 border-t bg-gray-50 rounded-b-2xl">
+          {hasUnpaidOrders && (
+            <div className="mb-3 p-3 bg-red-100 border border-red-300 rounded-lg flex items-center gap-2">
+              <span className="text-red-500 text-xl">⚠️</span>
+              <div className="flex-1">
+                <p className="text-red-700 font-semibold text-sm">
+                  Cannot close day - {unpaidOrderCount} unpaid order{unpaidOrderCount !== 1 ? 's' : ''} remaining
+                </p>
+                <p className="text-red-600 text-xs mt-0.5">
+                  Please complete all payments before closing the day.
+                </p>
+              </div>
+              <button 
+                onClick={checkUnpaidOrders}
+                className="px-3 py-1.5 bg-red-200 hover:bg-red-300 rounded text-red-700 text-xs font-semibold"
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button onClick={onClose} className="flex-1 px-3 py-2.5 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 text-sm">
+              Cancel
+            </button>
+            <button 
+              onClick={handleCloseDay} 
+              disabled={isClosing || isLoading || hasUnpaidOrders} 
+              className={`flex-[2] px-3 py-2.5 rounded-lg font-bold text-white ${
+                hasUnpaidOrders 
+                  ? 'bg-gray-400 cursor-not-allowed' 
+                  : 'bg-red-500 hover:bg-red-600 disabled:bg-gray-300'
+              }`}
+            >
+              {isClosing ? 'Closing...' : hasUnpaidOrders ? '⛔ Complete Payments First' : '✓ Close Day & Print Z-Report'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

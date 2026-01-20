@@ -149,28 +149,34 @@ router.put('/business-profile', requireManager, async (req, res) => {
   try {
     const p = req.body || {};
     await dbRun(`INSERT INTO business_profile (
-      id, business_name, tax_number, phone, address_line1, address_line2, city, state, zip, firebase_restaurant_id, updated_at
-    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      id, business_name, tax_number, phone, email, address_line1, address_line2, city, state, zip, logo_url, banner_url, firebase_restaurant_id, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
-      business_name = excluded.business_name,
-      tax_number = excluded.tax_number,
-      phone = excluded.phone,
-      address_line1 = excluded.address_line1,
-      address_line2 = excluded.address_line2,
-      city = excluded.city,
-      state = excluded.state,
-      zip = excluded.zip,
-      firebase_restaurant_id = excluded.firebase_restaurant_id,
+      business_name = COALESCE(excluded.business_name, business_name),
+      tax_number = COALESCE(excluded.tax_number, tax_number),
+      phone = COALESCE(excluded.phone, phone),
+      email = COALESCE(excluded.email, email),
+      address_line1 = COALESCE(excluded.address_line1, address_line1),
+      address_line2 = COALESCE(excluded.address_line2, address_line2),
+      city = COALESCE(excluded.city, city),
+      state = COALESCE(excluded.state, state),
+      zip = COALESCE(excluded.zip, zip),
+      logo_url = COALESCE(excluded.logo_url, logo_url),
+      banner_url = COALESCE(excluded.banner_url, banner_url),
+      firebase_restaurant_id = COALESCE(excluded.firebase_restaurant_id, firebase_restaurant_id),
       updated_at = CURRENT_TIMESTAMP
     `, [
-      String(p.business_name || ''),
-      String(p.tax_number || ''),
-      String(p.phone || ''),
-      String(p.address_line1 || ''),
-      String(p.address_line2 || ''),
-      String(p.city || ''),
-      String(p.state || ''),
-      String(p.zip || ''),
+      p.business_name !== undefined ? String(p.business_name) : null,
+      p.tax_number !== undefined ? String(p.tax_number) : null,
+      p.phone !== undefined ? String(p.phone) : null,
+      p.email !== undefined ? String(p.email) : null,
+      p.address_line1 !== undefined ? String(p.address_line1) : null,
+      p.address_line2 !== undefined ? String(p.address_line2) : null,
+      p.city !== undefined ? String(p.city) : null,
+      p.state !== undefined ? String(p.state) : null,
+      p.zip !== undefined ? String(p.zip) : null,
+      p.logo_url !== undefined ? String(p.logo_url) : null,
+      p.banner_url !== undefined ? String(p.banner_url) : null,
       p.firebase_restaurant_id ? String(p.firebase_restaurant_id) : null,
     ]);
     const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
@@ -192,6 +198,178 @@ router.post('/business-profile/logo', requireManager, logoUpload.single('logo'),
     const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
     res.json({ success: true, imageUrl, profile: saved });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== SYNC BUSINESS INFO FROM FIREBASE =====
+router.post('/business-profile/sync-from-firebase', async (req, res) => {
+  console.log('📥 [SYNC] Business Info sync request received from TZO Admin');
+  console.log('📥 [SYNC] Request body:', JSON.stringify(req.body, null, 2));
+  
+  try {
+    // Check if businessInfo is directly provided from TZO Admin
+    const { businessInfo, restaurantId: reqRestaurantId } = req.body;
+    
+    let updateData;
+    let restaurantId = reqRestaurantId;
+    
+    if (businessInfo) {
+      // Use directly provided data from TZO Admin
+      console.log('📥 Business Info received from TZO Admin:', JSON.stringify(businessInfo, null, 2));
+      
+      updateData = {
+        business_name: businessInfo.name || '',
+        phone: businessInfo.phone || '',
+        email: businessInfo.email || '',
+        address_line1: businessInfo.address || '',
+        city: businessInfo.city || '',
+        state: businessInfo.state || '',
+        zip: businessInfo.zipCode || '',
+        logo_url: businessInfo.logoUrl || '',
+        banner_url: businessInfo.bannerImageUrl || '',
+        firebase_restaurant_id: restaurantId || ''
+      };
+    } else {
+      // Fallback: Fetch from Firebase directly
+      if (!restaurantId) {
+        const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+        restaurantId = profile?.firebase_restaurant_id;
+      }
+      
+      if (!restaurantId) {
+        return res.status(400).json({ error: 'Restaurant ID is required. Set it in the Sync tab first.' });
+      }
+      
+      // Get Firestore instance
+      const firebaseService = require('../services/firebaseService');
+      const firestore = firebaseService.getFirestore();
+      
+      if (!firestore) {
+        return res.status(500).json({ error: 'Firebase not initialized' });
+      }
+      
+      // Fetch restaurant data from Firebase
+      const restaurantDoc = await firestore.collection('restaurants').doc(restaurantId).get();
+      
+      if (!restaurantDoc.exists) {
+        return res.status(404).json({ error: 'Restaurant not found in Firebase' });
+      }
+      
+      const fbData = restaurantDoc.data();
+      console.log('📥 Firebase Business Info:', JSON.stringify(fbData, null, 2));
+      
+      updateData = {
+        business_name: fbData.name || fbData.businessName || '',
+        phone: fbData.phone || '',
+        email: fbData.email || '',
+        address_line1: fbData.address || '',
+        city: fbData.city || '',
+        state: fbData.state || '',
+        zip: fbData.zipCode || fbData.zip || '',
+        logo_url: fbData.logoUrl || fbData.logo_url || '',
+        banner_url: fbData.bannerImageUrl || fbData.banner_url || '',
+        firebase_restaurant_id: restaurantId
+      };
+    }
+    
+    // Update POS database
+    await dbRun(`UPDATE business_profile SET
+      business_name = ?,
+      phone = ?,
+      email = ?,
+      address_line1 = ?,
+      city = ?,
+      state = ?,
+      zip = ?,
+      logo_url = ?,
+      banner_url = ?,
+      firebase_restaurant_id = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = 1`, [
+      updateData.business_name,
+      updateData.phone,
+      updateData.email,
+      updateData.address_line1,
+      updateData.city,
+      updateData.state,
+      updateData.zip,
+      updateData.logo_url,
+      updateData.banner_url,
+      updateData.firebase_restaurant_id
+    ]);
+    
+    const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
+    
+    // Handle Business Hours if provided
+    const { businessHours } = req.body;
+    let hoursUpdated = 0;
+    
+    if (businessHours && Array.isArray(businessHours)) {
+      console.log('📅 Syncing Business Hours:', businessHours.length, 'days');
+      
+      // Ensure business_hours table has all required columns
+      try {
+        const cols = await dbAll("PRAGMA table_info(business_hours)");
+        const colNames = cols.map(c => String(c.name));
+        
+        if (!colNames.includes('break_start')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN break_start TEXT");
+        }
+        if (!colNames.includes('break_end')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN break_end TEXT");
+        }
+        if (!colNames.includes('happy_hour_start')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN happy_hour_start TEXT");
+        }
+        if (!colNames.includes('happy_hour_end')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN happy_hour_end TEXT");
+        }
+        if (!colNames.includes('busy_hour_start')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN busy_hour_start TEXT");
+        }
+        if (!colNames.includes('busy_hour_end')) {
+          await dbRun("ALTER TABLE business_hours ADD COLUMN busy_hour_end TEXT");
+        }
+      } catch (colErr) {
+        console.warn('Column add warning:', colErr.message);
+      }
+      
+      // Delete existing hours first to prevent duplicates
+      await dbRun('DELETE FROM business_hours');
+      
+      for (const hour of businessHours) {
+        await dbRun(`
+          INSERT INTO business_hours 
+          (day_of_week, open_time, close_time, is_open, break_start, break_end, 
+           happy_hour_start, happy_hour_end, busy_hour_start, busy_hour_end, updated_at) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `, [
+          hour.day_of_week,
+          hour.open_time,
+          hour.close_time,
+          hour.is_open,
+          hour.break_start || null,
+          hour.break_end || null,
+          hour.happy_hour_start || null,
+          hour.happy_hour_end || null,
+          hour.busy_hour_start || null,
+          hour.busy_hour_end || null
+        ]);
+        hoursUpdated++;
+      }
+      console.log('✅ Business Hours synced:', hoursUpdated, 'days');
+    }
+    
+    console.log('✅ Business Info synced from Firebase');
+    res.json({ 
+      success: true, 
+      message: `Business Info synced. ${hoursUpdated > 0 ? `Business Hours: ${hoursUpdated} days updated.` : ''}`,
+      profile: saved,
+      hoursUpdated
+    });
+  } catch (e) {
+    console.error('❌ Sync Business Info failed:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -704,12 +882,39 @@ router.post('/business-hours/bulk', async (req, res) => {
   try {
     const { businessHours } = req.body;
     
+    // Ensure all columns exist
+    try {
+      const cols = await dbAll("PRAGMA table_info(business_hours)");
+      const colNames = cols.map(c => String(c.name));
+      if (!colNames.includes('break_start')) await dbRun("ALTER TABLE business_hours ADD COLUMN break_start TEXT");
+      if (!colNames.includes('break_end')) await dbRun("ALTER TABLE business_hours ADD COLUMN break_end TEXT");
+      if (!colNames.includes('happy_hour_start')) await dbRun("ALTER TABLE business_hours ADD COLUMN happy_hour_start TEXT");
+      if (!colNames.includes('happy_hour_end')) await dbRun("ALTER TABLE business_hours ADD COLUMN happy_hour_end TEXT");
+      if (!colNames.includes('busy_hour_start')) await dbRun("ALTER TABLE business_hours ADD COLUMN busy_hour_start TEXT");
+      if (!colNames.includes('busy_hour_end')) await dbRun("ALTER TABLE business_hours ADD COLUMN busy_hour_end TEXT");
+    } catch (colErr) { /* ignore duplicate column errors */ }
+    
+    // Delete existing hours first to prevent duplicates
+    await dbRun('DELETE FROM business_hours');
+    
     for (const hour of businessHours) {
       await dbRun(`
-        INSERT OR REPLACE INTO business_hours 
-        (day_of_week, open_time, close_time, is_open, updated_at) 
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-      `, [hour.day_of_week, hour.open_time, hour.close_time, hour.is_open]);
+        INSERT INTO business_hours 
+        (day_of_week, open_time, close_time, is_open, break_start, break_end, 
+         happy_hour_start, happy_hour_end, busy_hour_start, busy_hour_end, updated_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `, [
+        hour.day_of_week, 
+        hour.open_time, 
+        hour.close_time, 
+        hour.is_open,
+        hour.break_start || null,
+        hour.break_end || null,
+        hour.happy_hour_start || null,
+        hour.happy_hour_end || null,
+        hour.busy_hour_start || null,
+        hour.busy_hour_end || null
+      ]);
     }
     
     res.json({ message: 'Business hours updated successfully' });

@@ -69,6 +69,92 @@ interface TableInfo {
   business_name?: string;
 }
 
+interface FirebasePromotion {
+  id: string;
+  type: string;
+  name: string;
+  message?: string;
+  description: string;
+  active: boolean;
+  channels: string[];
+}
+
+// Promo Banner with Marquee Animation (same as TZO Online Order)
+function PromoBanner({ messages }: { messages: string[] }) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [animating, setAnimating] = useState(true);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    
+    // 각 메시지를 4초간 표시 (충분히 읽을 시간 제공)
+    const interval = setInterval(() => {
+      setAnimating(false);
+      setTimeout(() => {
+        setCurrentIndex((prev) => (prev + 1) % messages.length);
+        setAnimating(true);
+      }, 50);
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [messages.length]);
+
+  if (messages.length === 0) return null;
+
+  return (
+    <>
+      <style>{`
+        .promo-banner-marquee {
+          background: linear-gradient(135deg, #dc2626 0%, #b91c1c 50%, #991b1b 100%);
+          padding: 10px 0;
+          position: sticky;
+          top: 0;
+          z-index: 150;
+          overflow: hidden;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .promo-marquee-content {
+          display: inline-block;
+          white-space: nowrap;
+          padding-left: 100%;
+          opacity: 0;
+        }
+        .promo-marquee-content.animate {
+          animation: marqueeSlide 3.8s ease-in-out forwards;
+        }
+        .promo-marquee-text {
+          color: white;
+          font-size: 18px;
+          font-weight: 700;
+          text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+          letter-spacing: 0.5px;
+        }
+        @keyframes marqueeSlide {
+          0% { transform: translateX(0); opacity: 0; }
+          10% { opacity: 1; }
+          30% { transform: translateX(-50%); opacity: 1; }
+          70% { transform: translateX(-50%); opacity: 1; }
+          90% { opacity: 1; }
+          100% { transform: translateX(-100%); opacity: 0; }
+        }
+        @media (min-width: 641px) {
+          .promo-banner-marquee { padding: 12px 0; }
+          .promo-marquee-text { font-size: 22px; }
+        }
+        @media (min-width: 1025px) {
+          .promo-banner-marquee { padding: 14px 0; }
+          .promo-marquee-text { font-size: 26px; }
+        }
+      `}</style>
+      <div className="promo-banner-marquee">
+        <div className={`promo-marquee-content ${animating ? 'animate' : ''}`}>
+          <span className="promo-marquee-text">🎁 {messages[currentIndex]}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
 const TableOrderPage: React.FC = () => {
   const { storeId, tableId } = useParams<{ storeId: string; tableId: string }>();
   const [searchParams] = useSearchParams();
@@ -120,6 +206,9 @@ const TableOrderPage: React.FC = () => {
   const [showCallServerModal, setShowCallServerModal] = useState(false);
   const [callServerSent, setCallServerSent] = useState<string | null>(null);
   const [isCallingServer, setIsCallingServer] = useState(false);
+  
+  // 프로모션 상태
+  const [promotions, setPromotions] = useState<FirebasePromotion[]>([]);
   
   // Call Server 전송 함수
   const sendCallServerRequest = async (callType: string, message: string) => {
@@ -176,6 +265,40 @@ const TableOrderPage: React.FC = () => {
               setSelectedCategory(menuData.categories[0].category_id);
             }
           }
+        }
+        
+        // 프로모션 로드 (POS 데이터베이스에서)
+        try {
+          const promoRes = await fetch(`${API_URL}/promotions/pos-promotions`);
+          if (promoRes.ok) {
+            const promoData = await promoRes.json();
+            // table-order 채널에 적용되는 활성 프로모션만 필터링
+            const tableOrderChannelNames = ['table-order', 'tableorder', 'qr-order', 'qrorder'];
+            const tableOrderPromos = (promoData.promotions || []).filter(
+              (p: any) => p.active && p.message && p.channels?.some((c: string) => tableOrderChannelNames.includes(c.toLowerCase()))
+            );
+            // Convert to FirebasePromotion format for compatibility
+            const convertedPromos: FirebasePromotion[] = tableOrderPromos.map((p: any) => ({
+              id: p.id,
+              type: p.type,
+              name: p.name,
+              message: p.message || '',
+              description: p.description || '',
+              active: p.active,
+              minOrderAmount: p.minOrderAmount || 0,
+              discountPercent: p.discountPercent || 0,
+              discountAmount: p.discountAmount || 0,
+              validFrom: p.validFrom || '',
+              validUntil: p.validUntil || '',
+              channels: p.channels || [],
+              selectedItems: p.selectedItems || [],
+              selectedCategories: p.selectedCategories || []
+            }));
+            setPromotions(convertedPromos);
+            console.log('🎁 Table Order POS promotions loaded:', convertedPromos.length);
+          }
+        } catch (promoError) {
+          console.log('Failed to load promotions:', promoError);
         }
       } catch (err: any) {
         console.error('Failed to load data:', err);
@@ -864,6 +987,11 @@ const TableOrderPage: React.FC = () => {
           <span className="font-bold">Call Server</span>
         </button>
       </header>
+
+      {/* 프로모션 배너 */}
+      {promotions.length > 0 && (
+        <PromoBanner messages={promotions.map(p => p.message!).filter(Boolean)} />
+      )}
 
       {/* 메인 컨텐츠 */}
       <div className="flex-1 flex overflow-hidden">

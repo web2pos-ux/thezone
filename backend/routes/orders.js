@@ -74,6 +74,7 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_rate REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_breakdown TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN adjustments_json TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN subtotal REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -289,7 +290,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);

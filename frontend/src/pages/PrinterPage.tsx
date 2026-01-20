@@ -1252,6 +1252,22 @@ const PrinterPage = () => {
               kitchenPrinter: {
                 ...defaultLayoutSettings.externalKitchen.kitchenPrinter,
                 ...(savedSettings.externalKitchen?.kitchenPrinter || {}),
+                deliveryChannel: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.deliveryChannel,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.deliveryChannel || {}),
+                },
+                externalOrderNumber: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.externalOrderNumber,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.externalOrderNumber || {}),
+                },
+                pickupTime: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.pickupTime,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.pickupTime || {}),
+                },
+                serverName: {
+                  ...defaultLayoutSettings.externalKitchen.kitchenPrinter.serverName,
+                  ...(savedSettings.externalKitchen?.kitchenPrinter?.serverName || {}),
+                },
                 paidStatus: {
                   ...defaultLayoutSettings.externalKitchen.kitchenPrinter.paidStatus,
                   ...(savedSettings.externalKitchen?.kitchenPrinter?.paidStatus || {}),
@@ -1268,6 +1284,22 @@ const PrinterPage = () => {
               waitressPrinter: {
                 ...defaultLayoutSettings.externalKitchen.waitressPrinter,
                 ...(savedSettings.externalKitchen?.waitressPrinter || {}),
+                deliveryChannel: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.deliveryChannel,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.deliveryChannel || {}),
+                },
+                externalOrderNumber: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.externalOrderNumber,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.externalOrderNumber || {}),
+                },
+                pickupTime: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.pickupTime,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.pickupTime || {}),
+                },
+                serverName: {
+                  ...defaultLayoutSettings.externalKitchen.waitressPrinter.serverName,
+                  ...(savedSettings.externalKitchen?.waitressPrinter?.serverName || {}),
+                },
                 paidStatus: {
                   ...defaultLayoutSettings.externalKitchen.waitressPrinter.paidStatus,
                   ...(savedSettings.externalKitchen?.waitressPrinter?.paidStatus || {}),

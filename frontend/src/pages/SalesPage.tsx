@@ -2264,17 +2264,21 @@ const SalesPage: React.FC = () => {
             const data = await res.json();
             if (data.success && data.items) {
               // fullOrder 형태로 변환하여 저장
+              const parsedItems = data.items.map((item: any) => ({
+                name: item.name,
+                quantity: item.quantity || 1,
+                price: item.price || 0,
+                options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
+              }));
+              // DB subtotal 사용, 없으면 아이템 합계로 계산
+              const calculatedSubtotal = parsedItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+              
               const fullOrder = {
                 ...order,
                 status: data.order?.status || order.status,
                 paymentStatus: data.order?.paymentStatus || order.paymentStatus,
-                items: data.items.map((item: any) => ({
-                  name: item.name,
-                  quantity: item.quantity || 1,
-                  price: item.price || 0,
-                  options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
-                })),
-                subtotal: data.order?.total || order.total || 0,
+                items: parsedItems,
+                subtotal: data.order?.subtotal || calculatedSubtotal,
                 tax: data.order?.tax || 0,
                 taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
                 total: data.order?.total || order.total || 0
@@ -9008,17 +9012,21 @@ const SalesPage: React.FC = () => {
                               if (res.ok) {
                                 const data = await res.json();
                                 if (data.success && data.items) {
+                                  const parsedItems = data.items.map((item: any) => ({
+                                    name: item.name,
+                                    quantity: item.quantity || 1,
+                                    price: item.price || 0,
+                                    options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
+                                  }));
+                                  // DB subtotal 사용, 없으면 아이템 합계로 계산
+                                  const calculatedSubtotal = parsedItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+                                  
                                   const fullOrder = {
                                     ...order,
                                     status: data.order?.status || order.status,
                                     paymentStatus: data.order?.paymentStatus || order.paymentStatus,
-                                    items: data.items.map((item: any) => ({
-                                      name: item.name,
-                                      quantity: item.quantity || 1,
-                                      price: item.price || 0,
-                                      options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
-                                    })),
-                                    subtotal: data.order?.total || order.total || 0,
+                                    items: parsedItems,
+                                    subtotal: data.order?.subtotal || calculatedSubtotal,
                                     tax: data.order?.tax || 0,
                                     taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
                                     total: data.order?.total || order.total || 0
@@ -9072,8 +9080,67 @@ const SalesPage: React.FC = () => {
               
               {/* 오른쪽: 주문 상세 */}
               <div className="w-[45%] flex flex-col bg-white rounded-lg shadow-md overflow-hidden">
-                {/* 상단 버튼 영역 */}
+                {/* 상단 버튼 영역 (3:4:4 비율 = Print Bill : Pickup Complete : Payment) */}
                 <div className="p-2 flex gap-2 flex-shrink-0 bg-gray-50 border-b">
+                  {/* Print Bill 버튼 (3/11 ≈ 27%) */}
+                  <button
+                    onClick={async () => {
+                      try {
+                        const orderId = selectedOrderDetail?.id;
+                        const orderNum = selectedOrderType === 'togo' 
+                          ? String(orderId).padStart(3, '0')
+                          : (selectedOrderDetail.number || orderId);
+                        
+                        const billItems = (selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || []).map((item: any) => ({
+                          name: item.name,
+                          quantity: item.quantity || 1,
+                          price: item.price || 0,
+                          totalPrice: (item.price || 0) * (item.quantity || 1),
+                          modifiers: item.options || item.modifiers || [],
+                        }));
+                        
+                        const subtotal = Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0);
+                        const tax = Number(selectedOrderDetail.fullOrder?.tax || 0);
+                        const total = Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0);
+                        
+                        const billData = {
+                          header: {
+                            orderNumber: orderNum,
+                            channel: selectedOrderType === 'online' ? 'ONLINE' : 'TOGO',
+                            tableName: selectedOrderType === 'online' ? 'ONLINE' : 'TOGO',
+                            serverName: ''
+                          },
+                          orderInfo: {
+                            channel: selectedOrderType === 'online' ? 'ONLINE' : 'TOGO',
+                            tableName: selectedOrderType === 'online' ? 'ONLINE' : 'TOGO',
+                            serverName: ''
+                          },
+                          items: billItems,
+                          guestSections: [],
+                          subtotal: subtotal,
+                          adjustments: [],
+                          taxLines: selectedOrderDetail.fullOrder?.taxBreakdown || [{ name: 'Tax', rate: 0, amount: tax }],
+                          taxesTotal: tax,
+                          total: total,
+                          footer: {}
+                        };
+                        
+                        await fetch(`${API_URL}/printers/print-bill`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ billData, copies: 1 })
+                        });
+                        console.log('🧾 Bill printed for order:', orderNum);
+                      } catch (err) {
+                        console.error('Print bill error:', err);
+                      }
+                    }}
+                    style={{ flex: '3' }}
+                    className="py-3 bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold rounded-lg transition shadow-md"
+                  >
+                    Print Bill
+                  </button>
+                  {/* Pickup Complete 버튼 (4/11 ≈ 36%) */}
                   <button
                     onClick={async () => {
                       // 결제 상태 확인
@@ -9156,10 +9223,12 @@ const SalesPage: React.FC = () => {
                       loadOnlineOrders();
                       loadTogoOrders();
                     }}
-                    className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white text-base font-bold rounded-lg transition shadow-md"
+                    style={{ flex: '4' }}
+                    className="py-3 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg transition shadow-md"
                   >
                     Pickup Complete
                   </button>
+                  {/* Payment 버튼 (4/11 ≈ 36%) */}
                   {(() => {
                     const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
                     const isPaid = status === 'paid' || status === 'completed' || status === 'closed';
@@ -9188,7 +9257,8 @@ const SalesPage: React.FC = () => {
                           setShowOnlineTogoPaymentModal(true);
                         }}
                         disabled={isPaid}
-                        className={`flex-1 py-3 text-white text-base font-bold rounded-lg transition shadow-md ${
+                        style={{ flex: '4' }}
+                        className={`py-3 text-white text-sm font-bold rounded-lg transition shadow-md ${
                           isPaid 
                             ? 'bg-gray-400 cursor-not-allowed' 
                             : 'bg-blue-600 hover:bg-blue-700'
@@ -9297,6 +9367,32 @@ const SalesPage: React.FC = () => {
                         <span className="text-gray-600">Sub Total</span>
                         <span>${Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0).toFixed(2)}</span>
                       </div>
+                      {/* 할인 표시 */}
+                      {(() => {
+                        const subtotalVal = Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0);
+                        const taxVal = selectedOrderDetail.fullOrder?.taxBreakdown?.reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0) || Number(selectedOrderDetail.fullOrder?.tax || 0);
+                        const totalVal = Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0);
+                        const discountCalc = subtotalVal - (totalVal - taxVal);
+                        const promoName = selectedOrderDetail.fullOrder?.promotionName || 
+                          selectedOrderDetail.fullOrder?.items?.find((i: any) => i.promotionName)?.promotionName || 
+                          'Promotion';
+                        
+                        if (discountCalc > 0.5) {
+                          return (
+                            <>
+                              <div className="flex justify-between text-sm text-green-600">
+                                <span>🎁 {promoName}:</span>
+                                <span>-${discountCalc.toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between text-sm font-medium">
+                                <span>After Discount</span>
+                                <span>${(subtotalVal - discountCalc).toFixed(2)}</span>
+                              </div>
+                            </>
+                          );
+                        }
+                        return null;
+                      })()}
                       {/* 개별 세금 표시 (GST, PST 등) */}
                       {selectedOrderDetail.fullOrder?.taxBreakdown && Array.isArray(selectedOrderDetail.fullOrder.taxBreakdown) && selectedOrderDetail.fullOrder.taxBreakdown.length > 0 ? (
                         selectedOrderDetail.fullOrder.taxBreakdown.map((taxItem: any, idx: number) => (

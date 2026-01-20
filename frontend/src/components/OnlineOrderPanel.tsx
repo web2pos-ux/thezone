@@ -1,5 +1,6 @@
 // frontend/src/components/OnlineOrderPanel.tsx
 // 온라인 주문 패널 - 테이블맵 오른쪽에 표시
+// Updated: 2026-01-20 v3
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
@@ -516,23 +517,37 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
             
             {/* Subtotal */}
             <div className="flex justify-between text-sm pt-2 mt-2 border-t">
-              <span>Subtotal</span>
+              <span>Sub Total</span>
               <span>${selectedOrder.subtotal?.toFixed(2) || (selectedOrder.items?.reduce((sum: number, it: any) => sum + (it.subtotal || 0), 0) || 0).toFixed(2)}</span>
             </div>
             
-            {/* Discount */}
-            {selectedOrder.discountAmount && selectedOrder.discountAmount > 0 && (
-              <>
-                <div className="flex justify-between text-sm text-green-600">
-                  <span>🎁 {selectedOrder.promotionName || 'Discount'}</span>
-                  <span>-${selectedOrder.discountAmount.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between text-sm font-medium">
-                  <span>After Discount</span>
-                  <span>${((selectedOrder.subtotal || 0) - selectedOrder.discountAmount).toFixed(2)}</span>
-                </div>
-              </>
-            )}
+            {/* Discount 표시 - TEST V2 */}
+            {(() => {
+              const subtotalVal = selectedOrder.subtotal || selectedOrder.items?.reduce((s: number, i: any) => s + (i.subtotal || 0), 0) || 0;
+              const taxVal = selectedOrder.taxBreakdown?.reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0) || selectedOrder.tax || 0;
+              const totalVal = selectedOrder.total || 0;
+              const discountCalc = subtotalVal - (totalVal - taxVal);
+              console.log('[DISCOUNT-TEST-V2]', { subtotalVal, taxVal, totalVal, discountCalc });
+              
+              if (discountCalc > 0.5) {
+                const promoName = selectedOrder.promotionName || 
+                  selectedOrder.items?.find((i: any) => i.promotionName)?.promotionName || 
+                  'Promotion';
+                return (
+                  <>
+                    <div className="flex justify-between text-sm text-green-600">
+                      <span>🎁 {promoName}:</span>
+                      <span>-${discountCalc.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm font-medium">
+                      <span>After Discount</span>
+                      <span>${(subtotalVal - discountCalc).toFixed(2)}</span>
+                    </div>
+                  </>
+                );
+              }
+              return null;
+            })()}
             
             {/* Tax */}
             {selectedOrder.taxBreakdown && Array.isArray(selectedOrder.taxBreakdown) ? (

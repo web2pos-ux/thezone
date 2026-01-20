@@ -886,6 +886,99 @@ function listenToMenuVisibilityChanges(restaurantId, onVisibilityChange) {
   return unsubscribe;
 }
 
+// ============ Z-Report / Daily Closing 저장 ============
+async function saveDailyClosing(restaurantId, closingData) {
+  if (!restaurantId) {
+    console.error('saveDailyClosing: restaurantId is required');
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    const date = closingData.date || new Date().toISOString().split('T')[0];
+    
+    // restaurants/{restaurantId}/dailyClosings/{date}
+    const docRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('dailyClosings')
+      .doc(date);
+
+    const dataToSave = {
+      ...closingData,
+      date,
+      updatedAt: new Date().toISOString(),
+      syncedFromPOS: true
+    };
+
+    await docRef.set(dataToSave, { merge: true });
+    
+    console.log(`✅ Daily closing saved to Firebase: ${restaurantId}/${date}`);
+    return { success: true, date };
+  } catch (error) {
+    console.error('saveDailyClosing error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Z-Report 조회 (Firebase에서)
+async function getDailyClosing(restaurantId, date) {
+  if (!restaurantId) {
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    
+    const docRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('dailyClosings')
+      .doc(targetDate);
+
+    const doc = await docRef.get();
+    
+    if (doc.exists) {
+      return { success: true, data: doc.data() };
+    } else {
+      return { success: true, data: null };
+    }
+  } catch (error) {
+    console.error('getDailyClosing error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Daily Closing 이력 조회
+async function getDailyClosingHistory(restaurantId, limit = 30) {
+  if (!restaurantId) {
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    
+    const snapshot = await firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('dailyClosings')
+      .orderBy('date', 'desc')
+      .limit(limit)
+      .get();
+
+    const records = [];
+    snapshot.forEach(doc => {
+      records.push({ id: doc.id, ...doc.data() });
+    });
+
+    return { success: true, data: records };
+  } catch (error) {
+    console.error('getDailyClosingHistory error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -909,6 +1002,10 @@ module.exports = {
   listenToMenuVisibilityChanges,
   listenToDayOffChanges,
   listenToPauseChanges,
-  listenToPrepTimeChanges
+  listenToPrepTimeChanges,
+  // Daily Closing / Z-Report
+  saveDailyClosing,
+  getDailyClosing,
+  getDailyClosingHistory
 };
 

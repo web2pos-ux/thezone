@@ -83,45 +83,75 @@ export function checkPromotionApplicable(
   promo: FirebasePromotion,
   channel: 'table' | 'togo' | 'online' | 'delivery' | 'table-order' | 'kiosk',
   subtotal: number,
-  cartItemIds: string[]
+  cartItemIds: string[],
+  cartItemNames?: string[]
 ): boolean {
   // Check if active
   if (!promo.active) return false;
   
-  // Check channel
-  const channelMap: Record<string, string> = {
-    'table': 'dine-in',
-    'togo': 'togo',
-    'online': 'online',
-    'delivery': 'delivery',
-    'table-order': 'table-order',
-    'kiosk': 'kiosk'
+  // Check channel - handle various channel name variations
+  const channelAliases: Record<string, string[]> = {
+    'table': ['dine-in', 'table', 'dinein'],
+    'togo': ['togo', 'takeout', 'pick-up', 'pickup', 'to-go'],
+    'online': ['online'],
+    'delivery': ['delivery'],
+    'table-order': ['table-order', 'tableorder'],
+    'kiosk': ['kiosk']
   };
-  const firebaseChannel = channelMap[channel] || channel;
-  if (!promo.channels?.includes(firebaseChannel)) return false;
+  const acceptableChannels = channelAliases[channel] || [channel];
+  const hasChannel = promo.channels?.some(ch => acceptableChannels.includes(ch.toLowerCase()));
+  if (!hasChannel) {
+    console.log(`🎁 [Promo Check] "${promo.name}": Channel mismatch. Required: ${promo.channels?.join(',')}, Current: ${channel}`);
+    return false;
+  }
   
   // Check minimum order amount
-  if (promo.minOrderAmount && subtotal < promo.minOrderAmount) return false;
+  if (promo.minOrderAmount && subtotal < promo.minOrderAmount) {
+    console.log(`🎁 [Promo Check] "${promo.name}": Min order not met. Required: $${promo.minOrderAmount}, Current: $${subtotal}`);
+    return false;
+  }
   
   // Check date validity
   const now = new Date();
   if (promo.validFrom) {
     const fromDate = new Date(promo.validFrom);
-    if (now < fromDate) return false;
+    if (now < fromDate) {
+      console.log(`🎁 [Promo Check] "${promo.name}": Not yet valid. Starts: ${promo.validFrom}`);
+      return false;
+    }
   }
   if (promo.validUntil) {
     const untilDate = new Date(promo.validUntil);
-    if (now > untilDate) return false;
+    untilDate.setHours(23, 59, 59, 999); // Include the entire end date
+    if (now > untilDate) {
+      console.log(`🎁 [Promo Check] "${promo.name}": Expired. Ended: ${promo.validUntil}`);
+      return false;
+    }
   }
   
   // For item-specific promotions, check if any cart items match
   if (promo.type === 'percent_items' || promo.type === 'bogo' || promo.type === 'free_item') {
-    if (promo.selectedItems?.length) {
-      const hasMatchingItem = cartItemIds.some(id => promo.selectedItems?.includes(id));
-      if (!hasMatchingItem) return false;
+    const selectedItems = (promo as any).selectedItems || [];
+    const selectedCategories = (promo as any).selectedCategories || []; // Item names stored here in POS
+    
+    if (selectedItems.length > 0 || selectedCategories.length > 0) {
+      // Check by ID
+      const hasMatchingById = cartItemIds.some(id => selectedItems.includes(id));
+      // Check by name (selectedCategories contains item names in POS promotions)
+      const hasMatchingByName = cartItemNames?.some(name => 
+        selectedCategories.some((selName: string) => 
+          selName.toLowerCase() === name.toLowerCase()
+        )
+      );
+      
+      if (!hasMatchingById && !hasMatchingByName) {
+        console.log(`🎁 [Promo Check] "${promo.name}": No matching items. SelectedItems: ${selectedItems.join(',')}, SelectedCategories: ${selectedCategories.join(',')}, CartIDs: ${cartItemIds.join(',')}, CartNames: ${cartItemNames?.join(',')}`);
+        return false;
+      }
     }
   }
   
+  console.log(`🎁 [Promo Check] "${promo.name}": ✅ APPLICABLE`);
   return true;
 }
 
@@ -131,19 +161,33 @@ export function checkPromotionApplicable(
 export function calculatePromotionDiscount(
   promo: FirebasePromotion,
   subtotal: number,
-  cartItems: Array<{ menuItemId: string; subtotal: number; quantity: number }>,
+  cartItems: Array<{ menuItemId: string; name?: string; subtotal: number; quantity: number }>,
   deliveryFee: number = 0
 ): number {
   if (!promo.active) return 0;
+  
+  const selectedItems = (promo as any).selectedItems || [];
+  const selectedCategories = (promo as any).selectedCategories || []; // Item names stored here in POS
+  
+  // Helper to check if item matches promotion
+  const itemMatchesPromo = (item: { menuItemId: string; name?: string }) => {
+    // Check by ID
+    if (selectedItems.includes(item.menuItemId)) return true;
+    // Check by name
+    if (item.name && selectedCategories.some((selName: string) => 
+      selName.toLowerCase() === item.name?.toLowerCase()
+    )) return true;
+    return false;
+  };
   
   switch (promo.type) {
     case 'percent_cart':
       return subtotal * ((promo.discountPercent || 0) / 100);
     
     case 'percent_items':
-      if (!promo.selectedItems?.length) return 0;
+      if (!selectedItems.length && !selectedCategories.length) return 0;
       return cartItems
-        .filter(item => promo.selectedItems?.includes(item.menuItemId))
+        .filter(item => itemMatchesPromo(item))
         .reduce((sum, item) => sum + item.subtotal * ((promo.discountPercent || 0) / 100), 0);
     
     case 'fixed_discount':
@@ -153,9 +197,9 @@ export function calculatePromotionDiscount(
       return deliveryFee;
     
     case 'bogo':
-      if (!promo.selectedItems?.length) return 0;
+      if (!selectedItems.length && !selectedCategories.length) return 0;
       const eligibleItems = cartItems.filter(
-        item => promo.selectedItems?.includes(item.menuItemId) && item.quantity >= 2
+        item => itemMatchesPromo(item) && item.quantity >= 2
       );
       if (eligibleItems.length === 0) return 0;
       const cheapest = eligibleItems.reduce((min, item) => 

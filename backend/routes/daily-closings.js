@@ -290,6 +290,51 @@ module.exports = (db) => {
     }
   });
 
+  // ============ CHECK UNPAID ORDERS ============
+  router.get('/check-unpaid-orders', async (req, res) => {
+    try {
+      // Check for tables with active orders (current_order_id is not null)
+      const tablesWithOrders = await dbAll(`
+        SELECT element_id, name, floor, current_order_id 
+        FROM table_map_elements 
+        WHERE current_order_id IS NOT NULL
+      `);
+      
+      // Check for pending orders that are not paid
+      const today = new Date().toISOString().split('T')[0];
+      const unpaidOrders = await dbAll(`
+        SELECT id, order_number, table_id, total, status, created_at 
+        FROM orders 
+        WHERE DATE(created_at) = ? 
+        AND UPPER(status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED')
+      `, [today]);
+      
+      const hasUnpaidOrders = tablesWithOrders.length > 0 || unpaidOrders.length > 0;
+      
+      res.json({
+        success: true,
+        hasUnpaidOrders,
+        tablesWithOrders: tablesWithOrders.map(t => ({
+          tableId: t.element_id,
+          tableName: t.name,
+          floor: t.floor,
+          orderId: t.current_order_id
+        })),
+        unpaidOrders: unpaidOrders.map(o => ({
+          orderId: o.id,
+          orderNumber: o.order_number,
+          tableId: o.table_id,
+          total: o.total,
+          status: o.status
+        })),
+        count: tablesWithOrders.length + unpaidOrders.length
+      });
+    } catch (error) {
+      console.error('Check unpaid orders error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // ============ CLOSING ============
   router.post('/closing', async (req, res) => {
     try {

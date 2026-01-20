@@ -230,6 +230,18 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     
     console.log(`📦 Firebase 카테고리: ${firebaseCategories.length}개, 아이템: ${firebaseItems.length}개`);
     
+    // Debug: 이미지 URL이 있는 아이템 확인
+    const itemsWithImages = firebaseItems.filter(item => item.imageUrl || item.image_url);
+    const catsWithImages = firebaseCategories.filter(cat => cat.imageUrl || cat.image_url);
+    console.log(`🖼️ 이미지가 있는 카테고리: ${catsWithImages.length}개`);
+    console.log(`🖼️ 이미지가 있는 아이템: ${itemsWithImages.length}개`);
+    if (itemsWithImages.length > 0) {
+      console.log(`🖼️ 이미지 샘플:`, itemsWithImages.slice(0, 3).map(i => ({ name: i.name, imageUrl: i.imageUrl, image_url: i.image_url })));
+    }
+    if (firebaseItems.length > 0) {
+      console.log(`📋 첫번째 아이템 필드 목록:`, Object.keys(firebaseItems[0]));
+    }
+    
     // 3. 테이블에 firebase_id 컬럼 추가 (없으면)
     try {
       await dbRun("ALTER TABLE menu_categories ADD COLUMN firebase_id TEXT");
@@ -272,14 +284,14 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         
         console.log(`✅ 카테고리 업데이트: ${fbCat.name}`);
       } else {
-        // 이름으로 찾기 (최초 동기화 시)
+        // 이름으로 찾기 (firebase_id 조건 제거 - 기존 카테고리와 매칭)
         posCategory = await dbGet(
-          'SELECT * FROM menu_categories WHERE name = ? AND (firebase_id IS NULL OR firebase_id = "")',
-          [fbCat.name]
+          'SELECT * FROM menu_categories WHERE name = ? AND menu_id = ?',
+          [fbCat.name, 200005]
         );
         
         if (posCategory) {
-          // 기존 카테고리와 연결
+          // 기존 카테고리와 연결/업데이트
           await dbRun(
             `UPDATE menu_categories SET 
               firebase_id = ?, 
@@ -379,10 +391,10 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         
         updatedItems++;
       } else {
-        // 이름으로 찾기 (최초 동기화 시)
+        // 이름으로 찾기 (firebase_id 조건 제거 - 기존 아이템과 매칭)
         posItem = await dbGet(
-          'SELECT * FROM menu_items WHERE name = ? AND (firebase_id IS NULL OR firebase_id = "")',
-          [fbItem.name]
+          'SELECT * FROM menu_items WHERE name = ? AND menu_id = ?',
+          [fbItem.name, 200005]
         );
         
         if (posItem) {

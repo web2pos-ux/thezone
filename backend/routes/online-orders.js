@@ -137,9 +137,12 @@ function startOrderListener(restaurantId) {
           }
           const adjustmentsJson = adjustments.length > 0 ? JSON.stringify(adjustments) : null;
           
+          // prepTime 추출 (Firebase에서 온 주문에 포함됨)
+          const prepTime = order.prepTime || order.prep_time || 20; // 기본 20분
+          
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, adjustments_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, adjustments_json, pickup_minutes, order_source, kitchen_note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderNumber,
               'ONLINE',
@@ -152,7 +155,10 @@ function startOrderListener(restaurantId) {
               taxAmount,
               taxRate,
               taxBreakdown,
-              adjustmentsJson
+              adjustmentsJson,
+              prepTime,                                    // pickup_minutes
+              'THEZONE',                                   // order_source
+              order.notes || order.specialInstructions || null  // kitchen_note
             ]
           );
           localOrder = { id: result.lastID, adjustments };
@@ -331,90 +337,93 @@ function startOrderListener(restaurantId) {
             printReq.write(printData);
             printReq.end();
 
-            // 🧾 온라인 결제 완료 시 Bill과 Receipt도 출력
-            if (orderIsPaid) {
-              console.log(`💳 온라인 결제 완료 주문 - Bill 및 Receipt 출력: ${localOrderNumber}`);
-              
-              // Bill 데이터 구성
-              const taxLines = [];
-              if (order.taxBreakdown && Array.isArray(order.taxBreakdown)) {
-                order.taxBreakdown.forEach(tax => {
-                  taxLines.push({ name: tax.name || 'Tax', amount: tax.amount || 0 });
-                });
-              } else if (order.tax) {
-                taxLines.push({ name: 'Tax', amount: order.tax });
-              }
-              
-              const subtotal = (order.subtotal || order.total - (order.tax || 0)) || 0;
-              
-              // Bill용 adjustments 구성 (프로모션 할인 포함)
-              const billAdjustments = [];
-              if (order.discountAmount && order.discountAmount > 0) {
-                billAdjustments.push({
-                  kind: 'PROMOTION',
-                  label: order.promotionName || 'Promotion',
-                  mode: order.promotionType || 'amount',
-                  value: order.discountAmount,
-                  amount: -order.discountAmount // 마이너스로 표시
-                });
-              }
-              
-              const billData = {
-                header: {
-                  orderNumber: localOrderNumber,
-                  channel: 'ONLINE',
-                  tableName: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
-                  serverName: ''
-                },
-                orderInfo: {
-                  channel: 'ONLINE',
-                  tableName: order.orderType === 'pickup' ? 'PICKUP' : 'ONLINE',
-                  serverName: '',
-                  customerName: order.customerName || '',
-                  customerPhone: order.customerPhone || ''
-                },
-                items: (order.items || []).map(item => ({
-                  name: item.name || 'Unknown',
-                  quantity: item.quantity || 1,
-                  price: item.price || 0,
-                  totalPrice: (item.price || 0) * (item.quantity || 1),
-                  modifiers: (item.options || []).map(opt => ({
-                    name: opt.choiceName || opt.name || '',
-                    price: opt.price || 0
-                  }))
-                })),
-                guestSections: [],
-                subtotal: subtotal,
-                adjustments: billAdjustments,
-                taxLines: taxLines,
-                taxesTotal: order.tax || 0,
-                total: order.total || 0,
-                footer: {}
-              };
+            // 🧾 온라인 주문 수신 시 Bill 1장 출력 (결제 여부와 관계없이)
+            console.log(`🧾 온라인 주문 Bill 출력: ${localOrderNumber}`);
+            
+            // Bill 데이터 구성
+            const taxLines = [];
+            if (order.taxBreakdown && Array.isArray(order.taxBreakdown)) {
+              order.taxBreakdown.forEach(tax => {
+                taxLines.push({ name: tax.name || 'Tax', amount: tax.amount || 0 });
+              });
+            } else if (order.tax) {
+              taxLines.push({ name: 'Tax', amount: order.tax });
+            }
+            
+            const subtotal = (order.subtotal || order.total - (order.tax || 0)) || 0;
+            
+            // Bill용 adjustments 구성 (프로모션 할인 포함)
+            const billAdjustments = [];
+            if (order.discountAmount && order.discountAmount > 0) {
+              billAdjustments.push({
+                kind: 'PROMOTION',
+                label: order.promotionName || 'Promotion',
+                mode: order.promotionType || 'amount',
+                value: order.discountAmount,
+                amount: -order.discountAmount // 마이너스로 표시
+              });
+            }
+            
+            const billData = {
+              header: {
+                orderNumber: localOrderNumber,
+                channel: 'ONLINE',
+                tableName: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
+                serverName: ''
+              },
+              orderInfo: {
+                channel: 'ONLINE',
+                tableName: order.orderType === 'pickup' ? 'PICKUP' : 'ONLINE',
+                serverName: '',
+                customerName: order.customerName || '',
+                customerPhone: order.customerPhone || ''
+              },
+              items: (order.items || []).map(item => ({
+                name: item.name || 'Unknown',
+                quantity: item.quantity || 1,
+                price: item.price || 0,
+                totalPrice: (item.price || 0) * (item.quantity || 1),
+                modifiers: (item.options || []).map(opt => ({
+                  name: opt.choiceName || opt.name || '',
+                  price: opt.price || 0
+                }))
+              })),
+              guestSections: [],
+              subtotal: subtotal,
+              adjustments: billAdjustments,
+              taxLines: taxLines,
+              taxesTotal: order.tax || 0,
+              total: order.total || 0,
+              footer: {}
+            };
 
-              // Bill 출력
-              const billPrintData = JSON.stringify({ billData });
-              const billReq = http.request({
-                hostname: 'localhost',
-                port: 3177,
-                path: '/api/printers/print-bill',
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Content-Length': Buffer.byteLength(billPrintData)
-                }
-              }, (billRes) => {
-                let billResponseData = '';
-                billRes.on('data', chunk => { billResponseData += chunk; });
-                billRes.on('end', () => {
-                  console.log(`🧾 온라인 주문 Bill 출력 완료: ${localOrderNumber}`);
-                });
+            // Bill 출력 (1장만)
+            const billPrintData = JSON.stringify({ billData, copies: 1 });
+            const billReq = http.request({
+              hostname: 'localhost',
+              port: 3177,
+              path: '/api/printers/print-bill',
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(billPrintData)
+              }
+            }, (billRes) => {
+              let billResponseData = '';
+              billRes.on('data', chunk => { billResponseData += chunk; });
+              billRes.on('end', () => {
+                console.log(`🧾 온라인 주문 Bill 출력 완료 (1장): ${localOrderNumber}`);
               });
-              billReq.on('error', (err) => {
-                console.error('🧾 온라인 주문 Bill 출력 오류:', err.message);
-              });
-              billReq.write(billPrintData);
-              billReq.end();
+            });
+            billReq.on('error', (err) => {
+              console.error('🧾 온라인 주문 Bill 출력 오류:', err.message);
+            });
+            billReq.write(billPrintData);
+            billReq.end();
+
+            // 🧾 온라인 결제 완료 시 Receipt도 출력 + Cash Drawer 열기
+            if (orderIsPaid) {
+              console.log(`💳 온라인 결제 완료 주문 - Receipt 출력: ${localOrderNumber}`);
 
               // Receipt 출력 (결제 정보 포함)
               const receiptData = {
@@ -448,6 +457,29 @@ function startOrderListener(restaurantId) {
               });
               receiptReq.write(receiptPrintData);
               receiptReq.end();
+
+              // 💰 온라인 결제 완료 시 Cash Drawer 열기
+              console.log(`💰 온라인 결제 완료 - Cash Drawer 열기: ${localOrderNumber}`);
+              const drawerReq = http.request({
+                hostname: 'localhost',
+                port: 3177,
+                path: '/api/printers/open-drawer',
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': 2
+                }
+              }, (drawerRes) => {
+                drawerRes.on('data', () => {});
+                drawerRes.on('end', () => {
+                  console.log(`💰 온라인 주문 Cash Drawer 열기 완료: ${localOrderNumber}`);
+                });
+              });
+              drawerReq.on('error', (err) => {
+                console.error('💰 온라인 주문 Cash Drawer 열기 오류:', err.message);
+              });
+              drawerReq.write('{}');
+              drawerReq.end();
             }
           } catch (printError) {
             console.error('🖨️ 자동 출력 중 오류:', printError.message);
@@ -756,9 +788,12 @@ router.get('/:restaurantId', async (req, res) => {
         const taxBreakdown = order.taxBreakdown ? JSON.stringify(order.taxBreakdown) : null;
         
         try {
+          // prepTime 추출
+          const prepTime = order.prepTime || order.prep_time || 20;
+          
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, pickup_minutes, order_source, kitchen_note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderNumber,
               'ONLINE',
@@ -770,7 +805,10 @@ router.get('/:restaurantId', async (req, res) => {
               firebaseOrderId,
               taxAmount,
               taxRate,
-              taxBreakdown
+              taxBreakdown,
+              prepTime,                                    // pickup_minutes
+              'THEZONE',                                   // order_source
+              order.notes || order.specialInstructions || null  // kitchen_note
             ]
           );
           localOrder = { id: result.lastID };
@@ -944,6 +982,18 @@ router.post('/order/:orderId/complete', async (req, res) => {
 
     const { orderId } = req.params;
     const result = await firebaseService.updateOrderStatus(orderId, 'completed');
+
+    // 로컬 SQLite 데이터베이스도 PAID 상태로 업데이트
+    try {
+      const closedAt = new Date().toISOString();
+      await dbRun(
+        `UPDATE orders SET status = 'PAID', closed_at = ? WHERE firebase_order_id = ?`,
+        [closedAt, orderId]
+      );
+      console.log(`✅ 온라인 주문 로컬 DB 상태 업데이트: ${orderId} → PAID`);
+    } catch (dbError) {
+      console.error('로컬 DB 업데이트 실패:', dbError.message);
+    }
 
     res.json({
       success: true,

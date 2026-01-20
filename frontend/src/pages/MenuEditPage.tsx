@@ -2446,7 +2446,7 @@ Import때 참고해야하는것,
             <div {...listeners} className="cursor-grab p-1.5 self-stretch flex items-center hover:bg-gray-200 rounded-full transition-colors">
               <GripVertical size={20} className="text-slate-400" />
             </div>
-            {/* 카테고리 이미지 미리보기 및 업로드 */}
+            {/* 카테고리 이미지 미리보기 및 업로드/삭제 */}
             <div className="relative flex items-center">
               {category.image_url ? (
                 <img
@@ -2457,14 +2457,32 @@ Import때 참고해야하는것,
               ) : (
                 <div className="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center text-gray-400 mr-2 text-xs">No img</div>
               )}
+              {/* 업로드 버튼 (+) */}
               <button
                 type="button"
-                className="absolute bottom-0 right-0 bg-white rounded-lg p-0.5 border border-gray-300 hover:bg-blue-100"
-                onClick={() => fileInputRefs.current[category.id]?.click()}
+                className="absolute top-0 right-0 bg-white rounded-full w-4 h-4 flex items-center justify-center border border-gray-300 hover:bg-blue-100 text-blue-500 font-bold text-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRefs.current[category.id]?.click();
+                }}
                 title="카테고리 이미지 업로드"
               >
-                <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" /></svg>
+                +
               </button>
+              {/* 삭제 버튼 (-) - 이미지가 있을 때만 표시 */}
+              {category.image_url && (
+                <button
+                  type="button"
+                  className="absolute bottom-0 right-0 bg-white rounded-full w-4 h-4 flex items-center justify-center border border-red-300 hover:bg-red-100 text-red-500 font-bold text-xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteCategoryImage(category.id);
+                  }}
+                  title="카테고리 이미지 삭제"
+                >
+                  −
+                </button>
+              )}
               <input
                 type="file"
                 accept="image/*"
@@ -2960,24 +2978,40 @@ Import때 참고해야하는것,
         <GripVertical size={18} className="text-slate-400" />
       </div>
       <div className="flex items-center space-x-3 flex-1">
-        {/* 메뉴아이템 이미지 미리보기 및 업로드 */}
+        {/* 메뉴아이템 이미지 미리보기 및 업로드/삭제 */}
         <div className="relative flex items-center">
           {item.image_url ? (
             <img src={`http://localhost:3177${item.image_url}`} alt={item.name} className="w-12 h-12 object-cover rounded-lg border border-gray-300 mr-2" />
           ) : (
             <div className="w-12 h-12 bg-gray-200 rounded-lg flex items-center justify-center text-gray-400 mr-2 text-xs">No img</div>
           )}
+          {/* 업로드 버튼 (+) */}
           <button
             type="button"
-            className="absolute bottom-0 right-0 bg-white rounded-lg p-0.5 border border-gray-300 hover:bg-blue-100"
-            onClick={() => {
+            className="absolute top-0 right-0 bg-white rounded-full w-5 h-5 flex items-center justify-center border border-gray-300 hover:bg-blue-100 text-blue-500 font-bold text-sm"
+            onClick={(e) => {
+              e.stopPropagation();
               const input = document.querySelector(`input[data-item-id="${item.id}"]`) as HTMLInputElement;
               input?.click();
             }}
             title="메뉴아이템 이미지 업로드"
           >
-            <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" /></svg>
+            +
           </button>
+          {/* 삭제 버튼 (-) - 이미지가 있을 때만 표시 */}
+          {item.image_url && (
+            <button
+              type="button"
+              className="absolute bottom-0 right-0 bg-white rounded-full w-5 h-5 flex items-center justify-center border border-red-300 hover:bg-red-100 text-red-500 font-bold text-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDeleteMenuItemImage(item.id);
+              }}
+              title="메뉴아이템 이미지 삭제"
+            >
+              −
+            </button>
+          )}
           <input
             type="file"
             accept="image/*"
@@ -3196,6 +3230,56 @@ Import때 참고해야하는것,
     } catch (error) {
       console.error(error);
       alert('메뉴아이템 이미지 업로드에 실패했습니다.');
+    }
+  };
+
+  // Delete image confirmation state
+  const [deleteImageConfirm, setDeleteImageConfirm] = useState<{ 
+    show: boolean; 
+    type: 'category' | 'item' | null; 
+    id: number | null 
+  }>({ show: false, type: null, id: null });
+
+  const handleDeleteMenuItemImage = (itemId: number) => {
+    setDeleteImageConfirm({ show: true, type: 'item', id: itemId });
+  };
+
+  const handleDeleteCategoryImage = (categoryId: number) => {
+    setDeleteImageConfirm({ show: true, type: 'category', id: categoryId });
+  };
+
+  const confirmDeleteImage = async () => {
+    const { type, id } = deleteImageConfirm;
+    if (!id) {
+      setDeleteImageConfirm({ show: false, type: null, id: null });
+      return;
+    }
+    
+    try {
+      if (type === 'category') {
+        const response = await fetch(`${API_URL}/menu/categories/${id}/image`, {
+          method: 'DELETE',
+        });
+        if (!response.ok) throw new Error('Failed to delete category image');
+        setCategories(prev => prev.map(cat =>
+          cat.id === id ? { ...cat, image_url: '' } : cat
+        ));
+      } else if (type === 'item') {
+        const response = await fetch(`${API_URL}/menu/items/${id}/image`, {
+          method: 'DELETE',
+        });
+        if (!response.ok) throw new Error('Failed to delete menu item image');
+        setAllMenuItems(prev => prev.map(item =>
+          item.id === id ? { ...item, image_url: '' } : item
+        ));
+        setMenuItems(prev => prev.map(item =>
+          item.id === id ? { ...item, image_url: '' } : item
+        ));
+      }
+      setDeleteImageConfirm({ show: false, type: null, id: null });
+    } catch (error) {
+      console.error(error);
+      setDeleteImageConfirm({ show: false, type: null, id: null });
     }
   };
 
@@ -3960,6 +4044,43 @@ Import때 참고해야하는것,
 
       {/* 백업 모달 */}
       <BackupModal />
+
+      {/* Delete Image Confirmation Modal */}
+      {deleteImageConfirm.show && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10001]"
+          onClick={() => setDeleteImageConfirm({ show: false, type: null, id: null })}
+        >
+          <div 
+            className="bg-white rounded-2xl p-6 w-[350px] shadow-2xl text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-5xl mb-4">🗑️</div>
+            <h3 className="text-lg font-semibold text-gray-800 mb-3">
+              Delete Image
+            </h3>
+            <p className="text-sm text-gray-500 mb-6">
+              {deleteImageConfirm.type === 'category' 
+                ? 'Are you sure you want to delete this category image?' 
+                : 'Are you sure you want to delete this image?'}
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => setDeleteImageConfirm({ show: false, type: null, id: null })}
+                className="px-6 py-2.5 bg-gray-200 text-gray-600 rounded-lg hover:bg-gray-300 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteImage}
+                className="px-6 py-2.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
      </div>
    );
  };

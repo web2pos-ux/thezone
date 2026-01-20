@@ -438,6 +438,40 @@ app.post('/api/menu/items/:itemId/image', itemUpload.single('image'), (req, res)
   );
 });
 
+// --- 카테고리 이미지 삭제 엔드포인트 추가 ---
+app.delete('/api/menu/categories/:categoryId/image', (req, res) => {
+  db.run(
+    'UPDATE menu_categories SET image_url = NULL WHERE category_id = ?',
+    [req.params.categoryId],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: 'DB update failed' });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Category not found' });
+      }
+      res.json({ success: true, message: 'Category image deleted' });
+    }
+  );
+});
+
+// --- 메뉴아이템 이미지 삭제 엔드포인트 추가 ---
+app.delete('/api/menu/items/:itemId/image', (req, res) => {
+  db.run(
+    'UPDATE menu_items SET image_url = NULL WHERE item_id = ?',
+    [req.params.itemId],
+    function (err) {
+      if (err) {
+        return res.status(500).json({ error: 'DB update failed' });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+      res.json({ success: true, message: 'Item image deleted' });
+    }
+  );
+});
+
 // --- API Routers ---
 const menuRoutes = require('./routes/menus')(db);
 const menuItemRoutes = require('./routes/menu')(db);
@@ -476,6 +510,7 @@ const reportsV2Routes = require('./routes/reports-v2');
 const salesDashboardRoutes = require('./routes/sales-dashboard');
 const deliveryChannelsRoutes = require('./routes/delivery-channels')(db);
 const menuVisibilityRoutes = require('./routes/menu-visibility')(db);
+const dailyClosingsRoutes = require('./routes/daily-closings')(db);
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -514,6 +549,7 @@ app.use('/api/reports-v2', reportsV2Routes);
 app.use('/api/sales-dashboard', salesDashboardRoutes);
 app.use('/api/delivery-channels', deliveryChannelsRoutes);
 app.use('/api/menu-visibility', menuVisibilityRoutes);
+app.use('/api/daily-closings', dailyClosingsRoutes);
 
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
