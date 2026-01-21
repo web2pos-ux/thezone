@@ -62,11 +62,15 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
       const paymentMethod = (paymentData.method || 'CASH').toUpperCase();
       const orderType = (orderData.orderType || 'DINE-IN').toUpperCase();
       
+      // 할인 정보 계산
+      const discountAmount = Number(orderData.discountAmount || paymentData.discountAmount || 0);
+      const discountType = orderData.discountType || paymentData.discountType || null;
+      
       if (dailyDoc.exists) {
         const data = dailyDoc.data();
         
-        // 기존 데이터 업데이트
-        transaction.update(dailySalesRef, {
+        // 기존 데이터 업데이트 (할인 정보 포함)
+        const updateData = {
           totalSales: admin.firestore.FieldValue.increment(paymentAmount),
           totalTips: admin.firestore.FieldValue.increment(tipAmount),
           orderCount: admin.firestore.FieldValue.increment(1),
@@ -74,10 +78,18 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
           [`orderTypes.${orderType}`]: admin.firestore.FieldValue.increment(paymentAmount),
           [`hourlySales.${hourStr}`]: admin.firestore.FieldValue.increment(paymentAmount),
           lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-        });
+        };
+        
+        // 할인이 있는 경우 할인 필드 추가
+        if (discountAmount > 0) {
+          updateData.totalDiscount = admin.firestore.FieldValue.increment(discountAmount);
+          updateData.discountCount = admin.firestore.FieldValue.increment(1);
+        }
+        
+        transaction.update(dailySalesRef, updateData);
       } else {
-        // 새 문서 생성
-        transaction.set(dailySalesRef, {
+        // 새 문서 생성 (할인 정보 포함)
+        const setData = {
           date: dateStr,
           totalSales: paymentAmount,
           totalTips: tipAmount,
@@ -85,9 +97,13 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
           paymentMethods: { [paymentMethod]: paymentAmount },
           orderTypes: { [orderType]: paymentAmount },
           hourlySales: { [hourStr]: paymentAmount },
+          totalDiscount: discountAmount,
+          discountCount: discountAmount > 0 ? 1 : 0,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-        });
+        };
+        
+        transaction.set(dailySalesRef, setData);
       }
     });
 
@@ -268,9 +284,76 @@ async function getMonthlySales(restaurantId, month = null) {
   }
 }
 
+/**
+ * 테이블 머지/이동 히스토리를 Firebase에 동기화
+ * @param {Object} mergeData - 머지/이동 정보
+ * @param {string} restaurantId - Firebase 레스토랑 ID
+ */
+async function syncTableMergeToFirebase(mergeData, restaurantId) {
+  const db = getFirestore();
+  if (!db) {
+    console.warn('[SalesSync] Firebase not available for table merge sync');
+    return null;
+  }
+
+  try {
+    const now = new Date();
+    const dateStr = getDateString(now);
+    const restaurantRef = db.collection('restaurants').doc(restaurantId);
+    
+    // 테이블 머지/이동 히스토리 컬렉션에 기록
+    const mergeHistoryRef = restaurantRef.collection('tableMergeHistory').doc();
+    
+    await mergeHistoryRef.set({
+      date: dateStr,
+      actionType: mergeData.actionType || 'MERGE', // 'MERGE' or 'MOVE'
+      fromTableId: mergeData.fromTableId,
+      toTableId: mergeData.toTableId,
+      floor: mergeData.floor || '1F',
+      fromOrderId: mergeData.fromOrderId || null,
+      toOrderId: mergeData.toOrderId || null,
+      movedItemCount: mergeData.movedItemCount || 0,
+      partial: mergeData.partial || false,
+      performedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // 일별 머지/이동 카운트 업데이트
+    const dailyStatsRef = restaurantRef.collection('dailyTableStats').doc(dateStr);
+    
+    await db.runTransaction(async (transaction) => {
+      const doc = await transaction.get(dailyStatsRef);
+      const actionField = mergeData.actionType === 'MOVE' ? 'moveCount' : 'mergeCount';
+      
+      if (doc.exists) {
+        transaction.update(dailyStatsRef, {
+          [actionField]: admin.firestore.FieldValue.increment(1),
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        transaction.set(dailyStatsRef, {
+          date: dateStr,
+          mergeCount: mergeData.actionType === 'MERGE' ? 1 : 0,
+          moveCount: mergeData.actionType === 'MOVE' ? 1 : 0,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    });
+
+    console.log(`[SalesSync] ✅ Table ${mergeData.actionType} synced: ${mergeData.fromTableId} → ${mergeData.toTableId}`);
+    return { success: true };
+    
+  } catch (error) {
+    console.error('[SalesSync] ❌ Table merge sync failed:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   syncPaymentToFirebase,
   syncOrderItemsToFirebase,
+  syncTableMergeToFirebase,
   getDailySales,
   getMonthlySales
 };

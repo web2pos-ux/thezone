@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 
@@ -984,6 +985,7 @@ router.post('/order/:orderId/complete', async (req, res) => {
     const result = await firebaseService.updateOrderStatus(orderId, 'completed');
 
     // 로컬 SQLite 데이터베이스도 PAID 상태로 업데이트
+    let localOrderId = null;
     try {
       const closedAt = new Date().toISOString();
       await dbRun(
@@ -991,8 +993,55 @@ router.post('/order/:orderId/complete', async (req, res) => {
         [closedAt, orderId]
       );
       console.log(`✅ 온라인 주문 로컬 DB 상태 업데이트: ${orderId} → PAID`);
+      
+      // 로컬 주문 ID 조회
+      const localOrder = await dbGet(`SELECT id FROM orders WHERE firebase_order_id = ?`, [orderId]);
+      if (localOrder) {
+        localOrderId = localOrder.id;
+      }
     } catch (dbError) {
       console.error('로컬 DB 업데이트 실패:', dbError.message);
+    }
+
+    // Firebase 매출 동기화 (Dine-In, Togo와 동일하게)
+    try {
+      const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+      
+      if (restaurantId && localOrderId) {
+        // 주문 정보 조회
+        const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [localOrderId]);
+        // 결제 정보 조회
+        const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [localOrderId]);
+        // 주문 아이템 조회
+        const items = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [localOrderId]);
+        
+        if (orderData && payments.length > 0) {
+          // 총 결제 금액 계산
+          const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+          const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
+          const paymentMethod = payments[0]?.method || 'CASH';
+          
+          // Firebase 동기화 (비동기, 실패해도 결제는 성공)
+          salesSyncService.syncPaymentToFirebase(
+            { ...orderData, items, orderType: 'ONLINE' },
+            { amount: totalPayment, tip: totalTips, method: paymentMethod },
+            restaurantId
+          ).catch(err => console.warn('[SalesSync] Online order sync error:', err.message));
+          
+          // 아이템별 매출 동기화
+          if (items.length > 0) {
+            salesSyncService.syncOrderItemsToFirebase(
+              { ...orderData, items, orderType: 'ONLINE' },
+              restaurantId
+            ).catch(err => console.warn('[SalesSync] Online item sync error:', err.message));
+          }
+          
+          console.log(`✅ 온라인 주문 Firebase 매출 동기화 완료: ${orderId}`);
+        }
+      }
+    } catch (syncErr) {
+      // Firebase 동기화 실패해도 결제는 성공 처리
+      console.warn('[SalesSync] Online order sync skipped:', syncErr.message);
     }
 
     res.json({

@@ -284,6 +284,10 @@ const SalesPage: React.FC = () => {
   const [showOnlineTogoPaymentModal, setShowOnlineTogoPaymentModal] = useState<boolean>(false);
   const [onlineTogoPaymentOrder, setOnlineTogoPaymentOrder] = useState<any | null>(null);
   
+  // Online/Togo 결제 세션 관리 (Dine-In과 동일한 방식)
+  const [onlineTogoSessionPayments, setOnlineTogoSessionPayments] = useState<Array<{ paymentId: number; method: string; amount: number; tip: number }>>([]);
+  const onlineTogoSavedOrderIdRef = React.useRef<number | null>(null);
+  
   // 결제 완료 후 Pickup Complete 확인 모달
   const [showPickupConfirmModal, setShowPickupConfirmModal] = useState<boolean>(false);
   const [pickupConfirmOrder, setPickupConfirmOrder] = useState<any | null>(null);
@@ -592,7 +596,7 @@ const SalesPage: React.FC = () => {
           if (guestNumbers.size <= 1) {
             // 스플릿되지 않음 - 바로 ALL 선택
             setSelectionChoice('ALL');
-            setMoveMergeStatus(`✓ [전체 이동] ${label} → 목적지를 선택하세요`);
+            setMoveMergeStatus(`✓ [Move All] ${label} → Select destination`);
             return;
           }
         }
@@ -602,10 +606,10 @@ const SalesPage: React.FC = () => {
       // 스플릿됨 - 모달 표시
       setSelectionChoice(null);
       setIsSelectionModalOpen(true);
-      setMoveMergeStatus('이동할 게스트/아이템을 선택하세요.');
+      setMoveMergeStatus('Select guests/items to move.');
     } else {
       setSelectionChoice('ALL');
-      setMoveMergeStatus('목적 테이블을 선택하세요');
+      setMoveMergeStatus('Select destination table');
     }
   }, []);
 
@@ -2073,7 +2077,7 @@ const SalesPage: React.FC = () => {
             : `Online #${order.number ?? order.id}`;
           
           try {
-            setMoveMergeStatus(`🔄 ${targetLabel}로 머지 중...`);
+            setMoveMergeStatus(`🔄 Merging to ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-to-togo`, {
               method: 'POST',
@@ -2115,10 +2119,10 @@ const SalesPage: React.FC = () => {
               clearMoveMergeSelection();
               loadTogoOrders();
               
-              setMoveMergeStatus(result.message || `✅ ${targetLabel}로 머지 완료`);
+              setMoveMergeStatus(result.message || `✅ Merged to ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
-              setMoveMergeStatus(`❌ 머지 실패: ${result.error || result.details || 'Unknown error'}`);
+              setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
               setTimeout(() => {
                 setSourceTableId(null);
                 setMoveMergeStatus('');
@@ -2127,7 +2131,7 @@ const SalesPage: React.FC = () => {
             }
           } catch (error: any) {
             console.error('Merge to Togo error:', error);
-            setMoveMergeStatus(`❌ 오류: ${error.message}`);
+            setMoveMergeStatus(`❌ Error: ${error.message}`);
             setTimeout(() => {
               setSourceTableId(null);
               setMoveMergeStatus('');
@@ -2141,8 +2145,8 @@ const SalesPage: React.FC = () => {
         if (sourceTogoOrder) {
           // 같은 Togo 선택 방지
           if (sourceTogoOrder.id === order.id) {
-            setMoveMergeStatus('❌ 같은 Togo를 선택할 수 없습니다.');
-            setTimeout(() => setMoveMergeStatus('✓ 목적 Togo를 선택하세요'), 1500);
+            setMoveMergeStatus('❌ Cannot select the same Togo.');
+            setTimeout(() => setMoveMergeStatus('✓ Select destination Togo'), 1500);
             return;
           }
           
@@ -2151,7 +2155,7 @@ const SalesPage: React.FC = () => {
           const targetLabel = `Togo #${order.id}`;
           
           try {
-            setMoveMergeStatus(`🔄 ${sourceLabel} → ${targetLabel} 머지 중...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
               method: 'POST',
@@ -2170,10 +2174,10 @@ const SalesPage: React.FC = () => {
               clearMoveMergeSelection();
               loadTogoOrders();
               
-              setMoveMergeStatus(result.message || `✅ ${sourceLabel} → ${targetLabel} 머지 완료`);
+              setMoveMergeStatus(result.message || `✅ Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
-              setMoveMergeStatus(`❌ 머지 실패: ${result.error || result.details || 'Unknown error'}`);
+              setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
               setTimeout(() => {
                 setSourceTogoOrder(null);
                 setMoveMergeStatus('');
@@ -2182,7 +2186,7 @@ const SalesPage: React.FC = () => {
             }
           } catch (error: any) {
             console.error('Togo to Togo merge error:', error);
-            setMoveMergeStatus(`❌ 오류: ${error.message}`);
+            setMoveMergeStatus(`❌ Error: ${error.message}`);
             setTimeout(() => {
               setSourceTogoOrder(null);
               setMoveMergeStatus('');
@@ -2199,7 +2203,7 @@ const SalesPage: React.FC = () => {
           const targetLabel = `Togo #${order.id}`;
           
           try {
-            setMoveMergeStatus(`🔄 ${sourceLabel} → ${targetLabel} 머지 중...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
               method: 'POST',
@@ -2218,10 +2222,10 @@ const SalesPage: React.FC = () => {
               clearMoveMergeSelection();
               loadTogoOrders();
               
-              setMoveMergeStatus(result.message || `✅ ${sourceLabel} → ${targetLabel} 머지 완료`);
+              setMoveMergeStatus(result.message || `✅ Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
-              setMoveMergeStatus(`❌ 머지 실패: ${result.error || result.details || 'Unknown error'}`);
+              setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
               setTimeout(() => {
                 setSourceOnlineOrder(null);
                 setMoveMergeStatus('');
@@ -2230,7 +2234,7 @@ const SalesPage: React.FC = () => {
             }
           } catch (error: any) {
             console.error('Online to Togo merge error:', error);
-            setMoveMergeStatus(`❌ 오류: ${error.message}`);
+            setMoveMergeStatus(`❌ Error: ${error.message}`);
             setTimeout(() => {
               setSourceOnlineOrder(null);
               setMoveMergeStatus('');
@@ -2245,11 +2249,11 @@ const SalesPage: React.FC = () => {
           if (channel === 'togo') {
             const sourceLabel = `Togo #${order.id}`;
             setSourceTogoOrder(order);
-            setMoveMergeStatus(`✓ 출발: ${sourceLabel} → 목적 Togo를 선택하세요`);
+            setMoveMergeStatus(`✓ Source: ${sourceLabel} → Select destination Togo`);
           } else if (channel === 'online') {
             const sourceLabel = `Online #${order.number ?? order.id}`;
             setSourceOnlineOrder(order);
-            setMoveMergeStatus(`✓ 출발: ${sourceLabel} → 목적 Togo를 선택하세요`);
+            setMoveMergeStatus(`✓ Source: ${sourceLabel} → Select destination Togo`);
           }
           return;
         }
@@ -4245,7 +4249,7 @@ const SalesPage: React.FC = () => {
       // Available 테이블 → Move (이동)
       if (element.status === 'Available') {
         try {
-          setMoveMergeStatus(`🔄 ${sourceLabel} → ${tableLabel} 이동 중...`);
+            setMoveMergeStatus(`🔄 Moving ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/move-togo-to-table`, {
             method: 'POST',
@@ -4290,10 +4294,10 @@ const SalesPage: React.FC = () => {
             clearMoveMergeSelection();
             loadTogoOrders();
             
-            setMoveMergeStatus(`✅ ${sourceLabel} → ${tableLabel} 이동 완료`);
+            setMoveMergeStatus(`✅ Moved ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
-            setMoveMergeStatus(`❌ 이동 실패: ${result.error || result.details || 'Unknown error'}`);
+            setMoveMergeStatus(`❌ Move failed: ${result.error || result.details || 'Unknown error'}`);
             setTimeout(() => {
               setMoveMergeStatus('');
               clearMoveMergeSelection();
@@ -4301,7 +4305,7 @@ const SalesPage: React.FC = () => {
           }
         } catch (error: any) {
           console.error(`${sourceType} to Table move error:`, error);
-          setMoveMergeStatus(`❌ 오류: ${error.message}`);
+          setMoveMergeStatus(`❌ Error: ${error.message}`);
           setTimeout(() => {
             setMoveMergeStatus('');
             clearMoveMergeSelection();
@@ -4313,7 +4317,7 @@ const SalesPage: React.FC = () => {
       // Occupied 테이블 → Merge (병합)
       if (element.status === 'Occupied') {
         try {
-          setMoveMergeStatus(`🔄 ${sourceLabel} → ${tableLabel} 머지 중...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/merge-togo-to-table`, {
             method: 'POST',
@@ -4347,10 +4351,10 @@ const SalesPage: React.FC = () => {
               console.error('Failed to refresh table map:', e);
             }
             
-            setMoveMergeStatus(`✅ ${sourceLabel} → ${tableLabel} 머지 완료`);
+            setMoveMergeStatus(`✅ Merged ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
-            setMoveMergeStatus(`❌ 머지 실패: ${result.error || result.details || 'Unknown error'}`);
+            setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
             setTimeout(() => {
               setMoveMergeStatus('');
               clearMoveMergeSelection();
@@ -4358,7 +4362,7 @@ const SalesPage: React.FC = () => {
           }
         } catch (error: any) {
           console.error(`${sourceType} to Table merge error:`, error);
-          setMoveMergeStatus(`❌ 오류: ${error.message}`);
+          setMoveMergeStatus(`❌ Error: ${error.message}`);
           setTimeout(() => {
             setMoveMergeStatus('');
             clearMoveMergeSelection();
@@ -4368,7 +4372,7 @@ const SalesPage: React.FC = () => {
       }
       
       // 다른 상태의 테이블
-      setMoveMergeStatus('❌ 목적 테이블은 Available 또는 Occupied 상태여야 합니다.');
+      setMoveMergeStatus('❌ Destination table must be Available or Occupied.');
       setTimeout(() => setMoveMergeStatus(''), 2000);
       return;
     }
@@ -4376,19 +4380,19 @@ const SalesPage: React.FC = () => {
     // 첫 번째 클릭: 출발 테이블 선택 (Occupied만 가능)
     if (!sourceTableId) {
       if (element.status !== 'Occupied') {
-        setMoveMergeStatus('❌ 출발 테이블은 Occupied 상태여야 합니다.');
+        setMoveMergeStatus('❌ Source table must be Occupied.');
         setTimeout(() => setMoveMergeStatus(''), 3000);
         return;
       }
       setSourceTableId(element.id);
-      setMoveMergeStatus(`✓ 출발 테이블: ${tableLabel} → 목적 테이블을 선택하세요`);
+      setMoveMergeStatus(`✓ Source: ${tableLabel} → Select destination table`);
       beginSourceSelection(element, tableLabel);
       return;
     }
 
     // 두 번째 클릭: 목적 테이블 선택
     if (sourceTableId === element.id) {
-      setMoveMergeStatus('❌ 같은 테이블을 선택할 수 없습니다.');
+      setMoveMergeStatus('❌ Cannot select the same table.');
       setTimeout(() => {
         clearMoveMergeSelection();
         setMoveMergeStatus('');
@@ -4397,14 +4401,14 @@ const SalesPage: React.FC = () => {
     }
 
     if (!selectionChoice) {
-      setMoveMergeStatus('먼저 이동할 게스트/아이템을 선택해주세요.');
+      setMoveMergeStatus('Please select guests/items to move first.');
       return;
     }
 
     // MOVE: Occupied → Available
     if (element.status === 'Available') {
       try {
-        setMoveMergeStatus('🔄 테이블 이동 중...');
+        setMoveMergeStatus('🔄 Moving table...');
         const response = await fetch(`${API_URL}/table-operations/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4431,7 +4435,7 @@ const SalesPage: React.FC = () => {
           const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
           const toStatus = result.toTable?.status || 'Occupied';
           const targetOrderId = result.toTable?.orderId ?? null;
-          setMoveMergeStatus(result.message ? `✅ ${result.message}` : `✅ 테이블 이동 완료: ${sourceTableId} → ${element.text}`);
+          setMoveMergeStatus(result.message ? `✅ ${result.message}` : `✅ Table moved: ${sourceTableId} → ${element.text}`);
           
           setTableElements(prev => prev.map(el => {
             if (String(el.id) === String(sourceTableId)) {
@@ -4562,7 +4566,7 @@ const SalesPage: React.FC = () => {
           await fetchTableMapData();
         } else {
           console.error('[MOVE] Error details:', result);
-          setMoveMergeStatus(`❌ 이동 실패: ${result.details || result.error}`);
+          setMoveMergeStatus(`❌ Move failed: ${result.details || result.error}`);
           setTimeout(() => {
             setSourceTableId(null);
             setMoveMergeStatus('');
@@ -4571,7 +4575,7 @@ const SalesPage: React.FC = () => {
         }
       } catch (error: any) {
         console.error('Move table error:', error);
-        setMoveMergeStatus(`❌ 오류: ${error.message}`);
+        setMoveMergeStatus(`❌ Error: ${error.message}`);
         setTimeout(() => {
           setSourceTableId(null);
           setMoveMergeStatus('');
@@ -4582,7 +4586,7 @@ const SalesPage: React.FC = () => {
     // MERGE: Occupied → Occupied
     else if (element.status === 'Occupied') {
       try {
-        setMoveMergeStatus('🔄 테이블 병합 중...');
+        setMoveMergeStatus('🔄 Merging tables...');
         const response = await fetch(`${API_URL}/table-operations/merge`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4609,7 +4613,7 @@ const SalesPage: React.FC = () => {
           const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
           const toStatus = result.toTable?.status || 'Occupied';
           const targetOrderId = result.toTable?.orderId ?? null;
-          setMoveMergeStatus(result.message ? `✅ ${result.message}` : `✅ 테이블 병합 완료: ${sourceTableId} + ${element.text}`);
+          setMoveMergeStatus(result.message ? `✅ ${result.message}` : `✅ Tables merged: ${sourceTableId} + ${element.text}`);
           
           setTableElements(prev => prev.map(el => {
             if (String(el.id) === String(sourceTableId)) {
@@ -4735,7 +4739,7 @@ const SalesPage: React.FC = () => {
           await fetchTableMapData();
         } else {
           console.error('[MERGE] Error details:', result);
-          setMoveMergeStatus(`❌ 병합 실패: ${result.details || result.error}`);
+          setMoveMergeStatus(`❌ Merge failed: ${result.details || result.error}`);
           setTimeout(() => {
             setSourceTableId(null);
             setMoveMergeStatus('');
@@ -4744,7 +4748,7 @@ const SalesPage: React.FC = () => {
         }
       } catch (error: any) {
         console.error('Merge table error:', error);
-        setMoveMergeStatus(`❌ 오류: ${error.message}`);
+        setMoveMergeStatus(`❌ Error: ${error.message}`);
         setTimeout(() => {
           setSourceTableId(null);
           setMoveMergeStatus('');
@@ -4752,7 +4756,7 @@ const SalesPage: React.FC = () => {
         }, 3000);
       }
     } else {
-      setMoveMergeStatus('❌ 목적 테이블은 Available 또는 Occupied 상태여야 합니다.');
+      setMoveMergeStatus('❌ Destination table must be Available or Occupied.');
       setTimeout(() => setMoveMergeStatus(''), 2000);
     }
   };
@@ -4767,11 +4771,11 @@ const SalesPage: React.FC = () => {
     setSelectionChoice(selection);
     
     if (selection === 'ALL') {
-      setMoveMergeStatus(`✓ [전체 이동] ${sourceSelectionInfo?.label} → 목적 테이블을 선택하세요`);
+      setMoveMergeStatus(`✓ [Move All] ${sourceSelectionInfo?.label} → Select destination table`);
     } else {
       const guestCount = selection.guestNumbers?.length || 0;
       const itemCount = (selection.orderItemIds?.length || 0) + (selection.orderLineIds?.length || 0);
-      setMoveMergeStatus(`✓ [부분 이동: G${guestCount}/I${itemCount}] ${sourceSelectionInfo?.label} → 목적 테이블을 선택하세요`);
+      setMoveMergeStatus(`✓ [Partial: G${guestCount}/I${itemCount}] ${sourceSelectionInfo?.label} → Select destination table`);
     }
   };
 
@@ -8606,6 +8610,9 @@ const SalesPage: React.FC = () => {
         onClose={() => {
           setShowOnlineTogoPaymentModal(false);
           setOnlineTogoPaymentOrder(null);
+          // 결제 세션 초기화
+          setOnlineTogoSessionPayments([]);
+          onlineTogoSavedOrderIdRef.current = null;
         }}
         subtotal={onlineTogoPaymentOrder?.subtotal || 0}
         taxLines={onlineTogoPaymentOrder?.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : []}
@@ -8613,9 +8620,101 @@ const SalesPage: React.FC = () => {
         channel={onlineTogoPaymentOrder?.type?.toLowerCase() || 'togo'}
         customerName={onlineTogoPaymentOrder?.name || ''}
         tableName={`${onlineTogoPaymentOrder?.type || 'Order'} #${onlineTogoPaymentOrder?.number || ''}`}
+        payments={onlineTogoSessionPayments}
+        outstandingDue={(() => {
+          const total = onlineTogoPaymentOrder?.total || 0;
+          const paidSum = onlineTogoSessionPayments.reduce((s, p) => s + (p.amount || 0), 0);
+          return Math.max(0, Number((total - paidSum).toFixed(2)));
+        })()}
+        paidSoFar={onlineTogoSessionPayments.reduce((s, p) => s + (p.amount || 0), 0)}
+        onClearAllPayments={async () => {
+          // 결제 세션만 초기화 (DB 결제는 유지 - void 처리는 별도로)
+          setOnlineTogoSessionPayments([]);
+        }}
         onConfirm={async (payload: { method: string; amount: number; tip: number }) => {
-          console.log('Payment confirmed:', payload, 'for order:', onlineTogoPaymentOrder);
-          // onConfirm은 결제 처리 후 호출되므로, 여기서는 로깅만 수행
+          try {
+            // Togo 주문의 경우 이미 로컬 DB에 orderId가 있음
+            // Online 주문의 경우 로컬 DB에 저장되어 있지 않으므로 먼저 저장 필요
+            let orderId = onlineTogoSavedOrderIdRef.current;
+            
+            // selectedOrderType 대신 onlineTogoPaymentOrder.orderType 사용 (클로저 stale 값 방지)
+            const orderType = onlineTogoPaymentOrder?.orderType;
+            
+            if (!orderId) {
+              if (orderType === 'togo' && onlineTogoPaymentOrder?.id) {
+                // Togo: 이미 로컬 DB에 있음
+                orderId = onlineTogoPaymentOrder.id;
+                onlineTogoSavedOrderIdRef.current = orderId;
+              } else if (orderType === 'online' && onlineTogoPaymentOrder?.id) {
+                // Online: 로컬 DB에 주문 저장
+                const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
+                const items = orderData?.items || [];
+                const now = new Date();
+                const orderNumber = `ONLINE-${onlineTogoPaymentOrder.number || now.getTime()}`;
+                
+                const saveRes = await fetch(`${API_URL}/orders`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    orderNumber,
+                    orderType: 'ONLINE',
+                    total: onlineTogoPaymentOrder.total || 0,
+                    items: items.map((it: any) => ({
+                      id: it.id || it.item_id,
+                      name: it.name,
+                      quantity: it.quantity || 1,
+                      price: (it.price || 0) * (it.quantity || 1),
+                      modifiers: it.modifiers || []
+                    })),
+                    customerName: onlineTogoPaymentOrder.name || '',
+                    customerPhone: onlineTogoPaymentOrder.phone || ''
+                  })
+                });
+                
+                if (!saveRes.ok) throw new Error('Failed to save online order to local DB');
+                const saved = await saveRes.json();
+                orderId = saved.orderId;
+                onlineTogoSavedOrderIdRef.current = orderId;
+              }
+            }
+            
+            if (!orderId) {
+              console.error('No orderId available for payment');
+              return;
+            }
+            
+            // 결제 저장 API 호출 (Dine-In과 동일)
+            const payRes = await fetch(`${API_URL}/payments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                orderId,
+                method: payload.method,
+                amount: Number((payload.amount + payload.tip).toFixed(2)),
+                tip: payload.tip,
+                guestNumber: null
+              })
+            });
+            
+            if (!payRes.ok) throw new Error('Failed to save payment');
+            const payData = await payRes.json();
+            
+            // 로컬 세션에 결제 추가
+            setOnlineTogoSessionPayments(prev => ([
+              ...prev,
+              {
+                paymentId: payData.paymentId,
+                method: payload.method,
+                amount: Number((payload.amount + payload.tip).toFixed(2)),
+                tip: payload.tip
+              }
+            ]));
+            
+            console.log('Payment saved:', payData, 'for order:', orderId);
+          } catch (e) {
+            console.error('Payment processing error:', e);
+            alert('An error occurred during payment processing.');
+          }
         }}
         onComplete={async () => {
           // 결제 모달 닫기
@@ -8639,6 +8738,15 @@ const SalesPage: React.FC = () => {
               try {
                 // 온라인 주문 정보로 Receipt 데이터 구성
                 const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
+                // 실제 결제 내역 사용 (없으면 기본값)
+                const actualPayments = onlineTogoSessionPayments.length > 0
+                  ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
+                  : [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }];
+                // 현금 결제에서 Change 계산
+                const cashPaid = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+                const totalAmount = onlineTogoPaymentOrder.total || 0;
+                const nonCashPaid = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
+                const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
                 const receiptData = {
                   orderInfo: {
                     orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
@@ -8656,8 +8764,8 @@ const SalesPage: React.FC = () => {
                   taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
                   taxesTotal: onlineTogoPaymentOrder.tax || 0,
                   total: onlineTogoPaymentOrder.total || 0,
-                  payments: [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }],
-                  change: 0
+                  payments: actualPayments,
+                  change: changeAmount
                 };
                 
                 await fetch(`${API_URL}/printers/print-receipt`, {
@@ -8684,6 +8792,15 @@ const SalesPage: React.FC = () => {
               // Receipt 2장 출력 (Togo Order) - Receipt 프린터에만 출력
               try {
                 const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
+                // 실제 결제 내역 사용 (없으면 기본값)
+                const actualPaymentsTogo = onlineTogoSessionPayments.length > 0
+                  ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
+                  : [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }];
+                // 현금 결제에서 Change 계산
+                const cashPaidTogo = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+                const totalAmountTogo = onlineTogoPaymentOrder.total || 0;
+                const nonCashPaidTogo = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
+                const changeAmountTogo = Math.max(0, cashPaidTogo - (totalAmountTogo - nonCashPaidTogo));
                 const receiptData = {
                   orderInfo: {
                     orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
@@ -8701,8 +8818,8 @@ const SalesPage: React.FC = () => {
                   taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
                   taxesTotal: onlineTogoPaymentOrder.tax || 0,
                   total: onlineTogoPaymentOrder.total || 0,
-                  payments: [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }],
-                  change: 0
+                  payments: actualPaymentsTogo,
+                  change: changeAmountTogo
                 };
                 
                 await fetch(`${API_URL}/printers/print-receipt`, {
@@ -8732,11 +8849,24 @@ const SalesPage: React.FC = () => {
             }
           }
           
+          // 💰 Cash Drawer 열기 (Dine-In과 동일)
+          try {
+            console.log('💰 Opening cash drawer after Online/Togo payment completion...');
+            await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+            console.log('💰 Cash drawer opened successfully');
+          } catch (drawerErr) {
+            console.warn('Cash drawer open failed (ignored):', drawerErr);
+          }
+          
           // Pickup Complete 확인 모달 표시 (타입 정보 포함)
           setPickupConfirmOrder({ ...onlineTogoPaymentOrder, orderType: selectedOrderType });
           setShowPickupConfirmModal(true);
           
           setOnlineTogoPaymentOrder(null);
+          
+          // 결제 세션 초기화
+          setOnlineTogoSessionPayments([]);
+          onlineTogoSavedOrderIdRef.current = null;
           
           // 주문 목록 새로고침 (백그라운드)
           loadOnlineOrders();

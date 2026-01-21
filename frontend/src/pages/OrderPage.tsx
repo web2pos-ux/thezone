@@ -5131,10 +5131,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   // Precompute ALL-scope totals for PaymentModal (used for Pay in Full)
   const { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll } = useMemo(() => {
-    const orderPageTaxLines = taxLines || [];
     const base = computeGuestTotals('ALL');
-    // Always override with full-order tax lines for ALL scope
-    base.taxLines = orderPageTaxLines;
+    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
+    const baseTaxLines = base.taxLines || [];
+    
     if ((orderType || '').toLowerCase() === 'togo') {
       const discountActive = togoSettings.discountEnabled && togoSettings.discountValue > 0;
       const bagActive = togoSettings.bagFeeEnabled && togoSettings.bagFeeValue > 0;
@@ -5144,25 +5144,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const bagFeeAmt = bagActive ? bv : 0;
       const discountAmt = Number(discountAmtBase.toFixed(2));
       const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-      const grand = Number((subtotalAfter + (bagFeeAmt || 0) + orderPageTaxLines.reduce((s, t) => s + s + 0 && s, 0)).toFixed(2));
-      // Note: grand recomputed below to avoid mistake; keep return consistent
-      const grandFixed = Number((subtotalAfter + (bagFeeAmt || 0) + orderPageTaxLines.reduce((s, t) => s + t.amount, 0)).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: orderPageTaxLines, grand: grandFixed } as any;
+      // Adjust tax proportionally based on discount
+      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
+      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
+      const adjustedTaxLines = subtotalAfter <= 0 
+        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
+        : baseTaxLines;
+      const grandFixed = Number((subtotalAfter + (bagFeeAmt || 0) + taxAfterDiscount).toFixed(2));
+      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
     } else {
       const subtotalAfter = Math.max(0, Number((base.subtotal).toFixed(2)));
-      const grandFixed = Number((subtotalAfter + orderPageTaxLines.reduce((s, t) => s + t.amount, 0)).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: orderPageTaxLines, grand: grandFixed } as any;
+      // If subtotal is 0 (100% discount), tax should also be 0
+      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
+      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
+      const adjustedTaxLines = subtotalAfter <= 0 
+        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
+        : baseTaxLines;
+      const grandFixed = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
+      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderItems, orderType, taxLines]);
+  }, [orderItems, orderType, taxLines, computeGuestTotals, togoSettings]);
 
   const { subtotal: paySubtotal, taxLines: payTaxLines, grand: payGrand } = useMemo(() => {
     if (guestPaymentMode === 'ALL') {
       return { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll };
     }
     const base = computeGuestTotals(guestPaymentMode);
-    const orderPageTaxLines = taxLines || [];
-    base.taxLines = orderPageTaxLines;
+    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
+    const baseTaxLines = base.taxLines || [];
 
     if ((orderType || '').toLowerCase() === 'togo') {
       const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
@@ -5177,8 +5187,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const discountAmt = Number(discountAmtBase.toFixed(2));
       const subtotalAfterDiscount = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
       const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
-      const grand = Number((subtotalAfterDiscount + bagFeeAmt + orderPageTaxLines.reduce((s, t) => s + t.amount, 0)).toFixed(2));
-      return { subtotal: subtotalAfterDiscount, taxLines: orderPageTaxLines, grand };
+      // If subtotal is 0 (100% discount), tax should also be 0
+      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
+      const taxAfterDiscount = subtotalAfterDiscount <= 0 ? 0 : baseTaxTotal;
+      const adjustedTaxLines = subtotalAfterDiscount <= 0 
+        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
+        : baseTaxLines;
+      const grand = Number((subtotalAfterDiscount + bagFeeAmt + taxAfterDiscount).toFixed(2));
+      return { subtotal: subtotalAfterDiscount, taxLines: adjustedTaxLines, grand };
     }
 
     const items = (orderItems || []).filter(it =>
@@ -5194,8 +5210,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     });
     const discountAmt = promoAdj ? promoAdj.amountApplied : 0;
     const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-    const grand = Number((subtotalAfter + orderPageTaxLines.reduce((s, t) => s + t.amount, 0)).toFixed(2));
-    return { subtotal: subtotalAfter, taxLines: orderPageTaxLines, grand };
+    // If subtotal is 0 (100% discount), tax should also be 0
+    const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
+    const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
+    const adjustedTaxLines = subtotalAfter <= 0 
+      ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
+      : baseTaxLines;
+    const grand = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
+    return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand };
   }, [
     guestPaymentMode,
     computeGuestTotals,
@@ -5242,12 +5264,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const byGuest: Record<number, { grand: number; tax: number; subtotal: number }> = {} as any;
       (guestIds || []).forEach((g: number) => {
         const res = computeGuestTotals(g as any);
-        const tax = (res.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0);
-        byGuest[g] = { grand: Number((res.grand || 0).toFixed(2)), tax: Number((tax || 0).toFixed(2)), subtotal: Number((res.subtotal || 0).toFixed(2)) };
+        const guestSubtotal = Number((res.subtotal || 0).toFixed(2));
+        // If subtotal is 0 (100% discount), tax should also be 0
+        const rawTax = (res.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0);
+        const tax = guestSubtotal <= 0 ? 0 : rawTax;
+        const grand = guestSubtotal <= 0 ? 0 : Number((res.grand || 0).toFixed(2));
+        byGuest[g] = { grand: Number(grand.toFixed(2)), tax: Number(tax.toFixed(2)), subtotal: guestSubtotal };
       });
       const all = computeGuestTotals('ALL');
-      const allTax = (all.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0);
-      return { byGuest, allGrand: Number((all.grand || 0).toFixed(2)), allTax: Number((allTax || 0).toFixed(2)) };
+      const allSubtotal = Number((all.subtotal || 0).toFixed(2));
+      // If subtotal is 0 (100% discount), tax should also be 0
+      const rawAllTax = (all.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0);
+      const allTax = allSubtotal <= 0 ? 0 : rawAllTax;
+      const allGrand = allSubtotal <= 0 ? 0 : Number((all.grand || 0).toFixed(2));
+      return { byGuest, allGrand: Number(allGrand.toFixed(2)), allTax: Number(allTax.toFixed(2)) };
     } catch { return { byGuest: {}, allGrand: 0, allTax: 0 }; }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guestIds, orderItems]);

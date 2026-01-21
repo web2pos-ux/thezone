@@ -701,7 +701,9 @@ const addQuick = async (q: number) => {
 				const fixedGrandVal = initialGrandRef.current ?? (subtotal + taxLines.reduce((s, t) => s + t.amount, 0));
 				const confirmedTotalNow = (payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
 				let scopeDueNow: number;
-				if (typeof outstandingDue === 'number' && outstandingDue >= 0) {
+				// 게스트별 분할 결제 모드에서는 outstandingDue 사용 (게스트별 금액 계산 필요)
+				// 일반 결제 모드에서는 payments에서 직접 계산 (outstandingDue가 stale할 수 있으므로)
+				if (typeof guestMode === 'number' && typeof outstandingDue === 'number' && outstandingDue >= 0) {
 					scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
 				} else {
 					scopeDueNow = Math.max(0, Number((fixedGrandVal - confirmedTotalNow).toFixed(2)));

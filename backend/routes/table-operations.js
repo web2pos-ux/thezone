@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const salesSyncService = require('../services/salesSyncService');
 
 /**
  * ⚠️ PROTECTED FILE - Table Move/Merge Operations ⚠️
@@ -633,6 +634,21 @@ module.exports = (db) => {
 
           await dbRun('COMMIT');
 
+          // Firebase에 머지 히스토리 동기화
+          const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+          if (restaurantId) {
+            salesSyncService.syncTableMergeToFirebase({
+              actionType: 'MERGE',
+              fromTableId,
+              toTableId,
+              floor: floor || '1F',
+              fromOrderId: fromOrder.id,
+              toOrderId: toOrder.id,
+              movedItemCount: itemsToMove.length,
+              partial: true
+            }, restaurantId).catch(err => console.warn('[SalesSync] Table merge sync error:', err.message));
+          }
+
           return res.json({
             success: true,
             message: `Table ${fromTableId} partially merged into ${toTableId}`,
@@ -668,6 +684,21 @@ module.exports = (db) => {
           );
           
           await dbRun('COMMIT');
+          
+          // Firebase에 머지 히스토리 동기화
+          const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+          if (restaurantId) {
+            salesSyncService.syncTableMergeToFirebase({
+              actionType: 'MERGE',
+              fromTableId,
+              toTableId,
+              floor: floor || '1F',
+              fromOrderId: null,
+              toOrderId: null,
+              movedItemCount: 0,
+              partial: false
+            }, restaurantId).catch(err => console.warn('[SalesSync] Table merge sync error:', err.message));
+          }
           
           return res.json({
             success: true,
@@ -748,6 +779,21 @@ module.exports = (db) => {
             );
 
             await dbRun('COMMIT');
+
+          // Firebase에 머지 히스토리 동기화
+          const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+          if (restaurantId) {
+            salesSyncService.syncTableMergeToFirebase({
+              actionType: 'MERGE',
+              fromTableId,
+              toTableId,
+              floor: floor || '1F',
+              fromOrderId: null,
+              toOrderId: toOrder.id,
+              movedItemCount: 0,
+              partial: false
+            }, restaurantId).catch(err => console.warn('[SalesSync] Table merge sync error:', err.message));
+          }
 
           return res.json({
                 success: true,
@@ -861,6 +907,21 @@ module.exports = (db) => {
           'SELECT COUNT(*) as count FROM order_items WHERE order_id = ?',
           [toOrder.id]
         );
+
+        // Firebase에 머지 히스토리 동기화
+        const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          salesSyncService.syncTableMergeToFirebase({
+            actionType: 'MERGE',
+            fromTableId,
+            toTableId,
+            floor: floor || '1F',
+            fromOrderId: fromOrder.id,
+            toOrderId: toOrder.id,
+            movedItemCount: finalItems[0]?.count || 0,
+            partial: false
+          }, restaurantId).catch(err => console.warn('[SalesSync] Table merge sync error:', err.message));
+        }
 
         res.json({
             success: true,
