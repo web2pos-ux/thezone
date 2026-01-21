@@ -238,10 +238,11 @@ module.exports = (db) => {
         });
       }
 
-      if (fromTable.status !== 'Occupied') {
+      // Allow Occupied or Payment Pending (Bill printed) as source
+      if (fromTable.status !== 'Occupied' && fromTable.status !== 'Payment Pending') {
         return res.status(400).json({ 
           success: false, 
-          error: 'Source table must be Occupied' 
+          error: 'Source table must be Occupied or Payment Pending' 
         });
       }
 
@@ -265,20 +266,20 @@ module.exports = (db) => {
         });
       }
 
-      // 3. Get order from source table using current_order_id
+      // 3. Get order from source table using current_order_id (allow multiple statuses)
       let order = null;
       if (fromTable.current_order_id) {
         order = await dbGet(
-          'SELECT * FROM orders WHERE id = ? AND status = ?',
-          [fromTable.current_order_id, 'PENDING']
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTable.current_order_id]
         );
       }
       
       // Fallback: try to find order by table_id if current_order_id doesn't work
     if (!order) {
         order = await dbGet(
-          'SELECT * FROM orders WHERE table_id = ? AND status = ?',
-          [fromTableId, 'PENDING']
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTableId]
         );
       }
       
@@ -486,43 +487,45 @@ module.exports = (db) => {
         });
       }
 
-      if (fromTable.status !== 'Occupied' || toTable.status !== 'Occupied') {
+      // Allow both Occupied and Payment Pending (Bill printed) tables for merge
+      const validStatuses = ['Occupied', 'Payment Pending'];
+      if (!validStatuses.includes(fromTable.status) || !validStatuses.includes(toTable.status)) {
         return res.status(400).json({ 
           success: false, 
-          error: 'Both tables must be Occupied for merge' 
+          error: 'Both tables must be Occupied or Payment Pending for merge' 
         });
       }
 
-      // 2. Get orders from both tables using current_order_id
+      // 2. Get orders from both tables using current_order_id (allow multiple statuses)
       let fromOrder = null;
       if (fromTable.current_order_id) {
         fromOrder = await dbGet(
-          'SELECT * FROM orders WHERE id = ? AND status = ?',
-          [fromTable.current_order_id, 'PENDING']
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTable.current_order_id]
         );
       }
       
       // Fallback: try to find by table_id
       if (!fromOrder) {
         fromOrder = await dbGet(
-          'SELECT * FROM orders WHERE table_id = ? AND status = ?',
-          [fromTableId, 'PENDING']
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTableId]
         );
       }
 
       let toOrder = null;
       if (toTable.current_order_id) {
         toOrder = await dbGet(
-          'SELECT * FROM orders WHERE id = ? AND status = ?',
-          [toTable.current_order_id, 'PENDING']
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [toTable.current_order_id]
         );
       }
       
       // Fallback: try to find by table_id
       if (!toOrder) {
         toOrder = await dbGet(
-          'SELECT * FROM orders WHERE table_id = ? AND status = ?',
-          [toTableId, 'PENDING']
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [toTableId]
         );
       }
       
@@ -979,26 +982,27 @@ module.exports = (db) => {
         });
       }
 
-      if (fromTable.status !== 'Occupied') {
+      // Allow Occupied or Payment Pending (Bill printed) as source
+      if (fromTable.status !== 'Occupied' && fromTable.status !== 'Payment Pending') {
         return res.status(400).json({ 
           success: false, 
-          error: 'Source table must be Occupied' 
+          error: 'Source table must be Occupied or Payment Pending' 
         });
       }
 
-      // 2. Get order from source table
+      // 2. Get order from source table (allow multiple statuses)
       let fromOrder = null;
       if (fromTable.current_order_id) {
         fromOrder = await dbGet(
-          'SELECT * FROM orders WHERE id = ? AND status = ?',
-          [fromTable.current_order_id, 'PENDING']
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTable.current_order_id]
         );
       }
       
       if (!fromOrder) {
         fromOrder = await dbGet(
-          'SELECT * FROM orders WHERE table_id = ? AND status = ?',
-          [fromTableId, 'PENDING']
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [fromTableId]
         );
       }
 
@@ -1009,16 +1013,16 @@ module.exports = (db) => {
         });
       }
 
-      // 3. Get target Togo/Online order
+      // 3. Get target Togo/Online order (allow multiple statuses for online orders)
       const toOrder = await dbGet(
-        'SELECT * FROM orders WHERE id = ? AND status = ?',
-        [toOrderId, 'PENDING']
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        [toOrderId]
       );
 
       if (!toOrder) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Target order not found' 
+          error: 'Target order not found or already completed' 
         });
       }
 
@@ -1053,9 +1057,14 @@ module.exports = (db) => {
 
       try {
         // 5. Copy items to target order (all as guest_number = 1 for Togo)
+        // order_line_id가 없으면 생성 (이미 프린트된 아이템으로 표시 - ADDITIONAL 프린트 방지)
         const subtotal = calculateItemsSubtotal(itemsToMove);
         
+        let itemIndex = 0;
         for (const item of itemsToMove) {
+          // order_line_id가 없으면 생성 (머지된 아이템이 ADDITIONAL로 재프린트되는 것 방지)
+          const orderLineId = item.order_line_id || `MERGED-${fromOrder.id}-${itemIndex++}`;
+          
           await dbRun(
             `INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1070,7 +1079,7 @@ module.exports = (db) => {
               item.memo_json,
               item.discount_json,
               item.split_denominator,
-              item.order_line_id
+              orderLineId
             ]
           );
         }
@@ -1142,6 +1151,21 @@ module.exports = (db) => {
 
         console.log('[TABLE TO TOGO] Successfully merged to Togo');
 
+        // Firebase에 머지 히스토리 동기화
+        const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          salesSyncService.syncTableMergeToFirebase({
+            actionType: 'MERGE',
+            fromTableId,
+            toTableId: `TOGO_${toOrderId}`,
+            floor: floor || '1F',
+            fromOrderId: fromOrder.id,
+            toOrderId: toOrder.id,
+            movedItemCount: itemsToMove.length,
+            partial: isPartial
+          }, restaurantId).catch(err => console.warn('[SalesSync] Table to Togo merge sync error:', err.message));
+        }
+
         res.json({
           success: true,
           message: `Table ${fromTableId} merged to ${toChannel || 'Togo'} order #${toOrderId}`,
@@ -1182,16 +1206,16 @@ module.exports = (db) => {
 
       console.log('[TOGO TO TABLE MOVE] Starting:', { fromOrderId, toTableId, floor });
 
-      // 1. Get source order
+      // 1. Get source order (allow PENDING, NEW, RECEIVED, CONFIRMED, PREPARING for online orders)
       const fromOrder = await dbGet(
-        'SELECT * FROM orders WHERE id = ? AND status = ?',
-        [fromOrderId, 'PENDING']
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        [fromOrderId]
       );
 
       if (!fromOrder) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Source order not found or not pending' 
+          error: 'Source order not found or already completed/cancelled' 
         });
       }
 
@@ -1213,7 +1237,19 @@ module.exports = (db) => {
       await dbRun('BEGIN TRANSACTION');
 
       try {
-        // 3. Update order to be a table order
+        // 2.5. Update items without order_line_id (ADDITIONAL 프린트 방지)
+        const itemsWithoutLineId = await dbAll(
+          'SELECT id FROM order_items WHERE order_id = ? AND (order_line_id IS NULL OR order_line_id = "")',
+          [fromOrder.id]
+        );
+        for (let i = 0; i < itemsWithoutLineId.length; i++) {
+          await dbRun(
+            'UPDATE order_items SET order_line_id = ? WHERE id = ?',
+            [`MOVED-${fromOrder.id}-${i}`, itemsWithoutLineId[i].id]
+          );
+        }
+        
+        // 3. Update order to be a table order (order_type = POS로 변경하면 온라인 목록에서 자동 제외)
         await dbRun(
           'UPDATE orders SET table_id = ?, order_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
           [toTableId, 'POS', fromOrder.id]
@@ -1235,6 +1271,21 @@ module.exports = (db) => {
         await dbRun('COMMIT');
 
         console.log('[TOGO TO TABLE MOVE] Successfully moved');
+
+        // Firebase에 이동 히스토리 동기화
+        const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          salesSyncService.syncTableMergeToFirebase({
+            actionType: 'MOVE',
+            fromTableId: `TOGO_${fromOrderId}`,
+            toTableId,
+            floor: floor || '1F',
+            fromOrderId: fromOrder.id,
+            toOrderId: fromOrder.id,
+            movedItemCount: 0,
+            partial: false
+          }, restaurantId).catch(err => console.warn('[SalesSync] Togo to Table move sync error:', err.message));
+        }
 
         res.json({
           success: true,
@@ -1272,16 +1323,16 @@ module.exports = (db) => {
 
       console.log('[TOGO TO TABLE MERGE] Starting:', { fromOrderId, toTableId, floor });
 
-      // 1. Get source order
+      // 1. Get source order (allow PENDING, NEW, RECEIVED, CONFIRMED, PREPARING for online orders)
       const fromOrder = await dbGet(
-        'SELECT * FROM orders WHERE id = ? AND status = ?',
-        [fromOrderId, 'PENDING']
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        [fromOrderId]
       );
 
       if (!fromOrder) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Source order not found or not pending' 
+          error: 'Source order not found or already completed/cancelled' 
         });
       }
 
@@ -1291,25 +1342,26 @@ module.exports = (db) => {
         [toTableId, floor || '1F']
       );
 
-      if (!toTable || toTable.status !== 'Occupied') {
+      // Allow Occupied or Payment Pending (Bill printed) as target
+      if (!toTable || (toTable.status !== 'Occupied' && toTable.status !== 'Payment Pending')) {
         return res.status(400).json({ 
           success: false, 
-          error: 'Target table must be Occupied' 
+          error: 'Target table must be Occupied or Payment Pending' 
         });
       }
 
-      // 3. Get target table's order
+      // 3. Get target table's order (allow multiple statuses for flexibility)
       let toOrder = null;
       if (toTable.current_order_id) {
         toOrder = await dbGet(
-          'SELECT * FROM orders WHERE id = ? AND status = ?',
-          [toTable.current_order_id, 'PENDING']
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [toTable.current_order_id]
         );
       }
       if (!toOrder) {
         toOrder = await dbGet(
-          'SELECT * FROM orders WHERE table_id = ? AND status = ?',
-          [toTableId, 'PENDING']
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          [toTableId]
         );
       }
 
@@ -1341,10 +1393,15 @@ module.exports = (db) => {
 
       try {
         // 5. Copy items to target order with new guest numbers
+        // order_line_id가 없으면 생성 (이미 프린트된 아이템으로 표시 - ADDITIONAL 프린트 방지)
         const subtotal = calculateItemsSubtotal(fromItems);
         const newGuestNumber = maxGuestNumber + 1;
         
+        let itemIndex = 0;
         for (const item of fromItems) {
+          // order_line_id가 없으면 생성 (머지된 아이템이 ADDITIONAL로 재프린트되는 것 방지)
+          const orderLineId = item.order_line_id || `MERGED-${fromOrder.id}-${itemIndex++}`;
+          
           await dbRun(
             `INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1359,7 +1416,7 @@ module.exports = (db) => {
               item.memo_json,
               item.discount_json,
               item.split_denominator,
-              item.order_line_id
+              orderLineId
             ]
           );
         }
@@ -1387,6 +1444,21 @@ module.exports = (db) => {
         await dbRun('COMMIT');
 
         console.log('[TOGO TO TABLE MERGE] Successfully merged');
+
+        // Firebase에 머지 히스토리 동기화
+        const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          salesSyncService.syncTableMergeToFirebase({
+            actionType: 'MERGE',
+            fromTableId: `TOGO_${fromOrderId}`,
+            toTableId,
+            floor: floor || '1F',
+            fromOrderId: fromOrder.id,
+            toOrderId: toOrder.id,
+            movedItemCount: fromItems.length,
+            partial: false
+          }, restaurantId).catch(err => console.warn('[SalesSync] Togo to Table merge sync error:', err.message));
+        }
 
         res.json({
           success: true,
@@ -1424,29 +1496,46 @@ module.exports = (db) => {
 
       console.log('[TOGO TO TOGO] Starting merge operation:', { fromOrderId, toOrderId });
 
-      // 1. Get source Togo order
+      // 1. Get source order (Online orders may have different status like RECEIVED, NEW, CONFIRMED)
       const fromOrder = await dbGet(
-        'SELECT * FROM orders WHERE id = ? AND status = ?',
-        [fromOrderId, 'PENDING']
+        'SELECT * FROM orders WHERE id = ?',
+        [fromOrderId]
       );
 
       if (!fromOrder) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Source Togo order not found or not pending' 
+          error: 'Source order not found' 
+        });
+      }
+
+      // Check if source order can be merged (not in terminal status)
+      const terminalStatuses = ['COMPLETED', 'CANCELLED', 'MERGED', 'PAID', 'REFUNDED'];
+      if (terminalStatuses.includes(fromOrder.status)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Source order cannot be merged (status: ${fromOrder.status})` 
         });
       }
 
       // 2. Get target Togo order
       const toOrder = await dbGet(
-        'SELECT * FROM orders WHERE id = ? AND status = ?',
-        [toOrderId, 'PENDING']
+        'SELECT * FROM orders WHERE id = ?',
+        [toOrderId]
       );
 
       if (!toOrder) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Target Togo order not found or not pending' 
+          error: 'Target order not found' 
+        });
+      }
+
+      // Check if target order can receive merge (not in terminal status)
+      if (terminalStatuses.includes(toOrder.status)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: `Target order cannot be merged into (status: ${toOrder.status})` 
         });
       }
 
@@ -1467,9 +1556,14 @@ module.exports = (db) => {
 
       try {
         // 4. Copy items to target order (all as guest_number = 1 for Togo)
+        // order_line_id가 없으면 생성 (이미 프린트된 아이템으로 표시 - ADDITIONAL 프린트 방지)
         const subtotal = calculateItemsSubtotal(fromItems);
         
+        let itemIndex = 0;
         for (const item of fromItems) {
+          // order_line_id가 없으면 생성 (머지된 아이템이 ADDITIONAL로 재프린트되는 것 방지)
+          const orderLineId = item.order_line_id || `MERGED-${fromOrder.id}-${itemIndex++}`;
+          
           await dbRun(
             `INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1484,7 +1578,7 @@ module.exports = (db) => {
               item.memo_json,
               item.discount_json,
               item.split_denominator,
-              item.order_line_id
+              orderLineId
             ]
           );
         }
@@ -1517,6 +1611,21 @@ module.exports = (db) => {
         await dbRun('COMMIT');
 
         console.log('[TOGO TO TOGO] Successfully merged');
+
+        // Firebase에 머지 히스토리 동기화
+        const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          salesSyncService.syncTableMergeToFirebase({
+            actionType: 'MERGE',
+            fromTableId: `TOGO_${fromOrderId}`,
+            toTableId: `TOGO_${toOrderId}`,
+            floor: '1F',
+            fromOrderId: fromOrder.id,
+            toOrderId: toOrder.id,
+            movedItemCount: fromItems.length,
+            partial: false
+          }, restaurantId).catch(err => console.warn('[SalesSync] Togo to Togo merge sync error:', err.message));
+        }
 
         res.json({
           success: true,

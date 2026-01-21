@@ -46,6 +46,10 @@ import QrCodePage from './pages/QrCodePage';
 import KdsPage from './pages/KdsPage';
 import ReportManagerPage from './pages/ReportManagerPage';
 import GiftCardReportPage from './pages/GiftCardReportPage';
+import SalesReportPage from './pages/SalesReportPage';
+import PaymentReportPage from './pages/PaymentReportPage';
+import CustomerReportPage from './pages/CustomerReportPage';
+import InventoryReportPage from './pages/InventoryReportPage';
 import DebugPaymentPage from './pages/DebugPaymentPage';
 import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
@@ -140,6 +144,10 @@ function App() {
             <Route path="kds" element={<KdsPage />} />
             <Route path="reports" element={<ReportManagerPage />} />
             <Route path="reports-dashboard" element={<ReportsDashboardPage />} />
+            <Route path="sales-report" element={<SalesReportPage />} />
+            <Route path="payment-report" element={<PaymentReportPage />} />
+            <Route path="customer-report" element={<CustomerReportPage />} />
+            <Route path="inventory-report" element={<InventoryReportPage />} />
             <Route path="gift-card-report" element={<GiftCardReportPage />} />
             <Route path="togo-settings" element={<BackofficeTogoSettingsPage />} />
             <Route path="sales-summary" element={<BackofficeSalesSummaryPage />} />

@@ -421,4 +421,4 @@ const SalesReportPage = () => {
   );
 };
 
-export {}; 
+export default SalesReportPage; 

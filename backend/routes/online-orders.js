@@ -164,8 +164,9 @@ function startOrderListener(restaurantId) {
           );
           localOrder = { id: result.lastID, adjustments };
           
-          // 주문 아이템도 저장 (모디파이어 포함)
+          // 주문 아이템도 저장 (모디파이어 포함, order_line_id 생성하여 이미 프린트된 것으로 표시)
           if (Array.isArray(order.items)) {
+            let itemIndex = 0;
             for (const item of order.items) {
               // 모디파이어(options)를 modifiers_json 형식으로 변환
               const modifiersJson = (item.options || []).length > 0 
@@ -176,16 +177,20 @@ function startOrderListener(restaurantId) {
                   })))
                 : null;
               
+              // order_line_id 생성 (머지 시 ADDITIONAL 프린트 방지)
+              const orderLineId = `ONLINE-${localOrder.id}-${itemIndex++}`;
+              
               await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json, order_line_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
                 [
                   localOrder.id, 
                   item.posItemId || item.id || null, 
                   item.name || '', 
                   item.quantity || 1, 
                   item.price || 0,
-                  modifiersJson
+                  modifiersJson,
+                  orderLineId
                 ]
               );
             }
@@ -772,11 +777,21 @@ router.get('/:restaurantId', async (req, res) => {
     const ordersWithLocalId = await Promise.all(orders.map(async (order) => {
       const firebaseOrderId = order.id;
       
-      // 이미 SQLite에 저장된 주문인지 확인
+      // 이미 SQLite에 저장된 주문인지 확인 (상태와 주문타입도 함께 조회)
       let localOrder = await dbGet(
-        'SELECT id FROM orders WHERE firebase_order_id = ?',
+        'SELECT id, status, order_type FROM orders WHERE firebase_order_id = ?',
         [firebaseOrderId]
       );
+      
+      // SQLite에서 이미 MERGED, COMPLETED, PAID, CANCELLED 상태면 null 반환 (필터링됨)
+      if (localOrder && ['MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED'].includes(localOrder.status)) {
+        return null; // 이 주문은 필터링됨
+      }
+      
+      // 테이블로 이동된 주문 (order_type = 'POS')도 필터링
+      if (localOrder && localOrder.order_type === 'POS') {
+        return null; // 테이블로 이동된 주문은 온라인 목록에서 제외
+      }
       
       // 없으면 새로 생성
       if (!localOrder) {
@@ -814,8 +829,9 @@ router.get('/:restaurantId', async (req, res) => {
           );
           localOrder = { id: result.lastID };
           
-          // 주문 아이템도 저장 (모디파이어 포함)
+          // 주문 아이템도 저장 (모디파이어 포함, order_line_id 생성하여 이미 프린트된 것으로 표시)
           if (Array.isArray(order.items)) {
+            let itemIndex = 0;
             for (const item of order.items) {
               // 모디파이어(options)를 modifiers_json 형식으로 변환
               const modifiersJson = (item.options || []).length > 0 
@@ -826,16 +842,20 @@ router.get('/:restaurantId', async (req, res) => {
                   })))
                 : null;
               
+              // order_line_id 생성 (머지 시 ADDITIONAL 프린트 방지)
+              const orderLineId = `ONLINE-${localOrder.id}-${itemIndex++}`;
+              
               await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json, order_line_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
                 [
                   localOrder.id, 
                   item.posItemId || item.id || null, 
                   item.name || '', 
                   item.quantity || 1, 
                   item.price || 0,
-                  modifiersJson
+                  modifiersJson,
+                  orderLineId
                 ]
               );
             }
@@ -851,9 +871,12 @@ router.get('/:restaurantId', async (req, res) => {
       return formatted;
     }));
 
+    // null 값 필터링 (이미 머지/완료된 주문 제외)
+    const filteredOrders = ordersWithLocalId.filter(order => order !== null);
+    
     res.json({
       success: true,
-      orders: ordersWithLocalId
+      orders: filteredOrders
     });
   } catch (error) {
     console.error('주문 목록 조회 실패:', error);

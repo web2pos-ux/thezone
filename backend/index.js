@@ -1,5 +1,7 @@
 // backend/index.js
 
+// Load .env from backend folder first, then fallback to root
+require('dotenv').config({ path: './.env' });
 require('dotenv').config({ path: '../.env' });
 const express = require('express');
 const cors = require('cors');

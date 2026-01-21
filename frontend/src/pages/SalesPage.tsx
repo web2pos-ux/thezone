@@ -459,6 +459,7 @@ const SalesPage: React.FC = () => {
 
   // Move/Merge mode state (Restored from Backup)
   const [isMoveMergeMode, setIsMoveMergeMode] = useState<boolean>(false);
+  const [isMergeInProgress, setIsMergeInProgress] = useState<boolean>(false); // 더블 클릭 방지
   const [sourceTableId, setSourceTableId] = useState<string | null>(null);
   const [sourceTogoOrder, setSourceTogoOrder] = useState<any | null>(null); // Togo → Togo 머지용
   const [sourceOnlineOrder, setSourceOnlineOrder] = useState<any | null>(null); // Online → Togo 머지용
@@ -551,6 +552,34 @@ const SalesPage: React.FC = () => {
   const [newOrderAlertData, setNewOrderAlertData] = useState<any>(null);
   const [selectedPrepTime, setSelectedPrepTime] = useState<number>(20);
   const previousOnlineOrdersRef = useRef<string[]>([]);
+  
+  // 온라인 주문 알림음
+  const onlineOrderAudioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // 온라인 주문 알림음 초기화
+  useEffect(() => {
+    if (!onlineOrderAudioRef.current) {
+      onlineOrderAudioRef.current = new Audio('/sounds/new-order.mp3');
+      onlineOrderAudioRef.current.preload = 'auto';
+      onlineOrderAudioRef.current.volume = 1.0;
+    }
+  }, []);
+  
+  // 온라인 주문 알림음 재생 함수
+  const playOnlineOrderSound = useCallback(() => {
+    try {
+      if (!onlineOrderAudioRef.current) {
+        onlineOrderAudioRef.current = new Audio('/sounds/new-order.mp3');
+      }
+      onlineOrderAudioRef.current.currentTime = 0;
+      onlineOrderAudioRef.current.volume = 1.0;
+      onlineOrderAudioRef.current.play()
+        .then(() => console.log('🔔 온라인 주문 알림음 재생'))
+        .catch(err => console.warn('알림음 재생 실패:', err.message));
+    } catch (error) {
+      console.error('오디오 재생 오류:', error);
+    }
+  }, []);
 
   // Order List modal state
   const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
@@ -578,6 +607,7 @@ const SalesPage: React.FC = () => {
     setSelectionChoice(null);
     setIsSelectionModalOpen(false);
     setMoveMergeStatus('');
+    setIsMergeInProgress(false); // 더블 클릭 방지 상태도 리셋
   }, []);
 
   const beginSourceSelection = useCallback(async (element: TableElement, label: string) => {
@@ -1466,6 +1496,12 @@ const SalesPage: React.FC = () => {
         // picked_up 상태 제외 (픽업 완료된 주문)
         if (status === 'picked_up') return false;
         
+        // merged 상태 제외 (이미 머지된 주문)
+        if (status === 'merged') return false;
+        
+        // completed/paid 상태 제외 (완료된 주문)
+        if (status === 'completed' || status === 'paid') return false;
+        
         return true;
       });
       
@@ -1474,6 +1510,7 @@ const SalesPage: React.FC = () => {
       const mappedCards: OnlineQueueCard[] = filteredOrders.map((o: any, idx: number) => ({
         id: o.id,
         number: o.localOrderId || o.id || String(idx + 1),
+        localOrderId: o.localOrderId || null, // SQLite ID 명시적 저장
         time: new Date(o.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
         phone: o.customerPhone || '',
         name: o.customerName || 'Online Order',
@@ -1530,6 +1567,10 @@ const SalesPage: React.FC = () => {
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
         
+        // 🔔 새 온라인 주문 알림음 재생
+        playOnlineOrderSound();
+        console.log('🔔 새 온라인 주문 알림:', newOrder.id);
+        
         if (prepTimeSettings.thezoneorder.mode === 'auto') {
           // Auto 모드: 자동 수락 (모달 없음)
           const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
@@ -1563,7 +1604,7 @@ const SalesPage: React.FC = () => {
     } catch (error) {
       console.warn('Failed to load online orders:', error);
     }
-  }, [API_URL, onlineOrderRestaurantId]);
+  }, [API_URL, onlineOrderRestaurantId, playOnlineOrderSound]);
 
   useEffect(() => {
     loadOnlineOrders();
@@ -2150,11 +2191,18 @@ const SalesPage: React.FC = () => {
             return;
           }
           
+          // 더블 클릭 방지
+          if (isMergeInProgress) {
+            console.log('[handleVirtualOrderCardClick] Merge already in progress, ignoring');
+            return;
+          }
+          
           console.log('[handleVirtualOrderCardClick] Togo to Togo merge');
           const sourceLabel = `Togo #${sourceTogoOrder.id}`;
           const targetLabel = `Togo #${order.id}`;
           
           try {
+            setIsMergeInProgress(true);
             setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
@@ -2171,12 +2219,14 @@ const SalesPage: React.FC = () => {
             if (response.ok && result.success) {
               setSourceTogoOrder(null);
               setIsMoveMergeMode(false);
+              setIsMergeInProgress(false);
               clearMoveMergeSelection();
               loadTogoOrders();
               
               setMoveMergeStatus(result.message || `✅ Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
+              setIsMergeInProgress(false);
               setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
               setTimeout(() => {
                 setSourceTogoOrder(null);
@@ -2185,6 +2235,7 @@ const SalesPage: React.FC = () => {
               }, 3000);
             }
           } catch (error: any) {
+            setIsMergeInProgress(false);
             console.error('Togo to Togo merge error:', error);
             setMoveMergeStatus(`❌ Error: ${error.message}`);
             setTimeout(() => {
@@ -2198,18 +2249,36 @@ const SalesPage: React.FC = () => {
         
         // 3. Online → Togo 머지 (sourceOnlineOrder가 설정됨)
         if (sourceOnlineOrder && channel === 'togo') {
+          // 더블 클릭 방지
+          if (isMergeInProgress) {
+            console.log('[handleVirtualOrderCardClick] Merge already in progress, ignoring');
+            return;
+          }
+          
           console.log('[handleVirtualOrderCardClick] Online to Togo merge');
           const sourceLabel = `Online #${sourceOnlineOrder.number ?? sourceOnlineOrder.id}`;
           const targetLabel = `Togo #${order.id}`;
           
+          // Online 주문은 localOrderId (SQLite ID) 사용
+          // 우선순위: localOrderId > fullOrder.localOrderId > number (숫자인 경우) > id
+          const sourceOrderId = sourceOnlineOrder.localOrderId || 
+            sourceOnlineOrder.fullOrder?.localOrderId || 
+            (typeof sourceOnlineOrder.number === 'number' ? sourceOnlineOrder.number : null) ||
+            sourceOnlineOrder.id;
+          
+          console.log('[handleVirtualOrderCardClick] Online sourceOrderId:', sourceOrderId,
+            'localOrderId:', sourceOnlineOrder.localOrderId,
+            'fullOrder.localOrderId:', sourceOnlineOrder.fullOrder?.localOrderId);
+          
           try {
+            setIsMergeInProgress(true);
             setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                fromOrderId: sourceOnlineOrder.id,
+                fromOrderId: sourceOrderId,
                 toOrderId: order.id,
               }),
             });
@@ -2219,12 +2288,15 @@ const SalesPage: React.FC = () => {
             if (response.ok && result.success) {
               setSourceOnlineOrder(null);
               setIsMoveMergeMode(false);
+              setIsMergeInProgress(false);
               clearMoveMergeSelection();
               loadTogoOrders();
+              loadOnlineOrders(); // 온라인 주문 목록 새로고침
               
               setMoveMergeStatus(result.message || `✅ Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
+              setIsMergeInProgress(false);
               setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
               setTimeout(() => {
                 setSourceOnlineOrder(null);
@@ -2233,6 +2305,7 @@ const SalesPage: React.FC = () => {
               }, 3000);
             }
           } catch (error: any) {
+            setIsMergeInProgress(false);
             console.error('Online to Togo merge error:', error);
             setMoveMergeStatus(`❌ Error: ${error.message}`);
             setTimeout(() => {
@@ -4246,16 +4319,38 @@ const SalesPage: React.FC = () => {
         ? `Togo #${sourceTogoOrder.id}`
         : `Online #${sourceOnlineOrder.number ?? sourceOnlineOrder.id}`;
       
+      // Online 주문은 localOrderId (SQLite ID) 사용, Togo는 그냥 id 사용
+      // 우선순위: localOrderId > fullOrder.localOrderId > number (숫자인 경우) > id
+      const sourceOrderId = sourceTogoOrder 
+        ? sourceTogoOrder.id 
+        : (sourceOnlineOrder?.localOrderId || 
+           sourceOnlineOrder?.fullOrder?.localOrderId || 
+           (typeof sourceOnlineOrder?.number === 'number' ? sourceOnlineOrder.number : null) ||
+           sourceOnlineOrder?.id);
+      
+      console.log('[handleMoveMergeTableClick] Online sourceOrderId:', sourceOrderId, 
+        'localOrderId:', sourceOnlineOrder?.localOrderId,
+        'fullOrder.localOrderId:', sourceOnlineOrder?.fullOrder?.localOrderId,
+        'number:', sourceOnlineOrder?.number,
+        'id:', sourceOnlineOrder?.id);
+      
+      // 더블 클릭 방지
+      if (isMergeInProgress) {
+        console.log('[handleMoveMergeTableClick] Merge already in progress, ignoring');
+        return;
+      }
+      
       // Available 테이블 → Move (이동)
       if (element.status === 'Available') {
         try {
+            setIsMergeInProgress(true);
             setMoveMergeStatus(`🔄 Moving ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/move-togo-to-table`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              fromOrderId: sourceOrder.id,
+              fromOrderId: sourceOrderId,
               toTableId: element.id,
               floor: selectedFloor,
             }),
@@ -4288,15 +4383,23 @@ const SalesPage: React.FC = () => {
               console.warn('Failed to update localStorage:', e);
             }
             
+            // 온라인 주문 카드 즉시 제거 (API 응답 기다리지 않고 즉각 UI 반영)
+            if (sourceOnlineOrder) {
+              setOnlineQueueCards(prev => prev.filter(card => card.id !== sourceOnlineOrder.id));
+            }
+            
             setSourceTogoOrder(null);
             setSourceOnlineOrder(null);
             setIsMoveMergeMode(false);
+            setIsMergeInProgress(false);
             clearMoveMergeSelection();
             loadTogoOrders();
+            loadOnlineOrders(); // 온라인 주문 목록 서버에서 새로고침
             
             setMoveMergeStatus(`✅ Moved ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
+            setIsMergeInProgress(false);
             setMoveMergeStatus(`❌ Move failed: ${result.error || result.details || 'Unknown error'}`);
             setTimeout(() => {
               setMoveMergeStatus('');
@@ -4304,6 +4407,7 @@ const SalesPage: React.FC = () => {
             }, 3000);
           }
         } catch (error: any) {
+          setIsMergeInProgress(false);
           console.error(`${sourceType} to Table move error:`, error);
           setMoveMergeStatus(`❌ Error: ${error.message}`);
           setTimeout(() => {
@@ -4314,16 +4418,17 @@ const SalesPage: React.FC = () => {
         return;
       }
       
-      // Occupied 테이블 → Merge (병합)
-      if (element.status === 'Occupied') {
+      // Occupied 또는 Payment Pending 테이블 → Merge (병합)
+      if (element.status === 'Occupied' || element.status === 'Payment Pending') {
         try {
+            setIsMergeInProgress(true);
             setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/merge-togo-to-table`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              fromOrderId: sourceOrder.id,
+              fromOrderId: sourceOrderId,
               toTableId: element.id,
               floor: selectedFloor,
             }),
@@ -4335,8 +4440,12 @@ const SalesPage: React.FC = () => {
             setSourceTogoOrder(null);
             setSourceOnlineOrder(null);
             setIsMoveMergeMode(false);
+            setIsMergeInProgress(false);
             clearMoveMergeSelection();
             loadTogoOrders();
+            
+            // 온라인 주문 목록도 새로고침 (머지된 주문 제거)
+            loadOnlineOrders();
             
             // 테이블맵 데이터 서버에서 새로고침 (동기화)
             try {
@@ -4354,6 +4463,7 @@ const SalesPage: React.FC = () => {
             setMoveMergeStatus(`✅ Merged ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
+            setIsMergeInProgress(false);
             setMoveMergeStatus(`❌ Merge failed: ${result.error || result.details || 'Unknown error'}`);
             setTimeout(() => {
               setMoveMergeStatus('');
@@ -4361,6 +4471,7 @@ const SalesPage: React.FC = () => {
             }, 3000);
           }
         } catch (error: any) {
+          setIsMergeInProgress(false);
           console.error(`${sourceType} to Table merge error:`, error);
           setMoveMergeStatus(`❌ Error: ${error.message}`);
           setTimeout(() => {
@@ -4372,15 +4483,15 @@ const SalesPage: React.FC = () => {
       }
       
       // 다른 상태의 테이블
-      setMoveMergeStatus('❌ Destination table must be Available or Occupied.');
+      setMoveMergeStatus('❌ Destination table must be Available, Occupied, or Payment Pending.');
       setTimeout(() => setMoveMergeStatus(''), 2000);
       return;
     }
     
-    // 첫 번째 클릭: 출발 테이블 선택 (Occupied만 가능)
+    // 첫 번째 클릭: 출발 테이블 선택 (Occupied 또는 Payment Pending 가능)
     if (!sourceTableId) {
-      if (element.status !== 'Occupied') {
-        setMoveMergeStatus('❌ Source table must be Occupied.');
+      if (element.status !== 'Occupied' && element.status !== 'Payment Pending') {
+        setMoveMergeStatus('❌ Source table must be Occupied or Payment Pending.');
         setTimeout(() => setMoveMergeStatus(''), 3000);
         return;
       }
@@ -4583,8 +4694,8 @@ const SalesPage: React.FC = () => {
         }, 3000);
       }
     }
-    // MERGE: Occupied → Occupied
-    else if (element.status === 'Occupied') {
+    // MERGE: Occupied/Payment Pending → Occupied/Payment Pending
+    else if (element.status === 'Occupied' || element.status === 'Payment Pending') {
       try {
         setMoveMergeStatus('🔄 Merging tables...');
         const response = await fetch(`${API_URL}/table-operations/merge`, {
@@ -4756,7 +4867,7 @@ const SalesPage: React.FC = () => {
         }, 3000);
       }
     } else {
-      setMoveMergeStatus('❌ Destination table must be Available or Occupied.');
+      setMoveMergeStatus('❌ Destination table must be Available, Occupied, or Payment Pending.');
       setTimeout(() => setMoveMergeStatus(''), 2000);
     }
   };

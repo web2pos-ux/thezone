@@ -71,10 +71,10 @@ export const useMoveMerge = ({ selectedFloor, refreshTableMap, onPartialSelectio
     };
 
     setMoveSelection((prev: MoveSelectionState) => {
-      // 1. Source Selection
+      // 1. Source Selection (Occupied 또는 Payment Pending 허용)
       if (!prev.sourceId) {
-        if (status !== 'Occupied') {
-          setMoveMergeStatus('❌ Source table must be Occupied.');
+        if (status !== 'Occupied' && status !== 'Payment Pending') {
+          setMoveMergeStatus('❌ Source table must be Occupied or Payment Pending.');
           return prev;
         }
         setMoveMergeStatus(`✓ Source selected: ${label}`);
@@ -102,10 +102,10 @@ export const useMoveMerge = ({ selectedFloor, refreshTableMap, onPartialSelectio
         return createInitialMoveSelection();
       }
 
-      // 3. Target Selection
+      // 3. Target Selection (Available, Occupied, Payment Pending 허용)
       if (!prev.targetId) {
-        if (status !== 'Available' && status !== 'Occupied') {
-          setMoveMergeStatus('❌ Destination must be Available or Occupied.');
+        if (status !== 'Available' && status !== 'Occupied' && status !== 'Payment Pending') {
+          setMoveMergeStatus('❌ Destination must be Available, Occupied, or Payment Pending.');
           return prev;
         }
         setMoveMergeStatus(`→ Destination selected: ${label}`);
@@ -135,8 +135,8 @@ export const useMoveMerge = ({ selectedFloor, refreshTableMap, onPartialSelectio
       }
 
       // 5. Change Target
-      if (status !== 'Available' && status !== 'Occupied') {
-        setMoveMergeStatus('❌ Destination must be Available or Occupied.');
+      if (status !== 'Available' && status !== 'Occupied' && status !== 'Payment Pending') {
+        setMoveMergeStatus('❌ Destination must be Available, Occupied, or Payment Pending.');
         return prev;
       }
 
@@ -166,9 +166,9 @@ export const useMoveMerge = ({ selectedFloor, refreshTableMap, onPartialSelectio
 
     if (!source || !target) return;
 
-    // Simple validation
-    if (source.kind === 'table' && source.status !== 'Occupied') {
-      setMoveMergeStatus('❌ Source is not occupied');
+    // Simple validation (Occupied 또는 Payment Pending 허용)
+    if (source.kind === 'table' && source.status !== 'Occupied' && source.status !== 'Payment Pending') {
+      setMoveMergeStatus('❌ Source is not occupied or payment pending');
       return;
     }
 

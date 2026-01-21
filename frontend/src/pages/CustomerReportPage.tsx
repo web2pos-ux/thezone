@@ -279,4 +279,4 @@ const CustomerReportPage = () => {
   );
 };
 
-export {}; 
+export default CustomerReportPage; 

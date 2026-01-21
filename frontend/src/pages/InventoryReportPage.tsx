@@ -278,4 +278,4 @@ const InventoryReportPage = () => {
   );
 };
 
-export {}; 
+export default InventoryReportPage; 
