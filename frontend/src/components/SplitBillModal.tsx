@@ -309,11 +309,9 @@ const SplitBillPayCard: React.FC<{
                       </div>
                       <div className="mt-0 flex items-center justify-start gap-1.5 -translate-y-[3px]">
                         {(() => {
+                          // 규칙 1-3: 쉐어된 아이템은 항상 1/N 형식으로 표시 (N = splitDenominator)
                           if (g.splitDen) {
-                            const n = normalizeShare(g.wholeQty, g.splitNum, g.splitDen);
-                            if (n.num > 0 && n.whole > 0) return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{n.whole} {n.num}/{n.den}</span>;
-                            if (n.num > 0) return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{n.num}/{n.den}</span>;
-                            return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{n.whole}</span>;
+                            return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
                           }
                           return <span className={`text-xs font-normal text-gray-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
                         })()}
@@ -679,13 +677,13 @@ const payLayout = useMemo(() => {
 							<div className="flex flex-col gap-2 mt-3">
 								<button
 									onClick={() => { if (onPayInFull) { onPayInFull(); } else { onSelectGuest('ALL'); onClose(); } }}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
 								>
 									Pay in Full
 								</button>
 								<button
 									onClick={() => { if (preselectedRowIndex !== null) { onSplitItemEqual(preselectedRowIndex); setIsSplitSelectMode(false); } else { setIsSplitSelectMode(true); } }}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition active:translate-y-[1px] ${isSplitSelectMode ? 'bg-orange-600 text-white hover:bg-orange-700 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isSplitSelectMode ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
 									aria-pressed={isSplitSelectMode}
 									>
 									Share Evenly
@@ -712,7 +710,7 @@ const payLayout = useMemo(() => {
 											setShareTargetGuests(new Set());
 										}
 									}}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition active:translate-y-[1px] ${isShareSelectedMode ? 'bg-orange-600 text-white hover:bg-orange-700 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isShareSelectedMode ? 'bg-gradient-to-r from-orange-700 to-orange-800 text-white hover:from-orange-800 hover:to-orange-900 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
 									aria-pressed={isShareSelectedMode}
 									>
 									Share Selected
@@ -729,28 +727,28 @@ const payLayout = useMemo(() => {
 											setMoveTargetGuest(null);
 										}
 									}}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition active:translate-y-[1px] ${isMoveMode ? 'bg-orange-600 text-white hover:bg-orange-700 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isMoveMode ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
 									aria-pressed={isMoveMode}
 									>
 									Move
 								</button>
 								<button
 									onClick={() => { setIsShowShare(true); }}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition active:translate-y-[1px] ${isShowShare ? 'bg-orange-600 text-white hover:bg-orange-700 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isShowShare ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
 									aria-pressed={isShowShare}
 									>
 									Show Share
 								</button>
 								<button
 									onClick={() => { if (onResetSplit) onResetSplit(); setIsSplitSelectMode(false); setIsShareSelectedMode(false); setShareSelectedRowIndex(null); setShareTargetGuests(new Set()); setIsMoveMode(false); setMoveSelectedRowIndex(null); setMoveTargetGuest(null); setIsShowShare(false); setShowShareBlinkOn(false); }}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-orange-100 text-orange-900 hover:bg-orange-200 border border-orange-300 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
 								>
 									Reset Split
 								</button>
 								<div className="h-px bg-gray-200 my-1" />
 								<button
 									onClick={onClose}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-orange-100 text-orange-900 hover:bg-orange-200 border-2 border-red-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 transition transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border-2 border-red-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
 								>
 									Back to Order
 								</button>
@@ -859,11 +857,9 @@ const payLayout = useMemo(() => {
 																</div>
 																<div className="mt-0 flex items-center justify-start gap-1.5 -translate-y-[3px]">
 																	{(() => {
+																		// 규칙 1-3: 쉐어된 아이템은 항상 1/N 형식으로 표시 (N = splitDenominator)
 																		if (g.splitDen) {
-																			const n = normalizeShare(g.wholeQty, g.splitNum, g.splitDen);
-																			if (n.num > 0 && n.whole > 0) return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{n.whole} {n.num}/{n.den}</span>;
-																			if (n.num > 0) return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{n.num}/{n.den}</span>;
-																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{n.whole}</span>;
+																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
 																	}
 																	return <span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} text-xs font-normal text-gray-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
 																})()}

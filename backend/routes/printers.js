@@ -3835,7 +3835,7 @@ module.exports = (db) => {
       ctx.textAlign = 'left';
       ctx.fillText(displayLeft, MARGIN, yPos);
       ctx.textAlign = 'right';
-      ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN, yPos);
+      ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN - (CONTENT_WIDTH * 0.15), yPos);
     };
 
     const drawLine = (yPos, style = 'solid') => {
@@ -4427,7 +4427,7 @@ module.exports = (db) => {
           ctx.textAlign = 'left';
           ctx.fillText(displayLeft, MARGIN, yPos);
           ctx.textAlign = 'right';
-          ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN, yPos);
+          ctx.fillText(rightText, PAPER_WIDTH_PX - MARGIN - (CONTENT_WIDTH * 0.15), yPos);
         };
 
         const drawLine = (yPos, style = 'solid') => {

@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { X } from 'lucide-react';
+import { OrderItem } from '../pages/order/orderTypes';
 
 interface PaymentModalProps {
 	isOpen: boolean;
@@ -29,6 +31,9 @@ interface PaymentModalProps {
 	offsetTopPx?: number;
   // Callback to create adhoc guests for N-split
   onCreateAdhocGuests?: (count: number) => void;
+  // Share Selected functionality
+  orderItems?: OrderItem[];
+  onShareSelected?: (rowIndex: number, guests: number[]) => void;
 }
 
 const methods = [
@@ -41,7 +46,7 @@ const methods = [
 	{ key: 'OTHER', label: 'Other', emoji: '✳️' },
 ];
 
-const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, taxLines, total, onConfirm, onComplete, channel, customerName, tableName, onSplitBill, guestCount, guestMode, onSelectGuestMode, forceGuestMode, showAllButton, outstandingDue, paidSoFar, payments, onVoidPayment, onClearAllPayments, prefillDueNonce, prefillUseTotalOnceNonce, offsetTopPx, onCreateAdhocGuests }) => {
+const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, taxLines, total, onConfirm, onComplete, channel, customerName, tableName, onSplitBill, guestCount, guestMode, onSelectGuestMode, forceGuestMode, showAllButton, outstandingDue, paidSoFar, payments, onVoidPayment, onClearAllPayments, prefillDueNonce, prefillUseTotalOnceNonce, offsetTopPx, onCreateAdhocGuests, orderItems = [], onShareSelected }) => {
 	const [method, setMethod] = useState<string>('');
 	const skipAmountResetRef = useRef<boolean>(false);
 	const [amount, setAmount] = useState<string>('0.00');
@@ -49,13 +54,20 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
 	const [isTipFocused, setIsTipFocused] = useState<boolean>(false);
 	const [optimisticPayments, setOptimisticPayments] = useState<Array<{ tempId: string; method?: string; amount: number }>>([]);
 	const [rawAmountDigits, setRawAmountDigits] = useState<string>('');
-	const [clampPopup, setClampPopup] = useState<{ entered: number; applied: number; method?: string } | null>(null);
-	const clampTimerRef = useRef<number | null>(null);
-	const [proceedArmed, setProceedArmed] = useState<boolean>(false);
+  const [clampPopup, setClampPopup] = useState<{ entered: number; applied: number; method?: string } | null>(null);
+  const clampTimerRef = useRef<number | null>(null);
+  const [proceedArmed, setProceedArmed] = useState<boolean>(false);
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+  const alertTimerRef = useRef<number | null>(null);
   const [lastChange, setLastChange] = useState<number | null>(null);
   const [forceAllMode, setForceAllMode] = useState<boolean>(false);
   const [isSplitCountMode, setIsSplitCountMode] = useState<boolean>(false);
   const [splitCountInput, setSplitCountInput] = useState<string>('');
+  
+  // Share Selected states
+  const [isShareSelectedMode, setIsShareSelectedMode] = useState<boolean>(false);
+  const [shareSelectedRowIndex, setShareSelectedRowIndex] = useState<number | null>(null);
+  const [shareTargetGuests, setShareTargetGuests] = useState<Set<number>>(new Set());
 
   // Gift Card states
   const [showGiftCardModal, setShowGiftCardModal] = useState<boolean>(false);
@@ -65,6 +77,32 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [giftCardLoading, setGiftCardLoading] = useState<boolean>(false);
   const [giftCardPayAmount, setGiftCardPayAmount] = useState<string>('');
   const [giftCardInputFocus, setGiftCardInputFocus] = useState<'card' | 'amount'>('card');
+
+  // 초기 금액 고정 (Items, Tax, Total은 결제 후에도 절대 변경되지 않아야 함)
+  const initialSubtotalRef = useRef<number | null>(null);
+  const initialTaxTotalRef = useRef<number | null>(null);
+  const initialGrandRef = useRef<number | null>(null);
+  const wasOpenRef = useRef<boolean>(false);
+  
+  // 모달이 열릴 때 한 번만 초기값 저장 (결제 후에도 절대 변경되지 않음)
+  useEffect(() => {
+    if (isOpen && !wasOpenRef.current) {
+      // 모달이 처음 열릴 때만 초기값 저장 (한 번 저장되면 절대 변경되지 않음)
+      const taxTotal = taxLines.reduce((s, t) => s + t.amount, 0);
+      const grand = parseFloat((subtotal + taxTotal).toFixed(2));
+      initialSubtotalRef.current = subtotal;
+      initialTaxTotalRef.current = taxTotal;
+      initialGrandRef.current = grand;
+      wasOpenRef.current = true;
+      console.log('[PAYMENT] 초기값 고정:', { subtotal, taxTotal, grand });
+    } else if (!isOpen && wasOpenRef.current) {
+      // 모달이 닫히면 플래그만 리셋 (초기값은 유지하지 않음 - 다음 열 때 새로 저장)
+      wasOpenRef.current = false;
+      initialSubtotalRef.current = null;
+      initialTaxTotalRef.current = null;
+      initialGrandRef.current = null;
+    }
+  }, [isOpen]); // subtotal, taxLines를 의존성에서 제거하여 결제 후 변경되어도 초기값이 바뀌지 않도록 함
 
 	const forceCashMethod = useCallback(() => {
 		skipAmountResetRef.current = true;
@@ -117,9 +155,9 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
     }
   }, [giftCardInputFocus, giftCardNumber]);
 
-	useEffect(() => { if (!isOpen) { setRawAmountDigits(''); resetGiftCard(); setShowGiftCardModal(false); } }, [isOpen, resetGiftCard]);
+	useEffect(() => { if (!isOpen) { setRawAmountDigits(''); resetGiftCard(); setShowGiftCardModal(false); setIsShareSelectedMode(false); setShareSelectedRowIndex(null); setShareTargetGuests(new Set()); } }, [isOpen, resetGiftCard]);
 	useEffect(() => { if (isOpen) { setProceedArmed(false); setLastChange(null); } }, [isOpen]);
-	useEffect(() => { return () => { if (clampTimerRef.current) { window.clearTimeout(clampTimerRef.current); clampTimerRef.current = null; } }; }, []);
+	useEffect(() => { return () => { if (clampTimerRef.current) { window.clearTimeout(clampTimerRef.current); clampTimerRef.current = null; } if (alertTimerRef.current) { window.clearTimeout(alertTimerRef.current); alertTimerRef.current = null; } }; }, []);
 
 	const showClampPopup = (entered: number, applied: number, method?: string) => {
 		setClampPopup({ entered, applied, method });
@@ -129,32 +167,47 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
 			clampTimerRef.current = null;
 		}, 2200);
 	};
+
+	const showAlert = (message: string) => {
+		setAlertMessage(message);
+		if (alertTimerRef.current) { window.clearTimeout(alertTimerRef.current); }
+		alertTimerRef.current = window.setTimeout(() => {
+			setAlertMessage(null);
+			alertTimerRef.current = null;
+		}, 3000);
+	};
  
-	const taxTotal = useMemo(() => taxLines.reduce((s, t) => s + t.amount, 0), [taxLines]);
+	// 초기값 사용 (고정된 금액 - 결제 후에도 변경되지 않음)
+	const fixedSubtotal = initialSubtotalRef.current !== null ? initialSubtotalRef.current : subtotal;
+	const fixedTaxTotal = initialTaxTotalRef.current !== null ? initialTaxTotalRef.current : taxLines.reduce((s, t) => s + t.amount, 0);
+	const fixedGrand = initialGrandRef.current !== null ? initialGrandRef.current : parseFloat((subtotal + fixedTaxTotal).toFixed(2));
+	
+	const taxTotal = fixedTaxTotal; // 화면 표시용 (고정값)
 	const parsedAmount = useMemo(() => parseFloat(amount) || 0, [amount]);
 	const parsedTip = useMemo(() => parseFloat(tip) || 0, [tip]);
-  const grand = useMemo(() => parseFloat((subtotal + taxTotal).toFixed(2)), [subtotal, taxTotal]);
+  const grand = fixedGrand; // 화면 표시용 (고정값)
   const effectiveGuestMode = useMemo(() => {
     if (typeof forceGuestMode !== 'undefined') return forceGuestMode;
     return (forceAllMode ? 'ALL' : guestMode);
   }, [forceGuestMode, forceAllMode, guestMode]);
   // Remaining due in current scope (after confirmed payments)
   // 우선순위: 실제 확정 결제(`payments`) 합계를 신뢰하고, 외부에서 전달된 outstandingDue는 보조로 사용
+  // 중요: fixedGrand를 사용하여 Total 금액이 고정되도록 함
   const remainingDue = useMemo(() => {
     try {
       // 1) payments 기준으로 계산 (게스트 스코프를 고려한 합계는 아래 paymentsInScope/confirmed 합계로 산출)
       // paymentsInScope는 아래에서 정의되므로, 여기서는 우선 전체 기준 보정값만 사용하고 최종 due 계산에서 정밀 보정
-      const baseByProp = (typeof outstandingDue === 'number') ? Number(outstandingDue.toFixed(2)) : Number(grand.toFixed(2));
+      const baseByProp = (typeof outstandingDue === 'number') ? Number(outstandingDue.toFixed(2)) : Number(fixedGrand.toFixed(2));
       // In Even Split mode, we should trust baseByProp (calculated per guest) rather than grand (total for all)
-      if (onCreateAdhocGuests && guestCount && guestCount > 1 && baseByProp <= Number(grand.toFixed(2))) {
+      if (onCreateAdhocGuests && guestCount && guestCount > 1 && baseByProp <= Number(fixedGrand.toFixed(2))) {
          return Math.max(0, baseByProp);
       }
       // Fallback
       return Math.max(0, baseByProp);
     } catch {
-      return Math.max(0, Number(grand.toFixed(2)));
+      return Math.max(0, Number(fixedGrand.toFixed(2)));
     }
-  }, [outstandingDue, grand, onCreateAdhocGuests, guestCount]);
+  }, [outstandingDue, fixedGrand, onCreateAdhocGuests, guestCount]);
 
   // Gift Card functions (depends on remainingDue)
   const handleCheckGiftCardBalance = useCallback(async () => {
@@ -269,7 +322,8 @@ useEffect(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [prefillUseTotalOnceNonce, isOpen, showAllButton]);
 
-// 디스플레이 초기화: 모달 열림/게스트 스코프 변경 시, 또는 사용자가 직접 결제수단을 바꿀 때만 초기화
+// 디스플레이 초기화: 모달 열림/게스트 스코프 변경 시에만 초기화
+// 결제 수단 변경 시에는 금액을 유지하여 복합 결제 지원
 useEffect(() => {
   if (!isOpen) return;
   if (skipAmountResetRef.current) {
@@ -280,43 +334,48 @@ useEffect(() => {
     setRawAmountDigits('');
     setAmount('0.00');
   } catch {}
-}, [isOpen, method, effectiveGuestMode]);
+}, [isOpen, effectiveGuestMode]);
 
   // Removed auto-commit: 결제도구/금액 조합은 OK 시점에만 확정
 
   const finalizeAndComplete = async () => {
-    if (!canComplete) return;
+    // canClickOk 조건 확인: (Next 단계) 또는 (금액>0 && 결제도구 선택됨) 또는 (잔액≈0)
+    if (!canClickOk) return;
     try {
       // OK 시점 확정: 가장 마지막 결제도구(method)와 현재 입력 금액(amount) 조합만 확정 처리
       const rawAmt = parsedAmount;
       if (rawAmt > 0) {
-        if (!method) { try { alert('결제도구를 선택하세요.'); } catch {} return; }
+        if (!method) { showAlert('Please select a payment method.'); return; }
         const effectiveMethod = method;
         const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
-        const scopeDueNow = Math.max(0, Number((remainingDue - confirmedTotalNow).toFixed(2)));
-        const clampedAmt = Math.min(rawAmt, scopeDueNow);
+        // scopeDueNow 계산: fixedGrand에서 이미 결제한 금액을 빼서 남은 금액 계산 (Total은 고정)
+        // adhoc split 모드에서는 outstandingDue를 직접 사용 (이미 결제 반영된 값)
+        let scopeDueNow: number;
+        if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
+          scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
+        } else {
+          scopeDueNow = Math.max(0, Number((fixedGrand - confirmedTotalNow).toFixed(2)));
+        }
+        // Cash일 때는 입력값을 그대로 사용 (Change 발생), Cash가 아닐 때만 Due에 맞춰 clamp
+        const finalAmount = (effectiveMethod === 'CASH') ? rawAmt : Math.min(rawAmt, scopeDueNow);
         const t = parsedTip;
-        try {
-          const scopeDue = Number((remainingDue).toFixed(2));
-          const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
-          const remainingDueNow = Math.max(0, Number((scopeDue - confirmedTotal).toFixed(2)));
-          const draftTender = (effectiveMethod === 'CASH') ? rawAmt : 0;
-          const snapChange = (effectiveMethod === 'CASH') ? Math.max(0, Number((draftTender - remainingDueNow).toFixed(2))) : 0;
-          setLastChange(snapChange);
-        } catch {}
+        // OK 버튼 클릭 시 lastChange를 즉시 null로 설정하여 change 변수를 사용하도록 함
+        setLastChange(null);
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-        setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: clampedAmt }]);
+        setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount }]);
         setRawAmountDigits('');
-        await onConfirm({ method: effectiveMethod, amount: parseFloat(clampedAmt.toFixed(2)), tip: parseFloat(t.toFixed(2)) });
+        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)) });
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
-        if (effectiveMethod !== 'CASH' && rawAmt > clampedAmt) {
-          showClampPopup(rawAmt, clampedAmt, effectiveMethod);
+        if (effectiveMethod !== 'CASH' && rawAmt > finalAmount) {
+          showClampPopup(rawAmt, finalAmount, effectiveMethod);
         }
         setAmount('0.00');
         setTip('0');
         setMethod('');
+      } else if (canComplete) {
+        // 금액이 0이지만 잔액이 0에 근접한 경우 (이미 모든 결제가 완료된 경우)
+        setProceedArmed(true);
       }
-      setProceedArmed(true);
     } catch (e) {
       setOptimisticPayments(prev => prev.slice(0, -1));
       try { console.error('Finalize failed', e); } catch {}
@@ -353,9 +412,9 @@ useEffect(() => {
       return Number(sum.toFixed(2));
     }
     if (typeof paidSoFar === 'number') return Number(paidSoFar.toFixed(2));
-    if (typeof outstandingDue === 'number') return Number((grand - outstandingDue).toFixed(2));
+    if (typeof outstandingDue === 'number') return Number((fixedGrand - outstandingDue).toFixed(2));
     return 0;
-  }, [payments, paidSoFar, outstandingDue, grand, effectiveGuestMode]);
+  }, [payments, paidSoFar, outstandingDue, fixedGrand, effectiveGuestMode]);
   // Paid $ 합계는 확정 결제만 합산 (Processing/optimistic 제외)
   const displayPaidTotal = useMemo(() => parseFloat(((paidTotal)).toFixed(2)), [paidTotal]);
   const isSplitActive = useMemo(() => (typeof effectiveGuestMode === 'number') || ((guestCount || 0) > 1), [effectiveGuestMode, guestCount]);
@@ -380,6 +439,46 @@ useEffect(() => {
 		return { cashPaidConfirmed: parseFloat(cash.toFixed(2)), nonCashPaidConfirmed: parseFloat(nonCash.toFixed(2)) };
 	}, [paymentsInScope]);
 
+  // 방법 3: 다음 액션 시 자동 확정
+  // 이전에 준비된 조합(결제 수단 + 금액)이 있으면 먼저 확정하는 헬퍼 함수
+  const commitPendingIfReady = useCallback(async () => {
+    const currentAmt = parseFloat(amount || '0') || 0;
+    if (method && currentAmt > 0) {
+      // 준비된 조합이 있으면 확정
+      // finalizeAndComplete의 로직을 직접 사용 (무한 루프 방지)
+      try {
+        // finalizeAndComplete와 동일한 로직 사용
+        const effectiveMethod = method;
+        const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
+        // scopeDueNow 계산: fixedGrand에서 이미 결제한 금액을 빼서 남은 금액 계산 (Total은 고정)
+        // adhoc split 모드에서는 outstandingDue를 직접 사용 (이미 결제 반영된 값)
+        let scopeDueNow: number;
+        if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
+          scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
+        } else {
+          scopeDueNow = Math.max(0, Number((fixedGrand - confirmedTotalNow).toFixed(2)));
+        }
+        // Cash일 때는 입력값을 그대로 사용 (Change 발생), Cash가 아닐 때만 Due에 맞춰 clamp
+        const finalAmount = (effectiveMethod === 'CASH') ? currentAmt : Math.min(currentAmt, scopeDueNow);
+        const t = parsedTip;
+        const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+        setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount }]);
+        setRawAmountDigits('');
+        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)) });
+        setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
+        if (effectiveMethod !== 'CASH' && currentAmt > finalAmount) {
+          showClampPopup(currentAmt, finalAmount, effectiveMethod);
+        }
+        setAmount('0.00');
+        setTip('0');
+        setMethod('');
+      } catch (e) {
+        setOptimisticPayments(prev => prev.slice(0, -1));
+        try { console.error('Auto-commit failed', e); } catch {}
+      }
+    }
+  }, [method, amount, cashPaidConfirmed, nonCashPaidConfirmed, fixedGrand, parsedTip, onConfirm, showClampPopup, onCreateAdhocGuests, isSplitActive, outstandingDue]);
+
   // Confirmed 결제를 반영해 최종 남은 금액(dueFull)과 화면 Due 값을 계산
   const due = useMemo(() => {
     // In adhoc split mode, we trust outstandingDue prop passed from parent which is calculated per guest
@@ -391,25 +490,36 @@ useEffect(() => {
     }
 
     const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
-    const dueFull = Math.max(0, Number((grand - confirmedTotal).toFixed(2)));
+    const dueFull = Math.max(0, Number((fixedGrand - confirmedTotal).toFixed(2)));
     return Math.max(0, Number((dueFull - parsedAmount).toFixed(2)));
-  }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, parsedAmount, outstandingDue, onCreateAdhocGuests, isSplitActive]);
+  }, [fixedGrand, cashPaidConfirmed, nonCashPaidConfirmed, parsedAmount, outstandingDue, onCreateAdhocGuests, isSplitActive]);
 
 
   // Next는 사용자 조작으로만 진행 (자동 완료 제거)
 
   const change = useMemo(() => {
-    // Change는 "현금이 남긴 초과분"만 표시한다.
-    // 1) 확정된 비현금으로 먼저 총액을 상쇄
-    const baseTotal = (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') ? (outstandingDue + paidTotal) : grand;
+    // Change는 "현금으로 지불한 금액이 실제 필요한 금액보다 많을 때의 초과분"만 표시한다.
+    // Cash 결제의 경우, Due가 0이어도 현금을 더 많이 받았으면 Change를 계산해야 함
     
-    const remainingAfterNonCash = Math.max(0, Number((baseTotal - nonCashPaidConfirmed).toFixed(2)));
-    // 2) 확정된 현금 + (입력 중인 금액이 현금이면 그 금액도 미리 더해 미리보기)
+    // 현금으로 지불한 금액 (확정된 현금 + 입력 중인 현금 금액)
     const projectedCash = Number(((cashPaidConfirmed + ((method === 'CASH') ? parsedAmount : 0))).toFixed(2));
-    // 3) 현금 초과분만 Change로 표시
-    const ch = Math.max(0, Number((projectedCash - remainingAfterNonCash).toFixed(2)));
+    
+    // 현금 결제 전 Due 계산 (현금으로 지불해야 할 금액)
+    // fixedGrand에서 비현금 결제만 빼서 계산
+    const dueBeforeCash = Math.max(0, Number((fixedGrand - nonCashPaidConfirmed).toFixed(2)));
+    
+    // Change = 현금 지불액 - 현금 결제 전 Due (현금이 더 많을 때만)
+    // Cash가 아닌 결제 수단이면 Change는 0
+    if (method !== 'CASH' && parsedAmount === 0) {
+      // Cash 결제가 없고 입력 중인 금액도 Cash가 아니면 Change는 0
+      const ch = Math.max(0, Number((cashPaidConfirmed - dueBeforeCash).toFixed(2)));
+      return ch;
+    }
+    
+    // Cash 결제가 있거나 입력 중인 경우
+    const ch = Math.max(0, Number((projectedCash - dueBeforeCash).toFixed(2)));
     return ch;
-  }, [grand, nonCashPaidConfirmed, cashPaidConfirmed, method, parsedAmount, onCreateAdhocGuests, isSplitActive, outstandingDue, paidTotal]);
+  }, [fixedGrand, cashPaidConfirmed, nonCashPaidConfirmed, method, parsedAmount]);
  
   // canComplete: 잔액이 0에 충분히 근접하면 완료 가능
   const canComplete = useMemo(() => Math.abs(due) < 0.005, [due]);
@@ -442,7 +552,7 @@ useEffect(() => {
  
 	if (!isOpen) return null;
 
-	const appendDigit = (d: string) => {
+	const appendDigit = async (d: string) => {
     if (isSplitCountMode) {
       let nextRaw = splitCountInput;
       if (d === 'C') nextRaw = '';
@@ -477,6 +587,8 @@ useEffect(() => {
 			setTip(updaterTip);
 			return;
 		}
+		// 숫자 버튼은 단순히 금액 입력만 함
+		// 결제 수단 선택 시에만 확정됨 (commitPendingIfReady 제거)
 		// amount: maintain raw cents buffer to avoid premature formatting issues
 		let nextRaw = rawAmountDigits;
 		if (d === 'C') nextRaw = '';
@@ -496,13 +608,14 @@ const addQuick = async (q: number) => {
         setTip(prev => (parseFloat(prev || '0') + q).toFixed(2));
         return;
     }
-    // Quick buttons just input amount; payment method is chosen independently (no auto-assign)
+    // 금액 버튼은 단순히 현재 금액에 합산만 함
+    // 결제 수단 선택 시 확정됨 (commitPendingIfReady 제거)
     const current = parseFloat(amount || '0') || 0;
     const next = Math.max(0, parseFloat((current + q).toFixed(2)));
     const cents = Math.round(next * 100);
     setRawAmountDigits(String(cents));
     setAmount(next.toFixed(2));
-    forceCashMethod();
+    // 결제 수단은 사용자가 선택한 것을 유지
 };
 
 	const handleTipChange = (raw: string) => {
@@ -513,12 +626,16 @@ const addQuick = async (q: number) => {
 	};
 
 	// Explicitly fill display with remaining due (no commit) when user taps Due
-	const handleFillDue = () => {
+	const handleFillDue = async () => {
+		// 방법 3: 다음 액션 시 자동 확정
+		// 이전에 준비된 조합(결제 수단 + 금액)이 있으면 먼저 확정
+		await commitPendingIfReady();
 		const remaining = Math.max(0, Number(due.toFixed(2)));
 		const cents = Math.round(remaining * 100);
 		setRawAmountDigits(String(cents));
 		setAmount(remaining.toFixed(2));
-		forceCashMethod();
+		// 결제 수단은 현재 선택된 것을 유지 (forceCashMethod 제거)
+		// 사용자가 선택한 결제 수단과 금액을 매칭
 	};
 
 
@@ -566,43 +683,78 @@ const addQuick = async (q: number) => {
 
 	const commitDraft = async (clickedMethod?: string) => {
 		try {
-			const amt = parseFloat(amount || '0') || 0;
-			const t = parseFloat(tip || '0') || 0;
-			const total = Number((amt + t).toFixed(2));
-
-			// 1) 금액 선입력 후 결제도구 클릭: 클릭한 수단으로 즉시 확정 + 같은 수단을 선택 상태로 유지
-            if (clickedMethod && total > 0) {
-                const confirmedTotalNow2 = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
-                const scopeDueNow2 = Math.max(0, Number((remainingDue - confirmedTotalNow2).toFixed(2)));
-                const effectiveAmount = clickedMethod === 'CASH' ? total : Math.min(total, scopeDueNow2);
-				const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-				setOptimisticPayments(prev => [...prev, { tempId, method: clickedMethod, amount: effectiveAmount }]);
-				setAmount('0.00');
-				setTip('0');
+			if (!clickedMethod) {
+				// 결제 수단이 없으면 초기화
+				setMethod('');
 				setRawAmountDigits('');
-				await onConfirm({ method: clickedMethod, amount: parseFloat(effectiveAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)) });
-				setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
-				setMethod(clickedMethod); // 다음 입력을 같은 수단으로 받기
-				// Show clamp popup for non-cash if clamped
-				if (clickedMethod !== 'CASH' && total > effectiveAmount) {
-					showClampPopup(total, effectiveAmount, clickedMethod);
-				}
+				setAmount('0.00');
 				return;
 			}
-            // 2) 첫 결제도구 선택만(금액 0): 라벨만 지정 (아직 결제완료 아님)
-			if (clickedMethod && total <= 0) { setMethod(clickedMethod); setAmount('0.00'); setRawAmountDigits(''); return; }
-            // 3) 유효 금액이 없으면 결제도구만 전환 (아직 결제완료 아님)
-			if (total <= 0) { if (clickedMethod) { setMethod(clickedMethod); setAmount('0.00'); setRawAmountDigits(''); } else { setMethod(''); setRawAmountDigits(''); setAmount('0.00'); } return; }
+			
+			const currentAmt = parseFloat(amount || '0') || 0;
+			
+			if (currentAmt > 0) {
+				// 현재 금액 > 0이면: 기존 결제 수단이 있으면 그것으로, 없으면 클릭한 것으로 확정
+				// 기존 method가 있으면 그것을 사용, 없으면 clickedMethod 사용
+				const effectiveMethod = method || clickedMethod;
+				
+				const fixedGrandVal = initialGrandRef.current ?? (subtotal + taxLines.reduce((s, t) => s + t.amount, 0));
+				const confirmedTotalNow = (payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+				let scopeDueNow: number;
+				if (typeof outstandingDue === 'number' && outstandingDue >= 0) {
+					scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
+				} else {
+					scopeDueNow = Math.max(0, Number((fixedGrandVal - confirmedTotalNow).toFixed(2)));
+				}
+				
+				const finalAmount = (effectiveMethod === 'CASH') ? currentAmt : Math.min(currentAmt, scopeDueNow);
+				const parsedTipVal = parseFloat(tip || '0') || 0;
+				const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+				
+				setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount }]);
+				
+				await onConfirm({ 
+					method: effectiveMethod, 
+					amount: parseFloat(finalAmount.toFixed(2)), 
+					tip: parseFloat(parsedTipVal.toFixed(2)) 
+				});
+				
+				setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
+				
+				if (effectiveMethod !== 'CASH' && currentAmt > finalAmount) {
+					showClampPopup(currentAmt, finalAmount, effectiveMethod);
+				}
+				
+				// 금액 초기화
+				setAmount('0.00');
+				setRawAmountDigits('');
+				setTip('0');
+				// 결제 수단 처리: 같은 수단으로 확정했으면 초기화, 다른 수단으로 전환했으면 새 수단 유지
+				if (effectiveMethod === clickedMethod) {
+					setMethod(''); // 같은 수단 → 초기화
+				} else {
+					setMethod(clickedMethod); // 다른 수단 → 새 수단 활성화
+				}
+			} else {
+				// 현재 금액 = 0이면: 결제 수단만 활성화
+				setMethod(clickedMethod);
+			}
 		} catch (e) {
-			// rollback optimistic on failure
-			setOptimisticPayments(prev => prev.slice(0, -1));
 			try { console.error('Failed to commit draft payment', e); } catch {}
 		}
 	};
 
 	return (
 		<div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
-			<div className="bg-white rounded-2xl shadow-2xl p-0 overflow-hidden max-h-[90vh] relative" onClick={(e) => e.stopPropagation()} style={{ width: '720px', minWidth: '720px', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
+			<div className="bg-white rounded-2xl shadow-2xl p-0 overflow-hidden relative" onClick={(e) => e.stopPropagation()} style={{ width: '960px', height: '610px', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
+				{/* X Close Button */}
+				<button
+					onClick={handleCancel}
+					className="absolute top-[3px] right-[3px] z-10 p-2 rounded-full bg-white/30 hover:bg-white/50 shadow-xl hover:shadow-2xl transition-all border-[3px] border-red-500 ring-3 ring-red-300/50"
+					aria-label="Close modal"
+				>
+					<X size={28} className="text-red-600" strokeWidth={3} />
+				</button>
 				<div className="px-3 pt-3">
 					<div className="flex items-center gap-2 bg-white border rounded-full shadow px-3 py-2 overflow-x-auto whitespace-nowrap min-h-[60px]">
 						{Array.from({ length: isSplitActive ? maxGuestButtons : 0 }, (_, i) => i + 1).map((n) => {
@@ -620,13 +772,13 @@ const addQuick = async (q: number) => {
             })}
 					</div>
 				</div>
-				<div className="grid" style={{ gridTemplateColumns: '30% 40% 30%' }}>
+				<div className="grid grid-cols-1 md:[grid-template-columns:30%_40%_30%]">
 					{/* Middle (first column): Totals / Inputs */}
-											<div className={`p-3 space-y-3 order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+											<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 							<div className="space-y-1.5 text-sm">
-								<div className="flex justify-between"><span>Items</span><span>${formatMoney(subtotal)}</span></div>
-								<div className="flex justify-between"><span>Tax</span><span>${formatMoney(taxTotal)}</span></div>
-								<div className="flex justify-between text-xl font-bold border-t pt-2"><span>Total</span><span>${formatMoney(grand)}</span></div>
+								<div className="flex justify-between"><span>Items</span><span>${formatMoney(fixedSubtotal)}</span></div>
+								<div className="flex justify-between"><span>Tax</span><span>${formatMoney(fixedTaxTotal)}</span></div>
+								<div className="flex justify-between text-xl font-bold border-t pt-2"><span>Total</span><span>${formatMoney(fixedGrand)}</span></div>
 							</div>
 						<div className="mt-3 text-base flex-1 flex flex-col min-h-0">
 							{/* Change container at top */}
@@ -640,7 +792,7 @@ const addQuick = async (q: number) => {
                                 >
                                     <div className="flex flex-col items-center -translate-y-[10px] translate-x-[20px]">
                                         <span className={`text-xl font-bold text-red-700`}>Change $</span>
-                                        <span className={`font-extrabold leading-none tracking-tight text-[4.60625rem] text-red-600`}>{formatMoney((proceedArmed && lastChange != null) ? lastChange : change)}</span>
+                                        <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney((proceedArmed && lastChange != null) ? lastChange : change)}</span>
                                     </div>
                                 </div>
 								<div className="h-2" />
@@ -658,12 +810,6 @@ const addQuick = async (q: number) => {
 										<span className="text-lg font-bold text-gray-800">{formatMoney(displayPaidTotal)}</span>
 									</div>
 													<div className="mt-1 text-xs text-gray-600 max-h-12 overflow-y-auto space-y-0.5 pr-1">
-										{(parsedAmount > 0) && (
-											<div className="flex items-center justify-between">
-												<span className="truncate">{method ? getMethodLabel(method) : 'Processing'}</span>
-												<span className="font-semibold">{formatInput(amount)}</span>
-											</div>
-										)}
 										{(paymentsInScope && paymentsInScope.length > 0) && paymentsInScope.map((p, i) => (
 											<div key={`pay-${i}`} className="flex items-center justify-between">
 												<span className="truncate">{p.method}</span>
@@ -676,6 +822,12 @@ const addQuick = async (q: number) => {
 												<span className="font-semibold">{formatMoney(op.amount)}</span>
 											</div>
 										))}
+										{(parsedAmount > 0) && (
+											<div className="flex items-center justify-between">
+												<span className="truncate">{method ? getMethodLabel(method) : 'Processing'}</span>
+												<span className="font-semibold">{formatInput(amount)}</span>
+											</div>
+										)}
 									</div>
 									</div>
 									{/* Tip container */}
@@ -688,7 +840,7 @@ const addQuick = async (q: number) => {
 
 								</div>
 						{/* Right: Keypad & Quick */}
-						<div className="p-3 order-2 bg-gray-300 h-full flex flex-col">
+						<div className="p-3 md:order-2 bg-gray-300 h-full flex flex-col">
 							{/* Customer info moved here */}
                             <div className={`mb-2 flex items-center ${isCenterHeader ? 'justify-center' : 'justify-between'} text-lg rounded-md px-4 py-2 bg-gray-300 border border-gray-400`}>
                                 <span className="text-gray-800 font-extrabold text-lg">{headerLeftLabel}</span>
@@ -728,7 +880,7 @@ const addQuick = async (q: number) => {
                 <button className="col-span-2 h-[3.3rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100" onClick={() => addQuick(50)}>$50</button>
 
 								{/* Row 6: Clear (3col) ← (3col) $100 (2col) */}
-                <button className="col-span-3 h-[3.3rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100" onClick={()=>{ try { onClearAllPayments && onClearAllPayments(); } catch {} setAmount('0.00'); setTip('0'); }}>Clear</button>
+                <button className="col-span-3 h-[3.3rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100" onClick={()=>{ setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod(''); try { onClearAllPayments && onClearAllPayments(); } catch {} }}>Clear</button>
                 <button className="col-span-3 h-[3.3rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100" onClick={()=>appendDigit('BS')}>←</button>
                 <button className="col-span-2 h-[3.3rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100" onClick={() => addQuick(100)}>$100</button>
 							</div>
@@ -752,7 +904,7 @@ const addQuick = async (q: number) => {
 					</div>
 
 					{/* Methods (right column) */}
-					<div className={`bg-gray-100 border-l p-3 order-3 flex flex-col h-full space-y-1 duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+					<div className={`bg-gray-100 border-l p-3 md:order-3 flex flex-col h-full space-y-1 duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 						{methods.filter(m => m.key !== 'GIFT' && m.key !== 'OTHER').map(m => (
 							<button key={m.key} onClick={() => commitDraft(m.key)} className={`w-full flex items-center justify-between px-4 py-[0.71rem] rounded-lg border transition active:bg-red-600 active:text-white active:border-red-600 ${method===m.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'}`}>
 								<span className="flex items-center font-bold">{m.label}</span>
@@ -780,10 +932,31 @@ const addQuick = async (q: number) => {
 				</div>
 			{/* Clamp info popup */}
 			{clampPopup && (
-				<div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+				<div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
 					<div className="pointer-events-auto bg-gray-900/90 text-white px-4 py-3 rounded-xl shadow-2xl border border-gray-700 text-center">
 						<div className="text-sm font-semibold">{clampPopup.method ? `${getMethodLabel(clampPopup.method)}:` : 'Notice'}</div>
 						<div className="text-base font-bold">${clampPopup.entered.toFixed(2)} was entered, but ${clampPopup.applied.toFixed(2)} was processed.</div>
+					</div>
+				</div>
+			)}
+
+			{/* Custom Alert Popup */}
+			{alertMessage && (
+				<div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
+					<div className="pointer-events-auto bg-white rounded-xl shadow-2xl border-2 border-blue-500 px-6 py-4 text-center min-w-[320px] max-w-[480px]">
+						<div className="text-lg font-bold text-gray-800 mb-3">{alertMessage}</div>
+						<button
+							onClick={() => {
+								setAlertMessage(null);
+								if (alertTimerRef.current) {
+									window.clearTimeout(alertTimerRef.current);
+									alertTimerRef.current = null;
+								}
+							}}
+							className="px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+						>
+							OK
+						</button>
 					</div>
 				</div>
 			)}
