@@ -1672,6 +1672,55 @@ const handleVoidPinClear = useCallback(() => {
           };
         }).filter(s => s.items.length > 0);
 
+        // Build adjustments for receipt (할인 정보)
+        const receiptAdjustments: Array<{ label: string; amount: number }> = [];
+        
+        // Togo 할인
+        if ((orderType || '').toLowerCase() === 'togo') {
+          const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
+          const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
+          const discountValue = Number(togoSettings.discountValue || 0);
+          const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
+          
+          if (discountActive && discountValue > 0) {
+            const discountAmtBase = togoSettings.discountMode === 'percent'
+              ? (baseSubtotal * discountValue) / 100
+              : discountValue;
+            const discountAmt = Number(discountAmtBase.toFixed(2));
+            if (discountAmt > 0) {
+              const discountLabel = togoSettings.discountMode === 'percent' 
+                ? `Discount (${discountValue}%)` 
+                : 'Discount';
+              receiptAdjustments.push({ label: discountLabel, amount: -discountAmt });
+            }
+          }
+          
+          if (bagActive && bagFeeValue > 0) {
+            receiptAdjustments.push({ label: `Bag Fee`, amount: Number(bagFeeValue.toFixed(2)) });
+          }
+        }
+        
+        // Order D/C (전체 할인)
+        const orderDiscountItem = (orderItems || []).find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
+        if (orderDiscountItem) {
+          const discountData = (orderDiscountItem as any).discount || {};
+          const discountMode = discountData.mode || 'percent';
+          const discountValue = Number(discountData.value || 0);
+          const discountType = discountData.type || 'Order D/C';
+          
+          if (discountValue > 0) {
+            let discountAmount = 0;
+            if (discountMode === 'percent') {
+              discountAmount = baseSubtotal * (discountValue / 100);
+            } else {
+              discountAmount = Math.abs(Number(orderDiscountItem.totalPrice || orderDiscountItem.price || 0));
+            }
+            if (discountAmount > 0) {
+              receiptAdjustments.push({ label: discountType, amount: -Number(discountAmount.toFixed(2)) });
+            }
+          }
+        }
+        
         const receiptData = {
           header: {
             orderNumber: orderId || '',
@@ -1694,7 +1743,7 @@ const handleVoidPinClear = useCallback(() => {
           })),
           guestSections,
           subtotal: baseSubtotal,
-          adjustments: [],
+          adjustments: receiptAdjustments,
           taxLines: totals.taxLines || [],
           taxesTotal: taxTotal,
           total: expectedGrand,
@@ -4135,7 +4184,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          return {
             type: 'prebill',
             header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber },
-            orderInfo: { channel: orderType || 'POS', table: (location.state && (location.state as any).tableName) || undefined },
+            orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined },
             body: { 
                 guestSections: receiptItems, 
                 subtotal: specificSubtotal, 
@@ -4259,7 +4308,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           const fullReceipt = {
             type: 'prebill',
             header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber },
-            orderInfo: { channel: orderType || 'POS', table: (location.state && (location.state as any).tableName) || undefined },
+            orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined },
             body: { 
                 guestSections: Object.keys(byGuest).sort((a,b)=>Number(a)-Number(b)).map(k => ({ guestNumber: Number(k), items: byGuest[Number(k)] })), 
                 subtotal, 

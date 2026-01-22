@@ -655,12 +655,11 @@ function buildImageKitchenTicket(options) {
   const separator2 = layoutSettings.separator2 || { visible: true, style: 'solid' };
   const splitSeparator = layoutSettings.splitSeparator || { visible: true, style: 'dashed' };
 
-  // 폰트 높이 (순수 폰트 크기만)
+  // 폰트 높이 (순수 폰트 크기만) - DPI 스케일링 적용
   const getFontHeight = (el) => Math.round(scaleFontSize(el.fontSize));
   
-  // 윗 요소와의 간격 (lineSpacing을 픽셀 간격으로 사용)
-  // 기존 1.2 같은 값은 12px로 변환 (10배)
-  const getSpacing = (el) => Math.round((el.lineSpacing || 1.2) * 10);
+  // 윗 요소와의 간격 (lineSpacing 값을 그대로 픽셀로 사용, DPI 스케일링 적용)
+  const getSpacing = (el) => Math.round(scaleFontSize(el.lineSpacing || 0));
   
   // 전체 줄 높이 = 폰트 높이 + 간격
   const getLineHeight = (el) => getFontHeight(el) + getSpacing(el);
@@ -3606,8 +3605,9 @@ module.exports = (db) => {
         
         sectionsToRender.forEach((section, idx) => {
           if (sectionsToRender.length > 1) {
+            // Guest 라벨: Item과 동일한 스타일 적용
             const guestLabel = `--- GUEST ${section.guestNumber} ---`;
-            content += centerText(guestLabel) + '\n';
+            content += itemsStyle.prefix + centerText(guestLabel) + '\n' + itemsStyle.suffix;
           }
           
           (section.items || []).forEach(item => {
@@ -3615,7 +3615,7 @@ module.exports = (db) => {
             const name = item.name || 'Unknown';
             const lineTotal = item.lineTotal || item.total || (item.unitPrice * qty) || 0;
             
-            content += itemsStyle.prefix + leftRightText(`${name} x${qty}`, `$${lineTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
+            content += itemsStyle.prefix + leftRightText(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
             
             // Modifiers
             if (billLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
@@ -3745,40 +3745,45 @@ module.exports = (db) => {
       footer = {}
     } = billData;
 
+    // Font Scale: 프린터 DPI(203)와 화면 DPI(96) 차이 보정
+    const fontScale = billLayout.fontScale || 1.0;
+
     // 80mm = 576px, 58mm = 384px at 203 DPI
     const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
     // Minimal margins to maximize content width - only 4px minimum
     const MARGIN = Math.max(4, Math.min(12, Math.round((billLayout.leftMargin || 0) * 2.835) + 4));
-    const TOP_MARGIN = Math.round((billLayout.topMargin || 0) * 2.835) + 12;
+    const TOP_MARGIN = Math.round((billLayout.topMargin || 0) * 2.835) + 2;  // 상단 여백 최소화
+    const BOTTOM_MARGIN = 2;  // 하단 여백 2px 고정 (용지 낭비 방지)
     const CONTENT_WIDTH = PAPER_WIDTH_PX - (MARGIN * 2);
 
-    // Calculate height
-    let totalHeight = TOP_MARGIN + 40;
+    // Calculate height (apply fontScale to all height calculations)
+    let totalHeight = TOP_MARGIN + Math.round(10 * fontScale);
     
     // Store info
-    if (billLayout.storeName?.visible !== false) totalHeight += 35;
-    if (billLayout.storeAddress?.visible !== false) totalHeight += 20;
-    if (billLayout.storePhone?.visible !== false) totalHeight += 20;
+    if (billLayout.storeName?.visible !== false) totalHeight += Math.round(35 * fontScale);
+    if (billLayout.storeAddress?.visible !== false) totalHeight += Math.round(20 * fontScale);
+    if (billLayout.storePhone?.visible !== false) totalHeight += Math.round(20 * fontScale);
     
     // Order info
-    totalHeight += 100;
+    totalHeight += Math.round(100 * fontScale);
     
     // Items
     const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
+    const itemFontSizeForHeight = billLayout.items?.fontSize || 12;
     sectionsToRender.forEach(section => {
-      if (sectionsToRender.length > 1) totalHeight += 30;
+      if (sectionsToRender.length > 1) totalHeight += Math.round(itemFontSizeForHeight * fontScale) + (billLayout.items?.lineSpacing || 0);
       (section.items || []).forEach(item => {
-        totalHeight += 25;
-        if (item.modifiers) totalHeight += item.modifiers.length * 18;
-        if (item.memo) totalHeight += 18;
+        totalHeight += Math.round(itemFontSizeForHeight * fontScale) + (billLayout.items?.lineSpacing || 0);
+        if (item.modifiers) totalHeight += item.modifiers.length * Math.round(18 * fontScale);
+        if (item.memo) totalHeight += Math.round(18 * fontScale);
       });
     });
     
-    // Totals
-    totalHeight += 120;
+    // Totals + Greeting
+    totalHeight += Math.round(50 * fontScale);
     
-    // Footer
-    totalHeight += 60;
+    // Footer (하단 여백)
+    totalHeight += BOTTOM_MARGIN;
 
     const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
     const ctx = canvas.getContext('2d');
@@ -3787,12 +3792,16 @@ module.exports = (db) => {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, PAPER_WIDTH_PX, totalHeight);
 
-    let y = TOP_MARGIN;
+    // 첫 텍스트의 폰트 크기만큼 y 시작 위치를 아래로 조정 (텍스트 baseline 보정)
+    const firstFontSize = Math.round((billLayout.storeName?.fontSize || 16) * fontScale);
+    let y = TOP_MARGIN + firstFontSize;
     const centerX = PAPER_WIDTH_PX / 2;
 
     // Helper functions
-    const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center') => {
-      ctx.font = `${fontWeight} ${fontSize}px Arial`;
+    const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center', isItalic = false) => {
+      const scaledFontSize = Math.round(fontSize * fontScale);
+      const italicPrefix = isItalic ? 'italic ' : '';
+      ctx.font = `${italicPrefix}${fontWeight} ${scaledFontSize}px Arial`;
       ctx.fillStyle = '#000000';
       ctx.textAlign = align;
       
@@ -3814,8 +3823,10 @@ module.exports = (db) => {
     
     // Helper to draw left-right aligned text (for items with prices)
     // Minimized gap between left text and right amount
-    const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal') => {
-      ctx.font = `${fontWeight} ${fontSize}px Arial`;
+    const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal', isItalic = false) => {
+      const scaledFontSize = Math.round(fontSize * fontScale);
+      const italicPrefix = isItalic ? 'italic ' : '';
+      ctx.font = `${italicPrefix}${fontWeight} ${scaledFontSize}px Arial`;
       ctx.fillStyle = '#000000';
       
       const rightWidth = ctx.measureText(rightText).width;
@@ -3855,80 +3866,101 @@ module.exports = (db) => {
       ctx.setLineDash([]);
     };
 
-    // Header (from Business Profile) - use billLayout fontSize settings
+    // Header (from Business Profile) - use billLayout fontSize settings with fontScale
     if (billLayout.storeName?.visible !== false && storeInfo.name) {
       const fontSize = billLayout.storeName?.fontSize || 16;
+      const lineSpacing = billLayout.storeName?.lineSpacing || 0;
       const fontWeight = billLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(storeInfo.name, centerX, y, fontSize * 1.5, fontWeight);
-      y += fontSize * 2;
+      const isItalic = billLayout.storeName?.isItalic || false;
+      drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
     if (billLayout.storeAddress?.visible !== false && storeInfo.address) {
       const fontSize = billLayout.storeAddress?.fontSize || 10;
+      const lineSpacing = billLayout.storeAddress?.lineSpacing || 0;
       const fontWeight = billLayout.storeAddress?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(storeInfo.address, centerX, y, fontSize * 1.4, fontWeight);
-      y += fontSize * 1.8;
+      const isItalic = billLayout.storeAddress?.isItalic || false;
+      drawText(storeInfo.address, centerX, y, fontSize, fontWeight, 'center', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
     if (billLayout.storePhone?.visible !== false && storeInfo.phone) {
       const fontSize = billLayout.storePhone?.fontSize || 10;
+      const lineSpacing = billLayout.storePhone?.lineSpacing || 0;
       const fontWeight = billLayout.storePhone?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(storeInfo.phone, centerX, y, fontSize * 1.4, fontWeight);
-      y += fontSize * 1.8;
+      const isItalic = billLayout.storePhone?.isItalic || false;
+      drawText(storeInfo.phone, centerX, y, fontSize, fontWeight, 'center', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
     // Separator 1
     if (billLayout.separator1?.visible !== false) {
-      y += 8;
+      y += Math.round(4 * fontScale);
       drawLine(y, billLayout.separator1?.style || 'solid');
-      y += 12;
+      y += Math.round(8 * fontScale);
     }
 
-    // Order info - use billLayout fontSize settings
+    // Order info - use billLayout fontSize settings with fontScale
     ctx.textAlign = 'left';
     if (billLayout.orderNumber?.visible !== false && header.orderNumber) {
-      const fontSize = (billLayout.orderNumber?.fontSize || 12) * 1.4;
+      const fontSize = billLayout.orderNumber?.fontSize || 12;
+      const lineSpacing = billLayout.orderNumber?.lineSpacing || 0;
       const fontWeight = billLayout.orderNumber?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(`Order#: ${header.orderNumber}`, MARGIN, y, fontSize, fontWeight, 'left');
-      y += fontSize * 1.5;
+      const isItalic = billLayout.orderNumber?.isItalic || false;
+      drawText(`Order#: ${header.orderNumber}`, MARGIN, y, fontSize, fontWeight, 'left', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
     if (billLayout.orderChannel?.visible !== false) {
-      const fontSize = (billLayout.orderChannel?.fontSize || 12) * 1.4;
+      const fontSize = billLayout.orderChannel?.fontSize || 12;
+      const lineSpacing = billLayout.orderChannel?.lineSpacing || 0;
       const fontWeight = billLayout.orderChannel?.fontWeight === 'bold' ? 'bold' : 'normal';
-      const channelInfo = orderInfo.channel || 'POS';
-      const tableInfo = orderInfo.table ? ` / Table: ${orderInfo.table}` : '';
-      drawText(`${channelInfo}${tableInfo}`, MARGIN, y, fontSize, fontWeight, 'left');
-      y += fontSize * 1.5;
+      const isItalic = billLayout.orderChannel?.isItalic || false;
+      // header와 orderInfo 모두에서 channel/table 정보 확인
+      const channelInfo = header.channel || orderInfo.channel || 'POS';
+      const tableName = header.tableName || orderInfo.tableName || orderInfo.table || '';
+      const tableInfo = tableName ? ` / ${tableName}` : '';
+      drawText(`${channelInfo}${tableInfo}`, MARGIN, y, fontSize, fontWeight, 'left', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
     if (billLayout.serverName?.visible !== false && orderInfo.server) {
-      const fontSize = (billLayout.serverName?.fontSize || 11) * 1.4;
+      const fontSize = billLayout.serverName?.fontSize || 11;
+      const lineSpacing = billLayout.serverName?.lineSpacing || 0;
       const fontWeight = billLayout.serverName?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(`Server: ${orderInfo.server}`, MARGIN, y, fontSize, fontWeight, 'left');
-      y += fontSize * 1.5;
+      const isItalic = billLayout.serverName?.isItalic || false;
+      drawText(`Server: ${orderInfo.server}`, MARGIN, y, fontSize, fontWeight, 'left', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
     if (billLayout.dateTime?.visible !== false) {
-      const fontSize = (billLayout.dateTime?.fontSize || 11) * 1.4;
+      const fontSize = billLayout.dateTime?.fontSize || 11;
+      const lineSpacing = billLayout.dateTime?.lineSpacing || 0;
       const fontWeight = billLayout.dateTime?.fontWeight === 'bold' ? 'bold' : 'normal';
+      const isItalic = billLayout.dateTime?.isItalic || false;
       const now = header.dateTime ? new Date(header.dateTime) : new Date();
-      drawText(`${now.toLocaleDateString()} ${now.toLocaleTimeString()}`, MARGIN, y, fontSize, fontWeight, 'left');
-      y += fontSize * 1.5;
+      drawText(`${now.toLocaleDateString()} ${now.toLocaleTimeString()}`, MARGIN, y, fontSize, fontWeight, 'left', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
     // Separator 2
     if (billLayout.separator2?.visible !== false) {
-      y += 8;
+      y += Math.round(4 * fontScale);
       drawLine(y, billLayout.separator2?.style || 'dashed');
-      y += 12;
+      y += Math.round(8 * fontScale);
     }
 
-    // Items - use billLayout fontSize settings
-    const itemsFontSize = (billLayout.items?.fontSize || 12) * 1.4;
+    // Items - use billLayout fontSize settings with fontScale
+    const itemsFontSize = billLayout.items?.fontSize || 12;
+    const itemsLineSpacing = billLayout.items?.lineSpacing || 0;
     const itemsFontWeight = billLayout.items?.fontWeight === 'bold' ? 'bold' : 'normal';
-    const modifiersFontSize = (billLayout.modifiers?.fontSize || 10) * 1.4;
+    const itemsIsItalic = billLayout.items?.isItalic || false;
+    const modifiersFontSize = billLayout.modifiers?.fontSize || 10;
+    const modifiersLineSpacing = billLayout.modifiers?.lineSpacing || 0;
     const modifiersFontWeight = billLayout.modifiers?.fontWeight === 'bold' ? 'bold' : 'normal';
+    const modifiersIsItalic = billLayout.modifiers?.isItalic || false;
     
     sectionsToRender.forEach(section => {
       if (sectionsToRender.length > 1) {
-        drawText(`--- GUEST ${section.guestNumber} ---`, centerX, y, 14, 'bold', 'center');
-        y += 22;
+        // Guest 라벨: Item과 동일한 폰트 사이즈 사용
+        drawText(`--- GUEST ${section.guestNumber} ---`, centerX, y, itemsFontSize, itemsFontWeight, 'center', itemsIsItalic);
+        y += Math.round(itemsFontSize * fontScale) + itemsLineSpacing;
       }
 
       (section.items || []).forEach(item => {
@@ -3936,17 +3968,17 @@ module.exports = (db) => {
         const name = item.name || 'Unknown';
         const lineTotal = item.lineTotal || item.total || 0;
 
-        // Use drawLeftRight for proper text truncation
-        drawLeftRight(`${name} x${qty}`, `$${lineTotal.toFixed(2)}`, y, itemsFontSize, itemsFontWeight);
-        y += itemsFontSize * 1.5;
+        // Use drawLeftRight for proper text truncation (수량x 아이템 형식)
+        drawLeftRight(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, y, itemsFontSize, itemsFontWeight, itemsIsItalic);
+        y += Math.round(itemsFontSize * fontScale) + itemsLineSpacing;
 
         // Modifiers
         if (billLayout.modifiers?.visible !== false && item.modifiers) {
           const modPrefix = billLayout.modifiers?.prefix || '>>';
           item.modifiers.forEach(mod => {
             const modName = typeof mod === 'string' ? mod : (mod.name || mod);
-            drawText(`  ${modPrefix} ${modName}`, MARGIN, y, modifiersFontSize, modifiersFontWeight, 'left');
-            y += modifiersFontSize * 1.4;
+            drawText(`  ${modPrefix} ${modName}`, MARGIN, y, modifiersFontSize, modifiersFontWeight, 'left', modifiersIsItalic);
+            y += Math.round(modifiersFontSize * fontScale) + modifiersLineSpacing;
           });
         }
       });
@@ -3954,61 +3986,71 @@ module.exports = (db) => {
 
     // Separator 3
     if (billLayout.separator3?.visible !== false) {
-      y += 8;
+      y += Math.round(4 * fontScale);
       drawLine(y, billLayout.separator3?.style || 'solid');
-      y += 12;
+      y += Math.round(8 * fontScale);
     }
 
-    // Totals - use billLayout fontSize settings with drawLeftRight
+    // Totals - use billLayout fontSize settings with fontScale
     if (billLayout.subtotal?.visible !== false) {
-      const fontSize = (billLayout.subtotal?.fontSize || 12) * 1.4;
+      const fontSize = billLayout.subtotal?.fontSize || 12;
+      const lineSpacing = billLayout.subtotal?.lineSpacing || 0;
       const fontWeight = billLayout.subtotal?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawLeftRight('Subtotal:', `$${subtotal.toFixed(2)}`, y, fontSize, fontWeight);
-      y += fontSize * 1.5;
+      const isItalic = billLayout.subtotal?.isItalic || false;
+      drawLeftRight('Subtotal:', `$${subtotal.toFixed(2)}`, y, fontSize, fontWeight, isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
     // Adjustments (Discount)
     if (billLayout.discount?.visible !== false) {
-      const fontSize = (billLayout.discount?.fontSize || 11) * 1.4;
+      const fontSize = billLayout.discount?.fontSize || 11;
+      const lineSpacing = billLayout.discount?.lineSpacing || 0;
       const fontWeight = billLayout.discount?.fontWeight === 'bold' ? 'bold' : 'normal';
+      const isItalic = billLayout.discount?.isItalic || false;
       adjustments.forEach(adj => {
-        drawLeftRight(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, y, fontSize, fontWeight);
-        y += fontSize * 1.4;
+        drawLeftRight(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, y, fontSize, fontWeight, isItalic);
+        y += Math.round(fontSize * fontScale) + lineSpacing;
       });
     }
 
-    // Tax - use billLayout fontSize settings (taxGST/taxPST) with drawLeftRight
-    const taxFontSize = (billLayout.taxGST?.fontSize || billLayout.taxPST?.fontSize || 11) * 1.4;
+    // Tax - use billLayout fontSize settings with fontScale
+    const taxFontSize = billLayout.taxGST?.fontSize || billLayout.taxPST?.fontSize || 11;
+    const taxLineSpacing = billLayout.taxGST?.lineSpacing || billLayout.taxPST?.lineSpacing || 0;
     const taxFontWeight = (billLayout.taxGST?.fontWeight === 'bold' || billLayout.taxPST?.fontWeight === 'bold') ? 'bold' : 'normal';
+    const taxIsItalic = billLayout.taxGST?.isItalic || billLayout.taxPST?.isItalic || false;
     taxLines.forEach(tax => {
       if (tax.name) {
-        drawLeftRight(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, y, taxFontSize, taxFontWeight);
-        y += taxFontSize * 1.4;
+        drawLeftRight(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, y, taxFontSize, taxFontWeight, taxIsItalic);
+        y += Math.round(taxFontSize * fontScale) + taxLineSpacing;
       }
     });
 
     // Separator 4
     if (billLayout.separator4?.visible !== false) {
-      y += 8;
+      y += Math.round(4 * fontScale);
       drawLine(y, billLayout.separator4?.style || 'solid');
-      y += 12;
+      y += Math.round(8 * fontScale);
     }
 
-    // Total - use billLayout fontSize settings with drawLeftRight
+    // Total - use billLayout fontSize settings with fontScale
     if (billLayout.total?.visible !== false) {
-      const fontSize = (billLayout.total?.fontSize || 14) * 1.4;
+      const fontSize = billLayout.total?.fontSize || 14;
+      const lineSpacing = billLayout.total?.lineSpacing || 0;
       const fontWeight = billLayout.total?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawLeftRight('TOTAL:', `$${total.toFixed(2)}`, y, fontSize, fontWeight);
-      y += fontSize * 1.6;
+      const isItalic = billLayout.total?.isItalic || false;
+      drawLeftRight('TOTAL:', `$${total.toFixed(2)}`, y, fontSize, fontWeight, isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
-    // Footer - use billLayout fontSize settings
-    y += 10;
+    // Footer - use billLayout fontSize settings with fontScale
+    y += Math.round(10 * fontScale);
     if (billLayout.greeting?.visible !== false) {
-      const fontSize = (billLayout.greeting?.fontSize || 11) * 1.4;
+      const fontSize = billLayout.greeting?.fontSize || 11;
+      const lineSpacing = billLayout.greeting?.lineSpacing || 0;
       const fontWeight = billLayout.greeting?.fontWeight === 'bold' ? 'bold' : 'normal';
-      drawText(billLayout.greeting?.text || footer.message || 'Thank you!', centerX, y, fontSize, fontWeight, 'center');
-      y += fontSize * 1.5;
+      const isItalic = billLayout.greeting?.isItalic || false;
+      drawText(billLayout.greeting?.text || footer.message || 'Thank you!', centerX, y, fontSize, fontWeight, 'center', isItalic);
+      y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
     // Convert to ESC/POS
@@ -4354,32 +4396,35 @@ module.exports = (db) => {
       function renderReceiptImage(receiptData, receiptLayout, paperWidth, storeInfo = {}, payments = [], change = 0) {
         const { header = {}, orderInfo = {}, items = [], guestSections = [], subtotal = 0, adjustments = [], taxLines = [], total = 0, footer = {} } = receiptData;
 
+        // Font Scale: 프린터 DPI(203)와 화면 DPI(96) 차이 보정
+        const fontScale = receiptLayout.fontScale || 1.0;
+
         const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
         const MARGIN = Math.max(4, Math.min(12, Math.round((receiptLayout.leftMargin || 0) * 2.835) + 4));
         const TOP_MARGIN = Math.round((receiptLayout.topMargin || 0) * 2.835) + 12;
         const CONTENT_WIDTH = PAPER_WIDTH_PX - (MARGIN * 2);
 
-        // Calculate height
-        let totalHeight = TOP_MARGIN + 40;
-        if (receiptLayout.storeName?.visible !== false) totalHeight += 35;
-        if (receiptLayout.storeAddress?.visible !== false) totalHeight += 20;
-        if (receiptLayout.storePhone?.visible !== false) totalHeight += 20;
-        totalHeight += 100; // Order info
+        // Calculate height (apply fontScale)
+        let totalHeight = TOP_MARGIN + Math.round(40 * fontScale);
+        if (receiptLayout.storeName?.visible !== false) totalHeight += Math.round(35 * fontScale);
+        if (receiptLayout.storeAddress?.visible !== false) totalHeight += Math.round(20 * fontScale);
+        if (receiptLayout.storePhone?.visible !== false) totalHeight += Math.round(20 * fontScale);
+        totalHeight += Math.round(100 * fontScale); // Order info
         
         const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
         sectionsToRender.forEach(section => {
-          if (sectionsToRender.length > 1) totalHeight += 30;
+          if (sectionsToRender.length > 1) totalHeight += Math.round(30 * fontScale);
           (section.items || []).forEach(item => {
-            totalHeight += 25;
-            if (item.modifiers) totalHeight += item.modifiers.length * 18;
-            if (item.memo) totalHeight += 18;
+            totalHeight += Math.round(25 * fontScale);
+            if (item.modifiers) totalHeight += item.modifiers.length * Math.round(18 * fontScale);
+            if (item.memo) totalHeight += Math.round(18 * fontScale);
           });
         });
         
-        totalHeight += 150; // Subtotal, tax, total
-        totalHeight += payments.length * 25 + 50; // Payment info
-        totalHeight += 80; // Footer
-        totalHeight += 30; // Extra padding
+        totalHeight += Math.round(150 * fontScale); // Subtotal, tax, total
+        totalHeight += payments.length * Math.round(25 * fontScale) + Math.round(30 * fontScale); // Payment info
+        totalHeight += Math.round(30 * fontScale); // Footer (최소화)
+        totalHeight += 4; // 하단 여백 4px 고정
 
         const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
         const ctx = canvas.getContext('2d');
@@ -4390,8 +4435,10 @@ module.exports = (db) => {
         let y = TOP_MARGIN;
         const centerX = PAPER_WIDTH_PX / 2;
 
-        const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center') => {
-          ctx.font = `${fontWeight} ${fontSize}px Arial`;
+        const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center', isItalic = false) => {
+          const scaledFontSize = Math.round(fontSize * fontScale);
+          const italicPrefix = isItalic ? 'italic ' : '';
+          ctx.font = `${italicPrefix}${fontWeight} ${scaledFontSize}px Arial`;
           ctx.fillStyle = '#000000';
           ctx.textAlign = align;
           
@@ -4408,8 +4455,10 @@ module.exports = (db) => {
           ctx.fillText(displayText, x, yPos);
         };
         
-        const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal') => {
-          ctx.font = `${fontWeight} ${fontSize}px Arial`;
+        const drawLeftRight = (leftText, rightText, yPos, fontSize, fontWeight = 'normal', isItalic = false) => {
+          const scaledFontSize = Math.round(fontSize * fontScale);
+          const italicPrefix = isItalic ? 'italic ' : '';
+          ctx.font = `${italicPrefix}${fontWeight} ${scaledFontSize}px Arial`;
           ctx.fillStyle = '#000000';
           
           const rightWidth = ctx.measureText(rightText).width;
@@ -4447,199 +4496,217 @@ module.exports = (db) => {
           ctx.setLineDash([]);
         };
 
-        // Store Name
+        // Store Name (with fontScale)
         if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
-          const fontSize = (receiptLayout.storeName?.fontSize || 16) * 1.5;
+          const fontSize = receiptLayout.storeName?.fontSize || 16;
+          const lineSpacing = receiptLayout.storeName?.lineSpacing || 0;
           const fontWeight = receiptLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center');
-          y += fontSize * 1.3;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
-        // Store Address
+        // Store Address (with fontScale)
         if (receiptLayout.storeAddress?.visible !== false && storeInfo.address) {
-          const fontSize = (receiptLayout.storeAddress?.fontSize || 10) * 1.4;
+          const fontSize = receiptLayout.storeAddress?.fontSize || 10;
+          const lineSpacing = receiptLayout.storeAddress?.lineSpacing || 0;
           drawText(storeInfo.address, centerX, y, fontSize, 'normal', 'center');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
-        // Store Phone
+        // Store Phone (with fontScale)
         if (receiptLayout.storePhone?.visible !== false && storeInfo.phone) {
-          const fontSize = (receiptLayout.storePhone?.fontSize || 10) * 1.4;
+          const fontSize = receiptLayout.storePhone?.fontSize || 10;
+          const lineSpacing = receiptLayout.storePhone?.lineSpacing || 0;
           drawText(storeInfo.phone, centerX, y, fontSize, 'normal', 'center');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         // Separator 1
         if (receiptLayout.separator1?.visible !== false) {
-          y += 8;
+          y += Math.round(8 * fontScale);
           drawLine(y, receiptLayout.separator1?.style || 'solid');
-          y += 12;
+          y += Math.round(12 * fontScale);
         }
 
-        // Order Info
+        // Order Info (with fontScale)
         ctx.textAlign = 'left';
         if (receiptLayout.orderNumber?.visible !== false && header.orderNumber) {
-          const fontSize = (receiptLayout.orderNumber?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.orderNumber?.fontSize || 12;
+          const lineSpacing = receiptLayout.orderNumber?.lineSpacing || 0;
           drawText(`Order#: ${header.orderNumber}`, MARGIN, y, fontSize, 'normal', 'left');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         if (receiptLayout.orderChannel?.visible !== false) {
-          const fontSize = (receiptLayout.orderChannel?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.orderChannel?.fontSize || 12;
+          const lineSpacing = receiptLayout.orderChannel?.lineSpacing || 0;
           const channelInfo = header.channel || orderInfo.channel || '';
           const tableInfo = header.tableName || orderInfo.tableName || '';
           if (channelInfo || tableInfo) {
             drawText(`${channelInfo}${tableInfo ? ' - ' + tableInfo : ''}`, MARGIN, y, fontSize, 'normal', 'left');
-            y += fontSize * 1.4;
+            y += Math.round(fontSize * fontScale) + lineSpacing;
           }
         }
 
         if (receiptLayout.serverName?.visible !== false && (header.serverName || orderInfo.serverName)) {
-          const fontSize = (receiptLayout.serverName?.fontSize || 11) * 1.4;
+          const fontSize = receiptLayout.serverName?.fontSize || 11;
+          const lineSpacing = receiptLayout.serverName?.lineSpacing || 0;
           drawText(`Server: ${header.serverName || orderInfo.serverName}`, MARGIN, y, fontSize, 'normal', 'left');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         if (receiptLayout.dateTime?.visible !== false) {
-          const fontSize = (receiptLayout.dateTime?.fontSize || 11) * 1.4;
+          const fontSize = receiptLayout.dateTime?.fontSize || 11;
+          const lineSpacing = receiptLayout.dateTime?.lineSpacing || 0;
           const now = new Date();
           const dateStr = now.toLocaleDateString('en-CA');
           const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
           drawText(`${dateStr} ${timeStr}`, MARGIN, y, fontSize, 'normal', 'left');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         // Separator 2
         if (receiptLayout.separator2?.visible !== false) {
-          y += 8;
+          y += Math.round(8 * fontScale);
           drawLine(y, receiptLayout.separator2?.style || 'dashed');
-          y += 12;
+          y += Math.round(12 * fontScale);
         }
 
-        // Items
+        // Items (with fontScale)
         sectionsToRender.forEach((section, sIdx) => {
           if (sectionsToRender.length > 1) {
             const guestFontSize = 14;
             drawText(`--- Guest ${section.guestNumber || sIdx + 1} ---`, centerX, y, guestFontSize, 'bold', 'center');
-            y += 20;
+            y += Math.round(20 * fontScale);
           }
 
           (section.items || []).forEach(item => {
             if (receiptLayout.items?.visible !== false) {
-              const fontSize = (receiptLayout.items?.fontSize || 12) * 1.4;
+              const fontSize = receiptLayout.items?.fontSize || 12;
+              const lineSpacing = receiptLayout.items?.lineSpacing || 0;
               const fontWeight = receiptLayout.items?.fontWeight === 'bold' ? 'bold' : 'normal';
               const qtyName = `${item.quantity || 1}x ${item.name}`;
               const price = `$${(item.totalPrice || item.price || 0).toFixed(2)}`;
               drawLeftRight(qtyName, price, y, fontSize, fontWeight);
-              y += fontSize * 1.4;
+              y += Math.round(fontSize * fontScale) + lineSpacing;
             }
 
             if (receiptLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
-              const fontSize = (receiptLayout.modifiers?.fontSize || 10) * 1.4;
+              const fontSize = receiptLayout.modifiers?.fontSize || 10;
+              const lineSpacing = receiptLayout.modifiers?.lineSpacing || 0;
               const prefix = receiptLayout.modifiers?.prefix || '>>';
               item.modifiers.forEach(mod => {
                 const modText = `  ${prefix} ${mod.name || mod}`;
                 const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
                 drawLeftRight(modText, modPrice, y, fontSize, 'normal');
-                y += fontSize * 1.3;
+                y += Math.round(fontSize * fontScale) + lineSpacing;
               });
             }
 
             if (receiptLayout.itemNote?.visible !== false && item.memo) {
-              const fontSize = (receiptLayout.itemNote?.fontSize || 10) * 1.4;
+              const fontSize = receiptLayout.itemNote?.fontSize || 10;
+              const lineSpacing = receiptLayout.itemNote?.lineSpacing || 0;
               const prefix = receiptLayout.itemNote?.prefix || '->';
               drawText(`  ${prefix} ${item.memo.text || item.memo}`, MARGIN, y, fontSize, 'italic', 'left');
-              y += fontSize * 1.3;
+              y += Math.round(fontSize * fontScale) + lineSpacing;
             }
           });
         });
 
         // Separator 3
         if (receiptLayout.separator3?.visible !== false) {
-          y += 8;
+          y += Math.round(8 * fontScale);
           drawLine(y, receiptLayout.separator3?.style || 'solid');
-          y += 12;
+          y += Math.round(12 * fontScale);
         }
 
-        // Subtotal
+        // Subtotal (with fontScale)
         if (receiptLayout.subtotal?.visible !== false) {
-          const fontSize = (receiptLayout.subtotal?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.subtotal?.fontSize || 12;
+          const lineSpacing = receiptLayout.subtotal?.lineSpacing || 0;
           const fontWeight = receiptLayout.subtotal?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawLeftRight('Subtotal:', `$${subtotal.toFixed(2)}`, y, fontSize, fontWeight);
-          y += fontSize * 1.5;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
-        // Adjustments
+        // Adjustments (with fontScale)
         if (receiptLayout.discount?.visible !== false) {
-          const fontSize = (receiptLayout.discount?.fontSize || 11) * 1.4;
+          const fontSize = receiptLayout.discount?.fontSize || 11;
+          const lineSpacing = receiptLayout.discount?.lineSpacing || 0;
           adjustments.forEach(adj => {
             drawLeftRight(adj.label || 'Discount:', `$${adj.amount.toFixed(2)}`, y, fontSize, 'normal');
-            y += fontSize * 1.4;
+            y += Math.round(fontSize * fontScale) + lineSpacing;
           });
         }
 
-        // Tax
-        const taxFontSize = (receiptLayout.taxGST?.fontSize || 11) * 1.4;
+        // Tax (with fontScale)
+        const taxFontSize = receiptLayout.taxGST?.fontSize || 11;
+        const taxLineSpacing = receiptLayout.taxGST?.lineSpacing || 0;
         taxLines.forEach(tax => {
           if (tax.name) {
             drawLeftRight(`${tax.name}:`, `$${(tax.amount || 0).toFixed(2)}`, y, taxFontSize, 'normal');
-            y += taxFontSize * 1.4;
+            y += Math.round(taxFontSize * fontScale) + taxLineSpacing;
           }
         });
 
         // Separator 4
         if (receiptLayout.separator4?.visible !== false) {
-          y += 8;
+          y += Math.round(8 * fontScale);
           drawLine(y, receiptLayout.separator4?.style || 'solid');
-          y += 12;
+          y += Math.round(12 * fontScale);
         }
 
-        // Total
+        // Total (with fontScale)
         if (receiptLayout.total?.visible !== false) {
-          const fontSize = (receiptLayout.total?.fontSize || 14) * 1.4;
+          const fontSize = receiptLayout.total?.fontSize || 14;
+          const lineSpacing = receiptLayout.total?.lineSpacing || 0;
           const fontWeight = receiptLayout.total?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawLeftRight('TOTAL:', `$${total.toFixed(2)}`, y, fontSize, fontWeight);
-          y += fontSize * 1.6;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
-        y += 10;
+        y += Math.round(10 * fontScale);
 
-        // Payment Info
+        // Payment Info (with fontScale)
         if (receiptLayout.paymentMethod?.visible !== false && payments.length > 0) {
-          const fontSize = (receiptLayout.paymentMethod?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.paymentMethod?.fontSize || 12;
+          const lineSpacing = receiptLayout.paymentMethod?.lineSpacing || 0;
           drawText('--- Payment ---', centerX, y, fontSize, 'bold', 'center');
-          y += fontSize * 1.4;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
           
           payments.forEach(p => {
             const method = p.method || 'Unknown';
             const amount = `$${(p.amount || 0).toFixed(2)}`;
             drawLeftRight(method, amount, y, fontSize, 'normal');
-            y += fontSize * 1.3;
+            y += Math.round(fontSize * fontScale) + lineSpacing;
           });
         }
 
-        // Change
+        // Change (with fontScale)
         if (receiptLayout.changeAmount?.visible !== false && change > 0) {
-          const fontSize = (receiptLayout.changeAmount?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.changeAmount?.fontSize || 12;
+          const lineSpacing = receiptLayout.changeAmount?.lineSpacing || 0;
           const fontWeight = receiptLayout.changeAmount?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawLeftRight('Change:', `$${change.toFixed(2)}`, y, fontSize, fontWeight);
-          y += fontSize * 1.5;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
-        y += 15;
+        y += Math.round(15 * fontScale);
 
-        // Footer
+        // Footer (with fontScale)
         if (receiptLayout.greeting?.visible !== false) {
-          const fontSize = (receiptLayout.greeting?.fontSize || 11) * 1.4;
+          const fontSize = receiptLayout.greeting?.fontSize || 11;
+          const lineSpacing = receiptLayout.greeting?.lineSpacing || 0;
           drawText(receiptLayout.greeting?.text || footer.message || 'Thank you!', centerX, y, fontSize, 'normal', 'center');
-          y += fontSize * 1.5;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         if (receiptLayout.thankYouMessage?.visible !== false) {
-          const fontSize = (receiptLayout.thankYouMessage?.fontSize || 12) * 1.4;
+          const fontSize = receiptLayout.thankYouMessage?.fontSize || 12;
+          const lineSpacing = receiptLayout.thankYouMessage?.lineSpacing || 0;
           const fontWeight = receiptLayout.thankYouMessage?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawText(receiptLayout.thankYouMessage?.text || '*** THANK YOU ***', centerX, y, fontSize, fontWeight, 'center');
-          y += fontSize * 1.5;
+          y += Math.round(fontSize * fontScale) + lineSpacing;
         }
 
         return canvasToEscPosBitmap(canvas);

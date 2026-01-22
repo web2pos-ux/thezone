@@ -360,6 +360,8 @@ function startOrderListener(restaurantId) {
             
             // Bill용 adjustments 구성 (프로모션 할인 포함)
             const billAdjustments = [];
+            
+            // 명시적 할인 정보가 있는 경우
             if (order.discountAmount && order.discountAmount > 0) {
               billAdjustments.push({
                 kind: 'PROMOTION',
@@ -368,6 +370,20 @@ function startOrderListener(restaurantId) {
                 value: order.discountAmount,
                 amount: -order.discountAmount // 마이너스로 표시
               });
+            } else {
+              // 명시적 할인 정보가 없지만 subtotal과 total 차이가 있는 경우 할인 자동 계산
+              const taxAmount = order.tax || 0;
+              const expectedTotal = subtotal + taxAmount;
+              const actualTotal = order.total || 0;
+              const impliedDiscount = Number((expectedTotal - actualTotal).toFixed(2));
+              
+              if (impliedDiscount > 0.01) { // 1센트 이상의 차이가 있으면 할인으로 표시
+                billAdjustments.push({
+                  kind: 'DISCOUNT',
+                  label: order.promotionName || 'Discount',
+                  amount: -impliedDiscount // 마이너스로 표시
+                });
+              }
             }
             
             const billData = {

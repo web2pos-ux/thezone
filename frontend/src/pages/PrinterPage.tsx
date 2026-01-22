@@ -30,7 +30,8 @@ interface ElementStyle {
   fontFamily: string;
   fontSize: number;
   lineSpacing: number;
-  fontWeight: 'regular' | 'bold' | 'extrabold' | 'italic';
+  fontWeight: 'regular' | 'bold' | 'extrabold';
+  isItalic?: boolean;  // Bold와 Italic 동시 적용 가능
   visible: boolean;
   separatorStyle: 'none' | 'solid' | 'dashed' | 'dotted';
 }
@@ -47,6 +48,7 @@ interface BillLayoutSettings {
   paperWidth: number;
   topMargin: number;
   leftMargin: number;
+  fontScale: number;  // 프린터 출력 시 폰트 스케일 (기본 1.0, 권장 2.0)
   // Header Elements
   storeName: ElementStyle & { text: string };
   storeAddress: ElementStyle & { text: string };
@@ -82,6 +84,7 @@ interface ReceiptLayoutSettings {
   paperWidth: number;
   topMargin: number;
   leftMargin: number;
+  fontScale: number;  // 프린터 출력 시 폰트 스케일 (기본 1.0, 권장 2.0)
   // Header Elements
   storeName: ElementStyle & { text: string };
   storeAddress: ElementStyle & { text: string };
@@ -384,7 +387,7 @@ interface PrintLayoutSettings {
 const createDefaultElementStyle = (fontSize: number = 12, visible: boolean = true): ElementStyle => ({
   fontFamily: 'Arial',
   fontSize,
-  lineSpacing: 0,  // Top spacing in px (margin-top)
+  lineSpacing: 8,  // Top spacing in px (margin-top)
   fontWeight: 'regular',
   visible,
   separatorStyle: 'none',
@@ -396,7 +399,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
   headerFontSize: 14,
   bodyFontSize: 12,
   footerFontSize: 10,
-  lineSpacing: 1.2,
+  lineSpacing: 12,  // px
   paperWidth: 80,
   
   // New Bill Layout
@@ -405,6 +408,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     paperWidth: 80,
     topMargin: 5,
     leftMargin: 0,
+    fontScale: 2.0,  // 프린터 출력 시 폰트 스케일 (권장 2.0)
     // Header
     storeName: { ...createDefaultElementStyle(16), fontWeight: 'bold', text: 'TheZone Restaurant' },
     storeAddress: { ...createDefaultElementStyle(10), text: '123 Main Street, Vancouver, BC' },
@@ -422,7 +426,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     headerSeparator: { ...createDefaultElementStyle(12), separatorStyle: 'solid' },
     items: { ...createDefaultElementStyle(12) },
     modifiers: { ...createDefaultElementStyle(10), prefix: '>>' },
-    itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic' },
+    itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true },
     itemDiscount: { ...createDefaultElementStyle(10) },
     subtotal: { ...createDefaultElementStyle(12) },
     discount: { ...createDefaultElementStyle(11) },  // Subtotal 바로 아래
@@ -440,6 +444,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     paperWidth: 80,
     topMargin: 5,
     leftMargin: 0,
+    fontScale: 2.0,  // 프린터 출력 시 폰트 스케일 (권장 2.0)
     // Header
     storeName: { ...createDefaultElementStyle(16), fontWeight: 'bold', text: 'TheZone Restaurant' },
     storeAddress: { ...createDefaultElementStyle(10), text: '123 Main Street, Vancouver, BC' },
@@ -456,7 +461,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     dateTime: { ...createDefaultElementStyle(11) },
     items: { ...createDefaultElementStyle(12) },
     modifiers: { ...createDefaultElementStyle(10), prefix: '>>' },
-    itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic' },
+    itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true },
     itemDiscount: { ...createDefaultElementStyle(10) },
     subtotal: { ...createDefaultElementStyle(12) },
     discount: { ...createDefaultElementStyle(11) },
@@ -493,7 +498,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     dateTime: { ...createDefaultElementStyle(12), order: 6, inverse: false },
     items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 7, inverse: false },
     modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 8, inverse: false },
-    itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 9, inverse: false },
+    itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 9, inverse: false },
     // Online/Delivery specific
     pickupTime: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 10, inverse: true },
     deliveryChannel: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 11, inverse: false },
@@ -530,7 +535,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       dateTime: { ...createDefaultElementStyle(12), order: 7, inverse: false, showInHeader: true, showInFooter: true },
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 9, inverse: false },
-      itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 10, inverse: false },
+      itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 10, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 11, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -556,7 +561,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       dateTime: { ...createDefaultElementStyle(11), order: 7, inverse: false, showInHeader: true, showInFooter: true },
       items: { ...createDefaultElementStyle(12), order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 9, inverse: false },
-      itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 10, inverse: false },
+      itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 10, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 11, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -594,7 +599,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       separator2: { visible: true, style: 'solid' },
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
-      itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 102, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -625,7 +630,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       separator2: { visible: true, style: 'dashed' },
       items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
-      itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 102, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -663,7 +668,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       separator2: { visible: true, style: 'solid' },
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
-      itemNote: { ...createDefaultElementStyle(12), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 102, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -694,7 +699,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       separator2: { visible: true, style: 'dashed' },
       items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
-      itemNote: { ...createDefaultElementStyle(10), prefix: '->', fontWeight: 'italic', order: 102, inverse: false },
+      itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 102, inverse: false },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -711,9 +716,9 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     footerFontSize: 10,
     headerBold: true,
     totalBold: true,
-    headerLineSpacing: 1.2,
-    bodyLineSpacing: 1.2,
-    footerLineSpacing: 1.0,
+    headerLineSpacing: 12,  // px
+    bodyLineSpacing: 12,  // px
+    footerLineSpacing: 10,  // px
     itemGap: 2,
     modifierGap: 0,
     // Content Settings
@@ -742,9 +747,9 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     footerFontSize: 10,
     headerBold: true,
     totalBold: true,
-    headerLineSpacing: 1.2,
-    bodyLineSpacing: 1.2,
-    footerLineSpacing: 1.0,
+    headerLineSpacing: 12,  // px
+    bodyLineSpacing: 12,  // px
+    footerLineSpacing: 10,  // px
     itemGap: 2,
     modifierGap: 0,
     // Content Settings
@@ -776,9 +781,9 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     footerFontSize: 12,
     headerBold: true,
     totalBold: false,
-    headerLineSpacing: 1.2,
-    bodyLineSpacing: 1.3,
-    footerLineSpacing: 1.0,
+    headerLineSpacing: 0,
+    bodyLineSpacing: 0,
+    footerLineSpacing: 0,
     itemGap: 4,
     modifierGap: 2,
     // Content Settings
@@ -812,7 +817,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     paperHeight: 'DEFAULT',
     marginLeft: 'DEFAULT',
     marginRight: 'DEFAULT',
-    lineSpacingHw: 1.2,
+    lineSpacingHw: 0,
     sendDelay: 'IMMEDIATELY',
     // Status Check
     statusCheckMethod: 'DISABLED',
@@ -1681,7 +1686,7 @@ const PrinterPage = () => {
         {/* Top Spacing (margin-top in px) */}
         <div className="flex items-center gap-1">
           <span className="text-sm text-gray-400">Top</span>
-          <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} disabled={!element.visible} />
+          <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!element.visible} />
         </div>
         
         {/* R/B/B+/I Style */}
@@ -1811,7 +1816,7 @@ const PrinterPage = () => {
       leftElement: {
         key: element1Key,
         fontSize: element1?.fontSize || 14,
-        lineSpacing: element1?.lineSpacing || 1.2,
+        lineSpacing: element1?.lineSpacing || 0,
         fontWeight: (element1?.fontWeight as 'regular' | 'bold' | 'extrabold') || 'regular',
         isItalic: element1?.isItalic || false,
         inverse: element1?.inverse || false,
@@ -1819,7 +1824,7 @@ const PrinterPage = () => {
       rightElement: {
         key: element2Key,
         fontSize: element2?.fontSize || 14,
-        lineSpacing: element2?.lineSpacing || 1.2,
+        lineSpacing: element2?.lineSpacing || 0,
         fontWeight: (element2?.fontWeight as 'regular' | 'bold' | 'extrabold') || 'regular',
         isItalic: element2?.isItalic || false,
         inverse: element2?.inverse || false,
@@ -2096,7 +2101,7 @@ const PrinterPage = () => {
           {/* Top Spacing (margin-top in px) */}
           <div className="flex items-center gap-1 pointer-events-auto">
             <span className="text-sm text-gray-400">Top</span>
-            <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 0 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} disabled={!isVisible} draggable="false" />
+            <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseInt(e.target.value) || 0 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!isVisible} draggable="false" />
           </div>
           
           {/* Line Height (px) */}
@@ -2269,7 +2274,7 @@ const PrinterPage = () => {
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Top</span>
-                <input type="number" value={merged.leftElement.lineSpacing} onChange={(e) => updateLeftElement({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} />
+                <input type="number" value={merged.leftElement.lineSpacing} onChange={(e) => updateLeftElement({ lineSpacing: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} />
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Line</span>
@@ -2302,7 +2307,7 @@ const PrinterPage = () => {
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Top</span>
-                <input type="number" value={merged.rightElement.lineSpacing} onChange={(e) => updateRightElement({ lineSpacing: parseFloat(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={0.5} min={0} max={30} />
+                <input type="number" value={merged.rightElement.lineSpacing} onChange={(e) => updateRightElement({ lineSpacing: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} />
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-sm text-gray-400">Line</span>
@@ -2368,7 +2373,11 @@ const PrinterPage = () => {
       <div className="flex items-center gap-2">
         {/* Visible toggle */}
         <button
-          onClick={() => onChange({ visible: !element.visible })}
+          onClick={() => {
+            const scrollY = window.scrollY;
+            onChange({ visible: !element.visible });
+            requestAnimationFrame(() => window.scrollTo(0, scrollY));
+          }}
           className={`w-6 h-6 rounded flex items-center justify-center text-xs ${
             element.visible ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'
           }`}
@@ -2388,7 +2397,11 @@ const PrinterPage = () => {
               <input
                 type="number"
                 value={element.fontSize}
-                onChange={(e) => onChange({ fontSize: parseInt(e.target.value) || 12 })}
+                onChange={(e) => {
+                  const scrollY = window.scrollY;
+                  onChange({ fontSize: parseInt(e.target.value) || 12 });
+                  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }}
                 className="w-12 p-1 border rounded text-sm text-center"
                 min={8}
                 max={24}
@@ -2402,30 +2415,46 @@ const PrinterPage = () => {
               <input
                 type="number"
                 value={element.lineSpacing}
-                onChange={(e) => onChange({ lineSpacing: parseFloat(e.target.value) || 1.2 })}
+                onChange={(e) => {
+                  const scrollY = window.scrollY;
+                  onChange({ lineSpacing: parseInt(e.target.value) || 0 });
+                  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }}
                 className="w-12 p-1 border rounded text-sm text-center"
-                step={0.1}
-                min={0.8}
-                max={2.5}
+                step={1}
+                min={0}
+                max={50}
                 disabled={!element.visible}
               />
             </div>
             
-            {/* R/B/I Style */}
+            {/* R/B Style + I Toggle */}
             <div className="flex gap-1">
               <button
-                onClick={() => onChange({ fontWeight: 'regular' })}
+                onClick={() => {
+                  const scrollY = window.scrollY;
+                  onChange({ fontWeight: 'regular' });
+                  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }}
                 className={`px-2 py-1 text-sm rounded ${element.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`}
                 disabled={!element.visible}
               >R</button>
               <button
-                onClick={() => onChange({ fontWeight: 'bold' })}
+                onClick={() => {
+                  const scrollY = window.scrollY;
+                  onChange({ fontWeight: 'bold' });
+                  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }}
                 className={`px-2 py-1 text-sm rounded font-bold ${element.fontWeight === 'bold' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`}
                 disabled={!element.visible}
               >B</button>
               <button
-                onClick={() => onChange({ fontWeight: 'italic' })}
-                className={`px-2 py-1 text-sm rounded italic ${element.fontWeight === 'italic' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`}
+                onClick={() => {
+                  const scrollY = window.scrollY;
+                  onChange({ isItalic: !element.isItalic });
+                  requestAnimationFrame(() => window.scrollTo(0, scrollY));
+                }}
+                className={`px-2 py-1 text-sm rounded italic ${element.isItalic ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}
                 disabled={!element.visible}
               >I</button>
             </div>
@@ -2451,7 +2480,7 @@ const PrinterPage = () => {
     const bl = layoutSettings.billLayout;
     const globalFont = layoutSettings.fontFamily; // 전역 폰트
     const getFontWeight = (weight: string) => weight === 'bold' ? 'bold' : 'normal';
-    const getFontStyle = (weight: string) => weight === 'italic' ? 'italic' : 'normal';
+    const getFontStyle = (isItalic?: boolean) => isItalic ? 'italic' : 'normal';
     const getSeparatorClass = (style: string) => {
       switch(style) {
         case 'dashed': return 'border-dashed';
@@ -2478,7 +2507,7 @@ const PrinterPage = () => {
               fontSize: `${bl.storeName.fontSize}px`,
               lineHeight: bl.storeName.lineSpacing,
               fontWeight: getFontWeight(bl.storeName.fontWeight),
-              fontStyle: getFontStyle(bl.storeName.fontWeight)
+              fontStyle: getFontStyle(bl.storeName.isItalic)
             }}
           >
             {bl.storeName.text || 'Restaurant Name'}
@@ -2491,7 +2520,7 @@ const PrinterPage = () => {
               fontSize: `${bl.storeAddress.fontSize}px`,
               lineHeight: bl.storeAddress.lineSpacing,
               fontWeight: getFontWeight(bl.storeAddress.fontWeight),
-              fontStyle: getFontStyle(bl.storeAddress.fontWeight)
+              fontStyle: getFontStyle(bl.storeAddress.isItalic)
             }}
           >
             {bl.storeAddress.text || 'Address'}
@@ -2504,7 +2533,7 @@ const PrinterPage = () => {
               fontSize: `${bl.storePhone.fontSize}px`,
               lineHeight: bl.storePhone.lineSpacing,
               fontWeight: getFontWeight(bl.storePhone.fontWeight),
-              fontStyle: getFontStyle(bl.storePhone.fontWeight)
+              fontStyle: getFontStyle(bl.storePhone.isItalic)
             }}
           >
             {bl.storePhone.text || 'Phone'}
@@ -2520,7 +2549,7 @@ const PrinterPage = () => {
             fontSize: `${bl.orderNumber.fontSize}px`, 
             lineHeight: bl.orderNumber.lineSpacing, 
             fontWeight: getFontWeight(bl.orderNumber.fontWeight),
-            fontStyle: getFontStyle(bl.orderNumber.fontWeight)
+            fontStyle: getFontStyle(bl.orderNumber.isItalic)
           }}>
             Order#: ORD-20251212-001
           </div>
@@ -2530,7 +2559,7 @@ const PrinterPage = () => {
             fontSize: `${bl.orderChannel.fontSize}px`, 
             lineHeight: bl.orderChannel.lineSpacing, 
             fontWeight: getFontWeight(bl.orderChannel.fontWeight),
-            fontStyle: getFontStyle(bl.orderChannel.fontWeight)
+            fontStyle: getFontStyle(bl.orderChannel.isItalic)
           }}>
             Dine-in / Table: 5
           </div>
@@ -2540,7 +2569,7 @@ const PrinterPage = () => {
             fontSize: `${bl.serverName.fontSize}px`, 
             lineHeight: bl.serverName.lineSpacing, 
             fontWeight: getFontWeight(bl.serverName.fontWeight),
-            fontStyle: getFontStyle(bl.serverName.fontWeight)
+            fontStyle: getFontStyle(bl.serverName.isItalic)
           }}>
             Server: John
           </div>
@@ -2550,7 +2579,7 @@ const PrinterPage = () => {
             fontSize: `${bl.dateTime.fontSize}px`, 
             lineHeight: bl.dateTime.lineSpacing, 
             fontWeight: getFontWeight(bl.dateTime.fontWeight),
-            fontStyle: getFontStyle(bl.dateTime.fontWeight)
+            fontStyle: getFontStyle(bl.dateTime.isItalic)
           }}>
             2025-12-13 19:30
           </div>
@@ -2565,7 +2594,7 @@ const PrinterPage = () => {
             fontSize: `${bl.items.fontSize}px`, 
             lineHeight: bl.items.lineSpacing,
             fontWeight: getFontWeight(bl.items.fontWeight),
-            fontStyle: getFontStyle(bl.items.fontWeight)
+            fontStyle: getFontStyle(bl.items.isItalic)
           }}>
             <div className="flex justify-between"><span>Salmon Sashimi x1</span><span>$18.99</span></div>
             {bl.modifiers.visible && (
@@ -2573,7 +2602,7 @@ const PrinterPage = () => {
                 fontSize: `${bl.modifiers.fontSize}px`,
                 lineHeight: bl.modifiers.lineSpacing,
                 fontWeight: getFontWeight(bl.modifiers.fontWeight),
-                fontStyle: getFontStyle(bl.modifiers.fontWeight)
+                fontStyle: getFontStyle(bl.modifiers.isItalic)
               }}>
                 <span className="inline-block w-6 text-right mr-1">{bl.modifiers.prefix || '>>'}</span>
                 <span>Extra Ginger</span>
@@ -2584,7 +2613,7 @@ const PrinterPage = () => {
                 fontSize: `${bl.itemNote.fontSize}px`,
                 lineHeight: bl.itemNote.lineSpacing,
                 fontWeight: getFontWeight(bl.itemNote.fontWeight),
-                fontStyle: getFontStyle(bl.itemNote.fontWeight)
+                fontStyle: getFontStyle(bl.itemNote.isItalic)
               }}>
                 <span className="inline-block w-6 text-right mr-1">{bl.itemNote.prefix || '->'}</span>
                 <span>No wasabi please</span>
@@ -2595,7 +2624,7 @@ const PrinterPage = () => {
                 fontSize: `${bl.itemDiscount.fontSize}px`,
                 lineHeight: bl.itemDiscount.lineSpacing,
                 fontWeight: getFontWeight(bl.itemDiscount.fontWeight),
-                fontStyle: getFontStyle(bl.itemDiscount.fontWeight)
+                fontStyle: getFontStyle(bl.itemDiscount.isItalic)
               }}>
                 <span className="inline-block w-6 text-right mr-1">-</span>
                 <span>Item Discount: -$2.00</span>
@@ -2616,7 +2645,7 @@ const PrinterPage = () => {
               fontSize: `${bl.subtotal.fontSize}px`,
               lineHeight: bl.subtotal.lineSpacing,
               fontWeight: getFontWeight(bl.subtotal.fontWeight),
-              fontStyle: getFontStyle(bl.subtotal.fontWeight)
+              fontStyle: getFontStyle(bl.subtotal.isItalic)
             }}>
               <span>Subtotal:</span><span>$54.95</span>
             </div>
@@ -2626,7 +2655,7 @@ const PrinterPage = () => {
               fontSize: `${bl.discount.fontSize}px`,
               lineHeight: bl.discount.lineSpacing,
               fontWeight: getFontWeight(bl.discount.fontWeight),
-              fontStyle: getFontStyle(bl.discount.fontWeight)
+              fontStyle: getFontStyle(bl.discount.isItalic)
             }}>
               <span>Discount:</span><span>-$5.00</span>
             </div>
@@ -2636,7 +2665,7 @@ const PrinterPage = () => {
               fontSize: `${bl.taxGST.fontSize}px`,
               lineHeight: bl.taxGST.lineSpacing,
               fontWeight: getFontWeight(bl.taxGST.fontWeight),
-              fontStyle: getFontStyle(bl.taxGST.fontWeight)
+              fontStyle: getFontStyle(bl.taxGST.isItalic)
             }}>
               <span>GST (5%):</span><span>$2.75</span>
             </div>
@@ -2646,7 +2675,7 @@ const PrinterPage = () => {
               fontSize: `${bl.taxPST.fontSize}px`,
               lineHeight: bl.taxPST.lineSpacing,
               fontWeight: getFontWeight(bl.taxPST.fontWeight),
-              fontStyle: getFontStyle(bl.taxPST.fontWeight)
+              fontStyle: getFontStyle(bl.taxPST.isItalic)
             }}>
               <span>PST (7%):</span><span>$3.85</span>
             </div>
@@ -2660,7 +2689,7 @@ const PrinterPage = () => {
                 fontSize: `${bl.total.fontSize}px`,
                 lineHeight: bl.total.lineSpacing,
                 fontWeight: getFontWeight(bl.total.fontWeight),
-                fontStyle: getFontStyle(bl.total.fontWeight)
+                fontStyle: getFontStyle(bl.total.isItalic)
               }}
             >
               <span>TOTAL:</span><span>$56.55</span>
@@ -2676,7 +2705,7 @@ const PrinterPage = () => {
               fontSize: `${bl.greeting.fontSize}px`,
               lineHeight: bl.greeting.lineSpacing,
               fontWeight: getFontWeight(bl.greeting.fontWeight),
-              fontStyle: getFontStyle(bl.greeting.fontWeight)
+              fontStyle: getFontStyle(bl.greeting.isItalic)
             }}
           >
             {bl.greeting.text || 'Thank you!'}
@@ -3189,7 +3218,7 @@ const PrinterPage = () => {
             className="text-center"
             style={{ 
               fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
-              marginTop: `${(kl.kitchenNote.lineSpacing || 1.2) * 8}px`,
+              marginTop: `${kl.kitchenNote.lineSpacing || 0}px`,
               fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
               ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
             }}
@@ -3685,7 +3714,7 @@ const PrinterPage = () => {
             className="text-center"
             style={{ 
               fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
-              marginTop: `${(kl.kitchenNote.lineSpacing || 1.2) * 8}px`,
+              marginTop: `${kl.kitchenNote.lineSpacing || 0}px`,
               fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
               ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
             }}
@@ -4368,6 +4397,11 @@ const PrinterPage = () => {
                   <input type="number" value={layoutSettings.billLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
                   <span className="text-gray-400">mm</span>
                 </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-600 font-semibold">Scale:</span>
+                  <input type="number" step={0.1} value={layoutSettings.billLayout.fontScale || 1.0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, fontScale: parseFloat(e.target.value) || 1.0 } })} className="w-14 p-1 border rounded text-xs" min={0.5} max={3.0} />
+                  <span className="text-gray-400 text-xs">(권장: 2.0)</span>
+                </div>
               </div>
             </div>
 
@@ -4590,6 +4624,11 @@ const PrinterPage = () => {
                   <input type="number" value={layoutSettings.receiptLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
                   <span className="text-gray-400">mm</span>
                 </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-600 font-semibold">Scale:</span>
+                  <input type="number" step={0.1} value={layoutSettings.receiptLayout.fontScale || 1.0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, fontScale: parseFloat(e.target.value) || 1.0 } })} className="w-14 p-1 border rounded text-xs" min={0.5} max={3.0} />
+                  <span className="text-gray-400 text-xs">(권장: 2.0)</span>
+                </div>
               </div>
             </div>
 
@@ -4741,14 +4780,14 @@ const PrinterPage = () => {
                   {/* Line Spacing */}
                   <div className="flex items-center gap-1">
                     <span className="text-sm text-gray-400">Line</span>
-                    <input type="number" value={layoutSettings.receiptLayout.changeAmount.lineSpacing} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, lineSpacing: parseFloat(e.target.value) || 1.2 } } })} className="w-12 p-1 border rounded text-sm text-center" step={0.1} min={0.8} max={2.5} disabled={!layoutSettings.receiptLayout.changeAmount.visible} />
+                    <input type="number" value={layoutSettings.receiptLayout.changeAmount.lineSpacing} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, lineSpacing: parseInt(e.target.value) || 0 } } })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!layoutSettings.receiptLayout.changeAmount.visible} />
                   </div>
                   
                   {/* R/B/I Style */}
                   <div className="flex gap-1">
                     <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontWeight: 'regular' } } })} className={`px-2 py-1 text-sm rounded ${layoutSettings.receiptLayout.changeAmount.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>R</button>
                     <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontWeight: 'bold' } } })} className={`px-2 py-1 text-sm rounded font-bold ${layoutSettings.receiptLayout.changeAmount.fontWeight === 'bold' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>B</button>
-                    <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontWeight: 'italic' } } })} className={`px-2 py-1 text-sm rounded italic ${layoutSettings.receiptLayout.changeAmount.fontWeight === 'italic' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>I</button>
+                    <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, isItalic: !layoutSettings.receiptLayout.changeAmount.isItalic } } })} className={`px-2 py-1 text-sm rounded italic ${layoutSettings.receiptLayout.changeAmount.isItalic ? 'bg-blue-600 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>I</button>
                   </div>
                 </div>
               </div>

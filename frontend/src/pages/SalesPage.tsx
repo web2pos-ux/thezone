@@ -552,6 +552,7 @@ const SalesPage: React.FC = () => {
   const [newOrderAlertData, setNewOrderAlertData] = useState<any>(null);
   const [selectedPrepTime, setSelectedPrepTime] = useState<number>(20);
   const previousOnlineOrdersRef = useRef<string[]>([]);
+  const isFirstOnlineOrderLoadRef = useRef<boolean>(true); // 첫 로드 시 알람 방지
   
   // 온라인 주문 알림음
   const onlineOrderAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -1558,6 +1559,16 @@ const SalesPage: React.FC = () => {
       
       // 새 주문 감지 (pending 상태이고 이전에 없던 주문)
       const currentOrderIds = filteredOrders.map((o: any) => o.id);
+      
+      // 첫 번째 로드 시에는 알람음 재생 안함 (페이지 진입 시 기존 주문들이 새 주문으로 인식되는 것 방지)
+      if (isFirstOnlineOrderLoadRef.current) {
+        isFirstOnlineOrderLoadRef.current = false;
+        previousOnlineOrdersRef.current = currentOrderIds;
+        console.log('[loadOnlineOrders] 첫 로드 완료 - 기존 주문 ID 초기화:', currentOrderIds.length, '건');
+        setOnlineQueueCards(mappedCards);
+        return;
+      }
+      
       const pendingOrders = filteredOrders.filter((o: any) => 
         (o.status || 'pending').toLowerCase() === 'pending' &&
         !previousOnlineOrdersRef.current.includes(o.id)
