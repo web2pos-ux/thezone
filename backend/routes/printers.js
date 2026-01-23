@@ -3469,6 +3469,14 @@ module.exports = (db) => {
         footer = {}
       } = billData;
 
+      // Debug: Log adjustments received
+      console.log(`🧾 [print-bill] Received billData - subtotal: $${subtotal}, total: $${total}`);
+      console.log(`🧾 [print-bill] Adjustments received: ${JSON.stringify(adjustments)}`);
+      console.log(`🧾 [print-bill] billLayout.discount settings: ${JSON.stringify(billLayout.discount)}`);
+      if (adjustments.length === 0) {
+        console.log(`⚠️ [print-bill] No adjustments in billData - discount line will not be printed`);
+      }
+
       // Build ESC/POS content for text mode (or as fallback)
       // 80mm = 42 chars (normal), 58mm = 32 chars (normal)
       // DOUBLE_SIZE uses 2x width, so effective chars = LINE_WIDTH / 2
@@ -3613,9 +3621,23 @@ module.exports = (db) => {
           (section.items || []).forEach(item => {
             const qty = item.qty || item.quantity || 1;
             const name = item.name || 'Unknown';
-            const lineTotal = item.lineTotal || item.total || (item.unitPrice * qty) || 0;
+            const lineTotal = item.lineTotal || item.total || item.totalPrice || ((item.price || item.unitPrice || 0) * qty) || 0;
+            const hasDiscount = item.discount && item.discount.amount > 0;
+            const originalTotal = item.originalTotal || lineTotal;
             
-            content += itemsStyle.prefix + leftRightText(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
+            if (hasDiscount) {
+              // Show original price first
+              content += itemsStyle.prefix + leftRightText(`${qty}x ${name}`, `$${originalTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
+              
+              // Show discount line (using billLayout.discount settings for italic)
+              const discountStyle = applyFontStyle(billLayout.discount);
+              const discountLabel = item.discount.type || 'Item Discount';
+              const discountAmount = item.discount.amount || 0;
+              content += discountStyle.prefix + leftRightText(`  - ${discountLabel}: -$${discountAmount.toFixed(2)}`, `$${lineTotal.toFixed(2)}`, discountStyle.isDoubleWidth) + '\n' + discountStyle.suffix;
+            } else {
+              // No discount - show normal price
+              content += itemsStyle.prefix + leftRightText(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, itemsStyle.isDoubleWidth) + '\n' + itemsStyle.suffix;
+            }
             
             // Modifiers
             if (billLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
@@ -3770,10 +3792,15 @@ module.exports = (db) => {
     // Items
     const sectionsToRender = guestSections.length > 0 ? guestSections : [{ guestNumber: 1, items }];
     const itemFontSizeForHeight = billLayout.items?.fontSize || 12;
+    const discountFontSizeForHeight = billLayout.discount?.fontSize || 10;
     sectionsToRender.forEach(section => {
       if (sectionsToRender.length > 1) totalHeight += Math.round(itemFontSizeForHeight * fontScale) + (billLayout.items?.lineSpacing || 0);
       (section.items || []).forEach(item => {
         totalHeight += Math.round(itemFontSizeForHeight * fontScale) + (billLayout.items?.lineSpacing || 0);
+        // Add height for item-level discount line if present
+        if (item.discount && item.discount.amount > 0) {
+          totalHeight += Math.round(discountFontSizeForHeight * fontScale) + (billLayout.discount?.lineSpacing || 0);
+        }
         if (item.modifiers) totalHeight += item.modifiers.length * Math.round(18 * fontScale);
         if (item.memo) totalHeight += Math.round(18 * fontScale);
       });
@@ -3966,11 +3993,30 @@ module.exports = (db) => {
       (section.items || []).forEach(item => {
         const qty = item.qty || item.quantity || 1;
         const name = item.name || 'Unknown';
-        const lineTotal = item.lineTotal || item.total || 0;
+        const lineTotal = item.lineTotal || item.total || item.totalPrice || ((item.price || item.unitPrice || 0) * qty) || 0;
+        const hasDiscount = item.discount && item.discount.amount > 0;
+        const originalTotal = item.originalTotal || lineTotal;
 
-        // Use drawLeftRight for proper text truncation (수량x 아이템 형식)
-        drawLeftRight(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, y, itemsFontSize, itemsFontWeight, itemsIsItalic);
-        y += Math.round(itemsFontSize * fontScale) + itemsLineSpacing;
+        // If item has discount, show original price first
+        if (hasDiscount) {
+          // Show original price with strikethrough effect (using lighter text)
+          const origPriceStr = `$${originalTotal.toFixed(2)}`;
+          drawLeftRight(`${qty}x ${name}`, origPriceStr, y, itemsFontSize, itemsFontWeight, itemsIsItalic);
+          y += Math.round(itemsFontSize * fontScale) + itemsLineSpacing;
+          
+          // Show discount line (italic, using billLayout.discount settings)
+          const discountFontSize = billLayout.discount?.fontSize || 10;
+          const discountLineSpacing = billLayout.discount?.lineSpacing || 0;
+          const discountIsItalic = billLayout.discount?.isItalic !== false; // Default to italic
+          const discountLabel = item.discount.type || 'Item Discount';
+          const discountAmount = item.discount.amount || 0;
+          drawLeftRight(`  - ${discountLabel}: -$${discountAmount.toFixed(2)}`, `$${lineTotal.toFixed(2)}`, y, discountFontSize, 'normal', discountIsItalic);
+          y += Math.round(discountFontSize * fontScale) + discountLineSpacing;
+        } else {
+          // No discount - show normal price
+          drawLeftRight(`${qty}x ${name}`, `$${lineTotal.toFixed(2)}`, y, itemsFontSize, itemsFontWeight, itemsIsItalic);
+          y += Math.round(itemsFontSize * fontScale) + itemsLineSpacing;
+        }
 
         // Modifiers
         if (billLayout.modifiers?.visible !== false && item.modifiers) {

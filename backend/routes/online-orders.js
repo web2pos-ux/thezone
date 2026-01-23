@@ -356,25 +356,40 @@ function startOrderListener(restaurantId) {
               taxLines.push({ name: 'Tax', amount: order.tax });
             }
             
-            const subtotal = (order.subtotal || order.total - (order.tax || 0)) || 0;
+            // 원본 소계 계산 (할인 전): 아이템 가격 합계를 먼저 계산
+            const itemsSubtotal = (order.items || []).reduce((sum, item) => {
+              const itemPrice = Number(item.price || item.unitPrice || 0);
+              const qty = Number(item.quantity || 1);
+              const modifiersTotal = (item.options || []).reduce((s, opt) => s + Number(opt.price || 0), 0);
+              const lineTotal = Number(item.subtotal || item.totalPrice || ((itemPrice + modifiersTotal) * qty));
+              return sum + lineTotal;
+            }, 0);
+            
+            // order.subtotal이 있으면 사용, 없으면 아이템에서 계산한 값 사용
+            // total - tax 는 할인 후 금액이므로 사용하지 않음
+            const subtotal = Number(order.subtotal || itemsSubtotal) || 0;
             
             // Bill용 adjustments 구성 (프로모션 할인 포함)
             const billAdjustments = [];
             
+            // 할인 금액 계산
+            const taxAmount = Number(order.tax || 0);
+            const actualTotal = Number(order.total || 0);
+            const discountAmount = Number(order.discountAmount || 0);
+            
             // 명시적 할인 정보가 있는 경우
-            if (order.discountAmount && order.discountAmount > 0) {
+            if (discountAmount > 0) {
               billAdjustments.push({
                 kind: 'PROMOTION',
                 label: order.promotionName || 'Promotion',
                 mode: order.promotionType || 'amount',
-                value: order.discountAmount,
-                amount: -order.discountAmount // 마이너스로 표시
+                value: discountAmount,
+                amount: -discountAmount // 마이너스로 표시
               });
+              console.log(`🧾 명시적 할인 적용: ${order.promotionName || 'Promotion'} -$${discountAmount.toFixed(2)}`);
             } else {
               // 명시적 할인 정보가 없지만 subtotal과 total 차이가 있는 경우 할인 자동 계산
-              const taxAmount = order.tax || 0;
               const expectedTotal = subtotal + taxAmount;
-              const actualTotal = order.total || 0;
               const impliedDiscount = Number((expectedTotal - actualTotal).toFixed(2));
               
               if (impliedDiscount > 0.01) { // 1센트 이상의 차이가 있으면 할인으로 표시
@@ -383,6 +398,7 @@ function startOrderListener(restaurantId) {
                   label: order.promotionName || 'Discount',
                   amount: -impliedDiscount // 마이너스로 표시
                 });
+                console.log(`🧾 암시적 할인 감지: ${order.promotionName || 'Discount'} -$${impliedDiscount.toFixed(2)} (subtotal: $${subtotal.toFixed(2)}, tax: $${taxAmount.toFixed(2)}, expected: $${expectedTotal.toFixed(2)}, actual: $${actualTotal.toFixed(2)})`);
               }
             }
             
@@ -400,16 +416,23 @@ function startOrderListener(restaurantId) {
                 customerName: order.customerName || '',
                 customerPhone: order.customerPhone || ''
               },
-              items: (order.items || []).map(item => ({
-                name: item.name || 'Unknown',
-                quantity: item.quantity || 1,
-                price: item.price || 0,
-                totalPrice: (item.price || 0) * (item.quantity || 1),
-                modifiers: (item.options || []).map(opt => ({
-                  name: opt.choiceName || opt.name || '',
-                  price: opt.price || 0
-                }))
-              })),
+              items: (order.items || []).map(item => {
+                const itemPrice = item.price || item.unitPrice || item.subtotal || 0;
+                const qty = item.quantity || 1;
+                const modifiersTotal = (item.options || []).reduce((sum, opt) => sum + (opt.price || 0), 0);
+                const lineTotal = item.subtotal || item.totalPrice || ((itemPrice + modifiersTotal) * qty);
+                return {
+                  name: item.name || 'Unknown',
+                  quantity: qty,
+                  price: itemPrice,
+                  totalPrice: lineTotal,
+                  lineTotal: lineTotal,
+                  modifiers: (item.options || []).map(opt => ({
+                    name: opt.choiceName || opt.name || '',
+                    price: opt.price || 0
+                  }))
+                };
+              }),
               guestSections: [],
               subtotal: subtotal,
               adjustments: billAdjustments,

@@ -4081,6 +4081,184 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // Print Bill (Pre-bill) 출력 핸들러 - 최소 구현 (헤더/합계/게스트 구분 포함)
   const [showPrintBillModal, setShowPrintBillModal] = useState(false);
 
+  // 공통 Bill 데이터 빌드 함수 (주문 제출 시 Bill과 Print Bill 버튼에서 공통 사용)
+  const buildBillDataForPrint = useCallback((options: {
+    orderNumber: string;
+    channel: string;
+    tableName: string;
+    serverName: string;
+  }) => {
+    const items = (orderItems || []).filter(it => it.type === 'item');
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
+    
+    // Calculate gross subtotal (before item discounts)
+    const grossSubtotal = items.reduce((sum: number, item: any) => {
+      const memoPrice = item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+      const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
+      return sum + perUnit * (item.quantity || 1);
+    }, 0);
+    
+    // Calculate net subtotal (after item discounts)
+    const totals = computeGuestTotals('ALL');
+    const billSubtotal = Number((totals.subtotal || 0).toFixed(2));
+    const billTaxLines = totals.taxLines || [];
+    const billTaxTotal = billTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+    let billTotal = Number((billSubtotal + billTaxTotal).toFixed(2));
+    
+    // Calculate total item-level discounts (Item D/C)
+    const totalItemDiscount = Number((grossSubtotal - billSubtotal).toFixed(2));
+    
+    // Build adjustments array
+    const adjustments: any[] = [];
+    
+    // Add Item D/C to adjustments if any item has discount
+    if (totalItemDiscount > 0.01) {
+      adjustments.push({ label: 'Item Discount', amount: -totalItemDiscount });
+      console.log(`🧾 [buildBillData] Item D/C total: -$${totalItemDiscount.toFixed(2)}`);
+    }
+    
+    // Apply POS Promotions for TOGO
+    if (isTogo && togoFirebasePromotions.length > 0) {
+      const billCartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+      const billCartItemNames = items.map((it: any) => String(it.name || ''));
+      const billCartItems = items.map((it: any) => ({
+        menuItemId: String(it.id || it.item_id || it.menuItemId),
+        name: String(it.name || ''),
+        subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+        quantity: Number(it.quantity || 1)
+      }));
+      
+      let bestBillPromo: FirebasePromotion | null = null;
+      let bestBillDiscount = 0;
+      
+      for (const promo of togoFirebasePromotions) {
+        if (checkPromotionApplicable(promo, 'togo', billSubtotal, billCartItemIds, billCartItemNames)) {
+          const discount = calculatePromotionDiscount(promo, billSubtotal, billCartItems, 0);
+          if (discount > bestBillDiscount) {
+            bestBillDiscount = discount;
+            bestBillPromo = promo;
+          }
+        }
+      }
+      
+      if (bestBillPromo && bestBillDiscount > 0) {
+        const promoDiscount = Number(bestBillDiscount.toFixed(2));
+        adjustments.push({ label: `🎁 ${bestBillPromo.name}`, amount: -promoDiscount });
+        billTotal = Number((billTotal - promoDiscount).toFixed(2));
+        console.log(`🧾 [buildBillData] Promotion applied: ${bestBillPromo.name} - $${promoDiscount}`);
+      }
+    }
+    
+    // Apply Dine-in Promotions
+    if (!isTogo && dineInPromotions.length > 0) {
+      const billCartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
+      const billCartItemNames = items.map((it: any) => String(it.name || ''));
+      const billCartItems = items.map((it: any) => ({
+        menuItemId: String(it.id || it.item_id || it.menuItemId),
+        name: String(it.name || ''),
+        subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
+        quantity: Number(it.quantity || 1)
+      }));
+      
+      let bestPromo: FirebasePromotion | null = null;
+      let bestDiscount = 0;
+      
+      for (const promo of dineInPromotions) {
+        if (checkPromotionApplicable(promo, 'table', billSubtotal, billCartItemIds, billCartItemNames)) {
+          const discount = calculatePromotionDiscount(promo, billSubtotal, billCartItems, 0);
+          if (discount > bestDiscount) {
+            bestDiscount = discount;
+            bestPromo = promo;
+          }
+        }
+      }
+      
+      if (bestPromo && bestDiscount > 0) {
+        const promoDiscount = Number(bestDiscount.toFixed(2));
+        adjustments.push({ label: `🎁 ${bestPromo.name}`, amount: -promoDiscount });
+        billTotal = Number((billTotal - promoDiscount).toFixed(2));
+        console.log(`🧾 [buildBillData] Dine-in Promotion applied: ${bestPromo.name} - $${promoDiscount}`);
+      }
+    }
+    
+    // TOGO channel discount
+    if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+      const discountValue = Number(togoSettings.discountValue || 0);
+      const discountAmt = togoSettings.discountMode === 'percent'
+        ? Number(((billSubtotal * discountValue) / 100).toFixed(2))
+        : Number(discountValue.toFixed(2));
+      if (discountAmt > 0) {
+        adjustments.push({ label: `Discount (${togoSettings.discountMode === 'percent' ? discountValue + '%' : '$' + discountValue})`, amount: -discountAmt });
+        billTotal = Number((billTotal - discountAmt).toFixed(2));
+        console.log(`🧾 [buildBillData] TOGO channel discount: -$${discountAmt.toFixed(2)}`);
+      }
+    }
+    
+    // Bag fee for TOGO
+    if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+      const bagFee = Number(togoSettings.bagFeeValue || 0);
+      adjustments.push({ label: 'Bag Fee', amount: bagFee });
+      billTotal = Number((billTotal + bagFee).toFixed(2));
+    }
+    
+    // Build billData object
+    const billData = {
+      header: {
+        orderNumber: options.orderNumber,
+        channel: options.channel,
+        tableName: options.tableName || options.channel,
+        serverName: options.serverName
+      },
+      orderInfo: {
+        channel: options.channel,
+        tableName: options.tableName || options.channel,
+        serverName: options.serverName
+      },
+      items: items.map((item: any) => {
+        // Calculate item-level discount amount
+        const base = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0);
+        const memoAdd = Number((item.memo?.price) || 0);
+        const perUnit = base + memoAdd;
+        const itemGross = perUnit * (item.quantity || 1);
+        const discountAmount = item.discount ? (itemGross * (item.discount.value || 0)) / 100 : 0;
+        const itemNet = itemGross - discountAmount;
+        
+        return {
+          name: item.name,
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          totalPrice: item.totalPrice || item.price || 0,
+          lineTotal: discountAmount > 0 ? itemNet : itemGross, // Final price after discount
+          originalTotal: discountAmount > 0 ? itemGross : undefined, // Original price before discount
+          discount: item.discount ? {
+            type: item.discount.type || 'Item Discount',
+            value: item.discount.value || 0,
+            amount: discountAmount
+          } : undefined,
+          modifiers: item.modifiers || [],
+          memo: item.memo
+        };
+      }),
+      guestSections: [],
+      // Show original subtotal if there are item discounts, otherwise show net subtotal
+      subtotal: totalItemDiscount > 0.01 ? Number(grossSubtotal.toFixed(2)) : billSubtotal,
+      adjustments,
+      taxLines: billTaxLines,
+      taxesTotal: billTaxTotal,
+      total: billTotal,
+      footer: { message: 'Thank you for dining with us!' }
+    };
+    
+    console.log(`🧾 [buildBillData] Final billData:`, {
+      subtotal: billData.subtotal,
+      adjustments: billData.adjustments,
+      taxesTotal: billData.taxesTotal,
+      total: billData.total
+    });
+    
+    return billData;
+  }, [orderItems, orderType, computeGuestTotals, togoFirebasePromotions, dineInPromotions, togoSettings, checkPromotionApplicable, calculatePromotionDiscount]);
+
   const executePrintBill = async (mode: 'ALL_DETAILS' | 'INDIVIDUAL_GUEST' | 'ALL_SEPARATE', targetGuestId?: number) => {
      try {
       const now = new Date();
@@ -4198,146 +4376,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       };
 
       if (mode === 'ALL_DETAILS') {
-         // Print one consolidated bill with all guests
-         const allGuests = Object.keys(byGuest).map(Number).sort((a,b)=>a-b);
-         const subtotal = items.reduce((sum, it:any) => sum + Math.max(0, ((((it.totalPrice||0) + ((it.memo?.price)||0)) * (it.quantity||1)) - computeItemDiscountAmount(it))), 0);
-         // ... (Use existing full logic for tax/adjustments from original handlePrintBill)
-         // Re-using the original logic calculation variables which are already in scope or need re-calc
-         // Let's just call the simplified builder for consistency or use the full logic if adjustments are critical.
-         // For 'All Details', we want the full bill.
+         // 공통 Bill 데이터 빌드 함수 사용 (주문 제출 시 Bill과 동일한 로직)
+         const printOrderNumber = savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber;
+         const channelDisplay = normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase();
          
-         // Recalculate full adjustments/tax for accuracy
-         const recAdjustments: Array<{ label: string; amount: number }> = [];
+         const billData = buildBillDataForPrint({
+           orderNumber: printOrderNumber,
+           channel: channelDisplay,
+           tableName: resolvedTableName || tableNameFromState || '',
+           serverName: selectedServer?.name || ''
+         });
          
-         // Determine channel for promotion filtering
-         const isTogo = (orderType||'').toLowerCase()==='togo';
-         const promoChannel = isTogo ? 'togo' : 'table';
+         console.log(`🧾 [executePrintBill] Using buildBillDataForPrint - adjustments:`, billData.adjustments);
          
-         // Apply promotions (works for both Dine-In and Togo with channel filtering)
-         const tableIdForMap = (location.state && (location.state as any).tableId) || null;
-         const customerName = (location.state && (location.state as any).customerName) || null;
-         const todayKey = new Date().toISOString().slice(0,10);
-         const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
-         const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
-         const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
-         
-         let recPromoApplied = false;
-         
-         // For Togo orders, try POS promotions first
-         if (isTogo && togoFirebasePromotions.length > 0) {
-            const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
-            const cartItemNames = items.map((it: any) => String(it.name || ''));
-            const cartItems = items.map((it: any) => ({
-                menuItemId: String(it.id || it.item_id || it.menuItemId),
-                name: String(it.name || ''),
-                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
-                quantity: Number(it.quantity || 1)
-            }));
-            
-            // Find best applicable POS promotion
-            let bestPromo: FirebasePromotion | null = null;
-            let bestDiscount = 0;
-            
-            for (const promo of togoFirebasePromotions) {
-                if (checkPromotionApplicable(promo, 'togo', subtotal, cartItemIds, cartItemNames)) {
-                    const discount = calculatePromotionDiscount(promo, subtotal, cartItems, 0);
-                    if (discount > bestDiscount) {
-                        bestDiscount = discount;
-                        bestPromo = promo;
-                    }
-                }
-            }
-            
-            if (bestPromo && bestDiscount > 0) {
-                recAdjustments.push({ label: bestPromo.name || 'Promotion', amount: -Number(bestDiscount.toFixed(2)) });
-                recPromoApplied = true;
-            }
-         }
-         
-         // For Dine-in orders, try POS promotions
-         if (!isTogo && !recPromoApplied && dineInPromotions.length > 0) {
-            const cartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
-            const cartItemNames = items.map((it: any) => String(it.name || ''));
-            const cartItems = items.map((it: any) => ({
-                menuItemId: String(it.id || it.item_id || it.menuItemId),
-                name: String(it.name || ''),
-                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
-                quantity: Number(it.quantity || 1)
-            }));
-            
-            let bestPromo: FirebasePromotion | null = null;
-            let bestDiscount = 0;
-            
-            for (const promo of dineInPromotions) {
-                if (checkPromotionApplicable(promo, 'table', subtotal, cartItemIds, cartItemNames)) {
-                    const discount = calculatePromotionDiscount(promo, subtotal, cartItems, 0);
-                    if (discount > bestDiscount) {
-                        bestDiscount = discount;
-                        bestPromo = promo;
-                    }
-                }
-            }
-            
-            if (bestPromo && bestDiscount > 0) {
-                recAdjustments.push({ label: bestPromo.name || 'Promotion', amount: -Number(bestDiscount.toFixed(2)) });
-                recPromoApplied = true;
-            }
-         }
-         
-         // Fallback to local promotions if no POS promotion was applied
-         if (!recPromoApplied) {
-            const promoAdj = computePromotionAdjustment(items as any, { 
-               enabled: promotionEnabled && !alreadyUsedToday, 
-               type: promotionType as any, 
-               value: (typeof promotionValue === 'number' ? promotionValue : 0), 
-               eligibleItemIds: promotionEligibleItemIds, 
-               codeInput: '', 
-               rules: promotionRules,
-               channel: promoChannel as any
-            });
-            const line = buildPromotionReceiptLine(promoAdj);
-            if (line) recAdjustments.push(line);
-         }
-         
-         // Bag fee for Togo orders only
-         if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
-            const bv = Number(togoSettings.bagFeeValue)||0;
-            recAdjustments.push({ label: `Bag Fee ($${bv})`, amount: Number(bv.toFixed(2)) });
-         }
-          const adjustmentsTotal = recAdjustments.reduce((s,a)=>s+a.amount,0);
-          const fullReceipt = {
-            type: 'prebill',
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber },
-            orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined },
-            body: { 
-                guestSections: Object.keys(byGuest).sort((a,b)=>Number(a)-Number(b)).map(k => ({ guestNumber: Number(k), items: byGuest[Number(k)] })), 
-                subtotal, 
-                adjustments: recAdjustments, 
-                taxLines: taxLines, // Use global taxLines for full bill
-                taxesTotal, 
-                total: subtotal + adjustmentsTotal + taxesTotal 
-            },
-            footer: { message: 'Thank you for dining with us!' }
-          };
-          // Use new print-bill API with billLayout settings (1장만 출력)
-          await fetch(`${API_URL}/printers/print-bill`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ 
-              billData: {
-                header: fullReceipt.header,
-                orderInfo: fullReceipt.orderInfo,
-                guestSections: fullReceipt.body.guestSections,
-                subtotal: fullReceipt.body.subtotal,
-                adjustments: fullReceipt.body.adjustments,
-                taxLines: fullReceipt.body.taxLines,
-                taxesTotal: fullReceipt.body.taxesTotal,
-                total: fullReceipt.body.total,
-                footer: fullReceipt.footer
-              },
-              copies: 1
-            }) 
-          });
+         // Use new print-bill API with billLayout settings (1장만 출력)
+         await fetch(`${API_URL}/printers/print-bill`, { 
+           method: 'POST', 
+           headers: { 'Content-Type': 'application/json' }, 
+           body: JSON.stringify({ billData, copies: 1 }) 
+         });
 
       } else if (mode === 'INDIVIDUAL_GUEST' && targetGuestId) {
          const receipt = buildReceipt([targetGuestId], true);
@@ -4589,6 +4646,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         }
     }
     
+    // TOGO channel discount (from channel settings) - applied AFTER promotions
+    if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const discountValue = Number(togoSettings.discountValue || 0);
+        const discountAmt = togoSettings.discountMode === 'percent'
+            ? Number(((adjustedTotal * discountValue) / 100).toFixed(2))
+            : Number(discountValue.toFixed(2));
+        if (discountAmt > 0) {
+            adjustedTotal = Math.max(0, Number((adjustedTotal - discountAmt).toFixed(2)));
+            const discountLabel = togoSettings.discountMode === 'percent'
+                ? `Discount (${discountValue}%)`
+                : 'Discount';
+            adjustments.push({
+                kind: 'CHANNEL_DISCOUNT',
+                mode: togoSettings.discountMode,
+                value: discountValue,
+                amountApplied: discountAmt,
+                label: discountLabel
+            });
+            console.log(`🧾 [saveOrderToBackend] TOGO channel discount applied: ${discountLabel} - $${discountAmt.toFixed(2)}`);
+        }
+    }
+    
     // Bag fee for Togo orders only
     if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
         const bv = Number(togoSettings.bagFeeValue)||0;
@@ -4836,91 +4915,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           try {
             console.log(`🧾 ${orderTypeDisplay} order - printing Bill to receipt printer`);
             
-            // Calculate totals for bill
-            const totals = computeGuestTotals('ALL');
-            const billSubtotal = Number((totals.subtotal || 0).toFixed(2));
-            const billTaxLines = totals.taxLines || [];
-            const billTaxTotal = billTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-            let billTotal = Number((billSubtotal + billTaxTotal).toFixed(2));
+            // 공통 Bill 데이터 빌드 함수 사용 (Print Bill과 동일한 로직)
+            const billData = buildBillDataForPrint({
+              orderNumber: String(printOrderNumber),
+              channel: orderTypeDisplay,
+              tableName: printTableName || orderTypeDisplay,
+              serverName: printServerName
+            });
 
-            // Apply TOGO discount/bag fee if configured
-            const adjustments: any[] = [];
+            console.log(`🧾 [TOGO/ONLINE Bill] Using buildBillDataForPrint - adjustments:`, billData.adjustments);
             
-            // Apply POS Promotions for TOGO
-            if (orderTypeDisplay === 'TOGO' && togoFirebasePromotions.length > 0) {
-              const billCartItemIds = items.map((it: any) => String(it.id || it.item_id || it.menuItemId));
-              const billCartItemNames = items.map((it: any) => String(it.name || ''));
-              const billCartItems = items.map((it: any) => ({
-                menuItemId: String(it.id || it.item_id || it.menuItemId),
-                name: String(it.name || ''),
-                subtotal: Number(it.totalPrice || it.price || 0) * Number(it.quantity || 1),
-                quantity: Number(it.quantity || 1)
-              }));
-              
-              let bestBillPromo: FirebasePromotion | null = null;
-              let bestBillDiscount = 0;
-              
-              for (const promo of togoFirebasePromotions) {
-                if (checkPromotionApplicable(promo, 'togo', billSubtotal, billCartItemIds, billCartItemNames)) {
-                  const discount = calculatePromotionDiscount(promo, billSubtotal, billCartItems, 0);
-                  if (discount > bestBillDiscount) {
-                    bestBillDiscount = discount;
-                    bestBillPromo = promo;
-                  }
-                }
-              }
-              
-              if (bestBillPromo && bestBillDiscount > 0) {
-                const promoDiscount = Number(bestBillDiscount.toFixed(2));
-                adjustments.push({ label: `🎁 ${bestBillPromo.name}`, amount: -promoDiscount });
-                billTotal = Number((billTotal - promoDiscount).toFixed(2));
-                console.log(`🧾 Bill promotion applied: ${bestBillPromo.name} - $${promoDiscount}`);
-              }
-            }
-            
-            if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
-              const discountValue = Number(togoSettings.discountValue || 0);
-              const discountAmt = togoSettings.discountMode === 'percent'
-                ? Number(((billSubtotal * discountValue) / 100).toFixed(2))
-                : Number(discountValue.toFixed(2));
-              adjustments.push({ label: `Discount (${togoSettings.discountMode === 'percent' ? discountValue + '%' : '$' + discountValue})`, amount: -discountAmt });
-              billTotal = Number((billTotal - discountAmt).toFixed(2));
-            }
-            if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
-              const bagFee = Number(togoSettings.bagFeeValue || 0);
-              adjustments.push({ label: 'Bag Fee', amount: bagFee });
-              billTotal = Number((billTotal + bagFee).toFixed(2));
-            }
-
-            const billData = {
-              header: {
-                orderNumber: printOrderNumber,
-                channel: orderTypeDisplay,
-                tableName: printTableName || orderTypeDisplay,
-                serverName: printServerName
-              },
-              orderInfo: {
-                channel: orderTypeDisplay,
-                tableName: printTableName || orderTypeDisplay,
-                serverName: printServerName
-              },
-              items: items.map((item: any) => ({
-                name: item.name,
-                quantity: item.quantity || 1,
-                price: item.price || 0,
-                totalPrice: item.totalPrice || item.price || 0,
-                modifiers: item.modifiers || [],
-                memo: item.memo
-              })),
-              guestSections: [],
-              subtotal: billSubtotal,
-              adjustments,
-              taxLines: billTaxLines,
-              taxesTotal: billTaxTotal,
-              total: billTotal,
-              footer: {}
-            };
-
             await fetch(`${API_URL}/printers/print-bill`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

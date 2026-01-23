@@ -4258,6 +4258,27 @@ const SalesPage: React.FC = () => {
   const orderListCalculateTotals = () => {
       const subtotal = orderListSelectedItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
       
+      // 아이템 레벨 할인 (Item D/C) 계산
+      let itemDiscountTotal = 0;
+      let hasItemDiscount = false;
+      orderListSelectedItems.forEach((item: any) => {
+        if (item.discount_json || item.discount) {
+          const discount = typeof item.discount_json === 'string' 
+            ? JSON.parse(item.discount_json) 
+            : (item.discount_json || item.discount);
+          if (discount && discount.value > 0) {
+            hasItemDiscount = true;
+            const itemPrice = (item.price || 0) * (item.quantity || 1);
+            if (discount.mode === 'percent') {
+              itemDiscountTotal += itemPrice * (discount.value / 100);
+            } else {
+              itemDiscountTotal += Number(discount.value || 0);
+            }
+          }
+        }
+      });
+      itemDiscountTotal = Number(itemDiscountTotal.toFixed(2));
+      
       // adjustments_json 또는 adjustments 배열에서 할인 정보 가져오기
       let adjustments = orderListSelectedOrder?.adjustments || [];
       if (orderListSelectedOrder?.adjustments_json) {
@@ -4271,18 +4292,26 @@ const SalesPage: React.FC = () => {
         } catch (e) { /* ignore */ }
       }
       
-      // DISCOUNT 또는 PROMOTION 타입 할인 합산
-      const discountTotal = adjustments
-        .filter((a: any) => String(a.kind).toUpperCase() === 'DISCOUNT' || String(a.kind).toUpperCase() === 'PROMOTION')
+      // DISCOUNT 또는 PROMOTION 또는 CHANNEL_DISCOUNT 타입 할인 합산
+      const adjustmentDiscountTotal = adjustments
+        .filter((a: any) => ['DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT'].includes(String(a.kind).toUpperCase()))
         .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || a.amountApplied || a.value || 0)), 0);
+      
+      // 총 할인 = 아이템 할인 + 주문 레벨 할인
+      const discountTotal = itemDiscountTotal + adjustmentDiscountTotal;
       const subtotalAfterDiscount = subtotal - discountTotal;
-      const tax = orderListSelectedOrder?.total ? (Number(orderListSelectedOrder.total) - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
-      const total = orderListSelectedOrder?.total || (subtotalAfterDiscount + tax);
       
-      // 프로모션 이름 추출
-      const promotionName = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
+      // Tax는 할인 후 금액에서 계산 (또는 저장된 total에서 역산)
+      const storedTotal = Number(orderListSelectedOrder?.total || 0);
+      const calculatedTax = storedTotal > 0 ? Math.max(0, storedTotal - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
+      const tax = calculatedTax;
+      const total = storedTotal || (subtotalAfterDiscount + tax);
       
-      return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName };
+      // 할인 라벨 결정: Item D/C가 있으면 'Item Discount', 아니면 프로모션 이름
+      const promotionLabel = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
+      const discountLabel = hasItemDiscount ? 'Item Discount' : (promotionLabel || 'Discount');
+      
+      return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName: discountLabel };
     };
 
   const orderListGetDaysInMonth = (date: Date) => {
@@ -8442,7 +8471,7 @@ const SalesPage: React.FC = () => {
                               {totals.discountTotal > 0 && (
                                 <>
                                   <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
-                                    <span className="font-medium text-xs">🎁 {totals.promotionName || 'Discount'}:</span>
+                                    <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? '🏷️' : '🎁'} {totals.promotionName || 'Discount'}:</span>
                                     <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
