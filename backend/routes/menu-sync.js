@@ -98,6 +98,7 @@ router.get('/firebase-menu/:restaurantId', async (req, res) => {
     const { restaurantId } = req.params;
     const firestore = firebaseService.getFirestore();
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    const menuRef = menuId ? restaurantRef.collection('menus').doc(menuId) : null;
     
     // 카테고리 가져오기 (서브컬렉션에서)
     const categoriesSnapshot = await restaurantRef
@@ -203,29 +204,69 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     console.log(`   - 세금 그룹: ${backupData.taxGroups.length}개`);
     console.log(`   - 프린터 그룹: ${backupData.printerGroups.length}개`);
     
-    // 1. Firebase에서 카테고리 가져오기 (서브컬렉션에서)
+    // 1. Firebase에서 카테고리/아이템 가져오기 (menuId 우선, 없으면 전체/메뉴 하위 컬렉션 fallback)
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
-    const categoriesSnapshot = await restaurantRef
-      .collection('menuCategories')
-      .get();
+    const { menuId } = req.body || {};
     
-    const firebaseCategories = [];
-    categoriesSnapshot.forEach(doc => {
-      firebaseCategories.push({ id: doc.id, ...doc.data() });
-    });
+    const loadFirebaseMenusList = async () => {
+      const menusSnapshot = await restaurantRef.collection('menus').get();
+      const menus = [];
+      menusSnapshot.forEach(doc => menus.push({ id: doc.id, ...doc.data() }));
+      return menus;
+    };
+    
+    const fetchCategoriesAndItems = async (targetMenuId = null) => {
+      let categoriesSnapshot;
+      let itemsSnapshot;
+      
+      if (targetMenuId) {
+        categoriesSnapshot = await restaurantRef.collection('menuCategories').where('menuId', '==', targetMenuId).get();
+        itemsSnapshot = await restaurantRef.collection('menuItems').where('menuId', '==', targetMenuId).get();
+      } else {
+        categoriesSnapshot = await restaurantRef.collection('menuCategories').get();
+        itemsSnapshot = await restaurantRef.collection('menuItems').get();
+      }
+      
+      const categories = [];
+      categoriesSnapshot.forEach(doc => categories.push({ id: doc.id, ...doc.data() }));
+      const items = [];
+      itemsSnapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+      
+      return { categories, items };
+    };
+    
+    const fetchFromMenuSubcollections = async (targetMenuId) => {
+      const menuRef = restaurantRef.collection('menus').doc(targetMenuId);
+      const categoriesSnapshot = await menuRef.collection('menuCategories').get();
+      const itemsSnapshot = await menuRef.collection('menuItems').get();
+      const categories = [];
+      categoriesSnapshot.forEach(doc => categories.push({ id: doc.id, ...doc.data() }));
+      const items = [];
+      itemsSnapshot.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+      return { categories, items };
+    };
+    
+    let firebaseCategories = [];
+    let firebaseItems = [];
+    
+    if (menuId) {
+      ({ categories: firebaseCategories, items: firebaseItems } = await fetchCategoriesAndItems(menuId));
+      if (firebaseCategories.length === 0 && firebaseItems.length === 0) {
+        ({ categories: firebaseCategories, items: firebaseItems } = await fetchFromMenuSubcollections(menuId));
+      }
+    } else {
+      ({ categories: firebaseCategories, items: firebaseItems } = await fetchCategoriesAndItems(null));
+      if (firebaseCategories.length === 0 && firebaseItems.length === 0) {
+        const menus = await loadFirebaseMenusList();
+        const fallbackMenuId = menus[0]?.id || null;
+        if (fallbackMenuId) {
+          ({ categories: firebaseCategories, items: firebaseItems } = await fetchFromMenuSubcollections(fallbackMenuId));
+        }
+      }
+    }
+    
     // 클라이언트 측에서 정렬
     firebaseCategories.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-    
-    // 2. Firebase에서 메뉴 아이템 가져오기 (서브컬렉션에서)
-    const itemsSnapshot = await restaurantRef
-      .collection('menuItems')
-      .get();
-    
-    const firebaseItems = [];
-    itemsSnapshot.forEach(doc => {
-      firebaseItems.push({ id: doc.id, ...doc.data() });
-    });
-    // 클라이언트 측에서 정렬
     firebaseItems.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
     
     console.log(`📦 Firebase 카테고리: ${firebaseCategories.length}개, 아이템: ${firebaseItems.length}개`);
@@ -593,7 +634,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         const posPgId = printerGroupNameToId[fbPg.name.toLowerCase()];
         if (posPgId) {
           await dbRun(
-            'INSERT OR IGNORE INTO menu_item_printer_links (item_id, printer_group_id) VALUES (?, ?)',
+            'INSERT OR IGNORE INTO menu_item_printer_links (item_id, menu_printer_group_id) VALUES (?, ?)',
             [posItem.item_id, posPgId]
           );
           printerLinksCreated++;
@@ -697,14 +738,14 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
     
     console.log(`🔄 POS → Firebase 메뉴 업로드 시작: ${restaurantId}, Menu: ${menuId || 'All'}`);
     
-    // 0. 기존 메뉴 백업 (서브컬렉션에서)
-    const existingCatsBackup = await restaurantRef
-      .collection('menuCategories')
-      .get();
+    // 0. 기존 메뉴 백업 (menuId 기준)
+    const existingCatsBackup = menuId
+      ? await restaurantRef.collection('menuCategories').where('menuId', '==', menuId).get()
+      : await restaurantRef.collection('menuCategories').get();
     
-    const existingItemsBackup = await restaurantRef
-      .collection('menuItems')
-      .get();
+    const existingItemsBackup = menuId
+      ? await restaurantRef.collection('menuItems').where('menuId', '==', menuId).get()
+      : await restaurantRef.collection('menuItems').get();
     
     const backupCategories = [];
     existingCatsBackup.forEach(doc => {
@@ -757,37 +798,51 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
     
     console.log(`📦 POS 카테고리: ${posCategories.length}개, 아이템: ${posItems.length}개`);
     
-    // 3. 기존 Firebase 카테고리 삭제 (서브컬렉션에서)
-    const existingCats = await restaurantRef
-      .collection('menuCategories')
-      .get();
+    // 3. 기존 Firebase 메뉴 삭제 (menuId 기준, 중복 방지)
+    const deleteByMenuId = async (targetMenuId) => {
+      const existingCats = await restaurantRef.collection('menuCategories')
+        .where('menuId', '==', targetMenuId)
+        .get();
+      for (const doc of existingCats.docs) {
+        await doc.ref.delete();
+      }
+      
+      const existingItems = await restaurantRef.collection('menuItems')
+        .where('menuId', '==', targetMenuId)
+        .get();
+      for (const doc of existingItems.docs) {
+        await doc.ref.delete();
+      }
+      
+      const existingMenus = await restaurantRef.collection('menus')
+        .where('posId', '==', targetMenuId)
+        .get();
+      for (const doc of existingMenus.docs) {
+        await doc.ref.delete();
+      }
+      
+      console.log(`🗑️ 기존 Firebase 메뉴 삭제 완료 (menuId: ${targetMenuId})`);
+    };
     
-    const deleteBatch1 = firestore.batch();
-    existingCats.forEach(doc => {
-      deleteBatch1.delete(doc.ref);
-    });
-    await deleteBatch1.commit();
-    console.log(`🗑️ 기존 Firebase 카테고리 ${existingCats.size}개 삭제`);
-    
-    // 4. 기존 Firebase 메뉴 아이템 삭제 (서브컬렉션에서)
-    const existingItems = await restaurantRef
-      .collection('menuItems')
-      .get();
-    
-    const deleteBatch2 = firestore.batch();
-    existingItems.forEach(doc => {
-      deleteBatch2.delete(doc.ref);
-    });
-    await deleteBatch2.commit();
-    console.log(`🗑️ 기존 Firebase 아이템 ${existingItems.size}개 삭제`);
+    if (menuId) {
+      const candidates = [menuId];
+      const numericId = Number(menuId);
+      if (!Number.isNaN(numericId) && String(numericId) !== String(menuId)) {
+        candidates.push(numericId);
+      }
+      for (const targetId of candidates) {
+        await deleteByMenuId(targetId);
+      }
+    }
     
     // 5. 카테고리 업로드 (서브컬렉션에)
     const categoryMapping = {}; // pos_category_id -> firebase_category_id
     
     for (let i = 0; i < posCategories.length; i++) {
       const cat = posCategories[i];
-      const docRef = await restaurantRef.collection('menuCategories').add({
+      const docRef = await (menuRef ? menuRef : restaurantRef).collection('menuCategories').add({
         restaurantId,
+        menuId: menuId || undefined,
         name: cat.name,
         description: '',
         sortOrder: cat.sort_order || i,
@@ -849,9 +904,9 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
       
       // 아이템에 연결된 프린터 그룹 ID들 가져오기
       const printerGroupIds = await dbAll(
-        'SELECT printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
+        'SELECT menu_printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
         [item.item_id]
-      ).then(rows => rows.map(r => r.printer_group_id)).catch(() => []);
+      ).then(rows => rows.map(r => r.menu_printer_group_id)).catch(() => []);
       
       // Firebase Modifier Groups에서 POS group_id로 찾은 Firebase ID들로 변환 (서브컬렉션에서)
       const firebaseModifierGroupIds = [];
@@ -895,8 +950,9 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         }
       }
       
-      const docRef = await restaurantRef.collection('menuItems').add({
+      const docRef = await (menuRef ? menuRef : restaurantRef).collection('menuItems').add({
         restaurantId,
+        menuId: menuId || undefined,
         categoryId: firebaseCategoryId,
         name: item.name,
         shortName: item.short_name || '',
@@ -1856,34 +1912,93 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
     
     if (deleteExisting) {
-      // 기존 메뉴에서 같은 이름의 메뉴 찾기
-      const existingMenus = await restaurantRef.collection('menus')
-        .where('posId', '==', menuId)
-        .get();
+      // Hard reset: remove all menus/categories/items in TZO Cloud to avoid duplication
+      const purgeCollection = async (collectionName) => {
+        const snap = await restaurantRef.collection(collectionName).get();
+        for (const doc of snap.docs) {
+          await doc.ref.delete();
+        }
+        console.log(`🗑️ ${collectionName} 전체 삭제: ${snap.size}개`);
+      };
       
-      // 기존 메뉴 삭제
-      for (const menuDoc of existingMenus.docs) {
+      await purgeCollection('menuCategories');
+      await purgeCollection('menuItems');
+      await purgeCollection('menus');
+
+      const candidateMenuIdValues = new Set();
+      const addCandidate = (value) => {
+        if (value === undefined || value === null || value === '') return;
+        candidateMenuIdValues.add(value);
+      };
+      addCandidate(menuId);
+      const numericMenuId = Number(menuId);
+      if (!Number.isNaN(numericMenuId)) addCandidate(numericMenuId);
+      if (posMenu?.firebase_id) addCandidate(posMenu.firebase_id);
+      
+      const deleteMenuDocAndChildren = async (menuDoc) => {
         console.log(`🗑️ 기존 메뉴 삭제: ${menuDoc.data().name}`);
         
-        // 해당 메뉴의 카테고리 삭제
         const existingCats = await restaurantRef.collection('menuCategories')
           .where('menuId', '==', menuDoc.id)
           .get();
-        
         for (const catDoc of existingCats.docs) {
           await catDoc.ref.delete();
         }
         
-        // 해당 메뉴의 아이템도 삭제 (menuId로 필터링)
         const existingItems = await restaurantRef.collection('menuItems')
           .where('menuId', '==', menuDoc.id)
           .get();
-        
         for (const itemDoc of existingItems.docs) {
           await itemDoc.ref.delete();
         }
         
         await menuDoc.ref.delete();
+      };
+      
+      const menuDocs = new Map();
+      const posIdQueries = [
+        restaurantRef.collection('menus').where('posId', '==', menuId),
+        restaurantRef.collection('menus').where('posId', '==', Number(menuId))
+      ];
+      for (const q of posIdQueries) {
+        const snap = await q.get();
+        snap.docs.forEach(doc => menuDocs.set(doc.id, doc));
+      }
+      
+      const nameSnap = await restaurantRef.collection('menus')
+        .where('name', '==', posMenu.name)
+        .get();
+      nameSnap.docs.forEach(doc => menuDocs.set(doc.id, doc));
+      
+      for (const menuDoc of menuDocs.values()) {
+        await deleteMenuDocAndChildren(menuDoc);
+        addCandidate(menuDoc.id);
+      }
+      
+      // Delete menu docs by known IDs (firebase_id or previous ids)
+      for (const candidateId of candidateMenuIdValues) {
+        if (typeof candidateId !== 'string') continue;
+        const menuDoc = await restaurantRef.collection('menus').doc(candidateId).get();
+        if (menuDoc.exists) {
+          await deleteMenuDocAndChildren(menuDoc);
+        }
+      }
+      
+      // Legacy cleanup: menuId stored as POS menuId or previous firebase_id
+      for (const candidateId of candidateMenuIdValues) {
+        const legacyCats = await restaurantRef.collection('menuCategories')
+          .where('menuId', '==', candidateId)
+          .get();
+        for (const catDoc of legacyCats.docs) {
+          await catDoc.ref.delete();
+        }
+        
+        const legacyItems = await restaurantRef.collection('menuItems')
+          .where('menuId', '==', candidateId)
+          .get();
+        for (const itemDoc of legacyItems.docs) {
+          await itemDoc.ref.delete();
+        }
       }
     }
     
@@ -2406,14 +2521,14 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     
     for (const item of posItems) {
       const links = await dbAll(
-        'SELECT printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
+        'SELECT menu_printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
         [item.item_id]
       ).catch(() => []);
       
       for (const link of links) {
-        const fbPrinterGroupId = printerGroupMapping[link.printer_group_id];
+        const fbPrinterGroupId = printerGroupMapping[link.menu_printer_group_id];
         if (fbPrinterGroupId) {
-          const linkId = `${item.item_id}_${link.printer_group_id}`;
+          const linkId = `${item.item_id}_${link.menu_printer_group_id}`;
           await restaurantRef.collection('itemPrinterLinks').doc(linkId).set({
             id: linkId,
             itemId: String(item.item_id),

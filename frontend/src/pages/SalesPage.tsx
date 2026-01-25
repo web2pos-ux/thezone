@@ -8650,9 +8650,17 @@ const SalesPage: React.FC = () => {
                                 {/* 모디파이어 */}
                                 {item.modifiers && item.modifiers.length > 0 && (
                                   <div className={`ml-3 text-xs leading-snug ${isHighlighted ? 'text-red-500' : 'text-blue-600'}`}>
-                                    {item.modifiers.map((mod: any, mIdx: number) => (
-                                      <div key={mIdx}>+ {mod.name || mod}</div>
-                                    ))}
+                                    {item.modifiers.map((mod: any, mIdx: number) => {
+                                      const label = typeof mod === 'string'
+                                        ? mod
+                                        : (mod?.name
+                                          || (Array.isArray(mod?.modifierNames) ? mod.modifierNames.join(', ') : '')
+                                          || (Array.isArray(mod?.selectedEntries) ? mod.selectedEntries.map((entry: any) => entry?.name || entry).filter(Boolean).join(', ') : '')
+                                          || mod?.groupName
+                                          || '');
+                                      if (!label) return null;
+                                      return <div key={mIdx}>+ {label}</div>;
+                                    })}
                                   </div>
                                 )}
                                 

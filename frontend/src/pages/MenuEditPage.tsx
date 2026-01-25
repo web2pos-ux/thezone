@@ -3632,6 +3632,14 @@ Import때 참고해야하는것,
     } catch {}
   }, [menuEditLocked]);
 
+  if (menuEditLocked) {
+    return (
+      <div className="h-full flex items-center justify-center text-gray-500">
+        Menu Manager 편집이 잠겨있습니다.
+      </div>
+    );
+  }
+
   return (
     <div className="menu-edit-scope flex flex-col h-screen bg-gray-50" style={{ ['--layer-base' as any]: baseColor, ['--layer-darker' as any]: darkerColor }}>
 

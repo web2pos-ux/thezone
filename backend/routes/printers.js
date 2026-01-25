@@ -123,7 +123,7 @@ function renderKitchenTicketImage(options) {
   });
   
   // Footer
-  totalHeight += 60; // Bottom margin + cut space
+  totalHeight += 15; // Bottom margin + cut space
 
   // Create canvas
   const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
@@ -267,8 +267,9 @@ function renderKitchenTicketImage(options) {
   }
 
   // === SEPARATOR 1 ===
-  y += 5;
   const separator1 = layoutSettings.separator1 || { visible: true, style: 'solid' };
+  const sep1SpacingOld = separator1.lineSpacing || 5;  // lineSpacing 지원
+  y += sep1SpacingOld;
   if (separator1.visible !== false) {
     if (separator1.style === 'dashed') {
       drawDashedLine(y);
@@ -364,8 +365,9 @@ function renderKitchenTicketImage(options) {
   });
 
   // === SEPARATOR 2 ===
-  y += 10;
   const separator2 = layoutSettings.separator2 || { visible: true, style: 'solid' };
+  const sep2SpacingOld = separator2.lineSpacing || 10;  // lineSpacing 지원
+  y += sep2SpacingOld;
   if (separator2.visible !== false) {
     if (separator2.style === 'dashed') {
       drawDashedLine(y);
@@ -658,11 +660,20 @@ function buildImageKitchenTicket(options) {
   // 폰트 높이 (순수 폰트 크기만) - DPI 스케일링 적용
   const getFontHeight = (el) => Math.round(scaleFontSize(el.fontSize));
   
-  // 윗 요소와의 간격 (lineSpacing 값을 그대로 픽셀로 사용, DPI 스케일링 적용)
-  const getSpacing = (el) => Math.round(scaleFontSize(el.lineSpacing || 0));
+  // 윗 요소와의 간격 (lineSpacing 값을 그대로 픽셀로 사용, DPI 스케일링 없음)
+  const getSpacing = (el) => {
+    const spacing = el.lineSpacing || 0;
+    return spacing;  // 설정값 그대로 사용 (14px면 14px)
+  };
   
   // 전체 줄 높이 = 폰트 높이 + 간격
   const getLineHeight = (el) => getFontHeight(el) + getSpacing(el);
+  
+  // DEBUG: lineSpacing 값 확인 (함수 정의 후에 호출)
+  console.log('🔍 [Kitchen Ticket DEBUG] Items lineSpacing:', itemsEl.lineSpacing, '-> scaled:', getSpacing(itemsEl), 'px');
+  console.log('🔍 [Kitchen Ticket DEBUG] Modifiers lineSpacing:', modifiersEl.lineSpacing, '-> scaled:', getSpacing(modifiersEl), 'px');
+  console.log('🔍 [Kitchen Ticket DEBUG] ItemNote lineSpacing:', itemNoteEl.lineSpacing, '-> scaled:', getSpacing(itemNoteEl), 'px');
+  console.log('🔍 [Kitchen Ticket DEBUG] layoutSettings.items:', JSON.stringify(layoutSettings.items));
 
   // Calculate dynamic height based on actual settings
   let totalHeight = TOP_MARGIN;
@@ -694,10 +705,10 @@ function buildImageKitchenTicket(options) {
   const heightOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
   const heightIsDineIn = heightOrderType === 'DINE-IN' || heightOrderType === 'DINEIN';
   if (!mergedKeysForHeight.has('paidStatus') && paidStatusEl.visible && (paidStatusEl.showInHeader || (isServerTicket && !heightIsDineIn))) {
-    const paidTopSpacing = Math.round((paidStatusEl.lineSpacing || 1.2) * 10);
-    totalHeight += getFontHeight(paidStatusEl) + paidTopSpacing + 8;
+    const paidTopSpacing = paidStatusEl.lineSpacing || 0;
+    totalHeight += getFontHeight(paidStatusEl) + paidTopSpacing + 2;  // 프리뷰와 일치
   }
-  if (separator1.visible) totalHeight += 15;
+  if (separator1.visible) totalHeight += (separator1.lineSpacing || 8) + 15;
 
   // Items height
   items.forEach(item => {
@@ -738,7 +749,7 @@ function buildImageKitchenTicket(options) {
     totalHeight += getFontHeight(kitchenNoteEl) + kitchenNoteTopSpacing + 5;
   }
 
-  if (separator2.visible) totalHeight += 15;
+  if (separator2.visible) totalHeight += (separator2.lineSpacing || 10) + 15;
   // Footer elements: dateTime (showInFooter), paidStatus (showInFooter), specialInstructions
   if (dateTimeEl.visible && dateTimeEl.showInFooter) totalHeight += getLineHeight(dateTimeEl) + 5;
   // PAID는 Top spacing이 위쪽 간격으로만 적용되어야 함
@@ -747,7 +758,7 @@ function buildImageKitchenTicket(options) {
     totalHeight += getFontHeight(paidStatusEl) + paidFooterTopSpacing + 10;
   }
   if (specialInstructionsEl.visible && orderInfo.specialInstructions) totalHeight += getLineHeight(specialInstructionsEl) + 10;
-  totalHeight += 60; // Bottom margin + cut space
+  totalHeight -= 18; // Bottom margin reduced further (half of previous)
 
   // Create canvas
   const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
@@ -792,14 +803,20 @@ function buildImageKitchenTicket(options) {
   const getFontStyle = (el) => el.isItalic ? 'italic' : 'normal';
 
   // Draw inverse text (white on black background) - with DPI scaling
-  const drawInverse = (text, yPos, el) => {
+  // fullWidth=true: 전체 너비 검은 막대 (연속 inverse 간격 제거용)
+  const drawInverse = (text, yPos, el, fullWidth = false) => {
     const fs = scaleFontSize(el.fontSize);
     ctx.font = `${getFontStyle(el)} ${getFontWeight(el)} ${fs}px Arial`;
     const metrics = ctx.measureText(text);
-    const w = metrics.width + 30;
     const h = fs + 16;
     ctx.fillStyle = '#000000';
-    ctx.fillRect(centerX - w/2, yPos - h/2 - 2, w, h);
+    if (fullWidth) {
+      // 전체 너비로 그려서 연속 inverse 시 흰띠 제거
+      ctx.fillRect(0, yPos - h/2 - 2, PAPER_WIDTH_PX, h + 4);
+    } else {
+      const w = metrics.width + 30;
+      ctx.fillRect(centerX - w/2, yPos - h/2 - 2, w, h);
+    }
     ctx.fillStyle = '#FFFFFF';
     ctx.textAlign = 'center';
     ctx.fillText(text, centerX, yPos + fs/4);
@@ -954,19 +971,14 @@ function buildImageKitchenTicket(options) {
     
     if (!leftValue && !rightValue) return;
     
-    // Togo/TZO의 경우 externalOrderNumber 폰트 사이즈를 deliveryChannel과 동일하게
-    const channel = (orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
-    const isTogoOrTZO = ['TOGO', 'TAKEOUT', 'TO-GO', 'THEZONE', 'ONLINE'].includes(channel) ||
-                       ['TOGO', 'TAKEOUT', 'THEZONE'].includes((orderInfo.orderType || '').toUpperCase());
-    const isDelivery = ['DOORDASH', 'UBEREATS', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB', 'DELIVERY'].includes(channel);
-    
     // Calculate positions for side-by-side rendering
-    const leftFs = scaleFontSize(leftEl.fontSize);
-    // Togo/TZO: 오른쪽 요소(externalOrderNumber/posOrderNumber)의 폰트사이즈를 왼쪽과 동일하게
-    let rightFs = scaleFontSize(rightEl.fontSize);
-    if (isTogoOrTZO && !isDelivery && (leftKey === 'deliveryChannel' || leftKey === 'orderType')) {
-      rightFs = leftFs; // 왼쪽 채널명과 동일한 폰트 사이즈
-    }
+    // MERGED 요소에 설정된 fontSize를 직접 사용 (headerScale 제거)
+    const leftMergedFs = merged.leftElement.fontSize || leftEl.fontSize || 24;
+    const rightMergedFs = merged.rightElement.fontSize || rightEl.fontSize || 24;
+    const leftFs = scaleFontSize(leftMergedFs);
+    let rightFs = scaleFontSize(rightMergedFs);
+    
+    console.log(`🔍 [MERGED DEBUG] ${leftKey}+${rightKey}: leftFs=${leftMergedFs}→${leftFs}px, rightFs=${rightMergedFs}→${rightFs}px`);
     const maxFs = Math.max(leftFs, rightFs);
     
     ctx.font = `bold ${leftFs}px Arial`;
@@ -1065,7 +1077,18 @@ function buildImageKitchenTicket(options) {
 
   // === POS ORDER NUMBER === (skip if merged)
   if (!mergedKeys.has('posOrderNumber') && posOrderNumberEl.visible && posOrderNumberEl.showInHeader && orderInfo.orderNumber) {
-    drawText(`Order: ${orderInfo.orderNumber}`, y, posOrderNumberEl);
+    const orderText = `Order: ${orderInfo.orderNumber}`;
+    const align = posOrderNumberEl.textAlign || 'center';
+    if (align === 'right') {
+      const fs = scaleFontSize(posOrderNumberEl.fontSize);
+      const shiftLeft = scaleFontSize(60);
+      ctx.font = `${getFontStyle(posOrderNumberEl)} ${getFontWeight(posOrderNumberEl)} ${fs}px Arial`;
+      ctx.textAlign = 'right';
+      ctx.fillText(orderText, PAPER_WIDTH_PX - MARGIN - shiftLeft, y);
+      ctx.textAlign = 'left';
+    } else {
+      drawText(orderText, y, posOrderNumberEl);
+    }
     y += getLineHeight(posOrderNumberEl) + 4;
   }
 
@@ -1091,22 +1114,23 @@ function buildImageKitchenTicket(options) {
   const shouldShowPaidStatusInHeader = !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
                                        (paidStatusEl.showInHeader || (isServerTicket && !isDineIn));
   if (shouldShowPaidStatusInHeader) {
-    // Top spacing 적용 (lineSpacing * 10 = 픽셀 간격)
-    // 예: lineSpacing 1.2 → 12px, lineSpacing 5 → 50px
-    const topSpacing = Math.round((paidStatusEl.lineSpacing || 1.2) * 10);
+    // Top spacing 적용 (lineSpacing 값 그대로 사용, 프리뷰와 일치)
+    const topSpacing = paidStatusEl.lineSpacing || 0;
     y += topSpacing;
     
     const statusText = isPaid ? 'PAID' : 'UNPAID';
     if (paidStatusEl.inverse) {
-      drawInverse(statusText, y, paidStatusEl);
+      // fullWidth=true: 전체 너비로 그려서 연속 inverse 시 흰띠 제거
+      drawInverse(statusText, y, paidStatusEl, true);
     } else {
       drawText(statusText, y, paidStatusEl);
     }
-    y += getFontHeight(paidStatusEl) + 8;
+    y += getFontHeight(paidStatusEl) + 2;  // 아래 여백 축소 (8 → 2)
   }
 
   // === SEPARATOR 1 ===
-  y += 8;
+  const sep1Spacing = separator1.lineSpacing || 8;  // lineSpacing 지원
+  y += sep1Spacing;
   if (separator1.visible) {
     drawLine(y, separator1.style);
     y += 15;
@@ -1131,8 +1155,10 @@ function buildImageKitchenTicket(options) {
     // Guest header with decorative dashes: ----GUEST 1----
     // 게스트가 2명 이상일 때만 표시 (1명일 때는 표시 안함)
     if (guestNumberEl.visible && guests.length > 1) {
-      // 첫번째 게스트가 아니면 약간의 여백 추가
-      if (idx > 0) {
+      // 첫번째 게스트는 위쪽 여백 추가, 이후 게스트는 기존 여백 유지
+      if (idx === 0) {
+        y += 8;
+      } else {
         y += 10;
       }
       
@@ -1172,12 +1198,14 @@ function buildImageKitchenTicket(options) {
     }
 
     // Items for this guest
-    byGuest[gNum].forEach(item => {
+    byGuest[gNum].forEach((item, itemIdx) => {
       const qty = item.qty || item.quantity || 1;
       const name = item.name || 'Unknown';
       
-      // Item: 위쪽 간격 추가 후 출력
-      y += getSpacing(itemsEl);
+      // Item: 위쪽 간격 추가 후 출력 (첫 번째 아이템은 간격 없이)
+      const itemSpacing = (idx === 0 && itemIdx === 0) ? 0 : getSpacing(itemsEl);
+      console.log(`🔍 [Item Render] Guest ${gNum}, Item ${itemIdx}: "${name}", spacing: ${itemSpacing}px, y before: ${y}`);
+      y += itemSpacing;
       const itemFs = scaleFontSize(itemsEl.fontSize);
       ctx.font = `${getFontStyle(itemsEl)} ${getFontWeight(itemsEl)} ${itemFs}px Arial`;
       ctx.textAlign = 'left';
@@ -1206,7 +1234,6 @@ function buildImageKitchenTicket(options) {
           modNames.forEach(txt => {
             if (txt) {
               // Modifier: 위쪽 간격 추가 후 출력
-              y += getSpacing(modifiersEl);
               ctx.fillText(`   ${prefix} ${txt}`, MARGIN, y);
               y += getFontHeight(modifiersEl);
             }
@@ -1216,7 +1243,6 @@ function buildImageKitchenTicket(options) {
 
       // Item note/memo - 위쪽 간격 방식
       if (itemNoteEl.visible && item.memo) {
-        y += getSpacing(itemNoteEl);
         const noteFs = scaleFontSize(itemNoteEl.fontSize);
         ctx.font = `italic ${getFontWeight(itemNoteEl)} ${noteFs}px Arial`;
         const prefix = itemNoteEl.prefix || '->';
@@ -1240,7 +1266,8 @@ function buildImageKitchenTicket(options) {
   }
 
   // === SEPARATOR 2 ===
-  y += 10;
+  const sep2Spacing = separator2.lineSpacing || 10;  // lineSpacing 지원
+  y += sep2Spacing;
   if (separator2.visible) {
     drawLine(y, separator2.style);
     y += 15;
@@ -1253,18 +1280,19 @@ function buildImageKitchenTicket(options) {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     drawText(timeStr, y, dateTimeEl);
-    y += getLineHeight(dateTimeEl) + 5;
+    y += getLineHeight(dateTimeEl) + 2;
   }
 
   // === PAID STATUS === (show PAID or UNPAID in Footer if showInFooter is true)
   if (paidStatusEl.visible && paidStatusEl.showInFooter) {
-    // Top spacing 적용
-    const footerTopSpacing = Math.round((paidStatusEl.lineSpacing || 1.2) * 10);
+    // Top spacing 적용 (lineSpacing 값 그대로 사용)
+    const footerTopSpacing = paidStatusEl.lineSpacing || 0;
     y += footerTopSpacing;
     
     const statusText = isPaid ? 'PAID' : 'UNPAID';
     if (paidStatusEl.inverse) {
-      drawInverse(statusText, y, paidStatusEl);
+      // fullWidth=true: 전체 너비로 그려서 연속 inverse 시 흰띠 제거
+      drawInverse(statusText, y, paidStatusEl, true);
     } else {
       drawText(statusText, y, paidStatusEl);
     }
@@ -1281,6 +1309,10 @@ function buildImageKitchenTicket(options) {
     }
     y += getLineHeight(specialInstructionsEl) + 10;
   }
+
+  // DEBUG: 하단 여백 확인
+  const bottomMargin = totalHeight - y;
+  console.log(`🔍 [Bottom Margin DEBUG] y: ${y}, totalHeight: ${totalHeight}, bottomMargin: ${bottomMargin}px (${(bottomMargin / 8).toFixed(1)}mm)`);
 
   // Convert to ESC/POS bitmap using ESC * command
   return canvasToEscPosBitmap(canvas);
@@ -2789,7 +2821,24 @@ module.exports = (db) => {
             if (modifiersEl.visible !== false && item.modifiers && Array.isArray(item.modifiers) && item.modifiers.length > 0) {
               const prefix = modifiersEl.prefix || '>>';
               item.modifiers.forEach(mod => {
-                const modName = typeof mod === 'string' ? mod : (mod.name || mod);
+                // Modifier 객체에서 이름 추출
+                let modName = '';
+                if (typeof mod === 'string') {
+                  modName = mod;
+                } else if (mod.name) {
+                  modName = mod.name;
+                } else if (mod.text) {
+                  modName = mod.text;
+                } else if (mod.modifierName) {
+                  modName = mod.modifierName;
+                } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+                  modName = mod.selectedEntries.map(e => e.name || e).join(', ');
+                } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+                  modName = mod.modifierNames.join(', ');
+                } else {
+                  modName = '';
+                }
+                if (!modName) return;  // 빈 modifier는 건너뛰기
                 printContent += `   ${prefix} ${modName}\n`;
               });
             }
@@ -3545,11 +3594,57 @@ module.exports = (db) => {
         content += ESCPOS.INIT;
         
         // Header - Store Info (from Business Profile) - use billLayout fontSize
+        // Store Name이 길면 여러 줄로 분할 (공백 또는 문자 단위)
         if (billLayout.storeName?.visible !== false && storeInfo.name) {
           const style = applyFontStyle(billLayout.storeName);
+          const effectiveWidth = style.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
           content += ESCPOS.ALIGN_CENTER;
           content += style.prefix;
-          content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          
+          if (storeInfo.name.length > effectiveWidth) {
+            const text = storeInfo.name;
+            const lines = [];
+            let currentLine = '';
+            
+            // 먼저 공백 기준으로 분할 시도
+            const words = text.split(' ');
+            if (words.length > 1) {
+              words.forEach(word => {
+                const testLine = currentLine ? `${currentLine} ${word}` : word;
+                if (testLine.length > effectiveWidth) {
+                  if (currentLine) lines.push(currentLine);
+                  // 단어 자체가 너무 길면 문자 단위로 분할
+                  if (word.length > effectiveWidth) {
+                    for (let i = 0; i < word.length; i += effectiveWidth) {
+                      const chunk = word.substring(i, Math.min(i + effectiveWidth, word.length));
+                      if (i + effectiveWidth < word.length) {
+                        lines.push(chunk);
+                      } else {
+                        currentLine = chunk;
+                      }
+                    }
+                  } else {
+                    currentLine = word;
+                  }
+                } else {
+                  currentLine = testLine;
+                }
+              });
+            } else {
+              // 공백 없는 긴 텍스트 - 문자 단위로 분할
+              for (let i = 0; i < text.length; i += effectiveWidth) {
+                lines.push(text.substring(i, Math.min(i + effectiveWidth, text.length)));
+              }
+              currentLine = '';
+            }
+            if (currentLine) lines.push(currentLine);
+            
+            lines.forEach(line => {
+              content += centerText(line, style.isDoubleWidth) + '\n';
+            });
+          } else {
+            content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          }
           content += style.suffix;
         }
         
@@ -3643,10 +3738,28 @@ module.exports = (db) => {
             if (billLayout.modifiers?.visible !== false && item.modifiers && item.modifiers.length > 0) {
               const modPrefix = billLayout.modifiers?.prefix || '>>';
               item.modifiers.forEach(mod => {
-                const modName = typeof mod === 'string' ? mod : (mod.name || mod);
-                const effectiveWidth = modifiersStyle.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
-                const truncatedMod = modName.length > effectiveWidth - 4 ? modName.substring(0, effectiveWidth - 6) + '..' : modName;
-                content += modifiersStyle.prefix + `  ${modPrefix} ${truncatedMod}\n` + modifiersStyle.suffix;
+                // Modifier 객체에서 이름 추출 - 여러 개면 각각 별도 줄에 출력
+                const modNames = [];
+                if (typeof mod === 'string') {
+                  modNames.push(mod);
+                } else if (mod.name) {
+                  modNames.push(mod.name);
+                } else if (mod.text) {
+                  modNames.push(mod.text);
+                } else if (mod.modifierName) {
+                  modNames.push(mod.modifierName);
+                } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+                  mod.selectedEntries.forEach(e => modNames.push(e.name || e));
+                } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+                  mod.modifierNames.forEach(n => modNames.push(n));
+                }
+                // 각 modifier를 별도 줄에 출력
+                modNames.forEach(modName => {
+                  if (!modName) return;
+                  const effectiveWidth = modifiersStyle.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
+                  const truncatedMod = modName.length > effectiveWidth - 4 ? modName.substring(0, effectiveWidth - 6) + '..' : modName;
+                  content += modifiersStyle.prefix + `  ${modPrefix} ${truncatedMod}\n` + modifiersStyle.suffix;
+                });
               });
             }
             
@@ -3768,7 +3881,8 @@ module.exports = (db) => {
     } = billData;
 
     // Font Scale: 프린터 DPI(203)와 화면 DPI(96) 차이 보정
-    const fontScale = billLayout.fontScale || 1.0;
+    // 기본값 2.1 (203 / 96 ≈ 2.1) - 프리뷰와 동일한 시각적 크기로 출력
+    const fontScale = billLayout.fontScale || 2.1;
 
     // 80mm = 576px, 58mm = 384px at 203 DPI
     const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
@@ -3894,13 +4008,74 @@ module.exports = (db) => {
     };
 
     // Header (from Business Profile) - use billLayout fontSize settings with fontScale
+    // Store Name이 너무 길면 여러 줄로 표시
     if (billLayout.storeName?.visible !== false && storeInfo.name) {
       const fontSize = billLayout.storeName?.fontSize || 16;
       const lineSpacing = billLayout.storeName?.lineSpacing || 0;
       const fontWeight = billLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
       const isItalic = billLayout.storeName?.isItalic || false;
-      drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center', isItalic);
-      y += Math.round(fontSize * fontScale) + lineSpacing;
+      const scaledFontSize = Math.round(fontSize * fontScale);
+      ctx.font = `${isItalic ? 'italic ' : ''}${fontWeight} ${scaledFontSize}px Arial`;
+      const nameWidth = ctx.measureText(storeInfo.name).width;
+      // 프린터 출력 시 실제 가용 폭은 캔버스보다 작음 - 80mm 용지 기준 약 72mm (90%)
+      const maxWidth = CONTENT_WIDTH * 0.85; // 약 470px (80mm 용지 기준)
+      
+      console.log(`🏪 [Bill Store Name] nameWidth: ${nameWidth.toFixed(0)}px, maxWidth: ${maxWidth.toFixed(0)}px, split: ${nameWidth > maxWidth}`);
+      
+      if (nameWidth > maxWidth) {
+        // 여러 줄로 분할 (공백 또는 문자 단위)
+        const text = storeInfo.name;
+        const lines = [];
+        let currentLine = '';
+        
+        // 먼저 공백 기준으로 분할 시도
+        const words = text.split(' ');
+        if (words.length > 1) {
+          words.forEach(word => {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            if (ctx.measureText(testLine).width > maxWidth) {
+              if (currentLine) lines.push(currentLine);
+              // 단어 자체가 너무 길면 문자 단위로 분할
+              if (ctx.measureText(word).width > maxWidth) {
+                let charLine = '';
+                for (const char of word) {
+                  if (ctx.measureText(charLine + char).width > maxWidth) {
+                    if (charLine) lines.push(charLine);
+                    charLine = char;
+                  } else {
+                    charLine += char;
+                  }
+                }
+                currentLine = charLine;
+              } else {
+                currentLine = word;
+              }
+            } else {
+              currentLine = testLine;
+            }
+          });
+        } else {
+          // 공백 없는 긴 텍스트 - 문자 단위로 분할
+          for (const char of text) {
+            if (ctx.measureText(currentLine + char).width > maxWidth) {
+              if (currentLine) lines.push(currentLine);
+              currentLine = char;
+            } else {
+              currentLine += char;
+            }
+          }
+        }
+        if (currentLine) lines.push(currentLine);
+        
+        console.log(`🏪 [Store Name] Split into ${lines.length} lines:`, lines);
+        lines.forEach(line => {
+          drawText(line, centerX, y, fontSize, fontWeight, 'center', isItalic);
+          y += Math.round(fontSize * fontScale) + lineSpacing;
+        });
+      } else {
+        drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center', isItalic);
+        y += Math.round(fontSize * fontScale) + lineSpacing;
+      }
     }
     if (billLayout.storeAddress?.visible !== false && storeInfo.address) {
       const fontSize = billLayout.storeAddress?.fontSize || 10;
@@ -4022,9 +4197,27 @@ module.exports = (db) => {
         if (billLayout.modifiers?.visible !== false && item.modifiers) {
           const modPrefix = billLayout.modifiers?.prefix || '>>';
           item.modifiers.forEach(mod => {
-            const modName = typeof mod === 'string' ? mod : (mod.name || mod);
-            drawText(`  ${modPrefix} ${modName}`, MARGIN, y, modifiersFontSize, modifiersFontWeight, 'left', modifiersIsItalic);
-            y += Math.round(modifiersFontSize * fontScale) + modifiersLineSpacing;
+            // Modifier 객체에서 이름 추출 - 여러 개면 각각 별도 줄에 출력
+            const modNames = [];
+            if (typeof mod === 'string') {
+              modNames.push(mod);
+            } else if (mod.name) {
+              modNames.push(mod.name);
+            } else if (mod.text) {
+              modNames.push(mod.text);
+            } else if (mod.modifierName) {
+              modNames.push(mod.modifierName);
+            } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+              mod.selectedEntries.forEach(e => modNames.push(e.name || e));
+            } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+              mod.modifierNames.forEach(n => modNames.push(n));
+            }
+            // 각 modifier를 별도 줄에 출력
+            modNames.forEach(modName => {
+              if (!modName) return;
+              drawText(`  ${modPrefix} ${modName}`, MARGIN, y, modifiersFontSize, modifiersFontWeight, 'left', modifiersIsItalic);
+              y += Math.round(modifiersFontSize * fontScale) + modifiersLineSpacing;
+            });
           });
         }
       });
@@ -4259,12 +4452,57 @@ module.exports = (db) => {
         // Initialize
         content += ESCPOS.INIT;
         
-        // Header - Store Info
+        // Header - Store Info - Store Name이 길면 여러 줄로 분할 (공백 또는 문자 단위)
         if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
           const style = applyFontStyle(receiptLayout.storeName);
+          const effectiveWidth = style.isDoubleWidth ? Math.floor(LINE_WIDTH / 2) : LINE_WIDTH;
           content += ESCPOS.ALIGN_CENTER;
           content += style.prefix;
-          content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          
+          if (storeInfo.name.length > effectiveWidth) {
+            const text = storeInfo.name;
+            const lines = [];
+            let currentLine = '';
+            
+            // 먼저 공백 기준으로 분할 시도
+            const words = text.split(' ');
+            if (words.length > 1) {
+              words.forEach(word => {
+                const testLine = currentLine ? `${currentLine} ${word}` : word;
+                if (testLine.length > effectiveWidth) {
+                  if (currentLine) lines.push(currentLine);
+                  // 단어 자체가 너무 길면 문자 단위로 분할
+                  if (word.length > effectiveWidth) {
+                    for (let i = 0; i < word.length; i += effectiveWidth) {
+                      const chunk = word.substring(i, Math.min(i + effectiveWidth, word.length));
+                      if (i + effectiveWidth < word.length) {
+                        lines.push(chunk);
+                      } else {
+                        currentLine = chunk;
+                      }
+                    }
+                  } else {
+                    currentLine = word;
+                  }
+                } else {
+                  currentLine = testLine;
+                }
+              });
+            } else {
+              // 공백 없는 긴 텍스트 - 문자 단위로 분할
+              for (let i = 0; i < text.length; i += effectiveWidth) {
+                lines.push(text.substring(i, Math.min(i + effectiveWidth, text.length)));
+              }
+              currentLine = '';
+            }
+            if (currentLine) lines.push(currentLine);
+            
+            lines.forEach(line => {
+              content += centerText(line, style.isDoubleWidth) + '\n';
+            });
+          } else {
+            content += centerText(storeInfo.name, style.isDoubleWidth) + '\n';
+          }
           content += style.suffix;
         }
         
@@ -4342,9 +4580,28 @@ module.exports = (db) => {
               const style = applyFontStyle(receiptLayout.modifiers);
               const prefix = receiptLayout.modifiers?.prefix || '>>';
               item.modifiers.forEach(mod => {
-                const modText = `  ${prefix} ${mod.name || mod}`;
-                const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
-                content += style.prefix + leftRightText(modText, modPrice, style.isDoubleWidth) + '\n' + style.suffix;
+                // Modifier 객체에서 이름 추출 - 여러 개면 각각 별도 줄에 출력
+                const modNames = [];
+                if (typeof mod === 'string') {
+                  modNames.push(mod);
+                } else if (mod.name) {
+                  modNames.push(mod.name);
+                } else if (mod.text) {
+                  modNames.push(mod.text);
+                } else if (mod.modifierName) {
+                  modNames.push(mod.modifierName);
+                } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+                  mod.selectedEntries.forEach(e => modNames.push(e.name || e));
+                } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+                  mod.modifierNames.forEach(n => modNames.push(n));
+                }
+                // 각 modifier를 별도 줄에 출력
+                modNames.forEach(modName => {
+                  if (!modName) return;
+                  const modText = `  ${prefix} ${modName}`;
+                  const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
+                  content += style.prefix + leftRightText(modText, modPrice, style.isDoubleWidth) + '\n' + style.suffix;
+                });
               });
             }
             
@@ -4443,7 +4700,8 @@ module.exports = (db) => {
         const { header = {}, orderInfo = {}, items = [], guestSections = [], subtotal = 0, adjustments = [], taxLines = [], total = 0, footer = {} } = receiptData;
 
         // Font Scale: 프린터 DPI(203)와 화면 DPI(96) 차이 보정
-        const fontScale = receiptLayout.fontScale || 1.0;
+        // 기본값 2.1 (203 / 96 ≈ 2.1) - 프리뷰와 동일한 시각적 크기로 출력
+        const fontScale = receiptLayout.fontScale || 2.1;
 
         const PAPER_WIDTH_PX = paperWidth === 80 ? 576 : 384;
         const MARGIN = Math.max(4, Math.min(12, Math.round((receiptLayout.leftMargin || 0) * 2.835) + 4));
@@ -4469,8 +4727,9 @@ module.exports = (db) => {
         
         totalHeight += Math.round(150 * fontScale); // Subtotal, tax, total
         totalHeight += payments.length * Math.round(25 * fontScale) + Math.round(30 * fontScale); // Payment info
-        totalHeight += Math.round(30 * fontScale); // Footer (최소화)
-        totalHeight += 4; // 하단 여백 4px 고정
+        // Footer 높이는 실제 렌더링에서 계산되므로 여기서는 최소화
+        // 하단 여백 정확히 5mm = 40px @ 203 DPI (8px/mm)
+        totalHeight += 40;
 
         const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
         const ctx = canvas.getContext('2d');
@@ -4478,7 +4737,9 @@ module.exports = (db) => {
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, PAPER_WIDTH_PX, totalHeight);
 
-        let y = TOP_MARGIN;
+        // 첫 텍스트의 폰트 크기만큼 y 시작 위치 조정 (baseline 보정으로 상단 잘림 방지)
+        const firstFontSize = Math.round((receiptLayout.storeName?.fontSize || 16) * fontScale);
+        let y = TOP_MARGIN + firstFontSize;
         const centerX = PAPER_WIDTH_PX / 2;
 
         const drawText = (text, x, yPos, fontSize, fontWeight = 'normal', align = 'center', isItalic = false) => {
@@ -4542,13 +4803,73 @@ module.exports = (db) => {
           ctx.setLineDash([]);
         };
 
-        // Store Name (with fontScale)
+        // Store Name (with fontScale) - 길면 여러 줄로 표시
         if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
           const fontSize = receiptLayout.storeName?.fontSize || 16;
           const lineSpacing = receiptLayout.storeName?.lineSpacing || 0;
           const fontWeight = receiptLayout.storeName?.fontWeight === 'bold' ? 'bold' : 'normal';
-          drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center');
-          y += Math.round(fontSize * fontScale) + lineSpacing;
+          const scaledFontSize = Math.round(fontSize * fontScale);
+          ctx.font = `${fontWeight} ${scaledFontSize}px Arial`;
+          const nameWidth = ctx.measureText(storeInfo.name).width;
+          // 프린터 출력 시 실제 가용 폭은 캔버스보다 작음 - 80mm 용지 기준 약 72mm (90%)
+          const maxWidth = CONTENT_WIDTH * 0.85; // 약 470px (80mm 용지 기준)
+          
+          console.log(`🏪 [Receipt Store Name] nameWidth: ${nameWidth.toFixed(0)}px, maxWidth: ${maxWidth.toFixed(0)}px, split: ${nameWidth > maxWidth}`);
+          
+          if (nameWidth > maxWidth) {
+            // 여러 줄로 분할 (공백 또는 문자 단위)
+            const text = storeInfo.name;
+            const lines = [];
+            let currentLine = '';
+            
+            // 먼저 공백 기준으로 분할 시도
+            const words = text.split(' ');
+            if (words.length > 1) {
+              words.forEach(word => {
+                const testLine = currentLine ? `${currentLine} ${word}` : word;
+                if (ctx.measureText(testLine).width > maxWidth) {
+                  if (currentLine) lines.push(currentLine);
+                  // 단어 자체가 너무 길면 문자 단위로 분할
+                  if (ctx.measureText(word).width > maxWidth) {
+                    let charLine = '';
+                    for (const char of word) {
+                      if (ctx.measureText(charLine + char).width > maxWidth) {
+                        if (charLine) lines.push(charLine);
+                        charLine = char;
+                      } else {
+                        charLine += char;
+                      }
+                    }
+                    currentLine = charLine;
+                  } else {
+                    currentLine = word;
+                  }
+                } else {
+                  currentLine = testLine;
+                }
+              });
+            } else {
+              // 공백 없는 긴 텍스트 - 문자 단위로 분할
+              for (const char of text) {
+                if (ctx.measureText(currentLine + char).width > maxWidth) {
+                  if (currentLine) lines.push(currentLine);
+                  currentLine = char;
+                } else {
+                  currentLine += char;
+                }
+              }
+            }
+            if (currentLine) lines.push(currentLine);
+            
+            console.log(`🏪 [Receipt Store Name] Split into ${lines.length} lines:`, lines);
+            lines.forEach(line => {
+              drawText(line, centerX, y, fontSize, fontWeight, 'center');
+              y += Math.round(fontSize * fontScale) + lineSpacing;
+            });
+          } else {
+            drawText(storeInfo.name, centerX, y, fontSize, fontWeight, 'center');
+            y += Math.round(fontSize * fontScale) + lineSpacing;
+          }
         }
 
         // Store Address (with fontScale)
@@ -4642,10 +4963,29 @@ module.exports = (db) => {
               const lineSpacing = receiptLayout.modifiers?.lineSpacing || 0;
               const prefix = receiptLayout.modifiers?.prefix || '>>';
               item.modifiers.forEach(mod => {
-                const modText = `  ${prefix} ${mod.name || mod}`;
-                const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
-                drawLeftRight(modText, modPrice, y, fontSize, 'normal');
-                y += Math.round(fontSize * fontScale) + lineSpacing;
+                // Modifier 객체에서 이름 추출 - 여러 개면 각각 별도 줄에 출력
+                const modNames = [];
+                if (typeof mod === 'string') {
+                  modNames.push(mod);
+                } else if (mod.name) {
+                  modNames.push(mod.name);
+                } else if (mod.text) {
+                  modNames.push(mod.text);
+                } else if (mod.modifierName) {
+                  modNames.push(mod.modifierName);
+                } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+                  mod.selectedEntries.forEach(e => modNames.push(e.name || e));
+                } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+                  mod.modifierNames.forEach(n => modNames.push(n));
+                }
+                // 각 modifier를 별도 줄에 출력
+                modNames.forEach(modName => {
+                  if (!modName) return;
+                  const modText = `  ${prefix} ${modName}`;
+                  const modPrice = mod.price ? `$${mod.price.toFixed(2)}` : '';
+                  drawLeftRight(modText, modPrice, y, fontSize, 'normal');
+                  y += Math.round(fontSize * fontScale) + lineSpacing;
+                });
               });
             }
 
@@ -4753,6 +5093,18 @@ module.exports = (db) => {
           const fontWeight = receiptLayout.thankYouMessage?.fontWeight === 'bold' ? 'bold' : 'normal';
           drawText(receiptLayout.thankYouMessage?.text || '*** THANK YOU ***', centerX, y, fontSize, fontWeight, 'center');
           y += Math.round(fontSize * fontScale) + lineSpacing;
+        }
+
+        // 하단 여백 정확히 5mm (40px @ 203 DPI) - 캔버스 크롭
+        const BOTTOM_MARGIN_5MM = 40;
+        const finalHeight = y + BOTTOM_MARGIN_5MM;
+        
+        // 필요한 높이만큼만 새 캔버스 생성
+        if (finalHeight < totalHeight) {
+          const croppedCanvas = createCanvas(PAPER_WIDTH_PX, finalHeight);
+          const croppedCtx = croppedCanvas.getContext('2d');
+          croppedCtx.drawImage(canvas, 0, 0);
+          return canvasToEscPosBitmap(croppedCanvas);
         }
 
         return canvasToEscPosBitmap(canvas);

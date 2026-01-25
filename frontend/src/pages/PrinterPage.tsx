@@ -849,7 +849,7 @@ const kitchenElementLabels: Record<string, string> = {
   dateTime: 'Date/Time',
   items: 'Items',
   modifiers: 'Modifiers',
-  itemNote: 'Note',
+  itemNote: 'Memo',
   paidStatus: 'PAID/UNPAID Status',
   pickupTime: 'Pickup Time',
   deliveryChannel: 'Delivery Channel',
@@ -860,7 +860,7 @@ const kitchenElementLabels: Record<string, string> = {
 };
 
 
-const PrinterPage = () => {
+export default function PrinterPage() {
   const [activeTab, setActiveTab] = useState<'printers' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen' | 'deliveryKitchen'>('printers');
   
   // Kitchen 프린터 타입 (Kitchen vs Waitress)
@@ -888,6 +888,9 @@ const PrinterPage = () => {
   const [showGroupPrinterModal, setShowGroupPrinterModal] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   
+  const normalizeMergedElements = (mergedElements: MergedElement[] = []) =>
+    mergedElements.map((merged, index) => ({ ...merged, order: index + 1 }));
+
   // 새 그룹 입력
   const [newGroupName, setNewGroupName] = useState('');
   
@@ -1370,6 +1373,18 @@ const PrinterPage = () => {
           if (merged.fontFamily === 'Courier New') {
             merged.fontFamily = 'Arial';
           }
+
+          const normalizeMergedElementsForPrinter = (printer: any) => {
+            if (!printer?.mergedElements) return;
+            printer.mergedElements = normalizeMergedElements(printer.mergedElements);
+          };
+          normalizeMergedElementsForPrinter(merged.kitchenLayout);
+          normalizeMergedElementsForPrinter(merged.dineInKitchen?.kitchenPrinter);
+          normalizeMergedElementsForPrinter(merged.dineInKitchen?.waitressPrinter);
+          normalizeMergedElementsForPrinter(merged.externalKitchen?.kitchenPrinter);
+          normalizeMergedElementsForPrinter(merged.externalKitchen?.waitressPrinter);
+          normalizeMergedElementsForPrinter(merged.deliveryKitchen?.kitchenPrinter);
+          normalizeMergedElementsForPrinter(merged.deliveryKitchen?.waitressPrinter);
           
           // External Kitchen order 마이그레이션 - 배달 관련 요소를 헤더로 이동
           const migrateExternalKitchenOrder = (printer: any) => {
@@ -1811,6 +1826,8 @@ const PrinterPage = () => {
     const element1 = layout[element1Key] as KitchenElementStyle;
     const element2 = layout[element2Key] as KitchenElementStyle;
     
+    const currentMerged = layout.mergedElements || [];
+    const normalizedMerged = normalizeMergedElements(currentMerged);
     const newMergedElement: MergedElement = {
       id: `merge-${Date.now()}`,
       leftElement: {
@@ -1832,12 +1849,11 @@ const PrinterPage = () => {
       alignment: 'left-right',
       verticalAlign: 'center',
       gap: 16,
-      order: Math.min(element1?.order || 0, element2?.order || 0), // 병합된 요소는 원래 위치 유지
+      order: normalizedMerged.length + 1, // 병합된 요소는 추가 순서대로 유지
     };
 
-    const currentMerged = layout.mergedElements || [];
     updateCurrentLayoutSettings({
-      mergedElements: [...currentMerged, newMergedElement],
+      mergedElements: [...normalizedMerged, newMergedElement],
       [element1Key]: { ...element1, visible: false },
       [element2Key]: { ...element2, visible: false },
     });
@@ -2100,15 +2116,11 @@ const PrinterPage = () => {
           
           {/* Top Spacing (margin-top in px) */}
           <div className="flex items-center gap-1 pointer-events-auto">
-            <span className="text-sm text-gray-400">Top</span>
+            <span className="text-sm text-gray-400">Line</span>
             <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseInt(e.target.value) || 0 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!isVisible} draggable="false" />
           </div>
           
-          {/* Line Height (px) */}
-          <div className="flex items-center gap-1 pointer-events-auto">
-            <span className="text-sm text-gray-400">Line</span>
-            <input type="number" value={element.lineHeight || element.fontSize} onChange={(e) => onChange({ lineHeight: parseInt(e.target.value) || element.fontSize })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} disabled={!isVisible} draggable="false" />
-          </div>
+          
           
           {/* R/B/B+/I Style */}
           <div className="flex gap-0.5 pointer-events-auto">
@@ -2273,13 +2285,10 @@ const PrinterPage = () => {
                 <input type="number" value={merged.leftElement.fontSize} onChange={(e) => updateLeftElement({ fontSize: parseInt(e.target.value) || 12 })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} />
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-sm text-gray-400">Top</span>
+                <span className="text-sm text-gray-400">Line</span>
                 <input type="number" value={merged.leftElement.lineSpacing} onChange={(e) => updateLeftElement({ lineSpacing: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} />
               </div>
-              <div className="flex items-center gap-1">
-                <span className="text-sm text-gray-400">Line</span>
-                <input type="number" value={merged.leftElement.lineHeight || merged.leftElement.fontSize} onChange={(e) => updateLeftElement({ lineHeight: parseInt(e.target.value) || merged.leftElement.fontSize })} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} />
-              </div>
+              
               <div className="flex gap-0.5">
                 <button onClick={() => updateLeftElement({ fontWeight: 'regular' })} className={`px-1.5 py-1 text-xs rounded ${merged.leftElement.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Regular">R</button>
                 <button onClick={() => updateLeftElement({ fontWeight: 'bold' })} className={`px-1.5 py-1 text-xs rounded font-bold ${merged.leftElement.fontWeight === 'bold' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Bold">B</button>
@@ -2306,13 +2315,10 @@ const PrinterPage = () => {
                 <input type="number" value={merged.rightElement.fontSize} onChange={(e) => updateRightElement({ fontSize: parseInt(e.target.value) || 12 })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} />
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-sm text-gray-400">Top</span>
+                <span className="text-sm text-gray-400">Line</span>
                 <input type="number" value={merged.rightElement.lineSpacing} onChange={(e) => updateRightElement({ lineSpacing: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} />
               </div>
-              <div className="flex items-center gap-1">
-                <span className="text-sm text-gray-400">Line</span>
-                <input type="number" value={merged.rightElement.lineHeight || merged.rightElement.fontSize} onChange={(e) => updateRightElement({ lineHeight: parseInt(e.target.value) || merged.rightElement.fontSize })} className="w-12 p-1 border rounded text-sm text-center" min={12} max={60} />
-              </div>
+              
               <div className="flex gap-0.5">
                 <button onClick={() => updateRightElement({ fontWeight: 'regular' })} className={`px-1.5 py-1 text-xs rounded ${merged.rightElement.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Regular">R</button>
                 <button onClick={() => updateRightElement({ fontWeight: 'bold' })} className={`px-1.5 py-1 text-xs rounded font-bold ${merged.rightElement.fontWeight === 'bold' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} title="Bold">B</button>
@@ -2415,15 +2421,16 @@ const PrinterPage = () => {
               <input
                 type="number"
                 value={element.lineSpacing}
+                step={0.1}
                 onChange={(e) => {
                   const scrollY = window.scrollY;
-                  onChange({ lineSpacing: parseInt(e.target.value) || 0 });
+                  const nextValue = parseFloat(e.target.value);
+                  onChange({ lineSpacing: Number.isFinite(nextValue) ? nextValue : 0 });
                   requestAnimationFrame(() => window.scrollTo(0, scrollY));
                 }}
                 className="w-12 p-1 border rounded text-sm text-center"
-                step={1}
                 min={0}
-                max={50}
+                max={60}
                 disabled={!element.visible}
               />
             </div>
@@ -2505,7 +2512,7 @@ const PrinterPage = () => {
             className="text-center"
             style={{ 
               fontSize: `${bl.storeName.fontSize}px`,
-              lineHeight: bl.storeName.lineSpacing,
+              lineHeight: `${bl.storeName.fontSize + bl.storeName.lineSpacing}px`,
               fontWeight: getFontWeight(bl.storeName.fontWeight),
               fontStyle: getFontStyle(bl.storeName.isItalic)
             }}
@@ -2518,7 +2525,7 @@ const PrinterPage = () => {
             className="text-center"
             style={{ 
               fontSize: `${bl.storeAddress.fontSize}px`,
-              lineHeight: bl.storeAddress.lineSpacing,
+              lineHeight: `${bl.storeAddress.fontSize + bl.storeAddress.lineSpacing}px`,
               fontWeight: getFontWeight(bl.storeAddress.fontWeight),
               fontStyle: getFontStyle(bl.storeAddress.isItalic)
             }}
@@ -2531,7 +2538,7 @@ const PrinterPage = () => {
             className="text-center"
             style={{ 
               fontSize: `${bl.storePhone.fontSize}px`,
-              lineHeight: bl.storePhone.lineSpacing,
+              lineHeight: `${bl.storePhone.fontSize + bl.storePhone.lineSpacing}px`,
               fontWeight: getFontWeight(bl.storePhone.fontWeight),
               fontStyle: getFontStyle(bl.storePhone.isItalic)
             }}
@@ -2547,7 +2554,7 @@ const PrinterPage = () => {
         {bl.orderNumber.visible && (
           <div style={{ 
             fontSize: `${bl.orderNumber.fontSize}px`, 
-            lineHeight: bl.orderNumber.lineSpacing, 
+            lineHeight: `${bl.orderNumber.fontSize + bl.orderNumber.lineSpacing}px`, 
             fontWeight: getFontWeight(bl.orderNumber.fontWeight),
             fontStyle: getFontStyle(bl.orderNumber.isItalic)
           }}>
@@ -2557,7 +2564,7 @@ const PrinterPage = () => {
         {bl.orderChannel.visible && (
           <div style={{ 
             fontSize: `${bl.orderChannel.fontSize}px`, 
-            lineHeight: bl.orderChannel.lineSpacing, 
+            lineHeight: `${bl.orderChannel.fontSize + bl.orderChannel.lineSpacing}px`, 
             fontWeight: getFontWeight(bl.orderChannel.fontWeight),
             fontStyle: getFontStyle(bl.orderChannel.isItalic)
           }}>
@@ -2567,7 +2574,7 @@ const PrinterPage = () => {
         {bl.serverName.visible && (
           <div style={{ 
             fontSize: `${bl.serverName.fontSize}px`, 
-            lineHeight: bl.serverName.lineSpacing, 
+            lineHeight: `${bl.serverName.fontSize + bl.serverName.lineSpacing}px`, 
             fontWeight: getFontWeight(bl.serverName.fontWeight),
             fontStyle: getFontStyle(bl.serverName.isItalic)
           }}>
@@ -2577,7 +2584,7 @@ const PrinterPage = () => {
         {bl.dateTime.visible && (
           <div style={{ 
             fontSize: `${bl.dateTime.fontSize}px`, 
-            lineHeight: bl.dateTime.lineSpacing, 
+            lineHeight: `${bl.dateTime.fontSize + bl.dateTime.lineSpacing}px`, 
             fontWeight: getFontWeight(bl.dateTime.fontWeight),
             fontStyle: getFontStyle(bl.dateTime.isItalic)
           }}>
@@ -2592,7 +2599,7 @@ const PrinterPage = () => {
         {bl.items.visible && (
           <div style={{ 
             fontSize: `${bl.items.fontSize}px`, 
-            lineHeight: bl.items.lineSpacing,
+            lineHeight: `${bl.items.fontSize + bl.items.lineSpacing}px`,
             fontWeight: getFontWeight(bl.items.fontWeight),
             fontStyle: getFontStyle(bl.items.isItalic)
           }}>
@@ -2600,7 +2607,7 @@ const PrinterPage = () => {
             {bl.modifiers.visible && (
               <div className="text-gray-500 ml-3 flex" style={{ 
                 fontSize: `${bl.modifiers.fontSize}px`,
-                lineHeight: bl.modifiers.lineSpacing,
+                lineHeight: `${bl.modifiers.fontSize + bl.modifiers.lineSpacing}px`,
                 fontWeight: getFontWeight(bl.modifiers.fontWeight),
                 fontStyle: getFontStyle(bl.modifiers.isItalic)
               }}>
@@ -2611,7 +2618,7 @@ const PrinterPage = () => {
             {bl.itemNote?.visible && (
               <div className="text-blue-600 ml-3 flex" style={{ 
                 fontSize: `${bl.itemNote.fontSize}px`,
-                lineHeight: bl.itemNote.lineSpacing,
+                lineHeight: `${bl.itemNote.fontSize + bl.itemNote.lineSpacing}px`,
                 fontWeight: getFontWeight(bl.itemNote.fontWeight),
                 fontStyle: getFontStyle(bl.itemNote.isItalic)
               }}>
@@ -2622,7 +2629,7 @@ const PrinterPage = () => {
             {bl.itemDiscount.visible && (
               <div className="text-red-500 ml-3 flex" style={{ 
                 fontSize: `${bl.itemDiscount.fontSize}px`,
-                lineHeight: bl.itemDiscount.lineSpacing,
+                lineHeight: `${bl.itemDiscount.fontSize + bl.itemDiscount.lineSpacing}px`,
                 fontWeight: getFontWeight(bl.itemDiscount.fontWeight),
                 fontStyle: getFontStyle(bl.itemDiscount.isItalic)
               }}>
@@ -2643,7 +2650,7 @@ const PrinterPage = () => {
           {bl.subtotal.visible && (
             <div className="flex justify-between" style={{ 
               fontSize: `${bl.subtotal.fontSize}px`,
-              lineHeight: bl.subtotal.lineSpacing,
+              lineHeight: `${bl.subtotal.fontSize + bl.subtotal.lineSpacing}px`,
               fontWeight: getFontWeight(bl.subtotal.fontWeight),
               fontStyle: getFontStyle(bl.subtotal.isItalic)
             }}>
@@ -2653,7 +2660,7 @@ const PrinterPage = () => {
           {bl.discount.visible && (
             <div className="flex justify-between text-red-600" style={{ 
               fontSize: `${bl.discount.fontSize}px`,
-              lineHeight: bl.discount.lineSpacing,
+              lineHeight: `${bl.discount.fontSize + bl.discount.lineSpacing}px`,
               fontWeight: getFontWeight(bl.discount.fontWeight),
               fontStyle: getFontStyle(bl.discount.isItalic)
             }}>
@@ -2663,7 +2670,7 @@ const PrinterPage = () => {
           {bl.taxGST.visible && (
             <div className="flex justify-between" style={{ 
               fontSize: `${bl.taxGST.fontSize}px`,
-              lineHeight: bl.taxGST.lineSpacing,
+              lineHeight: `${bl.taxGST.fontSize + bl.taxGST.lineSpacing}px`,
               fontWeight: getFontWeight(bl.taxGST.fontWeight),
               fontStyle: getFontStyle(bl.taxGST.isItalic)
             }}>
@@ -2673,7 +2680,7 @@ const PrinterPage = () => {
           {bl.taxPST.visible && (
             <div className="flex justify-between" style={{ 
               fontSize: `${bl.taxPST.fontSize}px`,
-              lineHeight: bl.taxPST.lineSpacing,
+              lineHeight: `${bl.taxPST.fontSize + bl.taxPST.lineSpacing}px`,
               fontWeight: getFontWeight(bl.taxPST.fontWeight),
               fontStyle: getFontStyle(bl.taxPST.isItalic)
             }}>
@@ -2687,7 +2694,7 @@ const PrinterPage = () => {
               className="flex justify-between pt-1"
               style={{ 
                 fontSize: `${bl.total.fontSize}px`,
-                lineHeight: bl.total.lineSpacing,
+                lineHeight: `${bl.total.fontSize + bl.total.lineSpacing}px`,
                 fontWeight: getFontWeight(bl.total.fontWeight),
                 fontStyle: getFontStyle(bl.total.isItalic)
               }}
@@ -2703,7 +2710,7 @@ const PrinterPage = () => {
             className="text-center mt-4"
             style={{ 
               fontSize: `${bl.greeting.fontSize}px`,
-              lineHeight: bl.greeting.lineSpacing,
+              lineHeight: `${bl.greeting.fontSize + bl.greeting.lineSpacing}px`,
               fontWeight: getFontWeight(bl.greeting.fontWeight),
               fontStyle: getFontStyle(bl.greeting.isItalic)
             }}
@@ -2784,7 +2791,7 @@ const PrinterPage = () => {
   const ReceiptPreviewNew = () => {
     const rl = layoutSettings.receiptLayout;
     const getFontWeight = (weight: string) => weight === 'bold' ? 'bold' : 'normal';
-    const getFontStyle = (weight: string) => weight === 'italic' ? 'italic' : 'normal';
+    const getFontStyle = (isItalic?: boolean) => isItalic ? 'italic' : 'normal';
     const getSeparatorClass = (style: string) => {
       switch(style) {
         case 'dashed': return 'border-dashed';
@@ -2806,17 +2813,17 @@ const PrinterPage = () => {
         {/* ========== HEADER ========== */}
         <div className="text-center mb-3">
           {rl.storeName.visible && (
-            <div style={{ fontSize: `${rl.storeName.fontSize}px`, lineHeight: rl.storeName.lineSpacing, fontWeight: getFontWeight(rl.storeName.fontWeight), fontStyle: getFontStyle(rl.storeName.fontWeight) }}>
+            <div style={{ fontSize: `${rl.storeName.fontSize}px`, lineHeight: `${rl.storeName.fontSize + rl.storeName.lineSpacing}px`, fontWeight: getFontWeight(rl.storeName.fontWeight), fontStyle: getFontStyle(rl.storeName.isItalic) }}>
               {rl.storeName.text}
             </div>
           )}
           {rl.storeAddress.visible && (
-            <div style={{ fontSize: `${rl.storeAddress.fontSize}px`, lineHeight: rl.storeAddress.lineSpacing, fontWeight: getFontWeight(rl.storeAddress.fontWeight), fontStyle: getFontStyle(rl.storeAddress.fontWeight) }}>
+            <div style={{ fontSize: `${rl.storeAddress.fontSize}px`, lineHeight: `${rl.storeAddress.fontSize + rl.storeAddress.lineSpacing}px`, fontWeight: getFontWeight(rl.storeAddress.fontWeight), fontStyle: getFontStyle(rl.storeAddress.isItalic) }}>
               {rl.storeAddress.text}
             </div>
           )}
           {rl.storePhone.visible && (
-            <div style={{ fontSize: `${rl.storePhone.fontSize}px`, lineHeight: rl.storePhone.lineSpacing, fontWeight: getFontWeight(rl.storePhone.fontWeight), fontStyle: getFontStyle(rl.storePhone.fontWeight) }}>
+            <div style={{ fontSize: `${rl.storePhone.fontSize}px`, lineHeight: `${rl.storePhone.fontSize + rl.storePhone.lineSpacing}px`, fontWeight: getFontWeight(rl.storePhone.fontWeight), fontStyle: getFontStyle(rl.storePhone.isItalic) }}>
               {rl.storePhone.text}
             </div>
           )}
@@ -2828,22 +2835,22 @@ const PrinterPage = () => {
         {/* ========== ORDER INFO ========== */}
         <div className="mb-2">
           {rl.orderNumber.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.orderNumber.fontSize}px`, lineHeight: rl.orderNumber.lineSpacing, fontWeight: getFontWeight(rl.orderNumber.fontWeight), fontStyle: getFontStyle(rl.orderNumber.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.orderNumber.fontSize}px`, lineHeight: `${rl.orderNumber.fontSize + rl.orderNumber.lineSpacing}px`, fontWeight: getFontWeight(rl.orderNumber.fontWeight), fontStyle: getFontStyle(rl.orderNumber.isItalic) }}>
               <span>Order #:</span><span>ORD-2024-0042</span>
             </div>
           )}
           {rl.orderChannel.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.orderChannel.fontSize}px`, lineHeight: rl.orderChannel.lineSpacing, fontWeight: getFontWeight(rl.orderChannel.fontWeight), fontStyle: getFontStyle(rl.orderChannel.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.orderChannel.fontSize}px`, lineHeight: `${rl.orderChannel.fontSize + rl.orderChannel.lineSpacing}px`, fontWeight: getFontWeight(rl.orderChannel.fontWeight), fontStyle: getFontStyle(rl.orderChannel.isItalic) }}>
               <span>Channel:</span><span>Dine-in (Table 5)</span>
             </div>
           )}
           {rl.serverName.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.serverName.fontSize}px`, lineHeight: rl.serverName.lineSpacing, fontWeight: getFontWeight(rl.serverName.fontWeight), fontStyle: getFontStyle(rl.serverName.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.serverName.fontSize}px`, lineHeight: `${rl.serverName.fontSize + rl.serverName.lineSpacing}px`, fontWeight: getFontWeight(rl.serverName.fontWeight), fontStyle: getFontStyle(rl.serverName.isItalic) }}>
               <span>Server:</span><span>Sarah K.</span>
             </div>
           )}
           {rl.dateTime.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.dateTime.fontSize}px`, lineHeight: rl.dateTime.lineSpacing, fontWeight: getFontWeight(rl.dateTime.fontWeight), fontStyle: getFontStyle(rl.dateTime.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.dateTime.fontSize}px`, lineHeight: `${rl.dateTime.fontSize + rl.dateTime.lineSpacing}px`, fontWeight: getFontWeight(rl.dateTime.fontWeight), fontStyle: getFontStyle(rl.dateTime.isItalic) }}>
               <span>Date:</span><span>Dec 14, 2024 3:45 PM</span>
             </div>
           )}
@@ -2854,22 +2861,22 @@ const PrinterPage = () => {
 
         {/* ========== ITEMS ========== */}
         {rl.items.visible && (
-          <div className="mb-2" style={{ fontSize: `${rl.items.fontSize}px`, lineHeight: rl.items.lineSpacing, fontWeight: getFontWeight(rl.items.fontWeight), fontStyle: getFontStyle(rl.items.fontWeight) }}>
+          <div className="mb-2" style={{ fontSize: `${rl.items.fontSize}px`, lineHeight: `${rl.items.fontSize + rl.items.lineSpacing}px`, fontWeight: getFontWeight(rl.items.fontWeight), fontStyle: getFontStyle(rl.items.isItalic) }}>
             <div className="flex justify-between"><span>Salmon Sashimi x1</span><span>$18.99</span></div>
             {rl.modifiers.visible && (
-              <div className="text-gray-500 ml-3 flex" style={{ fontSize: `${rl.modifiers.fontSize}px`, lineHeight: rl.modifiers.lineSpacing, fontWeight: getFontWeight(rl.modifiers.fontWeight), fontStyle: getFontStyle(rl.modifiers.fontWeight) }}>
+              <div className="text-gray-500 ml-3 flex" style={{ fontSize: `${rl.modifiers.fontSize}px`, lineHeight: `${rl.modifiers.fontSize + rl.modifiers.lineSpacing}px`, fontWeight: getFontWeight(rl.modifiers.fontWeight), fontStyle: getFontStyle(rl.modifiers.isItalic) }}>
                 <span className="inline-block w-6 text-right mr-1">{rl.modifiers.prefix || '>>'}</span>
                 <span>Extra Ginger</span>
               </div>
             )}
             {rl.itemNote?.visible && (
-              <div className="text-gray-800 ml-3 flex" style={{ fontSize: `${rl.itemNote.fontSize}px`, lineHeight: rl.itemNote.lineSpacing, fontWeight: getFontWeight(rl.itemNote.fontWeight), fontStyle: getFontStyle(rl.itemNote.fontWeight) }}>
+              <div className="text-gray-800 ml-3 flex" style={{ fontSize: `${rl.itemNote.fontSize}px`, lineHeight: `${rl.itemNote.fontSize + rl.itemNote.lineSpacing}px`, fontWeight: getFontWeight(rl.itemNote.fontWeight), fontStyle: getFontStyle(rl.itemNote.isItalic) }}>
                 <span className="inline-block w-6 text-right mr-1">{rl.itemNote.prefix || '->'}</span>
                 <span>No wasabi please</span>
               </div>
             )}
             {rl.itemDiscount.visible && (
-              <div className="text-red-500 ml-3 flex" style={{ fontSize: `${rl.itemDiscount.fontSize}px`, lineHeight: rl.itemDiscount.lineSpacing, fontWeight: getFontWeight(rl.itemDiscount.fontWeight), fontStyle: getFontStyle(rl.itemDiscount.fontWeight) }}>
+              <div className="text-red-500 ml-3 flex" style={{ fontSize: `${rl.itemDiscount.fontSize}px`, lineHeight: `${rl.itemDiscount.fontSize + rl.itemDiscount.lineSpacing}px`, fontWeight: getFontWeight(rl.itemDiscount.fontWeight), fontStyle: getFontStyle(rl.itemDiscount.isItalic) }}>
                 <span className="inline-block w-6 text-right mr-1">-</span>
                 <span>Item Discount: -$2.00</span>
               </div>
@@ -2885,29 +2892,29 @@ const PrinterPage = () => {
         {/* ========== TOTALS ========== */}
         <div className="pt-1">
           {rl.subtotal.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.subtotal.fontSize}px`, lineHeight: rl.subtotal.lineSpacing, fontWeight: getFontWeight(rl.subtotal.fontWeight), fontStyle: getFontStyle(rl.subtotal.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.subtotal.fontSize}px`, lineHeight: `${rl.subtotal.fontSize + rl.subtotal.lineSpacing}px`, fontWeight: getFontWeight(rl.subtotal.fontWeight), fontStyle: getFontStyle(rl.subtotal.isItalic) }}>
               <span>Subtotal:</span><span>$54.95</span>
             </div>
           )}
           {rl.discount.visible && (
-            <div className="flex justify-between text-red-500" style={{ fontSize: `${rl.discount.fontSize}px`, lineHeight: rl.discount.lineSpacing, fontWeight: getFontWeight(rl.discount.fontWeight), fontStyle: getFontStyle(rl.discount.fontWeight) }}>
+            <div className="flex justify-between text-red-500" style={{ fontSize: `${rl.discount.fontSize}px`, lineHeight: `${rl.discount.fontSize + rl.discount.lineSpacing}px`, fontWeight: getFontWeight(rl.discount.fontWeight), fontStyle: getFontStyle(rl.discount.isItalic) }}>
               <span>Discount:</span><span>-$5.00</span>
             </div>
           )}
           {rl.taxGST.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.taxGST.fontSize}px`, lineHeight: rl.taxGST.lineSpacing, fontWeight: getFontWeight(rl.taxGST.fontWeight), fontStyle: getFontStyle(rl.taxGST.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.taxGST.fontSize}px`, lineHeight: `${rl.taxGST.fontSize + rl.taxGST.lineSpacing}px`, fontWeight: getFontWeight(rl.taxGST.fontWeight), fontStyle: getFontStyle(rl.taxGST.isItalic) }}>
               <span>GST (5%):</span><span>$2.75</span>
             </div>
           )}
           {rl.taxPST.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.taxPST.fontSize}px`, lineHeight: rl.taxPST.lineSpacing, fontWeight: getFontWeight(rl.taxPST.fontWeight), fontStyle: getFontStyle(rl.taxPST.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.taxPST.fontSize}px`, lineHeight: `${rl.taxPST.fontSize + rl.taxPST.lineSpacing}px`, fontWeight: getFontWeight(rl.taxPST.fontWeight), fontStyle: getFontStyle(rl.taxPST.isItalic) }}>
               <span>PST (7%):</span><span>$3.85</span>
             </div>
           )}
           {/* ④ Separator 4: Total 위 */}
           {rl.separator4.visible && <div className={`border-b ${getSeparatorClass(rl.separator4.style)} border-gray-400 my-1`} />}
           {rl.total.visible && (
-            <div className="flex justify-between pt-1" style={{ fontSize: `${rl.total.fontSize}px`, lineHeight: rl.total.lineSpacing, fontWeight: getFontWeight(rl.total.fontWeight), fontStyle: getFontStyle(rl.total.fontWeight) }}>
+            <div className="flex justify-between pt-1" style={{ fontSize: `${rl.total.fontSize}px`, lineHeight: `${rl.total.fontSize + rl.total.lineSpacing}px`, fontWeight: getFontWeight(rl.total.fontWeight), fontStyle: getFontStyle(rl.total.isItalic) }}>
               <span>TOTAL:</span><span>$56.55</span>
             </div>
           )}
@@ -2916,17 +2923,17 @@ const PrinterPage = () => {
         {/* ========== PAYMENT (Receipt only) ========== */}
         <div className="mt-3 pt-2 border-t border-gray-300">
           {rl.paymentMethod.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.paymentMethod.fontSize}px`, lineHeight: rl.paymentMethod.lineSpacing, fontWeight: getFontWeight(rl.paymentMethod.fontWeight), fontStyle: getFontStyle(rl.paymentMethod.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.paymentMethod.fontSize}px`, lineHeight: `${rl.paymentMethod.fontSize + rl.paymentMethod.lineSpacing}px`, fontWeight: getFontWeight(rl.paymentMethod.fontWeight), fontStyle: getFontStyle(rl.paymentMethod.isItalic) }}>
               <span>Payment:</span><span>VISA ****4242</span>
             </div>
           )}
           {rl.paymentDetails.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.paymentDetails.fontSize}px`, lineHeight: rl.paymentDetails.lineSpacing, fontWeight: getFontWeight(rl.paymentDetails.fontWeight), fontStyle: getFontStyle(rl.paymentDetails.fontWeight) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.paymentDetails.fontSize}px`, lineHeight: `${rl.paymentDetails.fontSize + rl.paymentDetails.lineSpacing}px`, fontWeight: getFontWeight(rl.paymentDetails.fontWeight), fontStyle: getFontStyle(rl.paymentDetails.isItalic) }}>
               <span>Tendered:</span><span>$60.00</span>
             </div>
           )}
           {rl.changeAmount.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.changeAmount.fontSize}px`, lineHeight: rl.changeAmount.lineSpacing, fontWeight: getFontWeight(rl.changeAmount.fontWeight), fontStyle: getFontStyle(rl.changeAmount.fontWeight), ...getInverseStyle(rl.changeAmount.inverse) }}>
+            <div className="flex justify-between" style={{ fontSize: `${rl.changeAmount.fontSize}px`, lineHeight: `${rl.changeAmount.fontSize + rl.changeAmount.lineSpacing}px`, fontWeight: getFontWeight(rl.changeAmount.fontWeight), fontStyle: getFontStyle(rl.changeAmount.isItalic), ...getInverseStyle(rl.changeAmount.inverse) }}>
               <span>Change:</span><span>$3.45</span>
             </div>
           )}
@@ -2935,12 +2942,12 @@ const PrinterPage = () => {
         {/* ========== FOOTER ========== */}
         <div className="text-center mt-4">
           {rl.thankYouMessage.visible && (
-            <div style={{ fontSize: `${rl.thankYouMessage.fontSize}px`, lineHeight: rl.thankYouMessage.lineSpacing, fontWeight: getFontWeight(rl.thankYouMessage.fontWeight), fontStyle: getFontStyle(rl.thankYouMessage.fontWeight) }}>
+            <div style={{ fontSize: `${rl.thankYouMessage.fontSize}px`, lineHeight: `${rl.thankYouMessage.fontSize + rl.thankYouMessage.lineSpacing}px`, fontWeight: getFontWeight(rl.thankYouMessage.fontWeight), fontStyle: getFontStyle(rl.thankYouMessage.isItalic) }}>
               {rl.thankYouMessage.text}
             </div>
           )}
           {rl.greeting.visible && (
-            <div style={{ fontSize: `${rl.greeting.fontSize}px`, lineHeight: rl.greeting.lineSpacing, fontWeight: getFontWeight(rl.greeting.fontWeight), fontStyle: getFontStyle(rl.greeting.fontWeight) }}>
+            <div style={{ fontSize: `${rl.greeting.fontSize}px`, lineHeight: `${rl.greeting.fontSize + rl.greeting.lineSpacing}px`, fontWeight: getFontWeight(rl.greeting.fontWeight), fontStyle: getFontStyle(rl.greeting.isItalic) }}>
               {rl.greeting.text}
             </div>
           )}
@@ -2991,15 +2998,15 @@ const PrinterPage = () => {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
-        const elLineHeight = el.lineHeight || el.fontSize;
+        const elLineHeight = el.fontSize + (el.lineHeight ?? 0);
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
         }
         return null;
       };
@@ -3013,13 +3020,13 @@ const PrinterPage = () => {
       return (
         <div className="mt-2 text-left">
            {kl.guestNumber.visible && (
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 1 --------------------</div>
+               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 1 --------------------</div>
            )}
            {renderItemRow('1x Salmon Sashimi', 'Extra Ginger', 'No wasabi')}
            {renderItemRow('1x Miso Soup')}
            
            {kl.guestNumber.visible && (
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing * 2}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 2 --------------------</div>
+               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 2 --------------------</div>
            )}
            {renderItemRow('2x Beef Teriyaki', 'Well Done')}
            {renderItemRow('1x Green Tea')}
@@ -3078,10 +3085,10 @@ const PrinterPage = () => {
       
       return (
         <div key={merged.id} className={`flex ${getVerticalAlign()}`} style={{ ...getContainerStyle(), ...getLineInverseStyle() }}>
-          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.fontSize + (merged.leftElement.lineHeight ?? 0)) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.leftElement.key)}
           </div>
-          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.fontSize + (merged.rightElement.lineHeight ?? 0)) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.rightElement.key)}
           </div>
         </div>
@@ -3181,7 +3188,7 @@ const PrinterPage = () => {
           <div className={item.key === 'serverName' ? '' : textAlign ? '' : 'text-center'} 
                style={{ 
                  fontSize: `${fontSize}px`, 
-                 marginTop: `${lineSpacing * 2}px`, 
+                marginTop: `${lineSpacing}px`, 
                  fontWeight: getFontWeight(fontWeight), 
                  fontStyle: getFontStyle(el),
                  textAlign: textAlign,
@@ -3198,7 +3205,7 @@ const PrinterPage = () => {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
@@ -3212,7 +3219,7 @@ const PrinterPage = () => {
           <React.Fragment key={`body-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
         
-        {/* Kitchen Note (Body 하단 고정) */}
+        {/* Kitchen Memo (Body 하단 고정) */}
         {kl.kitchenNote?.visible && (
           <div 
             className="text-center"
@@ -3223,7 +3230,7 @@ const PrinterPage = () => {
               ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
             }}
           >
-            *** Kitchen Note ***
+            *** Kitchen Memo ***
           </div>
         )}
         
@@ -3494,15 +3501,15 @@ const PrinterPage = () => {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
-        const elLineHeight = el.lineHeight || el.fontSize;
+        const elLineHeight = el.fontSize + (el.lineHeight ?? 0);
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing * 2}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
         }
         return null;
       };
@@ -3573,10 +3580,10 @@ const PrinterPage = () => {
       
       return (
         <div key={merged.id} className={`flex ${getVerticalAlign()}`} style={{ ...getContainerStyle(), ...getLineInverseStyle() }}>
-          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.lineHeight || merged.leftElement.fontSize) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getLeftStyle(), fontSize: `${merged.leftElement.fontSize * fontScale}px`, lineHeight: `${(merged.leftElement.fontSize + (merged.leftElement.lineHeight ?? 0)) * fontScale}px`, marginTop: `${merged.leftElement.lineSpacing}px`, fontWeight: getFontWeight(merged.leftElement.fontWeight), fontStyle: merged.leftElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.leftElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.leftElement.key)}
           </div>
-          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.lineHeight || merged.rightElement.fontSize) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing * 2}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
+          <div style={{ ...getRightStyle(), fontSize: `${merged.rightElement.fontSize * fontScale}px`, lineHeight: `${(merged.rightElement.fontSize + (merged.rightElement.lineHeight ?? 0)) * fontScale}px`, marginTop: `${merged.rightElement.lineSpacing}px`, fontWeight: getFontWeight(merged.rightElement.fontWeight), fontStyle: merged.rightElement.isItalic ? 'italic' : 'normal', ...(!merged.lineInverse && merged.rightElement.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 8px' } : {}) }}>
             {getContent(merged.rightElement.key)}
           </div>
         </div>
@@ -3677,7 +3684,7 @@ const PrinterPage = () => {
           <div className={isLeftAligned ? '' : textAlign ? '' : 'text-center'} 
                style={{ 
                  fontSize: `${fontSize}px`, 
-                 lineHeight: lineSpacing, 
+                lineHeight: `${lineSpacing}px`, 
                  fontWeight: getFontWeight(fontWeight), 
                  fontStyle: getFontStyle(el),
                  textAlign: textAlign,
@@ -3694,7 +3701,7 @@ const PrinterPage = () => {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
@@ -3708,7 +3715,7 @@ const PrinterPage = () => {
           <React.Fragment key={`body-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
         
-        {/* Kitchen Note (Body 하단 고정) */}
+        {/* Kitchen Memo (Body 하단 고정) */}
         {kl.kitchenNote?.visible && (
           <div 
             className="text-center"
@@ -3719,7 +3726,7 @@ const PrinterPage = () => {
               ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
             }}
           >
-            *** Kitchen Note ***
+            *** Kitchen Memo ***
           </div>
         )}
         
@@ -4031,7 +4038,7 @@ const PrinterPage = () => {
         <div className="font-bold" style={{ marginBottom: `${layoutSettings.kitchen.itemGap}px` }}>
           1x Salmon Sashimi
           {layoutSettings.kitchen.showItemModifiers && <div className="ml-2" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>+ Extra Ginger</div>}
-          {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Note: No wasabi</div>}
+          {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Memo: No wasabi</div>}
         </div>
         <div className="font-bold" style={{ marginBottom: `${layoutSettings.kitchen.itemGap}px` }}>2x Beef Teriyaki</div>
         <div className="font-bold">1x Miso Soup</div>
@@ -4080,7 +4087,7 @@ const PrinterPage = () => {
             <div className="font-bold" style={{ marginBottom: `${layoutSettings.kitchen.itemGap}px` }}>
               1x Salmon Sashimi
               {layoutSettings.kitchen.showItemModifiers && <div className="ml-2" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>+ Extra Ginger</div>}
-              {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Note: No wasabi</div>}
+              {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Memo: No wasabi</div>}
             </div>
           </div>
           <div className="text-center py-1" style={{ fontSize: layoutSettings.kitchen.modifierFontSize }}>--------- 2 ---------</div>
@@ -4094,7 +4101,7 @@ const PrinterPage = () => {
           <div className="font-bold" style={{ marginBottom: `${layoutSettings.kitchen.itemGap}px` }}>
             1x Salmon Sashimi
             {layoutSettings.kitchen.showItemModifiers && <div className="ml-2" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>+ Extra Ginger</div>}
-            {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Note: No wasabi</div>}
+            {layoutSettings.kitchen.showItemNotes && <div className="ml-2 italic" style={{ fontSize: layoutSettings.kitchen.modifierFontSize, marginTop: `${layoutSettings.kitchen.modifierGap}px` }}>Memo: No wasabi</div>}
           </div>
           <div className="font-bold" style={{ marginBottom: `${layoutSettings.kitchen.itemGap}px` }}>2x Beef Teriyaki</div>
           <div className="font-bold">1x Miso Soup</div>
@@ -4521,7 +4528,7 @@ const PrinterPage = () => {
               <ElementStyleRow label="Modifiers" element={layoutSettings.billLayout.modifiers}
                 onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, modifiers: { ...layoutSettings.billLayout.modifiers, ...updated } } })} />
               
-              <ElementStyleRow label="Note" element={layoutSettings.billLayout.itemNote}
+              <ElementStyleRow label="Memo" element={layoutSettings.billLayout.itemNote}
                 onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, itemNote: { ...layoutSettings.billLayout.itemNote, ...updated } } })} />
               
               <ElementStyleRow label="Item Discount" element={layoutSettings.billLayout.itemDiscount}
@@ -4720,7 +4727,7 @@ const PrinterPage = () => {
               <ElementStyleRow label="Modifiers" element={layoutSettings.receiptLayout.modifiers}
                 onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, modifiers: { ...layoutSettings.receiptLayout.modifiers, ...updated } } })} />
               
-              <ElementStyleRow label="Note" element={layoutSettings.receiptLayout.itemNote}
+              <ElementStyleRow label="Memo" element={layoutSettings.receiptLayout.itemNote}
                 onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, itemNote: { ...layoutSettings.receiptLayout.itemNote, ...updated } } })} />
               
               <ElementStyleRow label="Item Discount" element={layoutSettings.receiptLayout.itemDiscount}
@@ -4968,9 +4975,9 @@ const PrinterPage = () => {
               
               {renderSortedElements(KITCHEN_BODY_KEYS, 'kitchen')}
               
-              {/* Kitchen Note (Body 하단 고정) */}
+              {/* Kitchen Memo (Body 하단 고정) */}
               {currentLayout.kitchenNote && (
-                <KitchenElementRow label="Kitchen Note (Fixed)" element={currentLayout.kitchenNote}
+                <KitchenElementRow label="Kitchen Memo (Fixed)" element={currentLayout.kitchenNote}
                   onChange={(updated) => updateCurrentLayoutSettings({ kitchenNote: { ...currentLayout.kitchenNote, ...updated } })}
                 />
               )}
@@ -5480,6 +5487,4 @@ const PrinterPage = () => {
       )}
     </div>
   );
-};
-
-export default PrinterPage; 
+}

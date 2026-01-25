@@ -874,7 +874,7 @@ const ThezoneorderSyncTab = () => {
       const res = await fetch(`${API_URL}/menu-sync/sync-from-firebase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
+        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id, menuId: selectedMenuId })
       });
       const data = await res.json();
       
@@ -1274,9 +1274,10 @@ const ThezoneorderSyncTab = () => {
                   Thezoneorder Restaurant ID
                 </label>
             <input 
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg font-mono text-sm bg-gray-100 text-gray-600 cursor-not-allowed" 
               value={profile.firebase_restaurant_id || ''} 
-              onChange={e => setProfile({ ...profile, firebase_restaurant_id: e.target.value })} 
+              readOnly
+              disabled
               placeholder="e.g. 1TmCcBm2qQdVaQT30wVm"
             />
           </div>
@@ -1356,40 +1357,6 @@ const ThezoneorderSyncTab = () => {
                   <p className="text-xs text-gray-600 mt-2">
                     ✅ 메뉴 + 카테고리 + 아이템을 TZO Cloud에 완전히 동기화합니다.<br/>
                     ✅ posId가 포함되어 온라인 주문 시 프린터 라우팅이 정확해집니다.
-                  </p>
-                </div>
-          </div>
-
-              {/* Legacy Upload Section */}
-              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="text-2xl">📤</span>
-                  <h3 className="text-lg font-bold text-gray-800">Legacy Upload</h3>
-                  <span className="ml-auto text-xs bg-gray-400 text-white px-2 py-1 rounded-full">기존방식</span>
-          </div>
-          
-                <div className="space-y-3">
-            <button 
-              onClick={handleUploadToThezoneorder}
-              disabled={uploading || !profile.firebase_restaurant_id || !selectedMenuId}
-                    className={`w-full px-4 py-3 rounded-lg text-sm font-medium transition-all ${
-                      uploading || !selectedMenuId 
-                        ? 'bg-gray-300 cursor-not-allowed text-gray-500' 
-                        : 'bg-gray-600 text-white hover:bg-gray-700 shadow-sm hover:shadow'
-              }`}
-            >
-                    {uploading ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <span className="animate-spin">⏳</span>
-                        Uploading...
-                      </span>
-                    ) : (
-                      '📤 Upload (Legacy)'
-                    )}
-            </button>
-                  
-                  <p className="text-xs text-gray-500 mt-2">
-                    ⚠️ 기존 방식: 최상위 컬렉션에 업로드 (권장하지 않음)
                   </p>
                 </div>
           </div>
@@ -1478,79 +1445,6 @@ const ThezoneorderSyncTab = () => {
           </div>
         </div>
 
-        {/* TZO Cloud Menus Section - Full Width */}
-        <div className="mt-6 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="bg-green-700 px-6 py-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <span className="text-2xl">☁️</span>
-                TZO Cloud Menus (Firebase)
-              </h2>
-              <button
-                onClick={() => loadFirebaseMenus(profile.firebase_restaurant_id)}
-                disabled={!profile.firebase_restaurant_id || loadingFirebaseMenus}
-                className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-500 transition-all"
-              >
-                {loadingFirebaseMenus ? '⏳' : '🔄'} Refresh
-              </button>
-            </div>
-          </div>
-          
-          <div className="p-6">
-            {!profile.firebase_restaurant_id ? (
-              <div className="text-center py-8 text-gray-500">
-                <div className="text-4xl mb-2">🔗</div>
-                <div>Please enter Thezoneorder Restaurant ID first.</div>
-              </div>
-            ) : loadingFirebaseMenus ? (
-              <div className="text-center py-8 text-gray-500">
-                <div className="animate-spin text-4xl mb-2">⏳</div>
-                <div>Loading TZO Cloud menus...</div>
-              </div>
-            ) : firebaseMenus.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <div className="text-4xl mb-2">📭</div>
-                <div>No menus in TZO Cloud.</div>
-                <div className="text-sm mt-1">Use "Full Sync to Cloud" to upload menus from POS.</div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {firebaseMenus.map((menu) => (
-                  <div key={menu.id} className="bg-green-50 rounded-lg p-4 border border-green-200 hover:shadow transition-all">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
-                        <div className="font-bold text-gray-800 text-lg mb-1">
-                          {menu.name}
-                        </div>
-                        <div className="text-xs text-gray-600 mb-2">
-                          {menu.description || 'No description'}
-                        </div>
-                        <div className="text-xs text-gray-500 mb-1">
-                          ID: <span className="font-mono text-xs">{menu.id}</span>
-                        </div>
-                        {menu.posId && (
-                          <div className="text-xs text-green-600">
-                            ✅ POS ID: {menu.posId}
-                          </div>
-                        )}
-                        <div className="text-xs text-gray-500 mt-1">
-                          Channels: {(menu.sales_channels || []).join(', ') || 'None'}
-                        </div>
-                      </div>
-                      <div className={`w-3 h-3 rounded-full ${menu.is_active === 1 || menu.is_active === true ? 'bg-green-500' : 'bg-gray-400'}`}></div>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteFirebaseMenu(menu.id, menu.name)}
-                      className="w-full px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium transition-all shadow-sm hover:shadow"
-                    >
-                      🗑️ Delete from Cloud
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -1595,10 +1489,10 @@ const MenuListPage = () => {
   // Manager PIN 모달 제거
   const navigate = useNavigate();
 
-  // 'menus' 탭 선택시 자동으로 메뉴 편집 페이지로 이동 (고정 메뉴 ID: 200005)
+  // 'menus' 탭은 비워진 상태로 유지
   useEffect(() => {
     if (activeTab === 'menus') {
-      navigate('/backoffice/menu/edit/200005', { replace: true });
+      navigate('/backoffice/menu?tab=menus', { replace: true });
     }
   }, [activeTab, navigate]);
 
@@ -1758,7 +1652,7 @@ const MenuListPage = () => {
           {/* Tabs */}
           <div className="flex gap-1">
             <button
-              onClick={() => navigate('/backoffice/menu/edit/200005')}
+              onClick={() => { setActiveTab('menus'); navigate('/backoffice/menu?tab=menus', { replace: true }); }}
               className={`px-4 py-2 font-medium rounded-t-lg transition-colors text-sm ${
                 activeTab === 'menus'
                   ? 'bg-blue-600 text-white'
@@ -1792,153 +1686,38 @@ const MenuListPage = () => {
 
         {/* Menus Tab Content */}
         {activeTab === 'menus' && (
-        <>
-        <div className="mb-6">
-          <div className="flex items-center justify-end">
-            <div className="flex space-x-3">
-              <button
-                onClick={() => setIsAdding(true)}
-                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 flex items-center space-x-2"
-              >
-                <Plus className="w-4 h-4" />
-                <span>New Menu</span>
-              </button>
-            </div>
+          <div className="space-y-4">
+            {menus.length === 0 ? (
+              <div className="py-10 text-center text-gray-500">
+                메뉴가 없습니다.
+              </div>
+            ) : (
+              <div className="bg-white rounded-lg border shadow-sm">
+                <div className="px-4 py-3 border-b text-sm font-medium text-gray-700">
+                  Menus
+                </div>
+                <div className="divide-y">
+                  {menus.map(menu => (
+                    <div key={menu.menu_id} className="flex items-center justify-between px-4 py-3">
+                      <div>
+                        <div className="font-semibold text-gray-900">{menu.name}</div>
+                        <div className="text-xs text-gray-500">Menu ID: {menu.menu_id}</div>
+                        <div className="text-xs text-gray-500">
+                          Channels: {Array.isArray(menu.sales_channels) && menu.sales_channels.length > 0 ? menu.sales_channels.join(', ') : 'All'}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleEditMenu(menu)}
+                        className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                      >
+                        Open
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* Add New Menu */}
-        {isAdding && (
-          <div className="mb-6 bg-white rounded-lg shadow p-4 border">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input
-                type="text"
-                value={newMenuName}
-                onChange={(e) => setNewMenuName(e.target.value)}
-                placeholder="Menu name"
-                className="px-3 py-2 border rounded"
-              />
-              <input
-                type="text"
-                value={newMenuDescription}
-                onChange={(e) => setNewMenuDescription(e.target.value)}
-                placeholder="Description"
-                className="px-3 py-2 border rounded"
-              />
-            </div>
-            {/* Sales Channels */}
-            <div className="mt-3">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Sales Channels <span className="text-red-500">*</span>
-              </label>
-              <div className="flex flex-wrap gap-3">
-                {SALES_CHANNELS.map(channel => (
-                  <label key={channel.id} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newMenuChannels.includes(channel.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setNewMenuChannels(prev => [...prev, channel.id]);
-                        } else {
-                          setNewMenuChannels(prev => prev.filter(c => c !== channel.id));
-                        }
-                      }}
-                      className="w-4 h-4 text-blue-600 rounded"
-                    />
-                    <span className="text-sm text-gray-700">{channel.label}</span>
-                  </label>
-                ))}
-              </div>
-              {newMenuChannels.length === 0 && (
-                <p className="text-xs text-red-500 mt-1">At least one channel must be selected</p>
-              )}
-            </div>
-            <div className="mt-3 flex space-x-2">
-              <button
-                onClick={async () => {
-                  if (!newMenuName.trim()) return;
-                  if (newMenuChannels.length === 0) {
-                    alert('Please select at least one sales channel');
-                    return;
-                  }
-                  try {
-                    const response = await fetch(`${API_URL}/menus`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ 
-                        name: newMenuName.trim(), 
-                        description: newMenuDescription.trim(),
-                        sales_channels: newMenuChannels
-                      })
-                    });
-                    if (!response.ok) throw new Error('Failed to create menu');
-                    const created = await response.json();
-                    setMenus(prev => [created, ...prev]);
-                    setNewMenuName('');
-                    setNewMenuDescription('');
-                    setNewMenuChannels([]);
-                    setIsAdding(false);
-                  } catch (e) {
-                    console.error(e);
-                  }
-                }}
-                disabled={newMenuChannels.length === 0}
-                className={`px-4 py-2 rounded ${newMenuChannels.length === 0 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-              >
-                Save
-              </button>
-              <button
-                onClick={() => { setIsAdding(false); setNewMenuName(''); setNewMenuDescription(''); setNewMenuChannels([]); }}
-                className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Menu List */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {menus.map(menu => (
-            <div key={menu.menu_id} className="bg-white rounded-lg shadow p-4 border flex flex-col">
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-gray-900">{menu.name}</h3>
-                <p className="text-sm text-gray-600 mt-1">{menu.description}</p>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  onClick={() => handleEditMenu(menu)}
-                  className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
-                >
-                  Edit
-                </button>
-               <button
-                 onClick={() => handleCopyMenuClick(menu)}
-                 className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
-               >
-                 Copy
-               </button>
-               <button
-                 onClick={() => handleBackupClick(menu.menu_id)}
-                 className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
-               >
-                 Backup
-               </button>
-               <button
-                 onClick={() => handleDeleteMenu(menu.menu_id)}
-                 className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
-               >
-                 Delete
-               </button>
-              </div>
-            </div>
-          ))}
-          {menus.length === 0 && (
-            <div className="col-span-full text-center text-gray-500">No menus found.</div>
-          )}
-        </div>
-        </>
         )}
 
         {/* Tax Settings Tab Content */}

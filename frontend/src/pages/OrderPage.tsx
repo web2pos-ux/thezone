@@ -1565,6 +1565,66 @@ const handleVoidPinClear = useCallback(() => {
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
         setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: Number(guestPaymentMode) } ]));
+        
+        // 개별 Guest 결제 시 해당 Guest의 Receipt 출력
+        try {
+          const guestNum = Number(guestPaymentMode);
+          const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
+          if (guestItems.length > 0) {
+            const guestTotals = computeGuestTotals(guestNum);
+            const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
+            const guestTaxLines = guestTotals.taxLines || [];
+            const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+            const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+            
+            const guestReceiptData = {
+              header: {
+                orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
+                channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+                tableName: (location.state as any)?.tableName || resolvedTableName || '',
+                serverName: selectedServer?.name || ''
+              },
+              orderInfo: {
+                channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+                tableName: (location.state as any)?.tableName || resolvedTableName || '',
+                serverName: selectedServer?.name || ''
+              },
+              items: [],
+              guestSections: [{
+                guestNumber: guestNum,
+                items: guestItems.map(item => ({
+                  name: item.name,
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  totalPrice: item.totalPrice || item.price || 0,
+                  modifiers: item.modifiers || [],
+                  memo: item.memo
+                }))
+              }],
+              subtotal: guestSubtotal,
+              adjustments: [],
+              taxLines: guestTaxLines,
+              taxesTotal: guestTaxTotal,
+              total: guestTotal,
+              footer: { message: 'Thank you for dining with us!' }
+            };
+            
+            console.log(`🧾 Printing Receipt for Guest ${guestNum}...`);
+            await fetch(`${API_URL}/printers/print-receipt`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                receiptData: guestReceiptData,
+                payments: [{ method, amount: Number((amount + tip).toFixed(2)) }],
+                change: 0
+              })
+            });
+            console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
+          }
+        } catch (receiptErr) {
+          console.warn('Guest Receipt print failed (ignored):', receiptErr);
+        }
+        
         // Keep modal open; navigation occurs on Next
         // Auto-complete is deferred to onComplete
       }
@@ -1733,14 +1793,29 @@ const handleVoidPinClear = useCallback(() => {
             tableName: resolvedTableName || '',
             serverName: selectedServer?.name || ''
           },
-          items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
-            name: item.name,
-            quantity: item.quantity || 1,
-            price: item.price || 0,
-            totalPrice: item.totalPrice || item.price || 0,
-            modifiers: item.modifiers || [],
-            memo: item.memo
-          })),
+          items: (orderItems || []).filter(it => it.type !== 'separator').map(item => {
+            const memoPrice =
+              item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+            const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
+            const gross = perUnit * (item.quantity || 1);
+            const discountAmount = computeItemDiscountAmount(item as any);
+            const lineTotal = Math.max(0, gross - discountAmount);
+            return {
+              name: item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: item.totalPrice || item.price || 0,
+              lineTotal,
+              originalTotal: discountAmount > 0 ? gross : undefined,
+              discount: discountAmount > 0 ? {
+                type: (item as any).discount?.type || 'Item Discount',
+                value: (item as any).discount?.value || 0,
+                amount: discountAmount
+              } : undefined,
+              modifiers: item.modifiers || [],
+              memo: item.memo
+            };
+          }),
           guestSections,
           subtotal: baseSubtotal,
           adjustments: receiptAdjustments,
@@ -4239,7 +4314,41 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           memo: item.memo
         };
       }),
-      guestSections: [],
+      // Split 테이블인 경우 Guest 분리 표시를 위한 guestSections 생성
+      guestSections: (() => {
+        // Guest별로 아이템 그룹화
+        const byGuest: Record<number, any[]> = {};
+        items.forEach((item: any) => {
+          const g = item.guestNumber || 1;
+          if (!byGuest[g]) byGuest[g] = [];
+          
+          const base = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0);
+          const memoAdd = Number((item.memo?.price) || 0);
+          const perUnit = base + memoAdd;
+          const itemGross = perUnit * (item.quantity || 1);
+          const discountAmount = item.discount ? (itemGross * (item.discount.value || 0)) / 100 : 0;
+          const itemNet = itemGross - discountAmount;
+          
+          byGuest[g].push({
+            name: item.name,
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            totalPrice: discountAmount > 0 ? itemNet : itemGross,
+            modifiers: item.modifiers || [],
+            memo: item.memo
+          });
+        });
+        
+        // 단일 Guest인 경우 guestSections 생략 (기존 동작 유지)
+        const guestNumbers = Object.keys(byGuest).map(Number).sort((a, b) => a - b);
+        if (guestNumbers.length <= 1) return [];
+        
+        // 다중 Guest인 경우 guestSections 생성
+        return guestNumbers.map(gNum => ({
+          guestNumber: gNum,
+          items: byGuest[gNum]
+        }));
+      })(),
       // Show original subtotal if there are item discounts, otherwise show net subtotal
       subtotal: totalItemDiscount > 0.01 ? Number(grossSubtotal.toFixed(2)) : billSubtotal,
       adjustments,
@@ -4276,12 +4385,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         if (!byGuest[g]) byGuest[g] = [];
         const base = (((it.totalPrice||0) + (((it as any).memo && typeof (it as any).memo.price === 'number') ? (it as any).memo.price : 0)) * (it.quantity||1));
         const disc = computeItemDiscountAmount(it as any);
+        const discountType = (it as any).discount?.type || 'Item D/C';
         byGuest[g].push({
           qty: it.quantity,
           name: it.name,
           modifiers: (it as any).modifiers || [],
           memo: (it as any).memo || null,
           lineTotal: Math.max(0, base - disc),
+          originalTotal: disc > 0 ? base : undefined,
+          discount: disc > 0 ? {
+            type: discountType,
+            value: (it as any).discount?.value || 0,
+            amount: disc
+          } : undefined
         });
       });
 
@@ -4295,7 +4411,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          
          // Re-calculate subtotal/tax for the specific guests
          const specificItems = items.filter(it => guestList.includes(it.guestNumber || 1));
-         const specificSubtotal = specificItems.reduce((sum, it:any) => sum + Math.max(0, ((((it.totalPrice||0) + ((it.memo?.price)||0)) * (it.quantity||1)) - computeItemDiscountAmount(it))), 0);
+         const grossSubtotal = specificItems.reduce((sum, it:any) => sum + ((((it.totalPrice||0) + ((it.memo?.price)||0)) * (it.quantity||1))), 0);
+         const totalItemDiscount = specificItems.reduce((sum, it:any) => sum + computeItemDiscountAmount(it), 0);
+         const netSubtotal = Math.max(0, grossSubtotal - totalItemDiscount);
          
          // Calculate tax for specific items
          const specificTaxAmountByName: { [taxName: string]: number } = {};
@@ -4318,9 +4436,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          const specificTaxLines = Object.entries(specificTaxAmountByName).map(([name, amount]) => ({ name, amount }));
          const specificTaxTotal = specificTaxLines.reduce((s, t) => s + t.amount, 0);
          
-         // Order D/C (전체 할인) - 할인율이면 비율 적용, 할인금액이면 균등 분할
+         // Item D/C (아이템 할인) - 개별 할인 합계
          const orderDiscountItem = orderItems.find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
          const receiptAdjustments: Array<{ label: string; amount: number }> = [];
+         
+         if (totalItemDiscount > 0.01) {
+            receiptAdjustments.push({ label: 'Item D/C', amount: -totalItemDiscount });
+         }
+         
+         // Order D/C (전체 할인) - 할인율이면 비율 적용, 할인금액이면 균등 분할
          
          if (orderDiscountItem) {
             const discountData = (orderDiscountItem as any).discount || {};
@@ -4337,7 +4461,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   
                   if (discountMode === 'percent') {
                      // 할인율: 이 영수증에 포함된 게스트들의 소계에 할인율 적용
-                     discountForThisReceipt = specificSubtotal * (discountValue / 100);
+                     discountForThisReceipt = netSubtotal * (discountValue / 100);
                   } else {
                      // 할인금액: 균등 분할
                      const totalOrderDiscount = Math.abs(Number(orderDiscountItem.totalPrice || orderDiscountItem.price || 0));
@@ -4352,20 +4476,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             }
          }
          
-         const adjustmentsTotal = receiptAdjustments.reduce((s, a) => s + a.amount, 0);
+         const orderAdjustmentsTotal = receiptAdjustments
+            .filter(a => a.label !== 'Item D/C')
+            .reduce((s, a) => s + a.amount, 0);
          
          // 할인 후 금액에 대해 세금 재계산
-         const subtotalAfterDiscount = Math.max(0, specificSubtotal + adjustmentsTotal);
-         const discountRatio = specificSubtotal > 0 ? subtotalAfterDiscount / specificSubtotal : 1;
+         const subtotalAfterDiscount = Math.max(0, netSubtotal + orderAdjustmentsTotal);
+         const discountRatio = netSubtotal > 0 ? subtotalAfterDiscount / netSubtotal : 1;
          const taxAfterDiscount = Number((specificTaxTotal * discountRatio).toFixed(2));
          
          return {
             type: 'prebill',
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber },
-            orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined },
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber, showGuestNumber: true },
+            orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined, showGuestNumber: true },
             body: { 
                 guestSections: receiptItems, 
-                subtotal: specificSubtotal, 
+                subtotal: totalItemDiscount > 0.01 ? Number(grossSubtotal.toFixed(2)) : netSubtotal, 
                 adjustments: receiptAdjustments,
                 taxLines: specificTaxLines.map(t => ({ ...t, amount: Number((t.amount * discountRatio).toFixed(2)) })), 
                 taxesTotal: taxAfterDiscount, 
