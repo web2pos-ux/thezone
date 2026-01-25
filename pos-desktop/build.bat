@@ -1,0 +1,68 @@
+@echo off
+echo ================================================
+echo WEB2POS Build Script
+echo ================================================
+echo.
+
+REM 경로 설정
+set ROOT_DIR=%~dp0..
+set FRONTEND_DIR=%ROOT_DIR%\frontend
+set BACKEND_DIR=%ROOT_DIR%\backend
+set DESKTOP_DIR=%~dp0
+
+echo [1/5] Building Frontend...
+echo ------------------------------------------------
+cd /d "%FRONTEND_DIR%"
+call npm run build
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: Frontend build failed!
+    pause
+    exit /b 1
+)
+echo Frontend build completed.
+echo.
+
+echo [2/5] Copying Frontend Build...
+echo ------------------------------------------------
+if exist "%DESKTOP_DIR%frontend-build" rmdir /s /q "%DESKTOP_DIR%frontend-build"
+xcopy /s /e /i /y "%FRONTEND_DIR%\build" "%DESKTOP_DIR%frontend-build"
+echo Frontend copied.
+echo.
+
+echo [3/5] Copying Backend...
+echo ------------------------------------------------
+if exist "%DESKTOP_DIR%backend" rmdir /s /q "%DESKTOP_DIR%backend"
+mkdir "%DESKTOP_DIR%backend"
+
+REM Copy backend files (excluding node_modules, uploads, and db)
+xcopy /s /e /i /y "%BACKEND_DIR%\*.js" "%DESKTOP_DIR%backend\"
+xcopy /s /e /i /y "%BACKEND_DIR%\routes" "%DESKTOP_DIR%backend\routes\"
+xcopy /s /e /i /y "%BACKEND_DIR%\services" "%DESKTOP_DIR%backend\services\"
+xcopy /s /e /i /y "%BACKEND_DIR%\utils" "%DESKTOP_DIR%backend\utils\"
+xcopy /s /e /i /y "%BACKEND_DIR%\config" "%DESKTOP_DIR%backend\config\"
+copy /y "%BACKEND_DIR%\package.json" "%DESKTOP_DIR%backend\"
+copy /y "%BACKEND_DIR%\package-lock.json" "%DESKTOP_DIR%backend\"
+echo Backend copied.
+echo.
+
+echo [4/5] Installing Backend Dependencies...
+echo ------------------------------------------------
+cd /d "%DESKTOP_DIR%backend"
+call npm install --production
+echo Backend dependencies installed.
+echo.
+
+echo [5/5] Copying Database...
+echo ------------------------------------------------
+if exist "%DESKTOP_DIR%db" rmdir /s /q "%DESKTOP_DIR%db"
+mkdir "%DESKTOP_DIR%db"
+copy /y "%ROOT_DIR%\db\web2pos.db" "%DESKTOP_DIR%db\"
+echo Database copied.
+echo.
+
+echo ================================================
+echo Build preparation completed!
+echo.
+echo Now run: npm run build:win
+echo ================================================
+pause

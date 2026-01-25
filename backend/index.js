@@ -558,8 +558,9 @@ const remoteSyncRoutes = require('./routes/remote-sync');
 app.use('/api/remote-sync', remoteSyncRoutes);
 
 // --- Basic Endpoints ---
-app.get('/', (req, res) => {
-  res.send('WEB2POS Backend Server is running!');
+// 주의: '/' 핸들러는 프론트엔드 서빙과 충돌하므로 /api/status로 변경
+app.get('/api/status', (req, res) => {
+  res.send('TheZonePOS Backend Server is running!');
 });
 
 app.get('/ping', (req, res) => {
@@ -666,6 +667,48 @@ io.on('connection', (socket) => {
 
 // io 객체를 전역으로 사용 가능하게 export
 app.set('io', io);
+
+// --- Health Check Endpoint (for Electron app) ---
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
+});
+
+// --- Serve Frontend Build (Production) ---
+// 여러 가능한 경로 시도 (개발 모드 / 패키징된 앱)
+const possibleFrontendPaths = [
+  path.resolve(__dirname, '..', 'frontend', 'build'),      // 개발 모드
+  path.resolve(__dirname, '..', 'frontend-build'),         // 패키징된 앱 (extraResources)
+  process.env.FRONTEND_PATH                                // 환경 변수로 지정
+].filter(Boolean);
+
+let frontendBuildPath = null;
+for (const p of possibleFrontendPaths) {
+  if (fs.existsSync(p)) {
+    frontendBuildPath = p;
+    break;
+  }
+}
+
+if (frontendBuildPath) {
+  console.log(`[Backend] Serving frontend from: ${frontendBuildPath}`);
+  app.use(express.static(frontendBuildPath));
+  
+  // React Router의 모든 경로를 index.html로 리다이렉트 (API 제외)
+  // Express 5.x 호환: '*' 대신 정규식 사용
+  app.get(/^(?!\/api\/)(?!\/socket\.io\/).*/, (req, res, next) => {
+    // 파일 확장자가 있는 요청은 static에서 처리되었으므로 스킵
+    if (req.path.includes('.')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendBuildPath, 'index.html'));
+  });
+} else {
+  console.warn('[Backend] Frontend build not found! Tried:', possibleFrontendPaths);
+}
 
 // --- Server Startup ---
 server.listen(PORT, async () => {

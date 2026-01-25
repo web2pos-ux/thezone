@@ -690,8 +690,18 @@ function buildImageKitchenTicket(options) {
   });
   
   // Add height for merged elements (병합된 요소는 무조건 출력되므로 항상 높이 추가)
-  mergedElementsForHeight.forEach(() => {
-    totalHeight += scaleFontSize(24) + 15; // Max font size for merged
+  // 연속된 lineInverse 요소 사이에는 간격이 줄어듦
+  mergedElementsForHeight.forEach((merged, idx) => {
+    const nextMerged = mergedElementsForHeight[idx + 1];
+    const isLineInverse = merged.lineInverse === true;
+    const nextIsLineInverse = nextMerged?.lineInverse === true;
+    
+    if (isLineInverse && nextIsLineInverse) {
+      // 연속된 inverse - 간격 축소
+      totalHeight += scaleFontSize(24) / 2 + 8;
+    } else {
+      totalHeight += scaleFontSize(24) + 15;
+    }
   });
   
   // Individual elements (skip if merged)
@@ -705,8 +715,18 @@ function buildImageKitchenTicket(options) {
   const heightOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
   const heightIsDineIn = heightOrderType === 'DINE-IN' || heightOrderType === 'DINEIN';
   if (!mergedKeysForHeight.has('paidStatus') && paidStatusEl.visible && (paidStatusEl.showInHeader || (isServerTicket && !heightIsDineIn))) {
-    const paidTopSpacing = paidStatusEl.lineSpacing || 0;
-    totalHeight += getFontHeight(paidStatusEl) + paidTopSpacing + 2;  // 프리뷰와 일치
+    // 마지막 merged element가 lineInverse이고 paidStatus도 inverse면 간격 최소화
+    const lastMergedH = mergedElementsForHeight[mergedElementsForHeight.length - 1];
+    const lastMergedIsLineInverse = lastMergedH?.lineInverse === true;
+    const paidIsInverseH = paidStatusEl.inverse === true;
+    
+    if (lastMergedIsLineInverse && paidIsInverseH) {
+      // 연속 inverse - topSpacing 생략
+      totalHeight += getFontHeight(paidStatusEl) + 2;
+    } else {
+      const paidTopSpacing = paidStatusEl.lineSpacing || 0;
+      totalHeight += getFontHeight(paidStatusEl) + paidTopSpacing + 2;
+    }
   }
   if (separator1.visible) totalHeight += (separator1.lineSpacing || 8) + 15;
 
@@ -950,7 +970,7 @@ function buildImageKitchenTicket(options) {
 
   // Render merged elements (e.g., "DINE-IN TABLE 5" on same line)
   // 병합된 요소는 visible 설정과 관계없이 무조건 출력
-  mergedElements.forEach(merged => {
+  mergedElements.forEach((merged, mergedIdx) => {
     if (!merged.leftElement || !merged.rightElement) return;
     
     const leftKey = merged.leftElement.key;
@@ -1051,7 +1071,16 @@ function buildImageKitchenTicket(options) {
       }
     }
     
-    y += maxFs + 12;
+    // 연속된 lineInverse 요소 사이에는 간격 없음 (흰 띠 제거)
+    const nextMerged = mergedElements[mergedIdx + 1];
+    const nextIsLineInverse = nextMerged?.lineInverse === true;
+    
+    if (lineInverse && nextIsLineInverse) {
+      // 연속된 inverse - 간격 없이 바로 붙임
+      y += maxFs / 2 + 8;  // 절반 높이만 이동 (다음 요소가 나머지 절반 차지)
+    } else {
+      y += maxFs + 12;
+    }
   });
 
   // === ORDER TYPE === (skip if merged)
@@ -1114,9 +1143,19 @@ function buildImageKitchenTicket(options) {
   const shouldShowPaidStatusInHeader = !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
                                        (paidStatusEl.showInHeader || (isServerTicket && !isDineIn));
   if (shouldShowPaidStatusInHeader) {
-    // Top spacing 적용 (lineSpacing 값 그대로 사용, 프리뷰와 일치)
-    const topSpacing = paidStatusEl.lineSpacing || 0;
-    y += topSpacing;
+    // 마지막 merged element가 lineInverse이고, paidStatus도 inverse이면 간격 최소화 (흰 띠 제거)
+    const lastMerged = mergedElements[mergedElements.length - 1];
+    const lastMergedIsLineInverse = lastMerged?.lineInverse === true;
+    const paidIsInverse = paidStatusEl.inverse === true;
+    
+    if (lastMergedIsLineInverse && paidIsInverse) {
+      // 연속된 inverse - 간격 없이 바로 붙임
+      // y 위치는 이미 마지막 merged element에서 적절히 이동됨
+    } else {
+      // Top spacing 적용 (lineSpacing 값 그대로 사용, 프리뷰와 일치)
+      const topSpacing = paidStatusEl.lineSpacing || 0;
+      y += topSpacing;
+    }
     
     const statusText = isPaid ? 'PAID' : 'UNPAID';
     if (paidStatusEl.inverse) {

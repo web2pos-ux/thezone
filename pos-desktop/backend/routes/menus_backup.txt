@@ -1,0 +1,75 @@
+  // =========================================================================
+  // Manager PIN Management for Open Price
+  // =========================================================================
+
+  // GET /api/menu/manager-pins - Get current manager PINs
+  router.get('/manager-pins', async (req, res) => {
+    try {
+      const pins = (process.env.OPEN_PRICE_MANAGER_PINS || '1234,0000').split(',').map(s => s.trim());
+      const approvalLimit = parseFloat(process.env.OPEN_PRICE_APPROVAL_LIMIT || '50000');
+      const noteLimit = parseFloat(process.env.OPEN_PRICE_NOTE_LIMIT || '10000');
+      
+      res.json({
+        pins: pins,
+        approval_limit: approvalLimit,
+        note_limit: noteLimit
+      });
+    } catch (error) {
+      console.error('Failed to get manager pins:', error);
+      res.status(500).json({ error: 'Failed to get manager pins', details: error.message });
+    }
+  });
+
+  // POST /api/menu/manager-pins - Update manager PINs and limits
+  router.post('/manager-pins', async (req, res) => {
+    try {
+      const { pins, approval_limit, note_limit } = req.body;
+      
+      if (!Array.isArray(pins) || pins.length === 0) {
+        return res.status(400).json({ error: 'Valid pins array is required' });
+      }
+      
+      if (typeof approval_limit !== 'number' || approval_limit < 0) {
+        return res.status(400).json({ error: 'Valid approval_limit is required' });
+      }
+      
+      if (typeof note_limit !== 'number' || note_limit < 0) {
+        return res.status(400).json({ error: 'Valid note_limit is required' });
+      }
+
+      // Update environment variables (this will only affect the current process)
+      process.env.OPEN_PRICE_MANAGER_PINS = pins.join(',');
+      process.env.OPEN_PRICE_APPROVAL_LIMIT = approval_limit.toString();
+      process.env.OPEN_PRICE_NOTE_LIMIT = note_limit.toString();
+
+      // Optionally save to a config file for persistence
+      const fs = require('fs');
+      const path = require('path');
+      const configPath = path.join(__dirname, '..', 'config', 'open-price-config.json');
+      
+      // Ensure config directory exists
+      const configDir = path.dirname(configPath);
+      if (!fs.existsSync(configDir)) {
+        fs.mkdirSync(configDir, { recursive: true });
+      }
+      
+      const config = {
+        OPEN_PRICE_MANAGER_PINS: pins.join(','),
+        OPEN_PRICE_APPROVAL_LIMIT: approval_limit.toString(),
+        OPEN_PRICE_NOTE_LIMIT: note_limit.toString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      
+      res.json({ 
+        message: 'Manager PINs updated successfully',
+        pins: pins,
+        approval_limit: approval_limit,
+        note_limit: note_limit
+      });
+    } catch (error) {
+      console.error('Failed to update manager pins:', error);
+      res.status(500).json({ error: 'Failed to update manager pins', details: error.message });
+    }
+  });

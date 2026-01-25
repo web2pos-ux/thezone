@@ -259,8 +259,9 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			if (customerPhone) {
 				const digitsOnly = customerPhone.replace(/\D/g, '');
 				if (digitsOnly) {
-					clauses.push(`REPLACE(REPLACE(REPLACE(customer_phone, '-', ''), '(', ''), ')', '') LIKE ?`);
-					params.push(`${digitsOnly}%`);
+					// 공백, 괄호, 하이픈 모두 제거하여 숫자만 비교 (시작 일치)
+					clauses.push(`REPLACE(REPLACE(REPLACE(REPLACE(customer_phone, '-', ''), '(', ''), ')', ''), ' ', '') LIKE ?`);
+					params.push(`${digitsOnly}%`);  // 시작 일치
 				} else {
 					clauses.push('customer_phone LIKE ?');
 					params.push(`${customerPhone}%`);
