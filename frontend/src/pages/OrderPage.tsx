@@ -376,6 +376,8 @@ const OrderPage = () => {
   // Screen size from Back Office (/backoffice/tables screen-size API) for sales/order
   const [boScreenSize, setBoScreenSize] = useState<{ width: number; height: number } | null>(null);
   const [renderSize, setRenderSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [orderPageScale, setOrderPageScale] = useState<number>(1);
+  const [actualScreenSize, setActualScreenSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const floorFromState = (location.state as any)?.floor;
   
   useEffect(() => {
@@ -402,6 +404,40 @@ const OrderPage = () => {
     
     return () => clearTimeout(timer);
   }, [isSalesOrder, floorFromState]);
+
+  // 실제 화면 크기 감지
+  useEffect(() => {
+    const updateScreenSize = () => {
+      setActualScreenSize({
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+    };
+
+    updateScreenSize();
+    window.addEventListener('resize', updateScreenSize);
+    return () => window.removeEventListener('resize', updateScreenSize);
+  }, []);
+
+  // 백오피스 해상도와 실제 화면 크기를 비교하여 스케일 계산 (OrderPage용)
+  useEffect(() => {
+    if (!isSalesOrder || !boScreenSize) {
+      setOrderPageScale(1);
+      return;
+    }
+
+    const actualWidth = actualScreenSize.width;
+    const actualHeight = actualScreenSize.height;
+    const boWidth = boScreenSize.width;
+    const boHeight = boScreenSize.height;
+    
+    const scaleX = actualWidth / boWidth;
+    const scaleY = actualHeight / boHeight;
+    const calculatedScale = Math.max(0.5, Math.min(2.0, Math.min(scaleX, scaleY)));
+    
+    setOrderPageScale(calculatedScale);
+    console.log(`[OrderPage] Screen scaling: BO=${boWidth}x${boHeight}, Actual=${actualWidth}x${actualHeight}, Scale=${calculatedScale.toFixed(2)}`);
+  }, [boScreenSize, actualScreenSize, isSalesOrder]);
 
   // Measure actual rendered size of the canvas (to verify no scaling)
   useEffect(() => {
@@ -7447,6 +7483,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             maxHeight: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined,
             overflow: 'hidden',
             position: 'relative',
+            transform: isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)',
+            transformOrigin: 'top left',
             boxShadow: '0 0 0 4px #39FF14, 0 0 0 2px rgba(57,255,20,0.6) inset, 0 0 12px rgba(57,255,20,0.7)',
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'

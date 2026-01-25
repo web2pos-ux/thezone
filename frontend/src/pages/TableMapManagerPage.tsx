@@ -3566,9 +3566,6 @@ const TableMapManagerPage = () => {
                 marginRight: 'auto'
               }}
             >
-              {/* Frame outline */}
-              <div className="pointer-events-none absolute inset-0 border-4" style={{ borderColor: '#39FF14', boxShadow: '0 0 0 2px rgba(57,255,20,0.6) inset, 0 0 10px rgba(57,255,20,0.7)' }} />
-              <div className="pointer-events-none absolute -top-3 -left-3 text-black text-[10px] px-1 py-0.5 rounded" style={{ backgroundColor: '#39FF14' }}>Frame</div>
               {/* 캔바스 내부 알람들 */}
               <CallNotificationCanvasComponent />
               <OrderNotificationCanvasComponent />

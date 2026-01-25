@@ -849,6 +849,7 @@ const SalesPage: React.FC = () => {
   // View mode 고정: 항상 Fixed(1:1 픽셀)
   const viewMode: 'fixed' = 'fixed';
   const [scaleFactor, setScaleFactor] = useState<number>(1);
+  const [actualScreenSize, setActualScreenSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const pageHostRef = useRef<HTMLDivElement>(null);
   const fixedAreaRef = useRef<HTMLDivElement>(null);
   // BO Screen Size를 '전체 프레임' 크기로 그대로 사용
@@ -869,10 +870,43 @@ const SalesPage: React.FC = () => {
   const togoModalMaxWidth = Math.min(frameWidthPx - 48, TOGO_MODAL_MAX_WIDTH);
   const keyboardMaxWidth = Math.min(frameWidthPx - 120, 860);
 
+  // 실제 화면 크기 감지 및 스케일 계산
   useEffect(() => {
-    // 항상 Fixed 모드이므로 스케일은 1로 고정
-    setScaleFactor(1);
-  }, [screenSize]);
+    const updateScreenSize = () => {
+      setActualScreenSize({
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+    };
+
+    // 초기 크기 설정
+    updateScreenSize();
+
+    // 리사이즈 이벤트 리스너
+    window.addEventListener('resize', updateScreenSize);
+    return () => window.removeEventListener('resize', updateScreenSize);
+  }, []);
+
+  // 백오피스 해상도와 실제 화면 크기를 비교하여 스케일 계산
+  useEffect(() => {
+    const actualWidth = actualScreenSize.width;
+    const actualHeight = actualScreenSize.height;
+    
+    // 백오피스에서 설정한 해상도
+    const boWidth = frameWidthPx;
+    const boHeight = frameHeightPx;
+    
+    // 너비와 높이 비율 계산
+    const scaleX = actualWidth / boWidth;
+    const scaleY = actualHeight / boHeight;
+    
+    // 더 작은 비율을 사용하여 화면에 맞춤 (비율 유지)
+    // 최소 0.5배, 최대 2배로 제한
+    const calculatedScale = Math.max(0.5, Math.min(2.0, Math.min(scaleX, scaleY)));
+    
+    setScaleFactor(calculatedScale);
+    console.log(`[SalesPage] Screen scaling: BO=${boWidth}x${boHeight}, Actual=${actualWidth}x${actualHeight}, Scale=${calculatedScale.toFixed(2)}`);
+  }, [frameWidthPx, frameHeightPx, actualScreenSize]);
 
   // Togo 주문 관련 상태들
   const [showTogoOrderModal, setShowTogoOrderModal] = useState(false);
@@ -881,6 +915,7 @@ const SalesPage: React.FC = () => {
   const [pickupTime, setPickupTime] = useState(15);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
+  const customerPhoneRef = useRef(''); // 비동기 클로저용 ref
   const [customerAddress, setCustomerAddress] = useState('');
   const [customerZip, setCustomerZip] = useState('');
   const [togoOrderMode, setTogoOrderMode] = useState<'togo' | 'delivery'>('togo');
@@ -1280,6 +1315,7 @@ const SalesPage: React.FC = () => {
   const handlePhoneInputChange = (value: string) => {
     const formatted = formatTogoPhone(value);
     setCustomerPhone(formatted);
+    customerPhoneRef.current = formatted; // ref도 동기화
     updateCustomerSuggestions('phone', formatted);
   };
   const handleNameInputChange = (value: string) => {
@@ -1339,7 +1375,13 @@ const SalesPage: React.FC = () => {
   const fetchCustomerHistoryForSelection = useCallback(
     async (selection: CustomerSuggestion | null) => {
       const fetchId = ++historyFetchIdRef.current;
+      console.log('[CustomerHistory] fetchCustomerHistoryForSelection called', {
+        showTogoOrderModal,
+        selection: selection ? { name: selection.name, phone: selection.phone, phoneRaw: selection.phoneRaw } : null
+      });
+      
       if (!showTogoOrderModal || !selection) {
+        console.log('[CustomerHistory] Skipping - modal not open or no selection');
         setCustomerHistoryOrders([]);
         setCustomerHistoryError('');
         setCustomerHistoryLoading(false);
@@ -1349,7 +1391,10 @@ const SalesPage: React.FC = () => {
       }
       const digits = (selection.phoneRaw || '').replace(/\D/g, '').slice(0, 11);
       const nameTerm = formatNameForDisplay(selection.name).trim();
+      console.log('[CustomerHistory] Parsed values:', { digits, digitsLength: digits.length, nameTerm, nameLength: nameTerm.length });
+      
       if (digits.length < 2 && nameTerm.length < 2) {
+        console.log('[CustomerHistory] Skipping - digits and name too short');
         setCustomerHistoryOrders([]);
         setCustomerHistoryError('');
         setCustomerHistoryLoading(false);
@@ -1367,14 +1412,19 @@ const SalesPage: React.FC = () => {
         } else {
           params.set('customerName', nameTerm);
         }
-        const res = await fetch(`${API_URL}/orders?${params.toString()}`);
+        const url = `${API_URL}/orders?${params.toString()}`;
+        console.log('[CustomerHistory] Fetching:', url);
+        const res = await fetch(url);
         if (!res.ok) throw new Error('Failed to load customer history.');
         const data = await res.json();
+        console.log('[CustomerHistory] API Response:', { success: data.success, ordersCount: data.orders?.length || 0 });
         if (historyFetchIdRef.current !== fetchId) return;
         const orders = Array.isArray(data.orders) ? data.orders : [];
         orders.sort((a: any, b: any) => getOrderTimestamp(b) - getOrderTimestamp(a));
+        console.log('[CustomerHistory] Setting customerHistoryOrders:', orders.length, 'orders');
         setCustomerHistoryOrders(orders);
       } catch (error: any) {
+        console.error('[CustomerHistory] Error:', error);
         if (historyFetchIdRef.current !== fetchId) return;
         setCustomerHistoryError(error?.message || 'Failed to load customer history.');
         setCustomerHistoryOrders([]);
@@ -1578,9 +1628,8 @@ const SalesPage: React.FC = () => {
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
         
-        // 🔔 새 온라인 주문 알림음 재생
-        playOnlineOrderSound();
-        console.log('🔔 새 온라인 주문 알림:', newOrder.id);
+        // 🔔 알림음은 OnlineOrderPanel의 SSE에서 재생됨 (중복 방지)
+        console.log('🔔 새 온라인 주문 감지:', newOrder.id);
         
         if (prepTimeSettings.thezoneorder.mode === 'auto') {
           // Auto 모드: 자동 수락 (모달 없음)
@@ -2619,51 +2668,27 @@ const SalesPage: React.FC = () => {
       }
       if (mode === 'phone') {
         const digits = getTogoPhoneDigits(value);
-        // 1자리부터 검색 시작 (기존 2자리 제한 해제)
+        // 1자리부터 검색 시작
         if (digits.length < 1) {
-          customerSuggestionFetchIdRef.current += 1;
-          clearCustomerSuggestions();
+          setCustomerSuggestions([]);
+          setCustomerSuggestionSource(null);
           setSelectedCustomerHistory(null);
           resetCustomerHistoryView();
           return;
         }
+        
+        // 로컬 검색 (togoOrders에서) - 동기적으로 처리
         const localMatches = buildCustomerSuggestionOrders((order) => {
-          // 다양한 필드명 지원 (customer_phone, customerPhone, phoneRaw, phone)
           const rawPhone = order.customer_phone || order.customerPhone || order.phoneRaw || order.phone || '';
           const orderDigits = normalizePhoneDigits(rawPhone);
-          // 입력한 번호가 전화번호 어디에든 포함되면 매칭 (시작, 중간, 끝 모두)
-          return orderDigits.includes(digits);
+          return orderDigits.startsWith(digits);
         });
+        
+        // 결과 즉시 표시
         setCustomerSuggestions(localMatches);
-        setCustomerSuggestionSource(localMatches.length ? 'phone' : null);
+        setCustomerSuggestionSource(localMatches.length > 0 ? 'phone' : null);
         setSelectedCustomerHistory(null);
         resetCustomerHistoryView();
-        const fetchId = ++customerSuggestionFetchIdRef.current;
-        (async () => {
-          try {
-            const params = new URLSearchParams();
-            params.set('customerPhone', digits);
-            params.set('limit', '50');
-            const res = await fetch(`${API_URL}/orders?${params.toString()}`);
-            if (!res.ok) throw new Error('Failed to load customer suggestions.');
-            const data = await res.json();
-            if (customerSuggestionFetchIdRef.current !== fetchId) return;
-            // 원격 결과도 입력한 번호가 포함된 것만 필터링
-            const remoteOrders = Array.isArray(data.orders) ? data.orders : [];
-            const filteredRemote = remoteOrders.filter((order: any) => {
-              const rawPhone = order.customer_phone || order.customerPhone || order.phoneRaw || order.phone || '';
-              const orderDigits = normalizePhoneDigits(rawPhone);
-              return orderDigits.includes(digits);
-            });
-            const remote = buildRemoteSuggestions(filteredRemote);
-            const merged = mergeSuggestionLists(localMatches, remote);
-            setCustomerSuggestions(merged);
-            setCustomerSuggestionSource(merged.length ? 'phone' : null);
-          } catch (error) {
-            if (customerSuggestionFetchIdRef.current !== fetchId) return;
-            console.warn('Failed to load customer suggestions:', error);
-          }
-        })();
         return;
       }
       const formattedName = formatNameForDisplay(value);
@@ -2715,12 +2740,13 @@ const SalesPage: React.FC = () => {
     }
   };
   const scheduleSuggestionHide = () => {
-    if (suggestionHideTimeoutRef.current) {
-      clearTimeout(suggestionHideTimeoutRef.current);
-    }
-    suggestionHideTimeoutRef.current = setTimeout(() => {
-      clearCustomerSuggestions();
-    }, 120);
+    // 드롭다운 숨기기 비활성화 - 사용자가 선택하거나 모달 닫을 때만 숨김
+    // if (suggestionHideTimeoutRef.current) {
+    //   clearTimeout(suggestionHideTimeoutRef.current);
+    // }
+    // suggestionHideTimeoutRef.current = setTimeout(() => {
+    //   clearCustomerSuggestions();
+    // }, 120);
   };
   const handleCustomerSuggestionSelect = (suggestion: CustomerSuggestion) => {
     if (suggestionHideTimeoutRef.current) {
@@ -2741,10 +2767,18 @@ const SalesPage: React.FC = () => {
     setCustomerSuggestions([]);
   };
   // placeholder to maintain ordering
+  // 전화번호 입력 시 무조건 일치하는 고객 표시
   const renderCustomerSuggestionList = (source: 'phone' | 'name') => {
-    if (customerSuggestionSource !== source || customerSuggestions.length === 0) return null;
+    // 간단하게: 결과가 있으면 무조건 표시
+    if (customerSuggestions.length === 0) return null;
+    if (source === 'name' && customerSuggestionSource === 'phone') return null;
+    if (source === 'phone' && customerSuggestionSource === 'name') return null;
+    
     return (
-      <div className="absolute top-full left-0 right-0 mt-1 rounded-xl border border-slate-200 bg-white shadow-2xl z-50 max-h-60 overflow-y-auto">
+      <div 
+        className="absolute left-0 right-0 mt-1 rounded-xl border border-slate-200 bg-white shadow-2xl max-h-60 overflow-y-auto"
+        style={{ zIndex: 99999, top: '100%' }}
+      >
         {customerSuggestions.map((suggestion) => (
           <button
             type="button"
@@ -2873,7 +2907,76 @@ const SalesPage: React.FC = () => {
         body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error('Failed to process reorder.');
-      await response.json();
+      const orderResult = await response.json();
+      
+      // Kitchen Ticket 출력 (Ticket for Take-out 레이아웃 사용)
+      try {
+        const orderTypeForPrint = orderTypeRaw === 'DELIVERY' ? 'DELIVERY' : 'TOGO';
+        // 실제 주문 번호 사용 (#1043 형식)
+        const actualOrderNumber = orderResult.orderId || orderResult.id || newOrderNumber;
+        const printPayload = {
+          orderInfo: {
+            orderId: actualOrderNumber,
+            orderNumber: `#${actualOrderNumber}`,
+            orderType: orderTypeForPrint,
+            channel: orderTypeForPrint,
+            orderSource: orderTypeForPrint,
+            readyTime: payload.readyTime,
+            pickupTime: payload.readyTime,
+            customerName: payload.customerName,
+            customerPhone: payload.customerPhone,
+          },
+          items: itemsPayload.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            quantity: item.quantity,
+            modifiers: item.modifiers,
+            memo: item.memo,
+          })),
+        };
+        
+        console.log('🖨️ [Reorder] Printing Kitchen Ticket:', printPayload);
+        await fetch(`${API_URL}/printers/print-order`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(printPayload),
+        });
+        
+        // Bill 출력
+        const subtotal = itemsPayload.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+        const billData = {
+          storeName: '',
+          orderNumber: `#${actualOrderNumber}`,
+          orderType: orderTypeForPrint,
+          channel: orderTypeForPrint,
+          customerName: payload.customerName || '',
+          customerPhone: payload.customerPhone || '',
+          pickupTime: payload.readyTime || '',
+          items: itemsPayload.map((item: any) => ({
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            modifiers: item.modifiers || [],
+            memo: item.memo || null,
+          })),
+          guestSections: [],
+          subtotal: subtotal,
+          taxLines: [],
+          total: subtotal,
+          adjustments: [],
+          footer: {},
+        };
+        
+        console.log('🧾 [Reorder] Printing Bill:', billData);
+        await fetch(`${API_URL}/printers/print-bill`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ billData, copies: 1 }),
+        });
+      } catch (printError) {
+        console.warn('Kitchen Ticket/Bill print failed (ignored):', printError);
+      }
+      
       await loadTogoOrders();
       resetTogoModalAfterAction();
     } catch (error: any) {
@@ -5843,11 +5946,11 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] gap-4 mt-2 flex-1 min-h-0 overflow-hidden">
-            <div className="space-y-3 overflow-hidden">
-              <div className="grid gap-1.5">
-                <div className="flex flex-col md:flex-row gap-2">
-                  <div className="relative md:w-[34%] md:flex-none" onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] gap-4 mt-2 flex-1 min-h-0" style={{ overflow: 'visible' }}>
+            <div className="space-y-3" style={{ overflow: 'visible' }}>
+              <div className="grid gap-1.5" style={{ overflow: 'visible' }}>
+                <div className="flex flex-col md:flex-row gap-2" style={{ overflow: 'visible' }}>
+                  <div className="relative md:w-[34%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
                     <input
                       type="tel"
                       value={customerPhone}
@@ -5859,10 +5962,10 @@ const SalesPage: React.FC = () => {
                     />
                     {renderCustomerSuggestionList('phone')}
                   </div>
-                  <div className="relative md:w-[31%] md:flex-none" onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
-              <input
-                type="text"
-                value={customerName}
+                  <div className="relative md:w-[31%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
+                    <input
+                      type="text"
+                      value={customerName}
                       onChange={(e) => handleNameInputChange(e.target.value)}
                       onFocus={() => setTogoKeyboardTarget('name')}
                       ref={nameInputRef}
@@ -6437,18 +6540,12 @@ const SalesPage: React.FC = () => {
           style={ {
             width: `${frameWidthPx}px`,
             height: `${frameHeightPx}px`,
-            transform: 'scale(1)',
+            transform: `scale(${scaleFactor})`,
             transformOrigin: 'top left'
           }}
           className="bg-gray-100 relative flex flex-col"
           id="pos-canvas-anchor"
         >
-          {/* Frame outline (neon green) */}
-          <div className="pointer-events-none absolute inset-0" style={{ border: '4px solid #39FF14', boxShadow: '0 0 0 2px rgba(57,255,20,0.6) inset, 0 0 10px rgba(57,255,20,0.7)', borderRadius: 8 }} />
-          {/* Frame size label */}
-          <div className="pointer-events-none absolute -bottom-3 left-1/2 -translate-x-1/2 text-black text-[10px] px-2 py-0.5 rounded" style={{ backgroundColor: '#39FF14' }}>
-            {frameWidthPx} × {frameHeightPx}px
-          </div>
           {/* 1. 상단 바 (고정 높이) */}
           <div className="h-14 bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg grid grid-cols-3 items-center px-4">
             <div className="flex space-x-2 h-3/4 items-center">
