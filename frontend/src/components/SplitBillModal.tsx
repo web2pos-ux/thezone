@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { OrderItem } from '../pages/order/orderTypes';
 import { DndContext, PointerSensor, useSensor, useSensors, DragEndEvent, useDraggable, useDroppable, DragOverlay, defaultDropAnimationSideEffects, useDndContext } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
@@ -634,6 +635,10 @@ const payLayout = useMemo(() => {
 		// Right guest drop
 		if (overId.startsWith('guest-')) {
 			const targetGuest = Number(overId.replace('guest-', ''));
+			// 결제된 게스트로의 이동 방지
+			if (guestStatusMap && guestStatusMap[targetGuest] === 'PAID') {
+				return;
+			}
 			const m = String(active.id).match(/__rowIndex_(\d+)$/);
 			if (!m) return;
 			const rowIndex = Number(m[1]);
@@ -655,11 +660,12 @@ const payLayout = useMemo(() => {
 		}
 	};
 
-	return (
-		<div className={`fixed inset-0 z-[60] ${isOpen ? '' : 'hidden'}`} role="dialog" aria-modal="true">
+	// Portal로 document.body에 직접 렌더링하여 스케일링 영향 방지
+	const modalContent = (
+		<div className={`fixed inset-0 z-[9999] ${isOpen ? '' : 'hidden'}`} role="dialog" aria-modal="true" style={{ transform: 'none' }}>
 			<div className={`absolute inset-0 bg-black/60 flex items-center justify-center`} />
 			<div className="relative w-full h-full flex items-center justify-center p-3">
-				<div className="relative bg-white rounded-2xl shadow-2xl w-[92%] md:w-[86%] lg:w-[80%] xl:w-[60%] h-[84vh] overflow-hidden" style={{ width: `${Math.floor(Math.max(640, Math.min((modalWidth || 1024), (typeof window !== 'undefined' ? (window.innerWidth - 24) : 1280))) * 0.97)}px`, height: `${Math.floor(Math.max(480, Math.min((modalHeight || 720), (typeof window !== 'undefined' ? (window.innerHeight - 24) : 800))) * 0.97)}px`, marginTop: '-115px' }}>
+				<div className="relative bg-white rounded-2xl shadow-2xl overflow-hidden" style={{ width: `${Math.floor(Math.max(640, Math.min((modalWidth || 1024), (typeof window !== 'undefined' ? window.innerWidth * 0.92 : 1280))))}px`, height: `${Math.floor(Math.max(480, Math.min((modalHeight || 720), (typeof window !== 'undefined' ? window.innerHeight * 0.88 : 800))))}px` }}>
 					{/* Close button inside modal (on white background) */}
 					<button
 						onClick={onClose}
@@ -777,7 +783,7 @@ const payLayout = useMemo(() => {
 											key={`cell-${cellKey}-${slotIndex}`}
 											guest={Number(cell)}
 											className={`relative border rounded-lg ${rowBg} min-h-[114px] flex flex-col ${
-												isPaid ? 'opacity-60 pointer-events-none' : 'transition'
+												isPaid ? 'opacity-60' : 'transition'
 											} ${isMoveMode && moveSelectedRowIndex !== null && !isPaid ? 'cursor-pointer hover:shadow-lg' : ''}`}
 											onClick={(e) => {
 												const target = e.target as HTMLElement;
@@ -809,12 +815,22 @@ const payLayout = useMemo(() => {
 											<div className="flex-1 p-1.5 pr-1 space-y-0 overflow-y-auto overscroll-contain max-h-[300px] -translate-y-[5px]">
 												{(() => {
 													// Group items by base id for this guest to merge whole and split parts
-													const byKey: Record<string, { name: string; representRowIndex: number; wholeQty: number; splitNum: number; splitDen: number | undefined; amount: number; splitOrderMin?: number; hasSplit?: boolean }>= {};
+													const byKey: Record<string, { name: string; representRowIndex: number; wholeQty: number; splitNum: number; splitDen: number | undefined; amount: number; splitOrderMin?: number; hasSplit?: boolean; modifiers?: any[]; memo?: string; discount?: any }>= {};
 													(list || []).forEach(({ rowIndex, item }) => {
 														const key = getBaseId(item);
-														const entry = byKey[key] || { name: item.name, representRowIndex: rowIndex, wholeQty: 0, splitNum: 0, splitDen: undefined, amount: 0 } as any;
+														const entry = byKey[key] || { name: item.name, representRowIndex: rowIndex, wholeQty: 0, splitNum: 0, splitDen: undefined, amount: 0, modifiers: [], memo: '', discount: null } as any;
 														// Prefer non-split row as representative
 														if (!entry.splitDen && !(item as any).splitDenominator) { entry.representRowIndex = rowIndex; }
+														// 모디파이어, 메모, 디스카운트 저장
+														if (item.modifiers && item.modifiers.length > 0 && (!entry.modifiers || entry.modifiers.length === 0)) {
+															entry.modifiers = item.modifiers;
+														}
+														if (item.memo && !entry.memo) {
+															entry.memo = typeof item.memo === 'string' ? item.memo : (item.memo as any)?.text || '';
+														}
+														if ((item as any).discount && !entry.discount) {
+															entry.discount = (item as any).discount;
+														}
 																											if ((item as any).splitDenominator) {
 														entry.splitDen = entry.splitDen || (item as any).splitDenominator;
 														entry.splitNum += (item.quantity || 1);
@@ -849,23 +865,49 @@ const payLayout = useMemo(() => {
 														return (<div className="text-xs text-gray-400 text-center">No items</div>);
 													}
 													return grouped.map((g, idx2) => (
-														<DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-0 ${isShareSelectedMode && shareSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareActionActive) { return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isShareSelectedMode) { setShareSelectedRowIndex(g.representRowIndex); toggleShareTargetGuest(Number(cell)); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
+														<DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-1 mb-1 ${isShareSelectedMode && shareSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareActionActive) { return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isShareSelectedMode) { setShareSelectedRowIndex(g.representRowIndex); toggleShareTargetGuest(Number(cell)); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
 															<div className="flex flex-col w-full">
-																<div className="text-base text-gray-800 flex items-center gap-2 break-words">
+																<div className="text-sm text-gray-800 flex items-center gap-2 break-words">
 																	<span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} font-medium ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{g.name}</span>
-																	
 																</div>
-																<div className="mt-0 flex items-center justify-start gap-1.5 -translate-y-[3px]">
+																{/* 모디파이어 표시 */}
+																{Array.isArray(g.modifiers) && g.modifiers.length > 0 && (
+																	<div className="text-xs text-gray-500 pl-2 -mt-0.5 flex flex-wrap">
+																		{g.modifiers.map((mod: any, mi: number) => {
+																			const modName = mod?.name || mod?.label || mod?.modifierName || (typeof mod === 'string' ? mod : '');
+																			const modPrice = Number(mod?.price || mod?.totalModifierPrice || 0);
+																			if (!modName) return null;
+																			return (
+																				<span key={mi} className="mr-1 whitespace-nowrap">
+																					+ {modName}{modPrice > 0 ? ` ($${modPrice.toFixed(2)})` : ''}
+																				</span>
+																			);
+																		})}
+																	</div>
+																)}
+																{/* 메모 표시 */}
+																{g.memo && String(g.memo).trim() && (
+																	<div className="text-xs text-orange-600 pl-2 italic -mt-0.5">📝 {String(g.memo)}</div>
+																)}
+																{/* 디스카운트 표시 */}
+																{g.discount && (Number(g.discount.value) > 0 || Number(g.discount.percentage) > 0) && (
+																	<div className="text-xs text-red-600 pl-2 -mt-0.5">
+																		🏷️ -{g.discount.mode === 'percent' || g.discount.percentage > 0 
+																			? `${g.discount.value || g.discount.percentage}%` 
+																			: `$${Number(g.discount.value || 0).toFixed(2)}`}
+																	</div>
+																)}
+																<div className="mt-0 flex items-center justify-start gap-1.5">
 																	{(() => {
 																		// 규칙 1-3: 쉐어된 아이템은 항상 1/N 형식으로 표시 (N = splitDenominator)
 																		if (g.splitDen) {
-																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
+																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
 																	}
-																	return <span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} text-xs font-normal text-gray-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
+																	return <span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} text-xs font-normal text-gray-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
 																})()}
 																{(() => {
 																	const isShared = !!g.splitDen || !!g.hasSplit;
-																	return <span className={`${isShared ? 'text-blue-800' : 'text-gray-800'} ${showShareBlinkOn && isShared ? 'bg-yellow-200' : ''} text-xs font-normal -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'underline decoration-blue-400' : ''}`}>${formatMoney(g.amount)}</span>;
+																	return <span className={`${isShared ? 'text-blue-800' : 'text-gray-800'} ${showShareBlinkOn && isShared ? 'bg-yellow-200' : ''} text-xs font-normal inline-block ${preselectedRowIndex===g.representRowIndex ? 'underline decoration-blue-400' : ''}`}>${formatMoney(g.amount)}</span>;
 																})()}
 															</div>
 														</div>
@@ -937,6 +979,12 @@ const payLayout = useMemo(() => {
 			</div>
 		</div>
 	);
+
+	// Portal로 document.body에 렌더링하여 부모 스케일링 영향 방지
+	if (typeof document !== 'undefined') {
+		return createPortal(modalContent, document.body);
+	}
+	return modalContent;
 };
 
 export default SplitBillModal; 

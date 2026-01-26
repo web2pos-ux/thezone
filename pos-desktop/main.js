@@ -6,7 +6,7 @@
  * 하나의 Windows 데스크톱 앱으로 실행합니다.
  */
 
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
@@ -35,7 +35,7 @@ function getAppPaths() {
     const resourcesPath = process.resourcesPath;
     return {
       backend: path.join(resourcesPath, 'backend'),
-      frontend: path.join(resourcesPath, 'app.asar', 'frontend-build'),
+      frontend: path.join(resourcesPath, 'frontend-build'),
       db: path.join(resourcesPath, 'db'),
     };
   }
@@ -250,9 +250,8 @@ function createMainWindow() {
     minWidth: 1024,
     minHeight: 768,
     webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: true,
+      contextIsolation: false,
     },
     show: false,
     autoHideMenuBar: true,
@@ -395,6 +394,28 @@ function cleanupBackend() {
 // ==================== 앱 생명주기 ====================
 
 app.whenReady().then(startApp);
+
+// IPC 이벤트 핸들러 - 프론트엔드에서 호출 (preload.js와 일치)
+ipcMain.on('window-minimize', () => {
+  if (mainWindow) {
+    mainWindow.minimize();
+  }
+});
+
+ipcMain.on('window-maximize', () => {
+  if (mainWindow) {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  }
+});
+
+ipcMain.on('app-quit', () => {
+  cleanupBackend();
+  app.quit();
+});
 
 app.on('window-all-closed', () => {
   cleanupBackend();

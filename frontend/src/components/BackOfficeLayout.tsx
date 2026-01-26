@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import ReportIcon from './icons/ReportIcon';
 import UserPlusIcon from './icons/UserPlusIcon';
 import TableIcon from './icons/TableIcon';
@@ -53,12 +53,14 @@ const reportSubMenus = [
 ];
 
 const BackOfficeLayout = () => {
+  const navigate = useNavigate();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [employeeMenuExpanded, setEmployeeMenuExpanded] = useState(false);
   const [hardwareMenuExpanded, setHardwareMenuExpanded] = useState(false);
   const [reportMenuExpanded, setReportMenuExpanded] = useState(false);
   const [tableMenuExpanded, setTableMenuExpanded] = useState(false);
   const [orderMenuExpanded, setOrderMenuExpanded] = useState(false);
+  const [showExitModal, setShowExitModal] = useState(false);
 
   const toggleSidebar = () => {
     setSidebarCollapsed(!sidebarCollapsed);
@@ -382,13 +384,25 @@ const BackOfficeLayout = () => {
 
           </ul>
           
+          {/* Exit Button */}
+          <div className="px-4 py-2 border-t border-gray-700">
+            <button
+              onClick={() => setShowExitModal(true)}
+              className={`w-full py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition-colors flex items-center justify-center gap-2 ${sidebarCollapsed ? 'px-2' : 'px-4'}`}
+              title="Exit Menu"
+            >
+              <span className="text-lg">🚪</span>
+              {!sidebarCollapsed && <span>Exit</span>}
+            </button>
+          </div>
+          
           {/* Toggle Button */}
           <div className="px-4 py-2 border-t border-gray-700 flex justify-center">
             <button
               onClick={toggleSidebar}
               className={`rounded-lg border-2 border-white hover:bg-gray-700 transition-colors font-bold flex items-center justify-center ${sidebarCollapsed ? 'w-14 h-14 text-xl' : 'w-12 h-12 text-3xl'}`}
               style={{ aspectRatio: '1 / 1' }}
-              title={sidebarCollapsed ? '사이드바 펼치기' : '사이드바 접기'}
+              title={sidebarCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
             >
               <span className="flex items-center justify-center w-full h-full">
                 {sidebarCollapsed ? '›' : '‹'}
@@ -401,6 +415,85 @@ const BackOfficeLayout = () => {
         {/* The Outlet will render the matched child route component */}
         <Outlet />
       </main>
+      
+      {/* EXIT 모달 */}
+      {showExitModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80]">
+          <div className="bg-white rounded-2xl shadow-2xl w-[350px] overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-gray-700 to-gray-800 text-white px-6 py-4 text-center">
+              <div className="text-2xl font-bold">Exit Menu</div>
+              <div className="text-gray-300 mt-1 text-sm">Select an option</div>
+            </div>
+            
+            {/* Buttons */}
+            <div className="p-6 space-y-3">
+              {/* Go to Sales 버튼 */}
+              <button
+                onClick={() => {
+                  setShowExitModal(false);
+                  navigate('/sales');
+                }}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">🏪</span>
+                Go to Sales
+              </button>
+              
+              {/* Go to Windows 버튼 */}
+              <button
+                onClick={() => {
+                  setShowExitModal(false);
+                  try {
+                    // @ts-ignore
+                    const electron = window.require('electron');
+                    electron.ipcRenderer.send('window-minimize');
+                    console.log('Minimize command sent');
+                  } catch (e) {
+                    console.error('Minimize failed:', e);
+                    alert('Electron 환경이 아닙니다: ' + e);
+                  }
+                }}
+                className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">🪟</span>
+                Go to Windows
+              </button>
+              
+              {/* Power Off 버튼 */}
+              <button
+                onClick={() => {
+                  if (window.confirm('Are you sure you want to quit the app?')) {
+                    setShowExitModal(false);
+                    try {
+                      // @ts-ignore
+                      const electron = window.require('electron');
+                      electron.ipcRenderer.send('app-quit');
+                    } catch (e) {
+                      console.error('Quit failed:', e);
+                      window.close();
+                    }
+                  }
+                }}
+                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">⏻</span>
+                Power Off
+              </button>
+            </div>
+            
+            {/* Cancel */}
+            <div className="px-6 pb-6">
+              <button
+                onClick={() => setShowExitModal(false)}
+                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-medium rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

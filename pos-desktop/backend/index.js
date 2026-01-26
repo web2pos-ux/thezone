@@ -15,9 +15,11 @@ const { generateMenuId } = require('./utils/idGenerator');
 // --- App & DB Initialization ---
 const app = express();
 const PORT = process.env.PORT || 3177;
-// DB 파일명 원복 (기존 데이터 사용)
-const dbPath = path.resolve(__dirname, '..', 'db', 'web2pos.db');
+
+// DB 경로: 환경 변수 우선, 없으면 기본 경로 사용
+const dbPath = process.env.DB_PATH || path.resolve(__dirname, '..', 'db', 'web2pos.db');
 console.log(`[Backend] Using Database: ${dbPath}`);
+console.log(`[Backend] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -368,6 +370,7 @@ const allowedOrigins = [
   'http://localhost:3088',  // POS frontend
   'http://localhost:3000',  // React dev server
   'http://localhost:5173',  // Vite dev server
+  'http://localhost:3177',  // Electron app (production)
   /\.thezoneorder\.com$/,   // Thezoneorder production
   /\.firebaseapp\.com$/,    // Firebase hosting
   /\.web\.app$/             // Firebase hosting (alt domain)

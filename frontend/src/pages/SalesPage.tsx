@@ -295,6 +295,9 @@ const SalesPage: React.FC = () => {
   // UNPAID 주문 Pickup 시도 시 확인 모달
   const [showUnpaidPickupModal, setShowUnpaidPickupModal] = useState<boolean>(false);
   const [unpaidPickupOrder, setUnpaidPickupOrder] = useState<any | null>(null);
+  
+  // EXIT 모달 상태
+  const [showExitModal, setShowExitModal] = useState<boolean>(false);
 
   // Clock In/Out modal state
   const [showClockInOutMenu, setShowClockInOutMenu] = useState<boolean>(false);
@@ -3704,7 +3707,8 @@ const SalesPage: React.FC = () => {
             tableId: element.id,
             tableLabel: element.text,
             floor: selectedFloor,
-            loadExisting: Boolean((element as any).current_order_id)
+            loadExisting: Boolean((element as any).current_order_id),
+            orderId: (element as any).current_order_id || null  // 게스트 결제 상태 복원을 위해 orderId 전달
           }
         });
       } else if (currentStatus === 'Preparing') {
@@ -3744,7 +3748,8 @@ const SalesPage: React.FC = () => {
             tableId: element.id,
             tableLabel: element.text,
             floor: selectedFloor,
-            loadExisting: Boolean((element as any).current_order_id)
+            loadExisting: Boolean((element as any).current_order_id),
+            orderId: (element as any).current_order_id || null  // 게스트 결제 상태 복원을 위해 orderId 전달
           }
         });
       } else {
@@ -3771,7 +3776,8 @@ const SalesPage: React.FC = () => {
             tableId: element.id,
             tableLabel: element.text,
             floor: selectedFloor,
-            loadExisting: hasOrder
+            loadExisting: hasOrder,
+            orderId: effectiveOrderId || null  // 게스트 결제 상태 복원을 위해 orderId 전달
           }
         });
       }
@@ -6549,44 +6555,45 @@ const SalesPage: React.FC = () => {
           {/* 1. 상단 바 (고정 높이) */}
           <div className="h-14 bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg grid grid-cols-3 items-center px-4">
             <div className="flex space-x-2 h-3/4 items-center">
-              {/* Floor 탭들 */}
+              {/* Floor 탭 - 1F만 활성화 */}
               {floorList.map((floor) => (
                 <div key={floor} className="relative">
                   <button
                     className={`w-auto h-10 px-4 py-2 rounded-lg text-sm font-semibold ${
-                      selectedFloor === floor
-                        ? 'bg-indigo-500 text-white'
-                        : 'bg-white text-gray-700 hover:bg-indigo-50 hover:text-indigo-600 border border-gray-200'
+                      floor === '1F' 
+                        ? (selectedFloor === floor
+                            ? 'bg-indigo-500 text-white'
+                            : 'bg-white text-gray-700 hover:bg-indigo-50 hover:text-indigo-600 border border-gray-200')
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed border border-gray-200'
                     }`}
-                    onClick={() => handleFloorChange(floor)}
-                    title={`Floor ${floor}로 전환`}
+                    onClick={() => floor === '1F' && handleFloorChange(floor)}
+                    disabled={floor !== '1F'}
+                    title={floor === '1F' ? `Floor ${floor}로 전환` : '비활성화됨'}
                   >
                     {floor}
                   </button>
                 </div>
               ))}
             </div>
-            {/* 주문채널 탭 (중앙) */}
+            {/* 주문채널 탭 (중앙) - Delivery만 표시 */}
             <div className="flex justify-center">
-              {[
-                { key: 'table-map', label: 'Dine-in' },
-                { key: 'togo', label: 'Togo' },
-                { key: 'delivery', label: 'Delivery' },
-                { key: 'online', label: 'Online' }
-              ].map((ch) => (
-                <button
-                  key={ch.key}
-                  className={`h-9 px-3 mx-1 rounded-md text-sm font-medium border transition-colors ${
-                    selectedChannelTab === ch.key
-                      ? 'bg-purple-600 border-purple-600 text-white'
-                      : 'bg-white border-gray-300 text-gray-700 hover:bg-purple-50'
-                  }`}
-                  onClick={() => setSelectedChannelTab(ch.key)}
-                  title={ch.label}
-                >
-                  {ch.label}
-                </button>
-              ))}
+              <button
+                className="h-9 px-3 mx-1 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
+                onClick={() => setSelectedChannelTab('delivery')}
+                title="Delivery"
+              >
+                Delivery
+              </button>
+            </div>
+            {/* EXIT 버튼 (오른쪽) */}
+            <div className="flex justify-end">
+              <button
+                className="h-10 px-5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 border-2 border-red-700 shadow-md transition-all"
+                onClick={() => setShowExitModal(true)}
+                title="Exit Menu"
+              >
+                EXIT
+              </button>
             </div>
           </div>
 
@@ -9289,6 +9296,85 @@ const SalesPage: React.FC = () => {
                   Back to List
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXIT 모달 */}
+      {showExitModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80]">
+          <div className="bg-white rounded-2xl shadow-2xl w-[350px] overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-gray-700 to-gray-800 text-white px-6 py-4 text-center">
+              <div className="text-2xl font-bold">Exit Menu</div>
+              <div className="text-gray-300 mt-1 text-sm">Select an option</div>
+            </div>
+            
+            {/* Buttons */}
+            <div className="p-6 space-y-3">
+              {/* Back Office 버튼 */}
+              <button
+                onClick={() => {
+                  setShowExitModal(false);
+                  navigate('/backoffice');
+                }}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">🏢</span>
+                Back Office
+              </button>
+              
+              {/* Go to Windows 버튼 */}
+              <button
+                onClick={() => {
+                  setShowExitModal(false);
+                  try {
+                    // @ts-ignore
+                    const electron = window.require('electron');
+                    electron.ipcRenderer.send('window-minimize');
+                    console.log('Minimize command sent');
+                  } catch (e) {
+                    console.error('Minimize failed:', e);
+                    alert('Electron 환경이 아닙니다: ' + e);
+                  }
+                }}
+                className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">🪟</span>
+                Go to Windows
+              </button>
+              
+              {/* Power Off 버튼 */}
+              <button
+                onClick={() => {
+                  if (window.confirm('Are you sure you want to quit the app?')) {
+                    setShowExitModal(false);
+                    try {
+                      // @ts-ignore
+                      const electron = window.require('electron');
+                      electron.ipcRenderer.send('app-quit');
+                    } catch (e) {
+                      console.error('Quit failed:', e);
+                      window.close();
+                    }
+                  }
+                }}
+                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
+              >
+                <span className="text-2xl">⏻</span>
+                Power Off
+              </button>
+            </div>
+            
+            {/* Cancel */}
+            <div className="px-6 pb-6">
+              <button
+                onClick={() => setShowExitModal(false)}
+                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-medium rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

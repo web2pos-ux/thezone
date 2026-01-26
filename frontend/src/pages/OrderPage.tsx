@@ -1289,14 +1289,11 @@ const handleVoidPinClear = useCallback(() => {
       }
     } catch {}
     try {
+      // DB에서 불러온 persistedPaidGuests는 이미 결제가 완료된 것이므로 무조건 PAID로 설정
       if (Array.isArray(persistedPaidGuests) && persistedPaidGuests.length > 0) {
         persistedPaidGuests.forEach((guest) => { 
           if (guestIds.includes(guest)) {
-            // 안전장치: 실제 결제 내역이 있는 경우에만 외부 PAID 정보 인정
-            const paidAmount = Number((paymentsByGuest[String(guest)] || 0).toFixed(2));
-            if (paidAmount > 0.01) {
-              map[guest] = 'PAID';
-            }
+            map[guest] = 'PAID';
           }
         });
       }
@@ -1602,60 +1599,126 @@ const handleVoidPinClear = useCallback(() => {
         });
         setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: Number(guestPaymentMode) } ]));
         
-        // 개별 Guest 결제 시 해당 Guest의 Receipt 출력
+        // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
           const guestNum = Number(guestPaymentMode);
-          const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
-          if (guestItems.length > 0) {
-            const guestTotals = computeGuestTotals(guestNum);
-            const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
-            const guestTaxLines = guestTotals.taxLines || [];
-            const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-            const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+          const guestTotals = computeGuestTotals(guestNum);
+          const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
+          const guestTaxLines = guestTotals.taxLines || [];
+          const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+          const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+          
+          // 이전 결제 + 현재 결제 합계
+          const previousPaid = Number((paymentsByGuest[String(guestNum)] || 0).toFixed(2));
+          const currentPayment = Number((amount + tip).toFixed(2));
+          const totalPaidNow = Number((previousPaid + currentPayment).toFixed(2));
+          const outstanding = Number((guestTotal - totalPaidNow).toFixed(2));
+          
+          const EPS = 0.05; // 미세한 오차 허용
+          const isGuestFullyPaid = outstanding <= EPS;
+          
+          console.log(`🧾 Guest ${guestNum} payment check: total=${guestTotal}, paid=${totalPaidNow}, outstanding=${outstanding}, fullyPaid=${isGuestFullyPaid}`);
+          
+          // 게스트 전액 결제 완료 시에만 Receipt 출력
+          if (isGuestFullyPaid) {
+            const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
+            if (guestItems.length > 0) {
+              // 해당 게스트의 모든 결제 내역 수집
+              const guestPayments = sessionPayments
+                .filter(p => p.guestNumber === guestNum)
+                .map(p => ({ method: p.method, amount: p.amount }));
+              // 현재 결제도 추가
+              guestPayments.push({ method, amount: currentPayment });
+              
+              const guestReceiptData = {
+                header: {
+                  title: '*** RECEIPT ***',  // 명시적으로 RECEIPT 타이틀 추가
+                  orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
+                  channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+                  tableName: (location.state as any)?.tableName || resolvedTableName || '',
+                  serverName: selectedServer?.name || '',
+                  guestNumber: guestNum  // 게스트 번호 추가
+                },
+                orderInfo: {
+                  channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+                  tableName: (location.state as any)?.tableName || resolvedTableName || '',
+                  serverName: selectedServer?.name || '',
+                  guestNumber: guestNum
+                },
+                items: [],
+                guestSections: [{
+                  guestNumber: guestNum,
+                  items: guestItems.map(item => ({
+                    name: item.name,
+                    quantity: item.quantity || 1,
+                    price: item.price || 0,
+                    totalPrice: item.totalPrice || item.price || 0,
+                    modifiers: item.modifiers || [],
+                    memo: item.memo
+                  }))
+                }],
+                subtotal: guestSubtotal,
+                adjustments: [],
+                taxLines: guestTaxLines,
+                taxesTotal: guestTaxTotal,
+                total: guestTotal,
+                payments: guestPayments,  // ✅ payments를 receiptData 안에 포함!
+                change: 0,
+                footer: { message: 'Thank you for dining with us!' }
+              };
+              
+              console.log(`🧾 Printing Receipt for Guest ${guestNum} (FULLY PAID)...`);
+              console.log(`💳 Payment info:`, guestPayments);
+              await fetch(`${API_URL}/printers/print-receipt`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  receiptData: guestReceiptData,
+                  copies: 2  // 2장 출력
+                })
+              });
+              console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
+              
+              // 개별 게스트 결제 완료 시 Cash Drawer 오픈
+              try {
+                console.log(`💰 Opening cash drawer for Guest ${guestNum} payment...`);
+                await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+                console.log(`💰 Cash drawer opened successfully`);
+              } catch (drawerErr) {
+                console.warn('Cash drawer open failed (ignored):', drawerErr);
+              }
+            }
             
-            const guestReceiptData = {
-              header: {
-                orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
-                channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
-                tableName: (location.state as any)?.tableName || resolvedTableName || '',
-                serverName: selectedServer?.name || ''
-              },
-              orderInfo: {
-                channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
-                tableName: (location.state as any)?.tableName || resolvedTableName || '',
-                serverName: selectedServer?.name || ''
-              },
-              items: [],
-              guestSections: [{
-                guestNumber: guestNum,
-                items: guestItems.map(item => ({
-                  name: item.name,
-                  quantity: item.quantity || 1,
-                  price: item.price || 0,
-                  totalPrice: item.totalPrice || item.price || 0,
-                  modifiers: item.modifiers || [],
-                  memo: item.memo
-                }))
-              }],
-              subtotal: guestSubtotal,
-              adjustments: [],
-              taxLines: guestTaxLines,
-              taxesTotal: guestTaxTotal,
-              total: guestTotal,
-              footer: { message: 'Thank you for dining with us!' }
-            };
-            
-            console.log(`🧾 Printing Receipt for Guest ${guestNum}...`);
-            await fetch(`${API_URL}/printers/print-receipt`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                receiptData: guestReceiptData,
-                payments: [{ method, amount: Number((amount + tip).toFixed(2)) }],
-                change: 0
-              })
-            });
-            console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
+            // 게스트 결제 완료 시 즉시 DB에 PAID 상태 저장
+            try {
+              const currentOrderId = savedOrderIdRef.current || orderIdFromState;
+              if (currentOrderId) {
+                console.log(`💾 Saving Guest ${guestNum} PAID status to DB (orderId: ${currentOrderId})...`);
+                const saveRes = await fetch(`${API_URL}/orders/${encodeURIComponent(String(currentOrderId))}/guest-status/bulk`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ statuses: [{ guestNumber: guestNum, status: 'PAID', locked: true }] })
+                });
+                if (saveRes.ok) {
+                  // persistedPaidGuests 상태 즉시 업데이트
+                  setPersistedPaidGuests(prev => {
+                    if (prev.includes(guestNum)) return prev;
+                    const next = [...prev, guestNum].sort((a, b) => a - b);
+                    console.log(`💾 persistedPaidGuests updated:`, next);
+                    return next;
+                  });
+                  console.log(`💾 Guest ${guestNum} PAID status saved successfully`);
+                } else {
+                  console.error(`💾 Failed to save Guest ${guestNum} PAID status: ${saveRes.status}`);
+                }
+              } else {
+                console.warn(`💾 No orderId available, cannot save Guest ${guestNum} PAID status`);
+              }
+            } catch (dbErr) {
+              console.error('Failed to save guest PAID status to DB:', dbErr);
+            }
+          } else {
+            console.log(`🧾 Guest ${guestNum} not fully paid yet, skipping receipt print`);
           }
         } catch (receiptErr) {
           console.warn('Guest Receipt print failed (ignored):', receiptErr);
@@ -1866,12 +1929,18 @@ const handleVoidPinClear = useCallback(() => {
           footer: {}
         };
 
-        await fetch(`${API_URL}/printers/print-receipt`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ receiptData })
-        });
-        console.log('Receipt printed successfully');
+        // 스플릿빌(guestCount > 1)에서는 개별 게스트 결제 완료 시 이미 Receipt가 출력되었으므로 스킵
+        const isSplitBill = guestCount > 1;
+        if (!isSplitBill) {
+          await fetch(`${API_URL}/printers/print-receipt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ receiptData, copies: 2 })  // 전체 결제 완료 시 2장 출력
+          });
+          console.log('Receipt printed successfully');
+        } else {
+          console.log('Split bill - skipping final receipt (individual guest receipts already printed)');
+        }
         } catch (printErr) {
           console.warn('Receipt print failed (ignored):', printErr);
         }
@@ -3756,14 +3825,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   };
   const DroppableGuestLabel: React.FC<{ guest: number; children: React.ReactNode }> = ({ guest, children }) => {
     const { setNodeRef, isOver } = useDroppable({ id: `guest-${guest}`, data: { guest } });
+    const isLocked = isGuestLocked(guest);
+    const isPaid = guestStatusMap && guestStatusMap[guest] === 'PAID';
     return (
       <div
         ref={setNodeRef}
-        className={`w-full flex items-center justify-center min-h-[44px] py-3 my-2 ${isOver ? 'ring-2 ring-blue-400 rounded-sm bg-blue-50' : ''} ${activeGuestNumber === guest ? 'bg-yellow-100 rounded-sm border border-yellow-300' : ''} ${isGuestLocked(guest) ? 'opacity-60 cursor-not-allowed' : ''}`}
-        style={{ pointerEvents: 'auto' }}
-        onClick={() => { if (isGuestLocked(guest)) return; setActiveGuestNumber(guest); }}
+        className={`w-full flex items-center justify-center min-h-[44px] py-3 my-2 relative ${isOver && !isLocked ? 'ring-2 ring-blue-400 rounded-sm bg-blue-50' : ''} ${activeGuestNumber === guest && !isLocked ? 'bg-yellow-100 rounded-sm border border-yellow-300' : ''} ${isLocked ? 'opacity-50 cursor-not-allowed bg-green-100 border border-green-400 rounded-sm' : ''}`}
+        style={{ pointerEvents: isLocked ? 'none' : 'auto' }}
+        onClick={() => { if (isLocked) return; setActiveGuestNumber(guest); }}
       >
         {children}
+        {isPaid && (
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-green-700 bg-green-200 px-1.5 py-0.5 rounded">PAID</span>
+        )}
       </div>
     );
   };
@@ -5465,13 +5539,36 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   useEffect(() => {
     try {
       if (!showSplitBillModal) return;
-      const EPS = 0.005;
-      if (outstandingDueAll <= EPS) {
-        // Reuse the same completion routine to keep behavior consistent (status update, cleanup, navigate)
-        handleCompletePayment();
+      
+      // 아이템이 있는 게스트만 확인 (아이템 없는 게스트는 제외)
+      const guestsWithItems = (guestIds || []).filter((g: number) => {
+        const items = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === g);
+        return items.length > 0;
+      });
+      
+      if (guestsWithItems.length === 0) return;
+      
+      // 모든 게스트가 PAID 상태인지 확인 (guestStatusMap 또는 persistedPaidGuests 사용)
+      const allGuestsPaid = guestsWithItems.every((g: number) => {
+        const statusFromMap = guestStatusMap && guestStatusMap[g];
+        const isPersisted = Array.isArray(persistedPaidGuests) && persistedPaidGuests.includes(g);
+        return statusFromMap === 'PAID' || isPersisted;
+      });
+      
+      console.log(`🔍 Split Bill auto-complete check: guestsWithItems=${guestsWithItems}, allGuestsPaid=${allGuestsPaid}`);
+      
+      if (allGuestsPaid) {
+        console.log(`✅ All guests paid! Auto-completing and navigating to table map...`);
+        setShowSplitBillModal(false);
+        // 테이블맵으로 이동 (Receipt는 이미 개별 게스트 결제 시 출력됨)
+        clearServerAssignmentForContext();
+        setSelectedServer(null);
+        navigate('/sales');
       }
-    } catch {}
-  }, [showSplitBillModal, outstandingDueAll]);
+    } catch (err) {
+      console.error('Auto-complete check error:', err);
+    }
+  }, [showSplitBillModal, guestIds, orderItems, guestStatusMap, persistedPaidGuests]);
 
   // For SplitBillModal: per-guest precise grand/tax and overall totals (using computeGuestTotals)
   const splitGuestTotals = useMemo(() => {
@@ -5569,37 +5666,42 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     })();
   }, [guestStatusMap]);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const orderId = savedOrderIdRef.current || orderIdFromState || null;
-        if (!orderId) {
-          // orderId가 없으면 persistedPaidGuests를 초기화
-          setPersistedPaidGuests([]);
-          return;
-        }
-        const res = await fetch(`${API_URL}/orders/${encodeURIComponent(String(orderId))}/guest-status`);
-        if (!res.ok) {
-          setPersistedPaidGuests([]);
-          return;
-        }
-        const data = await res.json();
-        if (!data || !Array.isArray(data.statuses)) {
-          setPersistedPaidGuests([]);
-          return;
-        }
-        const paidFromDb: number[] = [];
-        (data.statuses || []).forEach((row: any) => {
-          const g = Number(row.guestNumber);
-          const st = String(row.status || 'UNPAID').toUpperCase();
-          if (st === 'PAID' || row.locked) paidFromDb.push(g);
-        });
-        setPersistedPaidGuests(Array.from(new Set(paidFromDb)).sort((a,b)=>a-b));
-      } catch {
+  // 페이지 로드 시 DB에서 결제된 게스트 상태 불러오기
+  const loadPersistedPaidGuests = React.useCallback(async () => {
+    try {
+      const orderId = savedOrderIdRef.current || orderIdFromState || null;
+      if (!orderId) {
         setPersistedPaidGuests([]);
+        return;
       }
-    })();
+      console.log(`📥 Loading guest payment status from DB for order ${orderId}...`);
+      const res = await fetch(`${API_URL}/orders/${encodeURIComponent(String(orderId))}/guest-status`);
+      if (!res.ok) {
+        setPersistedPaidGuests([]);
+        return;
+      }
+      const data = await res.json();
+      if (!data || !Array.isArray(data.statuses)) {
+        setPersistedPaidGuests([]);
+        return;
+      }
+      const paidFromDb: number[] = [];
+      (data.statuses || []).forEach((row: any) => {
+        const g = Number(row.guestNumber);
+        const st = String(row.status || 'UNPAID').toUpperCase();
+        if (st === 'PAID' || row.locked) paidFromDb.push(g);
+      });
+      const sorted = Array.from(new Set(paidFromDb)).sort((a,b)=>a-b);
+      console.log(`📥 Loaded paid guests from DB:`, sorted);
+      setPersistedPaidGuests(sorted);
+    } catch {
+      setPersistedPaidGuests([]);
+    }
   }, [orderIdFromState]);
+
+  React.useEffect(() => {
+    loadPersistedPaidGuests();
+  }, [loadPersistedPaidGuests]);
 
   // Reorder guest blocks on the left list: UNPAID/PARTIAL first, PAID last
   React.useEffect(() => {
@@ -5925,7 +6027,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           const guests: number[] = Array.from(guestSet).sort((a: number, b: number) => a - b);
           if (guests.length > 1) initializeSplitGuests(guests);
         } catch {}
-        try { savedOrderIdRef.current = Number(st.orderId); } catch {}
+        try { 
+          savedOrderIdRef.current = Number(st.orderId); 
+          // orderId가 설정된 후 결제 상태 불러오기
+          console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
+          loadPersistedPaidGuests();
+        } catch {}
       } catch (e) {
         console.warn('Failed to load existing order by orderId:', e);
       }
@@ -5935,7 +6042,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadPersistedPaidGuests]);
 
   // Persist promotion rules across refresh
   React.useEffect(() => {
@@ -6247,11 +6354,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     guestNumber,
     rowIndex,
     orderLineId,
+    showAbove = false,  // 위쪽에 표시할지 여부
   }: {
     itemId: string;
     guestNumber: number;
     rowIndex: number;
     orderLineId?: string;
+    showAbove?: boolean;
   }) => {
     const handleDiscount = () => {
       setSelectedOrderItemId(itemId);
@@ -6308,8 +6417,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     return (
       <div
-        className="relative z-50 bg-white border border-gray-300 rounded-2xl shadow-lg px-2 py-2 flex items-center justify-center gap-1 animate-fade-in w-full"
-        style={{ marginTop: '2px' }}
+        className={`${showAbove ? 'absolute left-0 right-0' : 'relative'} z-50 bg-white border border-gray-300 rounded-2xl shadow-lg px-2 py-2 flex items-center justify-center gap-1 animate-fade-in w-full`}
+        style={showAbove ? { bottom: '100%', marginBottom: '4px' } : { marginTop: '2px' }}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
@@ -7485,26 +7594,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             position: 'relative',
             transform: isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)',
             transformOrigin: 'top left',
-            boxShadow: '0 0 0 4px #39FF14, 0 0 0 2px rgba(57,255,20,0.6) inset, 0 0 12px rgba(57,255,20,0.7)',
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'
           }}
            id="pos-canvas-anchor"
          >
-          {/* Size label: show configured size for both /order and /sales/order */}
-          <div style={{ position: 'absolute', right: 8, top: 8, zIndex: 5, background: 'rgba(0,0,0,0.35)', color: '#fff', padding: '2px 6px', borderRadius: 6, fontSize: 12 }}>
-            {(() => {
-              if (isSalesOrder) {
-                const w = boScreenSize ? boScreenSize.width : 1024;
-                const h = boScreenSize ? boScreenSize.height : 768;
-                return `${w}×${h}px`;
-              }
-              const p = layoutSettings.screenResolution.split('x').map(Number);
-              const w = p[0] || 800;
-              const h = p[1] || 600;
-              return `${w}×${h}px`;
-            })()}
-          </div>
             {/* Content wrapper - 스케일링 없이 꽉 차게 */}
             <div
               style={{
@@ -7952,7 +8046,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 itemId={item.id} 
                                 guestNumber={item.guestNumber || 1} 
                                 rowIndex={index} 
-                                orderLineId={(item as any).orderLineId} 
+                                orderLineId={(item as any).orderLineId}
+                                showAbove={index >= orderItems.length - 3}  // 마지막 3개 아이템은 위쪽에 팝업 표시
                               />
                             )}
                           </div>

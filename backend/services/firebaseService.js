@@ -979,6 +979,77 @@ async function getDailyClosingHistory(restaurantId, limit = 30) {
   }
 }
 
+// 결제 데이터 Firebase 저장
+async function savePaymentToFirebase(restaurantId, paymentData) {
+  if (!restaurantId) {
+    console.warn('⚠️ savePaymentToFirebase: restaurantId is required');
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    
+    // restaurants/{restaurantId}/payments/{paymentId}
+    const paymentsRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('payments');
+
+    const dataToSave = {
+      ...paymentData,
+      syncedFromPOS: true,
+      syncedAt: new Date().toISOString()
+    };
+
+    // paymentId가 있으면 해당 문서에 저장, 없으면 자동 생성
+    if (paymentData.paymentId) {
+      await paymentsRef.doc(String(paymentData.paymentId)).set(dataToSave, { merge: true });
+    } else {
+      await paymentsRef.add(dataToSave);
+    }
+    
+    console.log(`✅ Payment saved to Firebase: ${restaurantId}/payments/${paymentData.paymentId || 'auto'}`);
+    return { success: true };
+  } catch (error) {
+    console.error('savePaymentToFirebase error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// 게스트 결제 상태 Firebase 저장
+async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status) {
+  if (!restaurantId || !orderId) {
+    console.warn('⚠️ saveGuestPaymentStatus: restaurantId and orderId are required');
+    return { success: false, error: 'Restaurant ID and Order ID are required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    
+    // restaurants/{restaurantId}/orders/{orderId}/guestPayments/{guestNumber}
+    const guestRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('orders')
+      .doc(String(orderId))
+      .collection('guestPayments')
+      .doc(String(guestNumber));
+
+    await guestRef.set({
+      guestNumber,
+      status, // 'PAID', 'PARTIAL', 'UNPAID'
+      updatedAt: new Date().toISOString(),
+      syncedFromPOS: true
+    }, { merge: true });
+    
+    console.log(`✅ Guest payment status saved to Firebase: order ${orderId}, guest ${guestNumber} = ${status}`);
+    return { success: true };
+  } catch (error) {
+    console.error('saveGuestPaymentStatus error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -1006,6 +1077,9 @@ module.exports = {
   // Daily Closing / Z-Report
   saveDailyClosing,
   getDailyClosing,
-  getDailyClosingHistory
+  getDailyClosingHistory,
+  // Payments
+  savePaymentToFirebase,
+  saveGuestPaymentStatus
 };
 

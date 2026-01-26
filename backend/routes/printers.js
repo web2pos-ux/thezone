@@ -4491,6 +4491,17 @@ module.exports = (db) => {
         // Initialize
         content += ESCPOS.INIT;
         
+        // Receipt Title (if provided)
+        if (header.title) {
+          content += ESCPOS.ALIGN_CENTER;
+          content += ESCPOS.DOUBLE_SIZE;
+          content += ESCPOS.BOLD_ON;
+          content += centerText(header.title, true) + '\n';
+          content += ESCPOS.BOLD_OFF;
+          content += ESCPOS.NORMAL_SIZE;
+          content += '\n';
+        }
+        
         // Header - Store Info - Store Name이 길면 여러 줄로 분할 (공백 또는 문자 단위)
         if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
           const style = applyFontStyle(receiptLayout.storeName);
@@ -4586,6 +4597,11 @@ module.exports = (db) => {
         if (receiptLayout.serverName?.visible !== false && (header.serverName || orderInfo.serverName)) {
           const style = applyFontStyle(receiptLayout.serverName);
           content += style.prefix + `Server: ${header.serverName || orderInfo.serverName}\n` + style.suffix;
+        }
+        
+        // Guest Number (for split bill individual guest receipt)
+        if (header.guestNumber) {
+          content += ESCPOS.BOLD_ON + `Guest #${header.guestNumber}\n` + ESCPOS.BOLD_OFF;
         }
         
         if (receiptLayout.dateTime?.visible !== false) {

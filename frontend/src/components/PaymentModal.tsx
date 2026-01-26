@@ -63,6 +63,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [forceAllMode, setForceAllMode] = useState<boolean>(false);
   const [isSplitCountMode, setIsSplitCountMode] = useState<boolean>(false);
   const [splitCountInput, setSplitCountInput] = useState<string>('');
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);  // 더블 클릭 방지용
   
   // Share Selected states
   const [isShareSelectedMode, setIsShareSelectedMode] = useState<boolean>(false);
@@ -341,11 +342,17 @@ useEffect(() => {
   const finalizeAndComplete = async () => {
     // canClickOk 조건 확인: (Next 단계) 또는 (금액>0 && 결제도구 선택됨) 또는 (잔액≈0)
     if (!canClickOk) return;
+    // 더블 클릭 방지
+    if (isProcessing) {
+      console.log('⚠️ Payment already processing, ignoring duplicate click');
+      return;
+    }
     try {
       // OK 시점 확정: 가장 마지막 결제도구(method)와 현재 입력 금액(amount) 조합만 확정 처리
       const rawAmt = parsedAmount;
       if (rawAmt > 0) {
         if (!method) { showAlert('Please select a payment method.'); return; }
+        setIsProcessing(true);  // 결제 처리 시작
         const effectiveMethod = method;
         const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
         // scopeDueNow 계산: fixedGrand에서 이미 결제한 금액을 빼서 남은 금액 계산 (Total은 고정)
@@ -372,12 +379,14 @@ useEffect(() => {
         setAmount('0.00');
         setTip('0');
         setMethod('');
+        setIsProcessing(false);  // 결제 처리 완료
       } else if (canComplete) {
         // 금액이 0이지만 잔액이 0에 근접한 경우 (이미 모든 결제가 완료된 경우)
         setProceedArmed(true);
       }
     } catch (e) {
       setOptimisticPayments(prev => prev.slice(0, -1));
+      setIsProcessing(false);  // 에러 시에도 초기화
       try { console.error('Finalize failed', e); } catch {}
     }
   };
@@ -442,11 +451,17 @@ useEffect(() => {
   // 방법 3: 다음 액션 시 자동 확정
   // 이전에 준비된 조합(결제 수단 + 금액)이 있으면 먼저 확정하는 헬퍼 함수
   const commitPendingIfReady = useCallback(async () => {
+    // 더블 클릭 방지
+    if (isProcessing) {
+      console.log('⚠️ Payment already processing (commitPendingIfReady), ignoring');
+      return;
+    }
     const currentAmt = parseFloat(amount || '0') || 0;
     if (method && currentAmt > 0) {
       // 준비된 조합이 있으면 확정
       // finalizeAndComplete의 로직을 직접 사용 (무한 루프 방지)
       try {
+        setIsProcessing(true);  // 결제 처리 시작
         // finalizeAndComplete와 동일한 로직 사용
         const effectiveMethod = method;
         const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
@@ -472,12 +487,14 @@ useEffect(() => {
         setAmount('0.00');
         setTip('0');
         setMethod('');
+        setIsProcessing(false);  // 결제 처리 완료
       } catch (e) {
         setOptimisticPayments(prev => prev.slice(0, -1));
+        setIsProcessing(false);  // 에러 시에도 초기화
         try { console.error('Auto-commit failed', e); } catch {}
       }
     }
-  }, [method, amount, cashPaidConfirmed, nonCashPaidConfirmed, fixedGrand, parsedTip, onConfirm, showClampPopup, onCreateAdhocGuests, isSplitActive, outstandingDue]);
+  }, [method, amount, cashPaidConfirmed, nonCashPaidConfirmed, fixedGrand, parsedTip, onConfirm, showClampPopup, onCreateAdhocGuests, isSplitActive, outstandingDue, isProcessing]);
 
   // Confirmed 결제를 반영해 최종 남은 금액(dueFull)과 화면 Due 값을 계산
   const due = useMemo(() => {
@@ -694,6 +711,13 @@ const addQuick = async (q: number) => {
 			const currentAmt = parseFloat(amount || '0') || 0;
 			
 			if (currentAmt > 0) {
+				// 더블 클릭 방지
+				if (isProcessing) {
+					console.log('⚠️ Payment already processing (commitDraft), ignoring');
+					return;
+				}
+				setIsProcessing(true);  // 결제 처리 시작
+				
 				// 현재 금액 > 0이면: 기존 결제 수단이 있으면 그것으로, 없으면 클릭한 것으로 확정
 				// 기존 method가 있으면 그것을 사용, 없으면 clickedMethod 사용
 				const effectiveMethod = method || clickedMethod;
@@ -737,11 +761,13 @@ const addQuick = async (q: number) => {
 				} else {
 					setMethod(clickedMethod); // 다른 수단 → 새 수단 활성화
 				}
+				setIsProcessing(false);  // 결제 처리 완료
 			} else {
 				// 현재 금액 = 0이면: 결제 수단만 활성화
 				setMethod(clickedMethod);
 			}
 		} catch (e) {
+			setIsProcessing(false);  // 에러 시에도 초기화
 			try { console.error('Failed to commit draft payment', e); } catch {}
 		}
 	};
