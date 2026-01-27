@@ -303,6 +303,20 @@ async function uploadOrder(restaurantId, orderData) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
+    
+    // Delivery 주문 추가 필드
+    if (orderData.deliveryCompany) {
+      orderDoc.deliveryCompany = orderData.deliveryCompany;
+    }
+    if (orderData.deliveryOrderNumber) {
+      orderDoc.deliveryOrderNumber = orderData.deliveryOrderNumber;
+    }
+    if (orderData.prepTime) {
+      orderDoc.prepTime = orderData.prepTime;
+    }
+    if (orderData.readyTimeLabel) {
+      orderDoc.readyTimeLabel = orderData.readyTimeLabel;
+    }
 
     // 서브컬렉션에 주문 저장
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);

@@ -5100,23 +5100,30 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       
       // Kitchen Note는 orderInfo.kitchenNote로 전달됨 (Body 하단에 고정 출력)
       
-      if (printItems.length === 0) {
-        console.log('🖨️ No items to print');
-        return;
-      }
-
       // 주문 타입 결정 (DINE-IN, TOGO, ONLINE 등)
       const currentOrderType = (orderType || 'dine-in').toUpperCase();
       const orderTypeDisplay = currentOrderType === 'TOGO' ? 'TOGO' : 
                                currentOrderType === 'ONLINE' ? 'ONLINE' : 
                                currentOrderType === 'DELIVERY' ? 'DELIVERY' : 'DINE-IN';
 
+      // 딜리버리 주문은 items가 없어도 Kitchen Ticket 출력 필요
+      const isDeliveryOrder = orderTypeDisplay === 'DELIVERY';
+      
+      if (printItems.length === 0 && !isDeliveryOrder) {
+        console.log('🖨️ No items to print');
+        return;
+      }
+
       // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
       const printTableName = resolvedTableName || tableNameFromState || '';
       const printServerName = selectedServer?.name || '';
       const printOrderNumber = savedOrderIdRef.current || `ORD-${Date.now()}`;
       
-      console.log('🖨️ Sending to print-order API:', printItems.length, 'items');
+      // 딜리버리 정보 추출
+      const deliveryCompany = (location.state as any)?.deliveryCompany || '';
+      const deliveryOrderNumber = (location.state as any)?.deliveryOrderNumber || '';
+      
+      console.log('🖨️ Sending to print-order API:', printItems.length, 'items', isDeliveryOrder ? `(Delivery: ${deliveryCompany} #${deliveryOrderNumber})` : '');
       try {
         const response = await fetch(`${API_URL}/printers/print-order`, { 
           method: 'POST', 
@@ -5131,7 +5138,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               channel: orderTypeDisplay,
               pickupTime: orderPickupInfo.readyTimeLabel || '',
               pickupMinutes: orderPickupInfo.pickupMinutes,
-              kitchenNote: savedKitchenMemo || ''
+              kitchenNote: savedKitchenMemo || '',
+              // 딜리버리 주문 정보 추가
+              deliveryCompany: deliveryCompany,
+              deliveryOrderNumber: deliveryOrderNumber
             },
             isAdditionalOrder: wasUpdateMode,
             isPaid: false
@@ -5146,7 +5156,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           console.error('❌ Print-order failed:', result.error);
         }
 
-        // TOGO 또는 ONLINE 주문일 경우 Receipt Printer에 Bill도 함께 출력
+        // TOGO, ONLINE 주문일 경우 Receipt Printer에 Bill도 함께 출력
         if ((orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'ONLINE') && !wasUpdateMode) {
           try {
             console.log(`🧾 ${orderTypeDisplay} order - printing Bill to receipt printer`);
@@ -5169,6 +5179,81 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             console.log(`🧾 ${orderTypeDisplay} Bill printed successfully (1 copy)`);
           } catch (billErr) {
             console.warn(`🧾 ${orderTypeDisplay} Bill print failed (ignored):`, billErr);
+          }
+        }
+        
+        // DELIVERY 주문일 경우: Bill 1장 + Receipt 1장 (Kitchen Ticket은 위에서 이미 출력됨)
+        if (orderTypeDisplay === 'DELIVERY' && !wasUpdateMode) {
+          // Bill 1장 출력
+          try {
+            console.log(`🧾 DELIVERY order - printing Bill (1 copy)`);
+            
+            const billData = buildBillDataForPrint({
+              orderNumber: String(printOrderNumber),
+              channel: 'DELIVERY',
+              tableName: printTableName || 'DELIVERY',
+              serverName: printServerName
+            });
+            
+            await fetch(`${API_URL}/printers/print-bill`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ billData, copies: 1 })
+            });
+            console.log(`🧾 DELIVERY Bill printed successfully (1 copy)`);
+          } catch (billErr) {
+            console.warn(`🧾 DELIVERY Bill print failed (ignored):`, billErr);
+          }
+          
+          // Receipt 1장 출력
+          try {
+            console.log(`🧾 DELIVERY order - printing Receipt (1 copy)`);
+            
+            // Receipt 데이터 구성
+            const items = (orderItems || []).filter(it => it.type === 'item');
+            const receiptItems = items.map(it => ({
+              name: it.name || 'Unknown',
+              qty: it.quantity || 1,
+              price: it.price || 0,
+              amount: (it.price || 0) * (it.quantity || 1),
+              modifiers: (it as any).modifiers || []
+            }));
+            
+            const subtotal = receiptItems.reduce((sum, it) => sum + it.amount, 0);
+            const taxRate = 0.1; // 10% 기본 세율
+            const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
+            const total = subtotal + taxAmount;
+
+            const receiptData = {
+              header: {
+                title: '*** DELIVERY ORDER ***',
+                orderNumber: String(printOrderNumber),
+                deliveryCompany: deliveryCompany,
+                deliveryOrderNumber: deliveryOrderNumber
+              },
+              orderInfo: {
+                orderType: 'DELIVERY',
+                table: printTableName,
+                server: printServerName,
+                pickupTime: orderPickupInfo.readyTimeLabel || ''
+              },
+              items: receiptItems,
+              subtotal,
+              taxLines: [{ label: 'Tax', rate: taxRate, amount: taxAmount }],
+              total,
+              payments: [],
+              change: 0,
+              footer: {}
+            };
+
+            await fetch(`${API_URL}/printers/print-receipt`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ receiptData, copies: 1 })
+            });
+            console.log(`🧾 DELIVERY Receipt printed successfully (1 copy)`);
+          } catch (receiptErr) {
+            console.warn(`🧾 DELIVERY Receipt print failed (ignored):`, receiptErr);
           }
         }
       } catch (err) {
@@ -5252,6 +5337,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       // 1. DB 저장
       const saved = await saveOrderToBackend();
+      
+      // 1.5. Delivery 주문이면 delivery_orders 테이블에 order_id 연결
+      const isDeliveryOrder = (orderType || '').toUpperCase() === 'DELIVERY';
+      const deliveryMetaId = (location.state as any)?.deliveryMetaId || (location.state as any)?.id;
+      if (isDeliveryOrder && deliveryMetaId && savedOrderIdRef.current) {
+        try {
+          await fetch(`${API_URL}/orders/delivery-orders/${deliveryMetaId}/link`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId: savedOrderIdRef.current })
+          });
+          console.log(`🚗 Linked delivery_order ${deliveryMetaId} to order ${savedOrderIdRef.current}`);
+        } catch (e) {
+          console.warn('Failed to link delivery order:', e);
+        }
+      }
       
       // 2. 주방 프린트
       if (saved) {
@@ -7692,6 +7793,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       let right = '';
                       if (ch === 'togo') {
                         right = `Togo${customerBadge ? ` • ${customerBadge}` : ''}`;
+                      } else if (ch === 'delivery') {
+                        right = tableName || 'Delivery';
                       } else {
                         right = tableName ? `Table ${tableName}` : '';
                       }

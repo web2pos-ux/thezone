@@ -48,7 +48,7 @@ interface HistoryOrderDetailPayload {
   adjustments: any[];
 }
 
-type VirtualOrderChannel = 'togo' | 'online';
+type VirtualOrderChannel = 'togo' | 'online' | 'delivery';
 
 interface VirtualOrderMeta {
   virtualTableId: string;
@@ -77,6 +77,7 @@ interface OnlineQueueCard {
 const VIRTUAL_TABLE_POOL: Record<VirtualOrderChannel, { prefix: string; limit: number }> = {
   togo: { prefix: 'TG', limit: 500 },
   online: { prefix: 'OL', limit: 500 },
+  delivery: { prefix: 'DL', limit: 500 },
 };
 
 const normalizeVirtualOrderChannel = (
@@ -86,6 +87,7 @@ const normalizeVirtualOrderChannel = (
   if (!value) return fallback;
   const key = String(value).trim().toLowerCase();
   if (key === 'online' || key === 'web' || key === 'qr') return 'online';
+  if (key === 'delivery' || key === 'ubereats' || key === 'doordash' || key === 'skipthedishes' || key === 'fantuan') return 'delivery';
   if (key === 'togo' || key === 'pickup' || key === 'takeout') return 'togo';
   return fallback;
 };
@@ -278,7 +280,7 @@ const SalesPage: React.FC = () => {
   // Online/Togo Order Detail Modal state (개별 카드 클릭 시)
   const [showOrderDetailModal, setShowOrderDetailModal] = useState<boolean>(false);
   const [selectedOrderDetail, setSelectedOrderDetail] = useState<any | null>(null);
-  const [selectedOrderType, setSelectedOrderType] = useState<'online' | 'togo' | null>(null);
+  const [selectedOrderType, setSelectedOrderType] = useState<'online' | 'togo' | 'delivery' | null>(null);
 
   // Online/Togo 결제 모달 state
   const [showOnlineTogoPaymentModal, setShowOnlineTogoPaymentModal] = useState<boolean>(false);
@@ -922,6 +924,14 @@ const SalesPage: React.FC = () => {
   const [customerAddress, setCustomerAddress] = useState('');
   const [customerZip, setCustomerZip] = useState('');
   const [togoOrderMode, setTogoOrderMode] = useState<'togo' | 'delivery'>('togo');
+  
+  // Delivery 전용 모달 state
+  const [showDeliveryOrderModal, setShowDeliveryOrderModal] = useState(false);
+  const [deliveryCompany, setDeliveryCompany] = useState<'UberEats' | 'Doordash' | 'SkipTheDishes' | 'Fantuan' | ''>('');
+  const [deliveryOrderNumber, setDeliveryOrderNumber] = useState('');
+  const [deliveryPrepTime, setDeliveryPrepTime] = useState(15);
+  const deliveryOrderInputRef = useRef<HTMLInputElement>(null);
+  
   const [prepButtonsLocked, setPrepButtonsLocked] = useState(false);
   const [togoNote, setTogoNote] = useState('');
   const [pickupAmPm, setPickupAmPm] = useState<'AM' | 'PM'>(() => getCurrentAmPm());
@@ -2000,21 +2010,89 @@ const SalesPage: React.FC = () => {
 
   const loadTogoOrders = useCallback(async () => {
     try {
-      // PENDING과 PAID 상태 모두 불러오기 (PICKED_UP은 제외)
-      const [pendingRes, paidRes] = await Promise.all([
+      // PENDING과 PAID 상태 모두 불러오기 (PICKED_UP은 제외) - TOGO + DELIVERY
+      const [togoPendingRes, togoPaidRes, deliveryPendingRes, deliveryPaidRes, deliveryOrdersRes] = await Promise.all([
         fetch(`${API_URL}/orders?type=TOGO&status=PENDING&limit=50`),
         fetch(`${API_URL}/orders?type=TOGO&status=PAID&limit=50`),
+        fetch(`${API_URL}/orders?type=DELIVERY&status=PENDING&limit=50`),
+        fetch(`${API_URL}/orders?type=DELIVERY&status=PAID&limit=50`),
+        fetch(`${API_URL}/orders/delivery-orders`), // delivery_orders 테이블에서도 불러오기
       ]);
       
-      const pendingJson = pendingRes.ok ? await pendingRes.json() : { orders: [] };
-      const paidJson = paidRes.ok ? await paidRes.json() : { orders: [] };
+      const togoPendingJson = togoPendingRes.ok ? await togoPendingRes.json() : { orders: [] };
+      const togoPaidJson = togoPaidRes.ok ? await togoPaidRes.json() : { orders: [] };
+      const deliveryPendingJson = deliveryPendingRes.ok ? await deliveryPendingRes.json() : { orders: [] };
+      const deliveryPaidJson = deliveryPaidRes.ok ? await deliveryPaidRes.json() : { orders: [] };
+      const deliveryOrdersJson = deliveryOrdersRes.ok ? await deliveryOrdersRes.json() : { orders: [] };
       
-      const pendingOrders = Array.isArray(pendingJson.orders) ? pendingJson.orders : [];
-      const paidOrders = Array.isArray(paidJson.orders) ? paidJson.orders : [];
+      const togoPendingOrders = Array.isArray(togoPendingJson.orders) ? togoPendingJson.orders : [];
+      const togoPaidOrders = Array.isArray(togoPaidJson.orders) ? togoPaidJson.orders : [];
+      const deliveryPendingOrders = Array.isArray(deliveryPendingJson.orders) ? deliveryPendingJson.orders : [];
+      const deliveryPaidOrders = Array.isArray(deliveryPaidJson.orders) ? deliveryPaidJson.orders : [];
+      const deliveryMetaOrders = Array.isArray(deliveryOrdersJson.orders) ? deliveryOrdersJson.orders : [];
+      
+      // 디버그 로그
+      console.log('🚗 [loadTogoOrders] deliveryPendingOrders:', deliveryPendingOrders.length);
+      console.log('🚗 [loadTogoOrders] deliveryPaidOrders:', deliveryPaidOrders.length);
+      console.log('🚗 [loadTogoOrders] deliveryMetaOrders:', deliveryMetaOrders.length, deliveryMetaOrders);
       
       // 두 목록 합치기 (중복 제거)
       const orderMap = new Map();
-      [...pendingOrders, ...paidOrders].forEach(o => orderMap.set(o.id, o));
+      [...togoPendingOrders, ...togoPaidOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach(o => orderMap.set(o.id, o));
+      
+      // orders 테이블의 delivery 주문에서 table_id로 delivery_orders.id 매핑 생성
+      // table_id = "DL" + delivery_orders.id 형식
+      const tableIdToOrderId = new Map();
+      [...deliveryPendingOrders, ...deliveryPaidOrders].forEach((o: any) => {
+        if (o.table_id && String(o.table_id).startsWith('DL')) {
+          const deliveryMetaId = String(o.table_id).substring(2); // "DL" 제거
+          tableIdToOrderId.set(deliveryMetaId, o.id);
+          console.log('🚗 [loadTogoOrders] table_id mapping:', o.table_id, '->', o.id);
+        }
+      });
+      
+      // delivery_orders 테이블의 메타데이터 병합 (deliveryCompany, deliveryOrderNumber 등)
+      deliveryMetaOrders.forEach((meta: any) => {
+        // 1순위: order_id로 매칭
+        // 2순위: table_id에서 추출한 매핑으로 매칭
+        // 3순위: meta.id로 직접 매칭
+        const metaIdStr = String(meta.id);
+        const mappedOrderId = tableIdToOrderId.get(metaIdStr);
+        const matchId = meta.order_id || mappedOrderId || meta.id;
+        const existing = orderMap.get(matchId);
+        
+        console.log('🚗 [loadTogoOrders] Matching meta:', meta.id, 'order_id:', meta.order_id, 'mappedOrderId:', mappedOrderId, 'matchId:', matchId, 'found:', !!existing);
+        
+        if (existing) {
+          // 기존 주문에 delivery 메타데이터 추가
+          existing.deliveryCompany = meta.delivery_company || meta.deliveryCompany;
+          existing.deliveryOrderNumber = meta.delivery_order_number || meta.deliveryOrderNumber;
+          existing.readyTimeLabel = meta.ready_time_label || meta.readyTimeLabel || existing.readyTimeLabel;
+          existing.prepTime = meta.prep_time || meta.prepTime;
+          existing.fulfillment_mode = 'delivery';
+          existing.fulfillment = 'delivery';
+          existing.order_id = existing.id; // orders 테이블의 id 저장
+          existing.deliveryMetaId = meta.id; // delivery_orders 테이블의 id 저장
+        } else {
+          // delivery_orders에만 있는 주문 (아직 OK 안 누른 주문)
+          orderMap.set(meta.id, {
+            id: meta.id,
+            order_id: meta.order_id || null, // orders 테이블과 연결된 id
+            type: 'Delivery',
+            status: meta.status || 'pending',
+            created_at: meta.created_at || meta.createdAt,
+            customer_name: meta.name,
+            deliveryCompany: meta.delivery_company || meta.deliveryCompany,
+            deliveryOrderNumber: meta.delivery_order_number || meta.deliveryOrderNumber,
+            ready_time: meta.ready_time_label || meta.readyTimeLabel,
+            readyTimeLabel: meta.ready_time_label || meta.readyTimeLabel,
+            fulfillment_mode: 'delivery',
+            fulfillment: 'delivery',  // 필터링용 추가
+            prepTime: meta.prep_time || meta.prepTime,
+          });
+        }
+      });
+      
       const allOrders = Array.from(orderMap.values());
       
       // PICKED_UP 상태만 제외 (Pickup Complete 된 것만 제외)
@@ -2076,6 +2154,7 @@ const SalesPage: React.FC = () => {
         const virtualChannel = normalizeVirtualOrderChannel(o.virtual_table_channel, 'togo');
         return {
           id: safeId,
+          order_id: o.order_id || null, // orders 테이블의 실제 id (delivery 주문에서 items 조회용)
           type: fulfillment === 'delivery' ? 'Delivery' : 'Togo',
           number: o.order_number || o.id,
           time: new Date(createdRaw || Date.now()).toLocaleTimeString('ko-KR', {
@@ -2091,9 +2170,13 @@ const SalesPage: React.FC = () => {
           serverName: o.server_name || o.serverName || '',
           fulfillment,
           total: Number(o.total || 0),
-          readyTimeLabel,
+          readyTimeLabel: o.readyTimeLabel || readyTimeLabel,
           virtualTableId: apiVirtualId || null,
           virtualChannel,
+          // Delivery 전용 필드
+          deliveryCompany: o.deliveryCompany || o.delivery_company || '',
+          deliveryOrderNumber: o.deliveryOrderNumber || o.delivery_order_number || '',
+          prepTime: o.prepTime || o.prep_time || 0,
         };
       });
       setTogoOrderMeta((prevMeta) => {
@@ -2113,6 +2196,15 @@ const SalesPage: React.FC = () => {
             virtualChannel: order.virtualChannel || resolvedMeta?.channel || 'togo',
           };
         });
+        
+        // 디버그 로그: 딜리버리 주문 확인
+        const deliveryOrders = normalizedOrders.filter((o: any) => 
+          String(o.fulfillment || '').toLowerCase() === 'delivery' ||
+          String(o.type || '').toLowerCase() === 'delivery' ||
+          o.deliveryCompany
+        );
+        console.log('🚗 [loadTogoOrders] Final deliveryOrders:', deliveryOrders.length, deliveryOrders);
+        
         setTogoOrders(normalizedOrders);
         return nextMeta;
       });
@@ -2396,22 +2488,50 @@ const SalesPage: React.FC = () => {
       }
       
       // Move/Merge 모드가 아닐 때: 모달 열기
-      // Togo 주문인 경우 상세 정보(items) 가져오기
-      if (channel === 'togo' && order.id) {
+      // Togo 또는 Delivery 주문인 경우 상세 정보(items) 가져오기
+      if ((channel === 'togo' || channel === 'delivery') && order.id) {
         try {
-          const res = await fetch(`${API_URL}/orders/${order.id}`);
+          // Delivery 주문은 order_id 사용
+          const actualOrderId = channel === 'delivery' ? (order.order_id || order.id) : order.id;
+          const res = await fetch(`${API_URL}/orders/${actualOrderId}`);
           if (res.ok) {
             const data = await res.json();
             if (data.success && data.items) {
               // fullOrder 형태로 변환하여 저장
-              const parsedItems = data.items.map((item: any) => ({
-                name: item.name,
-                quantity: item.quantity || 1,
-                price: item.price || 0,
-                options: item.modifiers_json ? JSON.parse(item.modifiers_json) : []
-              }));
+              const parsedItems = data.items.map((item: any) => {
+                let options: any[] = [];
+                let totalModifierPrice = 0;
+                try {
+                  if (item.modifiers_json) {
+                    const mods = typeof item.modifiers_json === 'string' 
+                      ? JSON.parse(item.modifiers_json) 
+                      : item.modifiers_json;
+                    options = Array.isArray(mods) ? mods : [];
+                    // Calculate totalModifierPrice
+                    options.forEach((modGroup: any) => {
+                      if (modGroup.totalModifierPrice) {
+                        totalModifierPrice += Number(modGroup.totalModifierPrice);
+                      } else if (modGroup.selectedEntries) {
+                        modGroup.selectedEntries.forEach((entry: any) => {
+                          totalModifierPrice += Number(entry.price_delta || entry.price || 0);
+                        });
+                      }
+                    });
+                  }
+                } catch {}
+                return {
+                  ...item,
+                  name: item.name,
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  options,
+                  totalModifierPrice,
+                  taxDetails: item.taxDetails || []
+                };
+              });
               // DB subtotal 사용, 없으면 아이템 합계로 계산
-              const calculatedSubtotal = parsedItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+              const calculatedSubtotal = parsedItems.reduce((sum: number, item: any) => 
+                sum + ((item.price + (item.totalModifierPrice || 0)) * item.quantity), 0);
               
               const fullOrder = {
                 ...order,
@@ -2430,7 +2550,7 @@ const SalesPage: React.FC = () => {
             }
           }
         } catch (e) {
-          console.warn('Failed to load togo order details:', e);
+          console.warn(`Failed to load ${channel} order details:`, e);
         }
       }
       setSelectedOrderDetail(order);
@@ -3135,6 +3255,7 @@ const SalesPage: React.FC = () => {
       return;
     }
 
+    setTogoOrderMode('togo');
     setServerModalError('');
     setCustomerZip('');
     if (shouldPromptServerSelection) {
@@ -3143,6 +3264,18 @@ const SalesPage: React.FC = () => {
     } else {
       startTogoOrderFlow(null);
     }
+  };
+
+  const handleNewDeliveryClick = () => {
+    if (isMoveMergeMode) {
+      setMoveMergeStatus('❌ Cannot create new Delivery in Move/Merge mode');
+      setTimeout(() => setMoveMergeStatus(''), 2000);
+      return;
+    }
+    // Delivery 전용 모달 열기
+    setDeliveryCompany('');
+    setDeliveryOrderNumber('');
+    setShowDeliveryOrderModal(true);
   };
 
   const handleServerModalClose = () => {
@@ -6687,214 +6820,213 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 4. 우측 34% - Togo Order 현황판 */}
+          {/* 4. 우측 34% - Togo/Delivery Order 현황판 */}
           <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
-            {/* Scrollable content */}
-            <div className="flex-1 overflow-auto p-2 pb-[85px]">
-              <div className="flex items-center justify-between mb-3 gap-2">
-                <button
-                  onClick={handleNewTogoClick}
-                  className="px-[13px] py-3 min-h-[44px] bg-green-800 text-white text-base font-medium rounded-lg hover:bg-green-900"
-                >
-                  New Togo
-                </button>
-                <div className="flex items-center gap-2 flex-1">
-                  <div className="relative w-4/5">
-                    <input value={togoSearch} onChange={e=>setTogoSearch(e.target.value)} className="w-full px-3 py-2 text-base border rounded-md min-h-[44px]" />
-                    <span className="absolute right-10 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="11" cy="11" r="8" />
-                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                      </svg>
-                    </span>
-                    <button
-                      type="button"
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                      onClick={() => { setSoftKbOpen(true); }}
-                      title="Virtual keyboard"
-                      aria-label="Virtual keyboard"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="2" y="6" width="20" height="12" rx="2" ry="2"></rect>
-                        <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"></path>
-                      </svg>
-                    </button>
-                  </div>
-                  <button className="px-4 py-2 min-h-[44px] bg-gray-300 text-gray-800 text-base rounded-md hover:bg-gray-400" onClick={()=>setTogoSearch('')} title="Clear">Clear</button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-1 mb-3">
-                {/* 왼쪽: Online 주문리스트 - 픽업시간 오름차순 정렬 */}
+            {/* 상단 고정 버튼 영역 */}
+            <div className="flex gap-2 p-2 pb-1 flex-shrink-0">
+              <button
+                onClick={handleNewDeliveryClick}
+                className="flex-1 py-2 min-h-[40px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+              >
+                🚗 Delivery
+              </button>
+              <button
+                onClick={handleNewTogoClick}
+                className="flex-1 py-2 min-h-[40px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+              >
+                🥡 Togo
+              </button>
+            </div>
+            {/* 스크롤 가능한 주문 목록 영역 */}
+            <div className="flex-1 overflow-auto px-2 pb-[85px]">
+              <div className="grid grid-cols-2 gap-1">
+                {/* 왼쪽: Delivery 주문 목록 */}
                 <div className="space-y-1">
-                  {[...onlineQueueCards].sort((a, b) => {
-                    const getTimeMs = (order: any): number => {
-                      // pickupTime 우선, 없으면 placedTime 사용
-                      const pt = order.pickupTime;
-                      if (pt) {
-                        if (pt._seconds) return pt._seconds * 1000;
-                        const d = new Date(pt);
-                        if (!isNaN(d.getTime())) return d.getTime();
-                      }
-                      const placed = order.placedTime || order.time;
-                      if (placed) {
-                        const d = new Date(placed);
-                        if (!isNaN(d.getTime())) return d.getTime();
-                      }
-                      return Infinity;
-                    };
-                    return getTimeMs(a) - getTimeMs(b);
-                  }).map((card) => {
-                    const q = togoSearch.trim().toLowerCase();
-                    const inNumber = String(card.number).includes(q);
-                    const inPhone = card.phone.toLowerCase().includes(q);
-                    const inName = card.name.toLowerCase().includes(q);
-                    const inItems = card.items.join(' ').toLowerCase().includes(q);
-                    const matched = !q || inNumber || inPhone || inName || inItems;
-                    
-                    // Move/Merge 모드일 때 상태 표시
-                    const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
-                    const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
-                    
-                    let backgroundColor = '#B1C4DD';
-                    let borderColor = matched && q ? '#B91C1C' : '#9BB3D1';
-                    let borderWidth = 1;
-                    
-                    if (isSourceOnline) {
-                      // 출발 Online - 보라색 강조
-                      backgroundColor = '#A78BFA';
-                      borderColor = '#7C3AED';
-                      borderWidth = 4;
-                    } else if (isTargetSelectable) {
-                      // 목적 선택 가능 - 연보라색
-                      backgroundColor = '#D4B8E8';
-                      borderColor = '#8B5CF6';
-                      borderWidth = 3;
-                    }
-
-                    const cls = [
-                      'w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left',
-                      'hover:shadow-lg',
-                      q && !matched ? 'opacity-40 pointer-events-none' : '',
-                      isTargetSelectable && !isSourceOnline ? 'animate-pulse' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ');
-                    return (
-                      <button
-                        key={card.id}
-                        className={cls}
-                        style={{ backgroundColor, borderColor, borderWidth }}
-                        onClick={() => handleVirtualOrderCardClick('online', card)}
-                      >
-                        {isSourceOnline && (
-                          <div className="text-[10px] font-bold text-white mb-0.5">◀ Source Online</div>
-                        )}
-                        {isTargetSelectable && !isSourceOnline && (
-                          <div className="text-[10px] font-bold text-purple-700 mb-0.5">▶ Merge Target</div>
-                        )}
-                        <div className="text-[13px] font-medium text-gray-800 mb-0.5 flex items-center">
-                          <span className="w-[50px] text-left">Online</span>
-                          <span className="flex-1 text-center">#{card.number}</span>
-                          <span className="font-bold text-gray-900 text-right">{card.time}</span>
-                        </div>
-                        <div className="text-[13px] text-gray-700 flex justify-between items-center">
-                          <span className="font-bold text-gray-900">{card.phone}</span>
-                          <span className="text-[12px] text-right">{card.name}</span>
-                        </div>
-                      </button>
+                  {(() => {
+                    const deliveryFiltered = togoOrders.filter(order => 
+                      String(order.fulfillment || '').toLowerCase() === 'delivery' ||
+                      String(order.type || '').toLowerCase() === 'delivery' ||
+                      order.deliveryCompany
                     );
-                  })}
-                </div>
-                
-                {/* 오른쪽: Togo 주문리스트 - 픽업시간 오름차순 정렬 */}
-                <div className="space-y-1">
-                  {[...togoOrders]
+                    console.log('🚗 [UI] togoOrders total:', togoOrders.length);
+                    console.log('🚗 [UI] deliveryFiltered:', deliveryFiltered.length, deliveryFiltered);
+                    return deliveryFiltered;
+                  })()
                     .sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99'))
-                    .filter(o => {
-                      const q = togoSearch.trim().toLowerCase();
-                      if (!q) return true;
-                      const sequenceValue = o.sequenceNumber != null ? String(o.sequenceNumber).toLowerCase() : '';
-                      const rawOrderNumber = String(o.number || '').toLowerCase();
-                      const inNumber = sequenceValue.includes(q) || rawOrderNumber.includes(q);
-                      const inPhone = String(o.phone || '').toLowerCase().includes(q);
-                      const inName = String(o.name || '').toLowerCase().includes(q);
-                      const items = (o.items || o.orderItems || [])
-                        .map((it: any) => String(it.name || '').toLowerCase())
-                        .join(' ');
-                      const inItems = items.includes(q);
-                      return inNumber || inPhone || inName || inItems;
-                    })
-                    .map((order) => {
-                      // Move/Merge 모드일 때 상태 표시
+                    .map(order => {
                       const isSourceTogo = isMoveMergeMode && sourceTogoOrder?.id === order.id;
                       const isTargetSelectable = isMoveMergeMode && (
                         (sourceTableId && selectionChoice) || 
                         (sourceTogoOrder && sourceTogoOrder.id !== order.id) ||
                         (sourceOnlineOrder)
                       );
-                      
-                      let backgroundColor = '#A8D5A8';
-                      let borderColor = '#95C295';
+                      let backgroundColor = '#E9D5FF';
+                      let borderColor = '#C084FC';
                       let borderWidth = 1;
-                      
                       if (isSourceTogo) {
-                        // 출발 Togo - 보라색 강조
                         backgroundColor = '#A78BFA';
                         borderColor = '#7C3AED';
                         borderWidth = 4;
                       } else if (isTargetSelectable) {
-                        // 목적 Togo 선택 가능 - 연보라색
                         backgroundColor = '#D4B8E8';
                         borderColor = '#8B5CF6';
                         borderWidth = 3;
                       }
-
                       return (
-                    <button 
-                      key={order.id}
-                          className={[
-                            'w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg',
-                            isTargetSelectable && !isSourceTogo ? 'animate-pulse' : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' ')}
+                        <button 
+                          key={`delivery-${order.id}`}
+                          className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                           style={{ backgroundColor, borderColor, borderWidth }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log('[TOGO BUTTON CLICKED]', { orderId: order.id, isSourceTogo, isTargetSelectable, isMoveMergeMode, sourceTableId, sourceTogoOrder });
-                            handleVirtualOrderCardClick('togo', order);
+                            handleVirtualOrderCardClick('delivery', order);
                           }}
                         >
-                          {isSourceTogo && (
-                            <div className="text-[10px] font-bold text-white mb-0.5">◀ Source Togo</div>
-                          )}
-                          {isTargetSelectable && !isSourceTogo && (
-                            <div className="text-[10px] font-bold text-purple-700 mb-0.5">▶ Merge Target</div>
-                          )}
-                          <div className="text-[13px] font-medium text-gray-800 mb-0.5 flex items-center">
-                            <span className="w-[50px] text-left">Togo</span>
-                            <span className="flex-1 text-center">#{order.id ?? '—'}</span>
-                            <span className="font-bold text-gray-900 text-right flex items-center gap-1">
-                              {order.readyTimeLabel || '--:--'}
-                              {String(order.fulfillment || order.type).toLowerCase() === 'delivery' && (
-                                <span className="px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide rounded-full bg-red-100 text-red-700 border border-red-300">
-                                  DLV
-                                </span>
-                              )}
-                            </span>
-                      </div>
-                          <div className="text-[13px] text-gray-700 flex justify-between">
-                            <span className="font-bold text-gray-900 truncate pr-2">{formatOrderPhoneDisplay(order.phone) || '—'}</span>
-                            <span className="text-[13px] text-gray-800 truncate text-right">{order.name || ''}</span>
+                          {/* 윗줄: 딜리버리채널(볼드) / 딜리버리주문번호(볼드) */}
+                          <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
+                            <span className="text-purple-700 font-bold">{order.deliveryCompany || 'Delivery'}</span>
+                            <span className="mx-1 text-gray-400">/</span>
+                            <span className="font-bold text-gray-900">#{order.deliveryOrderNumber || order.id}</span>
                           </div>
-                          {order.serverName ? (
-                            <div className="text-[12px] text-gray-600">
-                              Server: {formatEmployeeName(order.serverName)}
-                            </div>
-                          ) : null}
-                    </button>
+                          {/* 아랫줄: 픽업타임 */}
+                          <div className="text-[12px] text-gray-600">
+                            Ready: {order.readyTimeLabel || '--:--'}
+                          </div>
+                        </button>
                       );
                     })}
+                  {togoOrders.filter(order => 
+                    String(order.fulfillment || '').toLowerCase() === 'delivery' ||
+                    String(order.type || '').toLowerCase() === 'delivery' ||
+                    order.deliveryCompany
+                  ).length === 0 && (
+                    <div className="text-center text-gray-400 text-xs py-4">No Delivery Orders</div>
+                  )}
+                </div>
+                
+                {/* 오른쪽: Togo + Online 통합 주문리스트 - 픽업시간 오름차순 정렬 */}
+                <div className="space-y-1">
+                  {(() => {
+                    // Togo (delivery 제외)와 Online을 합쳐서 픽업시간 순으로 정렬
+                    const getPickupTimeMs = (order: any, type: 'togo' | 'online'): number => {
+                      if (type === 'togo') {
+                        const label = order.readyTimeLabel || '99:99';
+                        const [h, m] = label.split(':').map(Number);
+                        if (!isNaN(h) && !isNaN(m)) {
+                          const now = new Date();
+                          now.setHours(h, m, 0, 0);
+                          return now.getTime();
+                        }
+                        return Infinity;
+                      } else {
+                        const pt = order.pickupTime;
+                        if (pt) {
+                          if (pt._seconds) return pt._seconds * 1000;
+                          const d = new Date(pt);
+                          if (!isNaN(d.getTime())) return d.getTime();
+                        }
+                        const placed = order.placedTime || order.time;
+                        if (placed) {
+                          const d = new Date(placed);
+                          if (!isNaN(d.getTime())) return d.getTime();
+                        }
+                        return Infinity;
+                      }
+                    };
+                    const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
+                      ...togoOrders
+                        .filter(o => 
+                          String(o.fulfillment || '').toLowerCase() !== 'delivery' &&
+                          String(o.type || '').toLowerCase() !== 'delivery' &&
+                          !o.deliveryCompany
+                        )
+                        .map(o => ({ order: o, type: 'togo' as const, pickupMs: getPickupTimeMs(o, 'togo') })),
+                      ...onlineQueueCards.map(o => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
+                    ];
+                    combinedOrders.sort((a, b) => a.pickupMs - b.pickupMs);
+                    return combinedOrders.map(({ order, type }) => {
+                      if (type === 'togo') {
+                        const isSourceTogo = isMoveMergeMode && sourceTogoOrder?.id === order.id;
+                        const isTargetSelectable = isMoveMergeMode && (
+                          (sourceTableId && selectionChoice) || 
+                          (sourceTogoOrder && sourceTogoOrder.id !== order.id) ||
+                          (sourceOnlineOrder)
+                        );
+                        let backgroundColor = '#A8D5A8';
+                        let borderColor = '#95C295';
+                        let borderWidth = 1;
+                        if (isSourceTogo) {
+                          backgroundColor = '#A78BFA';
+                          borderColor = '#7C3AED';
+                          borderWidth = 4;
+                        } else if (isTargetSelectable) {
+                          backgroundColor = '#D4B8E8';
+                          borderColor = '#8B5CF6';
+                          borderWidth = 3;
+                        }
+                        return (
+                          <button 
+                            key={`togo-${order.id}`}
+                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            style={{ backgroundColor, borderColor, borderWidth }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleVirtualOrderCardClick('togo', order);
+                            }}
+                          >
+                            {/* 윗줄: Togo(볼드), 주문번호(볼드), 픽업시간 */}
+                            <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
+                              <span className="w-[40px] text-left text-green-700 font-bold">Togo</span>
+                              <span className="flex-1 text-center font-bold">#{order.id ?? '—'}</span>
+                              <span className="text-gray-900 text-right">{order.readyTimeLabel || '--:--'}</span>
+                            </div>
+                            {/* 아랫줄: 전화번호(볼드), 고객이름 */}
+                            <div className="text-[12px] text-gray-700 flex justify-between">
+                              <span className="font-bold text-gray-900 truncate pr-1">{formatOrderPhoneDisplay(order.phone) || '—'}</span>
+                              <span className="text-gray-800 truncate text-right">{order.name || ''}</span>
+                            </div>
+                          </button>
+                        );
+                      } else {
+                        // Online 카드 렌더링
+                        const card = order;
+                        const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
+                        const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
+                        let backgroundColor = '#B1C4DD';
+                        let borderColor = '#9BB3D1';
+                        let borderWidth = 1;
+                        if (isSourceOnline) {
+                          backgroundColor = '#A78BFA';
+                          borderColor = '#7C3AED';
+                          borderWidth = 4;
+                        } else if (isTargetSelectable) {
+                          backgroundColor = '#D4B8E8';
+                          borderColor = '#8B5CF6';
+                          borderWidth = 3;
+                        }
+                        return (
+                          <button
+                            key={`online-${card.id}`}
+                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                            style={{ backgroundColor, borderColor, borderWidth }}
+                            onClick={() => handleVirtualOrderCardClick('online', card)}
+                          >
+                            {/* 윗줄: Online(볼드), 주문번호(볼드), 픽업시간 */}
+                            <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
+                              <span className="w-[45px] text-left text-blue-700 font-bold">Online</span>
+                              <span className="flex-1 text-center font-bold">#{card.number}</span>
+                              <span className="text-gray-900 text-right">{card.time}</span>
+                            </div>
+                            {/* 아랫줄: 전화번호(볼드), 고객이름 */}
+                            <div className="text-[12px] text-gray-700 flex justify-between">
+                              <span className="font-bold text-gray-900">{card.phone}</span>
+                              <span className="text-right">{card.name}</span>
+                            </div>
+                          </button>
+                        );
+                      }
+                    });
+                  })()}
                 </div>
               </div>
             </div>
@@ -8857,6 +8989,182 @@ const SalesPage: React.FC = () => {
         }}
       />
 
+      {/* Delivery 전용 모달 */}
+      {showDeliveryOrderModal && (
+        <div className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-2">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[950px] flex flex-col overflow-hidden" style={{ height: 'min(90vh, 560px)' }}>
+            {/* 상단: 좌-채널(35%), 중-프렙타임(50%), 우-버튼(15%) */}
+            <div className="flex-shrink-0 border-b border-gray-300">
+              <div className="flex items-stretch">
+                {/* 좌측: 딜리버리 채널 (35%) - 연한 파란색 배경 */}
+                <div className="p-3 bg-blue-50" style={{ width: '35%' }}>
+                  <div className="grid grid-cols-2 gap-1.5 mb-1.5">
+                    {(['UberEats', 'Doordash', 'SkipTheDishes', 'Fantuan'] as const).map((company) => (
+                      <button
+                        key={company}
+                        type="button"
+                        onClick={() => setDeliveryCompany(company)}
+                        className={`h-10 rounded-lg font-bold text-xs transition-all shadow ${
+                          deliveryCompany === company
+                            ? company === 'UberEats' ? 'bg-green-500 text-white ring-2 ring-green-300'
+                            : company === 'Doordash' ? 'bg-red-500 text-white ring-2 ring-red-300'
+                            : company === 'SkipTheDishes' ? 'bg-orange-500 text-white ring-2 ring-orange-300'
+                            : 'bg-yellow-500 text-white ring-2 ring-yellow-300'
+                            : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
+                        }`}
+                      >
+                        {company === 'SkipTheDishes' ? 'Skip' : company}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    ref={deliveryOrderInputRef}
+                    value={deliveryOrderNumber}
+                    onChange={(e) => setDeliveryOrderNumber(e.target.value.toUpperCase())}
+                    placeholder="Order #"
+                    className="w-full h-11 px-3 text-lg font-mono bg-white border-2 border-purple-400 rounded-lg text-gray-800 text-center tracking-widest focus:outline-none focus:border-purple-600"
+                  />
+                </div>
+
+                {/* 중앙: 프렙타임 (50%) - 연한 노란색 배경 */}
+                <div className="p-3 bg-amber-50 flex flex-col justify-end" style={{ width: '50%' }}>
+                  <div className="flex items-center gap-3 mb-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500 text-xs">Now</span>
+                      <span className="text-sm font-mono text-gray-600">
+                        {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-600 text-sm font-semibold">+</span>
+                      <span className="text-xl font-mono font-bold text-purple-600">{deliveryPrepTime}m</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-600 text-sm">=</span>
+                      <span className="px-3 py-1 rounded-lg bg-emerald-500 text-white text-lg font-bold shadow-md">
+                        Ready {(() => {
+                          const now = new Date();
+                          now.setMinutes(now.getMinutes() + deliveryPrepTime);
+                          return now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {[5, 10, 15, 20, 25, 30, 40, 50, 60, 90].map((min) => (
+                      <button
+                        key={`prep-${min}`}
+                        type="button"
+                        onClick={() => setDeliveryPrepTime(min)}
+                        className={`h-11 rounded-lg text-sm font-bold transition-all ${
+                          deliveryPrepTime === min ? 'bg-purple-500 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
+                        }`}
+                      >
+                        {min}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 우측: 버튼 (15%) - 연한 보라색 배경 */}
+                <div className="p-3 bg-purple-50 flex flex-col gap-1.5" style={{ width: '15%' }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!deliveryCompany) { alert('Select channel'); return; }
+                      if (!deliveryOrderNumber.trim()) { alert('Enter order #'); return; }
+                      
+                      const now = new Date();
+                      now.setMinutes(now.getMinutes() + deliveryPrepTime);
+                      const readyTimeLabel = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                      
+                      const newOrder = {
+                        id: Date.now(),
+                        type: 'Delivery',
+                        time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+                        createdAt: new Date().toISOString(),
+                        phone: '',
+                        name: `${deliveryCompany} #${deliveryOrderNumber}`,
+                        status: 'pending',
+                        serverId: null,
+                        serverName: '',
+                        items: [],
+                        orderItems: [],
+                        fulfillment: 'delivery',
+                        deliveryCompany,
+                        deliveryOrderNumber: deliveryOrderNumber.trim(),
+                        readyTimeLabel,
+                        prepTime: deliveryPrepTime,
+                      };
+                      
+                      setTogoOrders(prev => [...prev, newOrder]);
+                      
+                      // DB 저장 (Kitchen Ticket/Receipt는 주문페이지에서 메뉴 추가 후 출력)
+                      try {
+                        await fetch(`${API_URL}/orders/delivery-orders`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ storeId: 'STORE001', ...newOrder }),
+                        });
+                        console.log('✅ Delivery order saved to DB and Firebase');
+                      } catch (err) { console.error('❌ Failed to save delivery order:', err); }
+                      
+                      setShowDeliveryOrderModal(false);
+                      navigate('/sales/order', {
+                        state: {
+                          tableId: `DL${newOrder.id}`,
+                          tableName: newOrder.name,
+                          channel: 'delivery',
+                          orderType: 'delivery',
+                          priceType: 'price2',
+                          menuId: defaultMenu.menuId,
+                          menuName: defaultMenu.menuName,
+                          deliveryMetaId: newOrder.id,  // delivery_orders 테이블의 id
+                          deliveryCompany,
+                          deliveryOrderNumber: deliveryOrderNumber.trim(),
+                        },
+                      });
+                    }}
+                    disabled={!deliveryCompany || !deliveryOrderNumber.trim()}
+                    className={`flex-1 font-bold rounded-lg transition-all ${
+                      deliveryCompany && deliveryOrderNumber.trim()
+                        ? 'bg-purple-600 text-white hover:bg-purple-500 shadow-md'
+                        : 'bg-gray-300 text-gray-400 cursor-not-allowed'
+                    }`}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeliveryOrderModal(false)}
+                    className="flex-1 bg-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-400"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 하단: 키보드 */}
+            <div className="flex-1 flex items-start justify-center bg-gray-100 pt-1 px-2">
+              <VirtualKeyboard
+                open={true}
+                onType={(char) => setDeliveryOrderNumber(prev => (prev + char).toUpperCase())}
+                onBackspace={() => setDeliveryOrderNumber(prev => prev.slice(0, -1))}
+                onClear={() => setDeliveryOrderNumber('')}
+                displayText={deliveryOrderNumber}
+                keepOpen={true}
+                showNumpad={true}
+                languages={['EN']}
+                currentLanguage="EN"
+                maxWidthPx={900}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Online Order Panel */}
       <OnlineOrderPanel
         restaurantId={onlineOrderRestaurantId}
@@ -9384,14 +9692,28 @@ const SalesPage: React.FC = () => {
       {showOrderDetailModal && selectedOrderDetail && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-[76%] max-w-4xl h-[80vh] flex flex-col">
-            {/* Header */}
-            <div className={`${selectedOrderType === 'online' ? 'bg-gradient-to-r from-blue-600 to-blue-700' : 'bg-gradient-to-r from-orange-500 to-orange-600'} text-white px-5 py-2.5 rounded-t-xl flex items-center justify-between flex-shrink-0`}>
-              <h2 className="text-base font-bold flex items-center gap-2">
-                {selectedOrderType === 'online' ? 'Online' : 'Togo'} Orders
-                <span className="text-sm font-normal opacity-80">
-                  ({selectedOrderType === 'online' ? onlineQueueCards.length : togoOrders.length})
-                </span>
-              </h2>
+            {/* Header with Tabs */}
+            <div className="bg-gradient-to-r from-slate-700 to-slate-800 text-white px-5 py-2.5 rounded-t-xl flex items-center justify-between flex-shrink-0">
+              {/* 탭 버튼 */}
+              <div className="flex items-center gap-1">
+                {[
+                  { key: 'delivery' as const, label: 'Delivery', count: togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany).length, color: 'bg-purple-500 hover:bg-purple-600' },
+                  { key: 'online' as const, label: 'Online', count: onlineQueueCards.length, color: 'bg-blue-500 hover:bg-blue-600' },
+                  { key: 'togo' as const, label: 'Togo', count: togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany).length, color: 'bg-orange-500 hover:bg-orange-600' },
+                ].map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setSelectedOrderType(tab.key)}
+                    className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
+                      selectedOrderType === tab.key 
+                        ? `${tab.color} text-white shadow-lg` 
+                        : 'bg-white/20 text-white/80 hover:bg-white/30'
+                    }`}
+                  >
+                    {tab.label} ({tab.count})
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={() => {
                   setShowOrderDetailModal(false);
@@ -9413,11 +9735,19 @@ const SalesPage: React.FC = () => {
                     <thead className="bg-gray-100 sticky top-0">
                       <tr>
                         <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Seq#</th>
-                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Order#</th>
-                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Placed</th>
-                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Pickup</th>
+                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                          {selectedOrderType === 'delivery' ? 'Channel' : 'Order#'}
+                        </th>
+                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                          {selectedOrderType === 'delivery' ? 'Order#' : 'Placed'}
+                        </th>
+                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                          {selectedOrderType === 'delivery' ? 'Ready' : 'Pickup'}
+                        </th>
                         <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Customer</th>
-                        <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
+                        {selectedOrderType !== 'delivery' && (
+                          <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
+                        )}
                         <th className="px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
                       </tr>
                     </thead>
@@ -9474,7 +9804,10 @@ const SalesPage: React.FC = () => {
                         </tr>
                       ))}
                       {/* Togo 타입일 경우 모든 Togo 주문 표시 - 픽업시간 오름차순 */}
-                      {selectedOrderType === 'togo' && [...togoOrders].sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99')).map((order, idx) => (
+                      {selectedOrderType === 'togo' && [...togoOrders]
+                        .filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany)
+                        .sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99'))
+                        .map((order, idx) => (
                         <tr 
                           key={order.id}
                           onClick={async () => {
@@ -9536,9 +9869,100 @@ const SalesPage: React.FC = () => {
                           </td>
                         </tr>
                       ))}
+                      {/* Delivery 타입일 경우 모든 Delivery 주문 표시 */}
+                      {selectedOrderType === 'delivery' && [...togoOrders]
+                        .filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany)
+                        .sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99'))
+                        .map((order, idx) => (
+                        <tr 
+                          key={order.id}
+                          onClick={async () => {
+                            // 즉시 주문 선택 (로딩 상태 표시)
+                            setSelectedOrderDetail({ ...order, fullOrder: null, isLoading: true });
+                            
+                            try {
+                              // order_id가 있으면 그것을 사용, 없으면 order.id 사용
+                              const actualOrderId = order.order_id || order.id;
+                              console.log('🚗 [Delivery Click] order:', order);
+                              console.log('🚗 [Delivery Click] order.id:', order.id, 'order_id:', order.order_id, 'using:', actualOrderId);
+                              
+                              const res = await fetch(`${API_URL}/orders/${actualOrderId}`);
+                              console.log('🚗 [Delivery Click] API response status:', res.status);
+                              
+                              if (res.ok) {
+                                const data = await res.json();
+                                console.log('🚗 [Delivery Click] API data:', data);
+                                console.log('🚗 [Delivery Click] data.items:', data.items?.length, data.items);
+                                
+                                if (data.success && data.order) {
+                                  // items는 data.items에 별도로 있음
+                                  const rawItems = data.items || [];
+                                  // modifiers_json, memo_json 파싱
+                                  const parsedItems = rawItems.map((item: any) => {
+                                    let options: any[] = [];
+                                    let memo = '';
+                                    try {
+                                      if (item.modifiers_json) {
+                                        const mods = typeof item.modifiers_json === 'string' 
+                                          ? JSON.parse(item.modifiers_json) 
+                                          : item.modifiers_json;
+                                        options = Array.isArray(mods) ? mods : [];
+                                      }
+                                    } catch {}
+                                    try {
+                                      if (item.memo_json) {
+                                        const memoData = typeof item.memo_json === 'string'
+                                          ? JSON.parse(item.memo_json)
+                                          : item.memo_json;
+                                        memo = memoData?.text || memoData?.memo || '';
+                                      }
+                                    } catch {}
+                                    return { ...item, options, memo };
+                                  });
+                                  console.log('🚗 [Delivery Click] parsedItems:', parsedItems.length, parsedItems);
+                                  
+                                  const fullOrder = {
+                                    ...data.order,
+                                    items: parsedItems,
+                                    subtotal: data.order.subtotal || data.order.total || 0,
+                                    tax: data.order.tax || 0,
+                                    taxBreakdown: data.order.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
+                                    total: data.order.total || 0,
+                                  };
+                                  console.log('🚗 [Delivery Click] fullOrder.items:', fullOrder.items?.length);
+                                  setSelectedOrderDetail({ ...order, fullOrder, isLoading: false });
+                                  return;
+                                }
+                              } else {
+                                console.log('🚗 [Delivery Click] API failed, status:', res.status);
+                              }
+                            } catch (e) {
+                              console.warn('Failed to load delivery order details:', e);
+                            }
+                            console.log('🚗 [Delivery Click] Falling back to order without fullOrder');
+                            setSelectedOrderDetail({ ...order, isLoading: false });
+                          }}
+                          className={`cursor-pointer hover:bg-purple-50 transition min-h-[44px] ${
+                            selectedOrderDetail.id === order.id 
+                              ? 'bg-purple-100 border-l-4 border-purple-500' 
+                              : 'border-l-4 border-transparent'
+                          }`}
+                          style={{ height: '44px' }}
+                        >
+                          <td className="px-2 py-3 text-gray-800">{idx + 1}</td>
+                          <td className="px-2 py-3 text-gray-800 font-bold">{order.deliveryCompany || 'Delivery'}</td>
+                          <td className="px-2 py-3 text-purple-700 font-bold">#{order.deliveryOrderNumber || order.id}</td>
+                          <td className="px-2 py-3 text-gray-600">{order.readyTimeLabel || '-'}</td>
+                          <td className="px-2 py-3 text-gray-800">{order.name || '-'}</td>
+                          <td className="px-2 py-3 text-right text-gray-800">
+                            ${Number(order.total || 0).toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
                       {/* 주문이 없을 경우 */}
                       {((selectedOrderType === 'online' && onlineQueueCards.length === 0) ||
-                        (selectedOrderType === 'togo' && togoOrders.length === 0)) && (
+                        (selectedOrderType === 'togo' && togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany).length === 0) ||
+                        (selectedOrderType === 'delivery' && togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany).length === 0)) && (
                         <tr>
                           <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
                             No orders found
@@ -9552,9 +9976,217 @@ const SalesPage: React.FC = () => {
               
               {/* 오른쪽: 주문 상세 */}
               <div className="w-[45%] flex flex-col bg-white rounded-lg shadow-md overflow-hidden">
-                {/* 상단 버튼 영역 (3:4:4 비율 = Print Bill : Pickup Complete : Payment) */}
+                {/* 상단 버튼 영역 */}
                 <div className="p-2 flex gap-2 flex-shrink-0 bg-gray-50 border-b">
-                  {/* Print Bill 버튼 (3/11 ≈ 27%) */}
+                  {/* Delivery 타입일 때: Print Bill + Reprint */}
+                  {selectedOrderType === 'delivery' ? (
+                    <>
+                      {/* Print Bill 버튼 - Delivery */}
+                      <button
+                        onClick={async () => {
+                          try {
+                            const orderId = selectedOrderDetail?.id;
+                            const deliveryCompany = selectedOrderDetail?.deliveryCompany || '';
+                            const deliveryOrderNumber = selectedOrderDetail?.deliveryOrderNumber || '';
+                            
+                            // 아이템별 금액 계산 (모디파이어 포함)
+                            const items = selectedOrderDetail.fullOrder?.items || [];
+                            let calculatedSubtotal = 0;
+                            let totalTax = 0;
+                            const taxBreakdown: { [key: string]: { rate: number; amount: number } } = {};
+                            
+                            const billItems = items.map((item: any) => {
+                              const basePrice = Number(item.price || 0);
+                              let modifierTotal = 0;
+                              
+                              // 모디파이어 금액 계산
+                              (item.options || []).forEach((opt: any) => {
+                                if (opt.totalModifierPrice !== undefined && opt.totalModifierPrice !== null) {
+                                  modifierTotal += Number(opt.totalModifierPrice || 0);
+                                } else if (opt.selectedEntries && Array.isArray(opt.selectedEntries)) {
+                                  opt.selectedEntries.forEach((entry: any) => {
+                                    modifierTotal += Number(entry.price_delta || entry.priceDelta || entry.price || 0);
+                                  });
+                                } else if (opt.price_delta || opt.priceDelta || opt.price) {
+                                  modifierTotal += Number(opt.price_delta || opt.priceDelta || opt.price || 0);
+                                }
+                              });
+                              
+                              const itemTotal = (basePrice + modifierTotal) * (item.quantity || 1);
+                              calculatedSubtotal += itemTotal;
+                              
+                              // 아이템별 세금 계산
+                              const itemTaxRate = item.taxRate || 0.05;
+                              const itemTaxDetails = item.taxDetails || [{ name: 'GST', rate: 5 }];
+                              
+                              itemTaxDetails.forEach((taxInfo: any) => {
+                                const taxName = taxInfo.name || 'Tax';
+                                const rate = taxInfo.rate || 5;
+                                const taxAmount = itemTotal * (rate / 100);
+                                
+                                if (!taxBreakdown[taxName]) {
+                                  taxBreakdown[taxName] = { rate, amount: 0 };
+                                }
+                                taxBreakdown[taxName].amount += taxAmount;
+                              });
+                              
+                              totalTax += itemTotal * itemTaxRate;
+                              
+                              return {
+                                name: item.name,
+                                quantity: item.quantity || 1,
+                                price: basePrice + modifierTotal, // 모디파이어 포함 가격
+                                totalPrice: itemTotal,
+                                modifiers: item.options || item.modifiers || [],
+                              };
+                            });
+                            
+                            // 최종 금액
+                            const subtotal = calculatedSubtotal > 0 ? calculatedSubtotal : Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0);
+                            const tax = totalTax > 0 ? totalTax : Number(selectedOrderDetail.fullOrder?.tax || 0);
+                            const total = subtotal + tax;
+                            
+                            // taxLines 생성
+                            const taxLines = Object.entries(taxBreakdown).map(([name, info]) => ({
+                              name,
+                              rate: info.rate,
+                              amount: info.amount
+                            }));
+                            
+                            const billData = {
+                              header: {
+                                orderNumber: deliveryOrderNumber || orderId,
+                                channel: 'DELIVERY',
+                                tableName: deliveryCompany || 'DELIVERY',
+                                serverName: '',
+                                deliveryCompany: deliveryCompany,
+                                deliveryOrderNumber: deliveryOrderNumber,
+                              },
+                              orderInfo: {
+                                channel: 'DELIVERY',
+                                tableName: deliveryCompany || 'DELIVERY',
+                                serverName: '',
+                                deliveryCompany: deliveryCompany,
+                                deliveryOrderNumber: deliveryOrderNumber,
+                              },
+                              items: billItems,
+                              guestSections: [],
+                              subtotal: subtotal,
+                              adjustments: [],
+                              taxLines: taxLines.length > 0 ? taxLines : [{ name: 'GST', rate: 5, amount: subtotal * 0.05 }],
+                              taxesTotal: tax,
+                              total: total,
+                              footer: {}
+                            };
+                            
+                            console.log('🧾 Delivery Bill data:', billData);
+                            
+                            await fetch(`${API_URL}/printers/print-bill`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ billData, copies: 1 })
+                            });
+                            console.log('🧾 Delivery Bill printed');
+                          } catch (err) {
+                            console.error('Print bill error:', err);
+                          }
+                        }}
+                        style={{ flex: '1' }}
+                        className="py-3 bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold rounded-lg transition shadow-md"
+                      >
+                        Print Bill
+                      </button>
+                      {/* Reprint 버튼 - Kitchen Ticket만 출력 (Pickup Time 포함) */}
+                      <button
+                        onClick={async () => {
+                          try {
+                            const orderId = selectedOrderDetail?.id;
+                            const deliveryCompany = selectedOrderDetail?.deliveryCompany || '';
+                            const deliveryOrderNumber = selectedOrderDetail?.deliveryOrderNumber || '';
+                            const pickupTime = selectedOrderDetail?.readyTimeLabel || selectedOrderDetail?.fullOrder?.ready_time || '';
+                            
+                            const items = (selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || []).map((item: any) => ({
+                              name: item.name,
+                              quantity: item.quantity || 1,
+                              price: item.price || 0,
+                              totalPrice: (item.price || 0) * (item.quantity || 1),
+                              modifiers: item.options || item.modifiers || [],
+                              memo: item.memo || '',
+                            }));
+                            
+                            // Kitchen Ticket 출력 (Ticket for Delivery 레이아웃, Pickup Time 포함)
+                            // posOrderId = POS 주문 순번 (orders 테이블의 id)
+                            const posOrderId = selectedOrderDetail?.order_id || selectedOrderDetail?.id;
+                            
+                            await fetch(`${API_URL}/printers/print-order`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                items: items,
+                                orderInfo: {
+                                  orderType: 'DELIVERY',
+                                  orderSource: deliveryCompany || 'DELIVERY',
+                                  orderNumber: deliveryOrderNumber || orderId,
+                                  deliveryCompany: deliveryCompany,
+                                  deliveryOrderNumber: deliveryOrderNumber,
+                                  pickupTime: pickupTime,
+                                  posOrderId: posOrderId, // POS 주문 순번
+                                },
+                                isReprint: true,
+                              })
+                            });
+                            console.log('🖨️ Kitchen Ticket reprinted for delivery (Pickup:', pickupTime, ')');
+                            
+                          } catch (err) {
+                            console.error('Reprint error:', err);
+                          }
+                        }}
+                        style={{ flex: '1' }}
+                        className="py-3 bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg transition shadow-md"
+                      >
+                        Reprint
+                      </button>
+                      {/* Pickup 버튼 - Delivery용 (Pay 없이 Pickup만) */}
+                      <button
+                        onClick={async () => {
+                          const orderId = selectedOrderDetail?.id;
+                          const actualOrderId = selectedOrderDetail?.order_id || orderId;
+                          
+                          if (actualOrderId) {
+                            try {
+                              // Delivery 주문: POS DB 상태 업데이트
+                              await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ status: 'PICKED_UP' }),
+                              });
+                              console.log('POS DB: Delivery order marked as PICKED_UP');
+                              
+                              // Delivery 주문 목록에서 즉시 제거
+                              setTogoOrders(prev => prev.filter(order => order.id !== orderId));
+                            } catch (error) {
+                              console.error('Pickup complete error:', error);
+                            }
+                          }
+                          
+                          // 모달 닫기
+                          setShowOrderDetailModal(false);
+                          setSelectedOrderDetail(null);
+                          setSelectedOrderType(null);
+                          
+                          // 목록 새로고침
+                          loadTogoOrders();
+                        }}
+                        style={{ flex: '1' }}
+                        className="py-3 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg transition shadow-md"
+                      >
+                        Pickup
+                      </button>
+                    </>
+                  ) : (
+                  /* Online/Togo 타입일 때: Print Bill, Reprint, Pay/Pickup 버튼 3개 */
+                  <>
+                  {/* Print Bill 버튼 */}
                   <button
                     onClick={async () => {
                       try {
@@ -9607,12 +10239,100 @@ const SalesPage: React.FC = () => {
                         console.error('Print bill error:', err);
                       }
                     }}
-                    style={{ flex: '3' }}
+                    style={{ flex: '1' }}
                     className="py-3 bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold rounded-lg transition shadow-md"
                   >
                     Print Bill
                   </button>
-                  {/* Pickup Complete 버튼 (4/11 ≈ 36%) */}
+                  {/* Reprint 버튼 - Kitchen Ticket 재출력 (기존 형식 그대로 + isReprint만 추가) */}
+                  <button
+                    onClick={async () => {
+                      try {
+                        const orderId = selectedOrderDetail?.id;
+                        const orderNum = selectedOrderType === 'togo' 
+                          ? String(orderId).padStart(3, '0')
+                          : (selectedOrderDetail.number || orderId);
+                        
+                        // 기존 Kitchen Ticket 형식과 동일하게 items 구성
+                        const printItems = (selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || []).map((item: any) => ({
+                          name: item.name,
+                          quantity: item.quantity || 1,
+                          price: item.price || 0,
+                          options: item.options || item.modifiers || [],
+                          memo: item.memo || '',
+                        }));
+                        
+                        // Pickup 시간 (HH:MM AM/PM 형식)
+                        const readyTime = selectedOrderDetail.readyTime || selectedOrderDetail.fullOrder?.readyTime ||
+                          selectedOrderDetail.ready_time || selectedOrderDetail.fullOrder?.ready_time ||
+                          selectedOrderDetail.pickupTime || selectedOrderDetail.fullOrder?.pickupTime;
+                        let pickupTimeLabel = selectedOrderDetail.readyTimeLabel || selectedOrderDetail.fullOrder?.readyTimeLabel || '';
+                        
+                        // readyTimeLabel이 없으면 readyTime에서 계산
+                        if (!pickupTimeLabel && readyTime) {
+                          const readyDate = new Date(readyTime);
+                          if (!isNaN(readyDate.getTime())) {
+                            pickupTimeLabel = readyDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                          }
+                        }
+                        
+                        // 그래도 없으면 time 필드에서 추출 시도
+                        if (!pickupTimeLabel && selectedOrderDetail.time) {
+                          pickupTimeLabel = selectedOrderDetail.time;
+                        }
+                        
+                        console.log('🕐 Reprint pickupTime:', pickupTimeLabel, 'readyTime:', readyTime);
+                        
+                        // 고객 정보
+                        const customerPhone = selectedOrderDetail.phone || selectedOrderDetail.customerPhone || 
+                          selectedOrderDetail.fullOrder?.customerPhone || selectedOrderDetail.customer_phone || '';
+                        const customerName = selectedOrderDetail.name || selectedOrderDetail.customerName || 
+                          selectedOrderDetail.fullOrder?.customerName || selectedOrderDetail.customer_name || '';
+                        
+                        // 결제 상태
+                        const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
+                        const isPaid = status === 'paid' || status === 'completed' || status === 'closed';
+                        
+                        // 주문 소스 (THEZONE, ONLINE 등)
+                        const orderSource = selectedOrderDetail.orderSource || selectedOrderDetail.fullOrder?.orderSource || 
+                          selectedOrderDetail.order_source || (selectedOrderType === 'online' ? 'THEZONE' : 'TOGO');
+                        
+                        const orderTypeDisplay = selectedOrderType === 'online' ? 'THEZONE' : 'TOGO';
+                        
+                        // 기존 Kitchen Ticket 형식 그대로 사용 + isReprint: true
+                        await fetch(`${API_URL}/printers/print-order`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            items: printItems,
+                            orderInfo: {
+                              orderNumber: orderNum,
+                              table: orderTypeDisplay,
+                              server: selectedOrderDetail.serverName || '',
+                              orderType: orderTypeDisplay,
+                              channel: orderTypeDisplay,
+                              orderSource: orderSource,
+                              pickupTime: pickupTimeLabel,
+                              pickupMinutes: selectedOrderDetail.pickupMinutes || selectedOrderDetail.prepTime || 0,
+                              kitchenNote: selectedOrderDetail.kitchenNote || selectedOrderDetail.fullOrder?.kitchenNote || '',
+                              customerPhone: customerPhone,
+                              customerName: customerName,
+                            },
+                            isReprint: true,
+                            isPaid: isPaid
+                          })
+                        });
+                        console.log('🖨️ Reprint sent for order:', orderNum);
+                      } catch (err) {
+                        console.error('Reprint error:', err);
+                      }
+                    }}
+                    style={{ flex: '1' }}
+                    className="py-3 bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg transition shadow-md"
+                  >
+                    Reprint
+                  </button>
+                  {/* Pay/Pickup 버튼 */}
                   <button
                     onClick={async () => {
                       // 결제 상태 확인
@@ -9620,11 +10340,11 @@ const SalesPage: React.FC = () => {
                       const isPaid = status === 'paid' || status === 'completed' || status === 'closed';
                       
                       if (!isPaid) {
-                        // UNPAID: 확인 모달 표시
+                        // UNPAID: 결제 모달 표시
                         const orderForPayment = {
                           id: selectedOrderDetail.id,
                           type: selectedOrderType === 'online' ? 'Online' : 'Togo',
-                          orderType: selectedOrderType, // online 또는 togo
+                          orderType: selectedOrderType,
                           number: selectedOrderType === 'togo' 
                             ? String(selectedOrderDetail.id).padStart(3, '0')
                             : (selectedOrderDetail.number || selectedOrderDetail.id),
@@ -9637,9 +10357,10 @@ const SalesPage: React.FC = () => {
                           items: selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || [],
                           localOrderId: selectedOrderDetail.localOrderId || selectedOrderDetail.fullOrder?.localOrderId || selectedOrderDetail.number,
                           fullOrder: selectedOrderDetail.fullOrder,
+                          status: selectedOrderDetail.fullOrder?.status || selectedOrderDetail.status || 'pending',
                         };
-                        setUnpaidPickupOrder(orderForPayment);
-                        setShowUnpaidPickupModal(true);
+                        setOnlineTogoPaymentOrder(orderForPayment);
+                        setShowOnlineTogoPaymentModal(true);
                         return;
                       }
                       
@@ -9695,51 +10416,13 @@ const SalesPage: React.FC = () => {
                       loadOnlineOrders();
                       loadTogoOrders();
                     }}
-                    style={{ flex: '4' }}
+                    style={{ flex: '1' }}
                     className="py-3 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg transition shadow-md"
                   >
-                    Pickup Complete
+                    Pay/Pickup
                   </button>
-                  {/* Payment 버튼 (4/11 ≈ 36%) */}
-                  {(() => {
-                    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
-                    const isPaid = status === 'paid' || status === 'completed' || status === 'closed';
-                    return (
-                      <button
-                        onClick={() => {
-                          if (isPaid) return; // 이미 결제됨
-                          // 결제 모달을 위한 주문 정보 설정
-                          const orderForPayment = {
-                            id: selectedOrderDetail.id,
-                            type: selectedOrderType === 'online' ? 'Online' : 'Togo',
-                            orderType: selectedOrderType,
-                            number: selectedOrderType === 'togo' 
-                              ? String(selectedOrderDetail.id).padStart(3, '0')
-                              : (selectedOrderDetail.number || selectedOrderDetail.id),
-                            time: selectedOrderDetail.time,
-                            phone: selectedOrderDetail.phone || selectedOrderDetail.customerPhone || '',
-                            name: selectedOrderDetail.name || selectedOrderDetail.customerName || '',
-                            total: Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0),
-                            subtotal: Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0),
-                            tax: Number(selectedOrderDetail.fullOrder?.tax || 0),
-                            items: selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || [],
-                            status: selectedOrderDetail.fullOrder?.status || selectedOrderDetail.status || 'pending',
-                          };
-                          setOnlineTogoPaymentOrder(orderForPayment);
-                          setShowOnlineTogoPaymentModal(true);
-                        }}
-                        disabled={isPaid}
-                        style={{ flex: '4' }}
-                        className={`py-3 text-white text-sm font-bold rounded-lg transition shadow-md ${
-                          isPaid 
-                            ? 'bg-gray-400 cursor-not-allowed' 
-                            : 'bg-blue-600 hover:bg-blue-700'
-                        }`}
-                      >
-                        {isPaid ? 'PAID' : 'Payment'}
-                      </button>
-                    );
-                  })()}
+                  </>
+                  )}
                 </div>
                 
                 {/* 주문 상세 정보 */}
@@ -9748,9 +10431,12 @@ const SalesPage: React.FC = () => {
                   <div className="bg-white rounded-lg p-3 shadow-sm">
                     <div className="flex justify-between items-center mb-1">
                       <div className="text-2xl font-bold text-gray-800">
-                        #{selectedOrderType === 'togo' 
-                          ? String(selectedOrderDetail.id).padStart(3, '0') 
-                          : (selectedOrderDetail.number || selectedOrderDetail.id)}
+                        {selectedOrderType === 'delivery'
+                          ? `${selectedOrderDetail.deliveryCompany || 'Delivery'} #${selectedOrderDetail.deliveryOrderNumber || selectedOrderDetail.id}`
+                          : `#${selectedOrderType === 'togo' 
+                              ? String(selectedOrderDetail.id).padStart(3, '0') 
+                              : (selectedOrderDetail.number || selectedOrderDetail.id)}`
+                        }
                       </div>
                       <div className="text-3xl font-bold text-red-600">
                         {(() => {
@@ -9797,11 +10483,49 @@ const SalesPage: React.FC = () => {
                     <div className="divide-y flex-1 overflow-auto" style={{ maxHeight: '120px' }}>
                       {(selectedOrderDetail.fullOrder?.items || []).length > 0 ? (
                         (selectedOrderDetail.fullOrder?.items || []).map((item: any, idx: number) => {
-                          // 모디파이어 표시 (options 배열에서)
-                          const modifierText = (item.options || [])
-                            .map((opt: any) => opt.choiceName || opt.name || '')
-                            .filter((n: string) => n)
+                          // 모디파이어 표시 (options 배열에서 - 다양한 구조 지원)
+                          const modifierNames: { name: string; price: number }[] = [];
+                          let modifierTotal = 0;
+                          (item.options || []).forEach((opt: any) => {
+                            // 케이스 1: 그룹 객체 {selectedEntries: [{name: "Add Avocado", price_delta: 2}], totalModifierPrice: 4}
+                            if (opt.selectedEntries && Array.isArray(opt.selectedEntries)) {
+                              opt.selectedEntries.forEach((entry: any) => {
+                                if (entry.name) {
+                                  const price = Number(entry.price_delta || entry.priceDelta || entry.price || 0);
+                                  modifierNames.push({ name: entry.name, price });
+                                }
+                              });
+                              // totalModifierPrice가 있으면 사용
+                              if (opt.totalModifierPrice !== undefined) {
+                                modifierTotal += Number(opt.totalModifierPrice || 0);
+                              }
+                            }
+                            // 케이스 2: 직접 modifier 객체 {name: "Add Avocado", price_delta: 2}
+                            else if (opt.choiceName || opt.name) {
+                              const price = Number(opt.price_delta || opt.priceDelta || opt.price || 0);
+                              modifierNames.push({ name: opt.choiceName || opt.name, price });
+                              modifierTotal += price;
+                            }
+                            // 케이스 3: 이름만 있는 경우
+                            else if (opt.modifierNames && Array.isArray(opt.modifierNames)) {
+                              opt.modifierNames.forEach((name: string) => {
+                                modifierNames.push({ name, price: 0 });
+                              });
+                            }
+                          });
+                          
+                          // modifierTotal이 0인데 modifierNames에 가격이 있으면 합산
+                          if (modifierTotal === 0 && modifierNames.length > 0) {
+                            modifierTotal = modifierNames.reduce((sum, m) => sum + Number(m.price || 0), 0);
+                          }
+                          
+                          // 모디파이어 텍스트: 이름 + 금액 (금액이 0이 아닌 경우만 표시)
+                          const modifierText = modifierNames
+                            .filter((m: any) => m.name)
+                            .map((m: any) => m.price > 0 ? `${m.name} (+$${Number(m.price).toFixed(2)})` : m.name)
                             .join(', ');
+                          const itemBasePrice = Number(item.price || item.subtotal || 0);
+                          const itemTotalPrice = itemBasePrice + modifierTotal;
                           
                           return (
                             <div key={idx} className="px-3 py-1">
@@ -9809,7 +10533,7 @@ const SalesPage: React.FC = () => {
                                 <div className="col-span-2 font-medium text-blue-600">{item.quantity || 1}</div>
                                 <div className="col-span-7 text-gray-800">{item.name}</div>
                                 <div className="col-span-3 text-right text-gray-600">
-                                  ${Number(item.price || item.subtotal || 0).toFixed(2)}
+                                  ${itemTotalPrice.toFixed(2)}
                                 </div>
                               </div>
                               {modifierText && (
@@ -9835,54 +10559,84 @@ const SalesPage: React.FC = () => {
                     
                     {/* 금액 요약 */}
                     <div className="border-t bg-gray-50 px-3 py-2 space-y-1">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Sub Total</span>
-                        <span>${Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0).toFixed(2)}</span>
-                      </div>
-                      {/* 할인 표시 */}
                       {(() => {
-                        const subtotalVal = Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0);
-                        const taxVal = selectedOrderDetail.fullOrder?.taxBreakdown?.reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0) || Number(selectedOrderDetail.fullOrder?.tax || 0);
-                        const totalVal = Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0);
-                        const discountCalc = subtotalVal - (totalVal - taxVal);
-                        const promoName = selectedOrderDetail.fullOrder?.promotionName || 
-                          selectedOrderDetail.fullOrder?.items?.find((i: any) => i.promotionName)?.promotionName || 
-                          'Promotion';
+                        // SubTotal 및 세금 재계산: 아이템 가격 + 모디파이어 금액, 아이템별 세금율 적용
+                        const items = selectedOrderDetail.fullOrder?.items || [];
+                        let calculatedSubtotal = 0;
+                        let totalTax = 0;
+                        const taxBreakdown: { [key: string]: { rate: number; amount: number } } = {};
                         
-                        if (discountCalc > 0.5) {
-                          return (
-                            <>
-                              <div className="flex justify-between text-sm text-green-600">
-                                <span>🎁 {promoName}:</span>
-                                <span>-${discountCalc.toFixed(2)}</span>
+                        items.forEach((item: any) => {
+                          const basePrice = Number(item.price || 0);
+                          let modifierTotal = 0;
+                          (item.options || []).forEach((opt: any) => {
+                            // 1순위: totalModifierPrice (그룹 전체 모디파이어 가격)
+                            if (opt.totalModifierPrice !== undefined && opt.totalModifierPrice !== null) {
+                              modifierTotal += Number(opt.totalModifierPrice || 0);
+                            }
+                            // 2순위: selectedEntries 배열에서 개별 price_delta 합산
+                            else if (opt.selectedEntries && Array.isArray(opt.selectedEntries)) {
+                              opt.selectedEntries.forEach((entry: any) => {
+                                modifierTotal += Number(entry.price_delta || entry.priceDelta || entry.price || 0);
+                              });
+                            }
+                            // 3순위: 직접 price_delta
+                            else if (opt.price_delta || opt.priceDelta || opt.price) {
+                              modifierTotal += Number(opt.price_delta || opt.priceDelta || opt.price || 0);
+                            }
+                          });
+                          const itemTotal = (basePrice + modifierTotal) * (item.quantity || 1);
+                          calculatedSubtotal += itemTotal;
+                          
+                          // 아이템별 세금 계산 (API에서 받은 taxRate, taxDetails 사용)
+                          const itemTaxRate = item.taxRate || 0.05; // 기본 5%
+                          const itemTaxDetails = item.taxDetails || [{ name: 'GST', rate: 5 }];
+                          
+                          // 각 세금별 금액 집계
+                          itemTaxDetails.forEach((taxInfo: any) => {
+                            const taxName = taxInfo.name || 'Tax';
+                            const rate = taxInfo.rate || 5; // 백분율
+                            const taxAmount = itemTotal * (rate / 100);
+                            
+                            if (!taxBreakdown[taxName]) {
+                              taxBreakdown[taxName] = { rate, amount: 0 };
+                            }
+                            taxBreakdown[taxName].amount += taxAmount;
+                          });
+                          
+                          totalTax += itemTotal * itemTaxRate;
+                        });
+                        
+                        // SubTotal이 0이면 저장된 값 사용
+                        const subtotalVal = calculatedSubtotal > 0 ? calculatedSubtotal : Number(selectedOrderDetail.fullOrder?.subtotal || selectedOrderDetail.total || 0);
+                        
+                        // 저장된 세금이 있으면 사용
+                        const storedTax = Number(selectedOrderDetail.fullOrder?.tax || 0);
+                        const finalTax = storedTax > 0 ? storedTax : totalTax;
+                        
+                        // Total
+                        const totalVal = subtotalVal + finalTax;
+                        
+                        return (
+                          <>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">Sub Total</span>
+                              <span>${subtotalVal.toFixed(2)}</span>
+                            </div>
+                            {/* 개별 세금 표시 (GST, PST 등) */}
+                            {Object.entries(taxBreakdown).map(([taxName, info]) => (
+                              <div key={taxName} className="flex justify-between text-sm">
+                                <span className="text-gray-600">{taxName} ({info.rate}%)</span>
+                                <span>${info.amount.toFixed(2)}</span>
                               </div>
-                              <div className="flex justify-between text-sm font-medium">
-                                <span>After Discount</span>
-                                <span>${(subtotalVal - discountCalc).toFixed(2)}</span>
-                              </div>
-                            </>
-                          );
-                        }
-                        return null;
+                            ))}
+                            <div className="flex justify-between text-base font-bold border-t pt-1">
+                              <span>Total</span>
+                              <span className="text-blue-600">${totalVal.toFixed(2)}</span>
+                            </div>
+                          </>
+                        );
                       })()}
-                      {/* 개별 세금 표시 (GST, PST 등) */}
-                      {selectedOrderDetail.fullOrder?.taxBreakdown && Array.isArray(selectedOrderDetail.fullOrder.taxBreakdown) && selectedOrderDetail.fullOrder.taxBreakdown.length > 0 ? (
-                        selectedOrderDetail.fullOrder.taxBreakdown.map((taxItem: any, idx: number) => (
-                          <div key={idx} className="flex justify-between text-sm">
-                            <span className="text-gray-600">{taxItem.name} ({taxItem.rate}%)</span>
-                            <span>${Number(taxItem.amount || 0).toFixed(2)}</span>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600">Tax</span>
-                          <span>${Number(selectedOrderDetail.fullOrder?.tax || 0).toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between text-base font-bold border-t pt-1">
-                        <span>Total</span>
-                        <span className="text-blue-600">${Number(selectedOrderDetail.fullOrder?.total || selectedOrderDetail.total || 0).toFixed(2)}</span>
-                      </div>
                     </div>
                     
                     {/* Paid/Unpaid 상태 */}
@@ -9897,6 +10651,7 @@ const SalesPage: React.FC = () => {
                         selectedOrderDetail.fullOrder?.paymentStatus === 'COMPLETED' ||
                         selectedOrderDetail.fullOrder?.paid === true ||
                         selectedOrderDetail.status === 'PAID' || 
+                        selectedOrderType === 'delivery' || // Delivery 주문은 항상 PAID
                         selectedOrderDetail.status === 'paid' ||
                         selectedOrderDetail.status === 'completed' ||
                         selectedOrderDetail.status === 'closed' ||
