@@ -1228,6 +1228,71 @@ const QsrOrderPage = () => {
   const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
   const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
   
+  // Online Settings Modal States
+  const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
+  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide'>('preptime');
+  const [prepTimeSettings, setPrepTimeSettings] = useState<{
+    thezoneorder: { mode: 'auto' | 'manual'; time: string };
+    ubereats: { mode: 'auto' | 'manual'; time: string };
+    doordash: { mode: 'auto' | 'manual'; time: string };
+    skipthedishes: { mode: 'auto' | 'manual'; time: string };
+  }>(() => {
+    const saved = localStorage.getItem('prepTimeSettings');
+    if (saved) { try { return JSON.parse(saved); } catch (e) { /* ignore */ } }
+    return { thezoneorder: { mode: 'auto', time: '20m' }, ubereats: { mode: 'auto', time: '20m' }, doordash: { mode: 'auto', time: '20m' }, skipthedishes: { mode: 'auto', time: '20m' } };
+  });
+  const [pauseSettings, setPauseSettings] = useState<{
+    thezoneorder: { paused: boolean; pauseUntil: Date | null };
+    ubereats: { paused: boolean; pauseUntil: Date | null };
+    doordash: { paused: boolean; pauseUntil: Date | null };
+    skipthedishes: { paused: boolean; pauseUntil: Date | null };
+  }>({ thezoneorder: { paused: false, pauseUntil: null }, ubereats: { paused: false, pauseUntil: null }, doordash: { paused: false, pauseUntil: null }, skipthedishes: { paused: false, pauseUntil: null } });
+  const [selectedPauseDuration, setSelectedPauseDuration] = useState<string | null>(null);
+  const [dayOffDates, setDayOffDates] = useState<{ date: string; channels: string; type: string }[]>([]);
+  const [dayOffCalendarMonth, setDayOffCalendarMonth] = useState<Date>(new Date());
+  const [dayOffSelectedDates, setDayOffSelectedDates] = useState<string[]>([]);
+  const [dayOffSelectedChannels, setDayOffSelectedChannels] = useState<string[]>(['all']);
+  const [dayOffType, setDayOffType] = useState<'closed' | 'extended' | 'early' | 'late'>('closed');
+  const [dayOffTime, setDayOffTime] = useState<{ start: string; end: string }>({ start: '09:00', end: '21:00' });
+  const [dayOffSaveStatus, setDayOffSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [menuHideCategories, setMenuHideCategories] = useState<Array<{ category_id: string; name: string; item_count: number; hidden_online: number; hidden_delivery: number; }>>([]);
+  const [menuHideItems, setMenuHideItems] = useState<Array<{ item_id: string; name: string; price: number; hidden_online: boolean; hidden_delivery: boolean; online_start?: string; online_end?: string; delivery_start?: string; delivery_end?: string; }>>([]);
+  const [menuHideSelectedCategory, setMenuHideSelectedCategory] = useState<string | null>(null);
+  const [menuHideLoading, setMenuHideLoading] = useState<boolean>(false);
+  const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
+  const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
+  
+  // Opening/Closing Modal States
+  const [isDayClosed, setIsDayClosed] = useState<boolean>(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const closedDate = localStorage.getItem('pos_last_closed_date');
+    const openedDate = localStorage.getItem('pos_last_opened_date');
+    if (closedDate === today && openedDate !== today) return true;
+    if (openedDate === today) return false;
+    return true;
+  });
+  const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
+  const [showClosingModal, setShowClosingModal] = useState<boolean>(false);
+  const [closingStep, setClosingStep] = useState<'report' | 'cash'>('report');
+  const [zReportData, setZReportData] = useState<any>(null);
+  const [isLoadingZReport, setIsLoadingZReport] = useState<boolean>(false);
+  const cashDenominations = [
+    { label: '1¢', key: 'cent1', value: 0.01 }, { label: '5¢', key: 'cent5', value: 0.05 },
+    { label: '10¢', key: 'cent10', value: 0.10 }, { label: '25¢', key: 'cent25', value: 0.25 },
+    { label: '$1', key: 'dollar1', value: 1 }, { label: '$5', key: 'dollar5', value: 5 },
+    { label: '$10', key: 'dollar10', value: 10 }, { label: '$20', key: 'dollar20', value: 20 },
+    { label: '$50', key: 'dollar50', value: 50 }, { label: '$100', key: 'dollar100', value: 100 }
+  ];
+  const [openingCashCounts, setOpeningCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  const [closingCashCounts, setClosingCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  const [focusedOpeningDenom, setFocusedOpeningDenom] = useState<string | null>(null);
+  const [focusedClosingDenom, setFocusedClosingDenom] = useState<string | null>(null);
+  const calculateCashTotal = (counts: typeof openingCashCounts) => cashDenominations.reduce((sum, d) => sum + (counts[d.key as keyof typeof counts] * d.value), 0);
+  const openingCashTotal = calculateCashTotal(openingCashCounts);
+  const closingCashTotal = calculateCashTotal(closingCashCounts);
+  const resetOpeningCashCounts = () => setOpeningCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  const resetClosingCashCounts = () => setClosingCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  
   const [selectedDiscountType, setSelectedDiscountType] = useState<string>('');
   const [discountPercentage, setDiscountPercentage] = useState<string>('');
   const [customDiscountPercentage, setCustomDiscountPercentage] = useState<string>('');
@@ -2322,6 +2387,220 @@ const handleVoidPinClear = useCallback(() => {
       alert(`Print failed: ${error.message}`);
     }
   };
+
+  /**
+   * Online Settings (Day Off) 관련 함수들
+   */
+  const toggleDayOffSelection = (dateStr: string) => {
+    setDayOffSaveStatus('idle');
+    setDayOffSelectedDates(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr].sort());
+  };
+
+  const toggleDayOffChannel = (channel: string) => {
+    setDayOffSaveStatus('idle');
+    if (channel === 'all') {
+      setDayOffSelectedChannels(prev => prev.includes('all') ? [] : ['all']);
+    } else {
+      setDayOffSelectedChannels(prev => {
+        const newChannels = prev.filter(c => c !== 'all');
+        return newChannels.includes(channel) ? newChannels.filter(c => c !== channel) : [...newChannels, channel];
+      });
+    }
+  };
+
+  const saveDayOffs = async () => {
+    if (dayOffSelectedDates.length === 0 || dayOffSaveStatus === 'saving') return;
+    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    setDayOffSaveStatus('saving');
+    const channelsStr = dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes('all') ? 'all' : dayOffSelectedChannels.join(',');
+    try {
+      const res = await fetch(`${API_URL}/online-orders/day-off/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dates: dayOffSelectedDates.map(date => ({ date, channels: channelsStr, type: dayOffType, time: dayOffType !== 'closed' ? dayOffTime : null })), restaurantId })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDayOffDates(prev => {
+          const existingDates = prev.filter(d => !dayOffSelectedDates.includes(d.date));
+          return [...existingDates, ...(data.dayOffs || dayOffSelectedDates.map(date => ({ date, channels: channelsStr, type: dayOffType })))].sort((a, b) => a.date.localeCompare(b.date));
+        });
+        setDayOffSelectedDates([]);
+        setDayOffSaveStatus('saved');
+        setTimeout(() => setDayOffSaveStatus('idle'), 2000);
+      }
+    } catch (err) {
+      console.error('Day off save error:', err);
+      setDayOffSaveStatus('idle');
+    }
+  };
+
+  const removeDayOff = async (dateStr: string) => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const url = restaurantId ? `${API_URL}/online-orders/day-off/${dateStr}?restaurantId=${restaurantId}` : `${API_URL}/online-orders/day-off/${dateStr}`;
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.ok) {
+        setDayOffDates(prev => prev.filter(d => d.date !== dateStr));
+        setDayOffSaveStatus('idle');
+      }
+    } catch (err) {
+      console.error('Day off remove error:', err);
+    }
+  };
+
+  const loadMenuHideCategories = useCallback(async () => {
+    try {
+      setMenuHideLoading(true);
+      const menuId = defaultMenu.menuId || localStorage.getItem('menuId') || '200005';
+      const response = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${menuId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) setMenuHideCategories(data.categories);
+      }
+    } catch (error) {
+      console.error('Failed to load menu hide categories:', error);
+    } finally {
+      setMenuHideLoading(false);
+    }
+  }, [API_URL, defaultMenu.menuId]);
+
+  const loadMenuHideItems = useCallback(async (categoryId: string) => {
+    try {
+      setMenuHideLoading(true);
+      const response = await fetch(`${API_URL}/menu-visibility/items/${categoryId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) setMenuHideItems(data.items);
+      }
+    } catch (error) {
+      console.error('Failed to load menu hide items:', error);
+    } finally {
+      setMenuHideLoading(false);
+    }
+  }, [API_URL]);
+
+  const toggleItemVisibility = async (itemId: string, field: 'online_visible' | 'delivery_visible') => {
+    const item = menuHideItems.find(i => i.item_id === itemId);
+    if (!item) return;
+    const newValue = field === 'online_visible' ? !item.hidden_online : !item.hidden_delivery;
+    try {
+      const response = await fetch(`${API_URL}/menu-visibility/items/${itemId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: newValue })
+      });
+      if (response.ok) {
+        setMenuHideItems(prev => prev.map(i => i.item_id === itemId ? { ...i, [field === 'online_visible' ? 'hidden_online' : 'hidden_delivery']: !newValue } : i));
+        if (menuHideSelectedCategory) {
+          const catResponse = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${defaultMenu.menuId || localStorage.getItem('menuId') || '200005'}`);
+          if (catResponse.ok) {
+            const catData = await catResponse.json();
+            if (catData.success) setMenuHideCategories(catData.categories);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to toggle item visibility:', error);
+    }
+  };
+
+  // Menu Hide 탭 열릴 때 카테고리 로드
+  useEffect(() => {
+    if (onlineModalTab === 'menuhide' && showPrepTimeModal) {
+      loadMenuHideCategories();
+      setMenuHideSelectedCategory(null);
+      setMenuHideItems([]);
+    }
+  }, [onlineModalTab, showPrepTimeModal, loadMenuHideCategories]);
+
+  // 카테고리 선택 시 아이템 로드
+  useEffect(() => {
+    if (menuHideSelectedCategory) {
+      loadMenuHideItems(menuHideSelectedCategory);
+    }
+  }, [menuHideSelectedCategory, loadMenuHideItems]);
+
+  /**
+   * Opening/Closing 관련 함수들
+   */
+  const handleOpeningNumpadClick = (num: string) => {
+    if (!focusedOpeningDenom) return;
+    const currentValue = openingCashCounts[focusedOpeningDenom as keyof typeof openingCashCounts];
+    let newValue: number;
+    if (num === 'C') { newValue = 0; }
+    else if (num === '⌫') { newValue = Math.floor(currentValue / 10); }
+    else { newValue = Math.min(999, currentValue * 10 + parseInt(num)); }
+    setOpeningCashCounts(prev => ({ ...prev, [focusedOpeningDenom]: newValue }));
+  };
+
+  const handleClosingNumpadClick = (num: string) => {
+    if (!focusedClosingDenom) return;
+    const currentValue = closingCashCounts[focusedClosingDenom as keyof typeof closingCashCounts];
+    let newValue: number;
+    if (num === 'C') { newValue = 0; }
+    else if (num === '⌫') { newValue = Math.floor(currentValue / 10); }
+    else { newValue = Math.min(999, currentValue * 10 + parseInt(num)); }
+    setClosingCashCounts(prev => ({ ...prev, [focusedClosingDenom]: newValue }));
+  };
+
+  const handleOpenDay = async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      await fetch(`${API_URL}/pos/open-day`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: today, openingCash: openingCashTotal, cashCounts: openingCashCounts })
+      });
+      localStorage.setItem('pos_last_opened_date', today);
+      setIsDayClosed(false);
+      setShowOpeningModal(false);
+      resetOpeningCashCounts();
+    } catch (error) {
+      console.error('Failed to open day:', error);
+      alert('Failed to open day');
+    }
+  };
+
+  const handleCloseDay = async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      await fetch(`${API_URL}/pos/close-day`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: today, closingCash: closingCashTotal, cashCounts: closingCashCounts, zReportData })
+      });
+      localStorage.setItem('pos_last_closed_date', today);
+      setIsDayClosed(true);
+      setShowClosingModal(false);
+      resetClosingCashCounts();
+      setClosingStep('report');
+    } catch (error) {
+      console.error('Failed to close day:', error);
+      alert('Failed to close day');
+    }
+  };
+
+  const fetchZReport = async () => {
+    setIsLoadingZReport(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API_URL}/reports/z-report?date=${today}`);
+      const data = await response.json();
+      setZReportData(data);
+    } catch (error) {
+      console.error('Failed to fetch Z-Report:', error);
+    } finally {
+      setIsLoadingZReport(false);
+    }
+  };
+
+  // Closing Modal 열릴 때 Z-Report 로드
+  useEffect(() => {
+    if (showClosingModal && closingStep === 'report') {
+      fetchZReport();
+    }
+  }, [showClosingModal, closingStep]);
 
   // Open Void modal
   const handleOpenVoid = async () => {
@@ -10157,10 +10436,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                         {showQsrMoreMenu && (
                           <div className="absolute bottom-full right-0 mb-1 w-40 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
-                            <button onClick={() => { setShowQsrMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Wait List</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Gift Card</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Online</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Opening/Closing</button>
+                            <button onClick={() => { setShowQsrMoreMenu(false); alert('Wait List feature coming soon'); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Wait List</button>
+                            <button onClick={() => { setShowQsrMoreMenu(false); resetGiftCardForm(); setGiftCardMode('sell'); setShowGiftCardModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Gift Card</button>
+                            <button onClick={() => { setShowQsrMoreMenu(false); setOnlineModalTab('preptime'); setShowPrepTimeModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Online</button>
+                            <button onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">{isDayClosed ? 'Opening' : 'Closing'}</button>
                             <button onClick={() => { setShowQsrMoreMenu(false); navigate('/backoffice'); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Back Office</button>
                             <button onClick={() => { setShowQsrMoreMenu(false); window.close(); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Goto Windows</button>
                           </div>
@@ -14102,6 +14381,315 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         autoConfirm={false}
         soundEnabled={true}
       />
+
+      {/* Online Settings Modal (Prep Time, Pause, Day Off, Menu Hide) */}
+      {showPrepTimeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-[644px]" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
+              <h2 className="text-lg font-bold text-white">Online Settings</h2>
+              <button onClick={() => setShowPrepTimeModal(false)} className="text-white hover:text-gray-300 text-xl font-bold">✕</button>
+            </div>
+            {/* Tabs */}
+            <div className="flex gap-2 p-3 bg-gray-100">
+              <button onClick={() => setOnlineModalTab('preptime')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'preptime' ? 'bg-white text-blue-700 shadow-md border-2 border-blue-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Prep Time</button>
+              <button onClick={() => setOnlineModalTab('pause')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Pause</button>
+              <button onClick={() => setOnlineModalTab('dayoff')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Day Off</button>
+              <button onClick={() => setOnlineModalTab('menuhide')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'menuhide' ? 'bg-white text-purple-700 shadow-md border-2 border-purple-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Menu Hide</button>
+            </div>
+            {/* Tab Content */}
+            <div className="p-4 h-[437px] overflow-auto">
+              {/* Prep Time Tab */}
+              {onlineModalTab === 'preptime' && (
+                <div className="flex flex-col h-full">
+                  <table className="w-full border-collapse flex-1">
+                    <thead>
+                      <tr className="text-xs text-gray-500 border-b">
+                        <th className="text-left py-2 font-medium">Service</th>
+                        <th className="text-center py-2 font-medium">Mode</th>
+                        <th className="text-center py-2 font-medium">Prep Time</th>
+                        <th className="w-16"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).map((channel, idx) => {
+                        const labels: Record<string, string> = { thezoneorder: 'TheZoneOrder', ubereats: 'UberEats', doordash: 'DoorDash', skipthedishes: 'SkipTheDishes' };
+                        return (
+                          <tr key={channel} className="border-b border-gray-200">
+                            <td className="py-4"><span className="text-base font-bold text-gray-800">{labels[channel]}</span></td>
+                            <td className="py-4">
+                              <div className="flex justify-center">
+                                <div className="inline-flex bg-gray-100 rounded-lg p-1">
+                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'auto' } }))} className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings[channel].mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Auto</button>
+                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'manual' } }))} className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings[channel].mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Manual</button>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-4">
+                              <select value={prepTimeSettings[channel].time} onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], time: e.target.value } }))} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500">
+                                {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => <option key={time} value={time}>{time}</option>)}
+                              </select>
+                            </td>
+                            <td className="py-4 pl-3">
+                              {idx === 0 && (
+                                <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, time: prev.thezoneorder.time }, doordash: { ...prev.doordash, time: prev.thezoneorder.time }, skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time } }))} className="px-3 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold whitespace-nowrap">Apply All</button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div className="mt-2 pt-2 border-t border-gray-200">
+                    <button onClick={async () => {
+                      try {
+                        const response = await fetch(`${API_URL}/online-orders/prep-time-settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: prepTimeSettings }) });
+                        const data = await response.json();
+                        if (data.success) { alert('Prep Time settings saved!'); localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings)); }
+                        else { alert('Failed to save: ' + (data.error || 'Unknown error')); }
+                      } catch (error) { alert('Failed to save settings'); }
+                    }} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Save</button>
+                  </div>
+                </div>
+              )}
+              {/* Pause Tab */}
+              {onlineModalTab === 'pause' && (
+                <div className="flex flex-col h-full justify-between">
+                  <div className="flex items-center justify-between p-3 bg-slate-100 rounded-lg">
+                    <div className="flex items-center gap-4">
+                      <div className="text-center"><div className="text-xs text-gray-500">Now</div><div className="text-xl font-bold text-gray-800">{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div></div>
+                      <div className="text-2xl text-gray-400">→</div>
+                      <div className="text-center"><div className="text-xs text-gray-500">Resume at</div><div className="text-xl font-bold text-orange-600">{selectedPauseDuration ? (() => { const durationMap: { [key: string]: number } = { '15m': 15, '30m': 30, '1h': 60, '2h': 120, '3h': 180, '4h': 240, '5h': 300, 'Today': -1 }; const min = durationMap[selectedPauseDuration]; const previewTime = min === -1 ? new Date(new Date().setHours(23, 59, 59, 999)) : new Date(Date.now() + min * 60000); return previewTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); })() : '--:--'}</div></div>
+                    </div>
+                    <button onClick={async () => { const restaurantId = localStorage.getItem('firebaseRestaurantId'); if (!restaurantId) { alert('Restaurant ID not found'); return; } try { await fetch(`${API_URL}/online-orders/resume/${restaurantId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); setPauseSettings({ thezoneorder: { paused: false, pauseUntil: null }, ubereats: { paused: false, pauseUntil: null }, doordash: { paused: false, pauseUntil: null }, skipthedishes: { paused: false, pauseUntil: null } }); setSelectedPauseDuration(null); } catch (error) { alert('Resume failed'); } }} className="px-5 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg text-base font-bold shadow-md">Resume All</button>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg border">
+                    <div className="grid grid-cols-5 gap-3">
+                      <button onClick={() => { const allSelected = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused); setPauseSettings(prev => ({ thezoneorder: { ...prev.thezoneorder, paused: !allSelected }, ubereats: { ...prev.ubereats, paused: !allSelected }, doordash: { ...prev.doordash, paused: !allSelected }, skipthedishes: { ...prev.skipthedishes, paused: !allSelected } })); }} className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused) ? 'bg-gray-700 text-white border-gray-800' : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'}`}>All</button>
+                      {(['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).map((channel) => {
+                        const labels = { thezoneorder: 'TZO', ubereats: 'Uber', doordash: 'Door', skipthedishes: 'Skip' };
+                        return <button key={channel} onClick={() => setPauseSettings(prev => ({ ...prev, [channel]: { ...prev[channel], paused: !prev[channel].paused } }))} className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${pauseSettings[channel].paused ? 'bg-orange-500 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'}`}>{labels[channel]}</button>;
+                      })}
+                    </div>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg border">
+                    <div className="grid grid-cols-4 gap-3">
+                      {[{ label: '15m', min: 15 }, { label: '30m', min: 30 }, { label: '1h', min: 60 }, { label: '2h', min: 120 }, { label: '3h', min: 180 }, { label: '4h', min: 240 }, { label: '5h', min: 300 }, { label: 'Today', min: -1 }].map(({ label, min }) => (
+                        <button key={label} onClick={() => { setSelectedPauseDuration(label); const pauseUntil = min === -1 ? new Date(new Date().setHours(23, 59, 59, 999)) : new Date(Date.now() + min * 60000); setPauseSettings(prev => { const updated = { ...prev }; (['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const).forEach((ch) => { if (prev[ch].paused) { updated[ch] = { paused: true, pauseUntil }; } }); return updated; }); }} className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${selectedPauseDuration === label ? 'bg-orange-600 text-white border-orange-700 shadow-md' : 'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200'}`}>{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <button onClick={async () => { try { const response = await fetch(`${API_URL}/online-orders/pause-settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: { thezoneorder: { paused: pauseSettings.thezoneorder.paused, pausedUntil: pauseSettings.thezoneorder.pauseUntil?.toISOString() || null }, ubereats: { paused: pauseSettings.ubereats.paused, pausedUntil: pauseSettings.ubereats.pauseUntil?.toISOString() || null }, doordash: { paused: pauseSettings.doordash.paused, pausedUntil: pauseSettings.doordash.pauseUntil?.toISOString() || null }, skipthedishes: { paused: pauseSettings.skipthedishes.paused, pausedUntil: pauseSettings.skipthedishes.pauseUntil?.toISOString() || null } } }) }); const data = await response.json(); if (data.success) { alert('Pause settings saved!'); } else { alert('Failed to save'); } } catch (error) { alert('Failed to save settings'); } }} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Save</button>
+                  </div>
+                </div>
+              )}
+              {/* Day Off Tab */}
+              {onlineModalTab === 'dayoff' && (
+                <div className="flex flex-col h-full">
+                  <div className="flex gap-3 flex-1">
+                    {/* Channels */}
+                    <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '16%' }}>
+                      <div className="text-sm font-bold text-orange-500 mb-2">Channels</div>
+                      <div className="space-y-2">
+                        {[{ id: 'all', name: 'All' }, { id: 'thezoneorder', name: 'TZO' }, { id: 'ubereats', name: 'Uber' }, { id: 'doordash', name: 'Door' }, { id: 'skipthedishes', name: 'Skip' }].map((channel) => {
+                          const isAllSelected = dayOffSelectedChannels.includes('all');
+                          const isSelected = channel.id === 'all' ? isAllSelected : isAllSelected || dayOffSelectedChannels.includes(channel.id);
+                          return <button key={channel.id} onClick={() => toggleDayOffChannel(channel.id)} className={`w-full py-2 px-2 rounded-lg text-sm font-semibold text-center transition-all border-2 ${isSelected ? 'bg-orange-500 text-white border-orange-600' : 'bg-white text-gray-600 hover:bg-gray-100 border-orange-300'}`}>{channel.name}</button>;
+                        })}
+                      </div>
+                    </div>
+                    {/* Calendar */}
+                    <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '54%' }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <button onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() - 1, 1))} className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white">◀</button>
+                        <div className="text-base font-bold text-gray-800">{dayOffCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div>
+                        <button onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() + 1, 1))} className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white">▶</button>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 mb-1">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => <div key={idx} className="text-center text-xs font-semibold text-gray-500 py-1">{day}</div>)}</div>
+                      <div className="grid grid-cols-7 gap-1 flex-1">
+                        {(() => {
+                          const year = dayOffCalendarMonth.getFullYear(); const month = dayOffCalendarMonth.getMonth(); const firstDay = new Date(year, month, 1).getDay(); const daysInMonth = new Date(year, month + 1, 0).getDate(); const today = new Date().toISOString().split('T')[0]; const cells = [];
+                          for (let i = 0; i < firstDay; i++) cells.push(<div key={`empty-${i}`} className="h-8" />);
+                          for (let day = 1; day <= daysInMonth; day++) {
+                            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`; const savedDayOff = dayOffDates.find(d => d.date === dateStr); const isSavedDayOff = !!savedDayOff; const isSelected = dayOffSelectedDates.includes(dateStr); const isToday = dateStr === today; const isPast = dateStr < today;
+                            cells.push(<button key={dateStr} onClick={() => !isPast && toggleDayOffSelection(dateStr)} disabled={isPast} className={`h-8 rounded-lg text-sm font-semibold transition-all ${isPast ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-white cursor-pointer'} ${isSavedDayOff ? (savedDayOff?.type === 'closed' ? 'bg-red-500 text-white' : savedDayOff?.type === 'extended' ? 'bg-green-500 text-white' : savedDayOff?.type === 'early' ? 'bg-yellow-500 text-white' : 'bg-purple-500 text-white') : ''} ${isSelected && !isSavedDayOff ? 'bg-blue-500 text-white' : ''} ${isToday && !isSavedDayOff && !isSelected ? 'ring-2 ring-blue-400' : ''}`}>{day}</button>);
+                          }
+                          return cells;
+                        })()}
+                      </div>
+                    </div>
+                    {/* Type + Save */}
+                    <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '30%' }}>
+                      <div className="text-xs font-bold text-gray-700 mb-1">Type</div>
+                      <div className="grid grid-cols-2 gap-1.5 mb-2">
+                        {[{ id: 'closed', name: 'Closed', color: 'red' }, { id: 'extended', name: 'Ext Open', color: 'green' }, { id: 'early', name: 'Early Close', color: 'yellow' }, { id: 'late', name: 'Late Open', color: 'purple' }].map((type) => (
+                          <button key={type.id} onClick={() => setDayOffType(type.id as any)} className={`py-2.5 px-1 rounded-lg text-xs font-bold text-center transition-all min-h-[40px] ${dayOffType === type.id ? (type.id === 'closed' ? 'bg-red-500 text-white shadow-md' : type.id === 'extended' ? 'bg-green-500 text-white shadow-md' : type.id === 'early' ? 'bg-yellow-500 text-white shadow-md' : 'bg-purple-500 text-white shadow-md') : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-300 active:bg-gray-300'}`}>{type.name}</button>
+                        ))}
+                      </div>
+                      {dayOffType !== 'closed' && (
+                        <div className="mb-2 p-2 bg-white rounded-lg border border-gray-200">
+                          <div className="text-xs text-gray-500 mb-1 font-medium">{dayOffType === 'extended' ? 'Open Until' : dayOffType === 'early' ? 'Close At' : 'Open At'}</div>
+                          <select value={dayOffType === 'late' ? dayOffTime.start : dayOffTime.end} onChange={(e) => setDayOffTime(prev => dayOffType === 'late' ? { ...prev, start: e.target.value } : { ...prev, end: e.target.value })} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm font-medium">{Array.from({ length: 24 }, (_, i) => { const hour = i.toString().padStart(2, '0'); return <option key={hour} value={`${hour}:00`}>{hour}:00</option>; })}</select>
+                        </div>
+                      )}
+                      <div className="text-xs text-gray-500 mb-2 text-center">{dayOffSelectedDates.length} dates, {dayOffSelectedChannels.includes('all') ? 'All' : dayOffSelectedChannels.length} channels</div>
+                      <div className="pt-2 border-t border-gray-200">
+                        <button onClick={saveDayOffs} disabled={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0} className={`w-full py-3 rounded-lg font-bold text-lg transition-all shadow-md ${dayOffSaveStatus === 'saving' ? 'bg-gray-400 text-white cursor-wait' : dayOffSelectedDates.length > 0 ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}>{dayOffSaveStatus === 'saving' ? 'Saving...' : 'Save'}</button>
+                      </div>
+                      {dayOffSaveStatus === 'saved' && <div className="mt-2 text-center text-sm text-green-600 font-medium">✓ Saved!</div>}
+                      {dayOffSelectedDates.length > 0 && <button onClick={() => { setDayOffSelectedDates([]); setDayOffSaveStatus('idle'); }} className="mt-2 w-full py-2 text-sm text-gray-500 hover:text-gray-700 hover:underline">Clear Selection</button>}
+                    </div>
+                  </div>
+                  {/* Scheduled */}
+                  <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-200">
+                    <div className="text-sm font-bold text-gray-700 mb-2">Scheduled ({dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length})</div>
+                    {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length === 0 ? <div className="text-sm text-gray-400 text-center py-2">No scheduled day offs</div> : (
+                      <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                        {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).sort((a, b) => a.date.localeCompare(b.date)).map((d) => {
+                          const typeColor = d.type === 'closed' ? 'bg-red-100 text-red-700 border-red-300' : d.type === 'extended' ? 'bg-green-100 text-green-700 border-green-300' : d.type === 'early' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' : 'bg-purple-100 text-purple-700 border-purple-300';
+                          return <div key={`${d.date}-${d.channels}`} className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border ${typeColor}`}><span className="font-bold">{new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span><span className="text-xs opacity-75">{d.channels === 'all' ? 'All' : d.channels}</span><span className="px-1.5 py-0.5 rounded text-xs bg-white bg-opacity-50">{d.type === 'closed' ? 'Closed' : d.type === 'extended' ? 'Ext' : d.type === 'early' ? 'Early' : 'Late'}</span><button onClick={() => removeDayOff(d.date)} className="hover:opacity-70 font-bold ml-1">×</button></div>;
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* Menu Hide Tab */}
+              {onlineModalTab === 'menuhide' && (
+                <div className="flex flex-col h-full">
+                  <div className="text-sm text-gray-500 mb-2">Hide menu items or set time limits for Online/Delivery orders.</div>
+                  <div className="flex gap-3 flex-1 min-h-0">
+                    <div className="w-1/3 bg-gray-50 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                      <div className="bg-gray-700 text-white text-sm font-bold px-3 py-2 text-center">Categories</div>
+                      <div className="flex-1 overflow-y-auto">{menuHideLoading && menuHideCategories.length === 0 ? <div className="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div> : menuHideCategories.length === 0 ? <div className="flex items-center justify-center h-full text-gray-400 text-sm">No categories</div> : menuHideCategories.map((cat) => <button key={cat.category_id} onClick={() => { setMenuHideSelectedCategory(cat.category_id); setMenuHideSelectedItem(null); setMenuHideEditMode(null); }} className={`w-full px-3 py-2 text-left text-sm border-b border-gray-200 ${menuHideSelectedCategory === cat.category_id ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'}`}><div className="font-medium">{cat.name}</div><div className="text-xs text-gray-500">{cat.item_count} items {(cat.hidden_online > 0 || cat.hidden_delivery > 0) && <span className="text-red-500">({cat.hidden_online + cat.hidden_delivery} hidden)</span>}</div></button>)}</div>
+                    </div>
+                    <div className="w-2/3 bg-gray-50 rounded-lg border border-gray-200 overflow-hidden flex flex-col">
+                      <div className="bg-gray-700 text-white text-sm font-bold px-3 py-2 text-center">Items</div>
+                      <div className="flex-1 overflow-y-auto">{!menuHideSelectedCategory ? <div className="flex items-center justify-center h-full text-gray-400 text-sm">Select a category</div> : menuHideLoading ? <div className="flex items-center justify-center h-full text-gray-400 text-sm">Loading...</div> : menuHideItems.length === 0 ? <div className="flex items-center justify-center h-full text-gray-400 text-sm">No items</div> : menuHideItems.map((item) => (
+                        <div key={item.item_id} className="px-3 py-2 border-b border-gray-200">
+                          <div className="flex items-center justify-between">
+                            <div><div className="font-medium text-sm">{item.name}</div><div className="text-xs text-gray-500">${item.price?.toFixed(2)}</div></div>
+                            <div className="flex gap-2">
+                              <button onClick={() => toggleItemVisibility(item.item_id, 'online_visible')} className={`px-3 py-1.5 rounded text-xs font-bold ${item.hidden_online ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-green-100 text-green-700 border border-green-300'}`}>{item.hidden_online ? '🚫 Online' : '✓ Online'}</button>
+                              <button onClick={() => toggleItemVisibility(item.item_id, 'delivery_visible')} className={`px-3 py-1.5 rounded text-xs font-bold ${item.hidden_delivery ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-green-100 text-green-700 border border-green-300'}`}>{item.hidden_delivery ? '🚫 Delivery' : '✓ Delivery'}</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Opening Modal */}
+      {showOpeningModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-[500px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 bg-green-600 rounded-t-xl">
+              <h2 className="text-xl font-bold text-white">🌅 Opening Day</h2>
+              <button onClick={() => setShowOpeningModal(false)} className="text-white hover:text-gray-200 text-2xl font-bold">✕</button>
+            </div>
+            <div className="p-5">
+              <div className="mb-4 text-center">
+                <p className="text-lg font-semibold text-gray-700">Enter Starting Cash</p>
+                <p className="text-sm text-gray-500">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+              </div>
+              <div className="grid grid-cols-5 gap-2 mb-4">
+                {cashDenominations.map((denom) => (
+                  <div key={denom.key} onClick={() => setFocusedOpeningDenom(denom.key)} className={`p-2 rounded-lg border-2 cursor-pointer text-center ${focusedOpeningDenom === denom.key ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                    <div className="text-xs font-bold text-gray-600">{denom.label}</div>
+                    <div className="text-lg font-bold">{openingCashCounts[denom.key as keyof typeof openingCashCounts]}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-4 gap-2 mb-4">
+                {['7', '8', '9', 'C', '4', '5', '6', '⌫', '1', '2', '3', '0'].map((num) => (
+                  <button key={num} onClick={() => handleOpeningNumpadClick(num)} className={`py-3 rounded-lg font-bold text-lg ${num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200' : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200' : 'bg-gray-100 hover:bg-gray-200'}`}>{num}</button>
+                ))}
+              </div>
+              <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg mb-4">
+                <span className="font-bold text-gray-700">Total Cash:</span>
+                <span className="text-2xl font-bold text-green-600">${openingCashTotal.toFixed(2)}</span>
+              </div>
+              <button onClick={handleOpenDay} className="w-full py-4 bg-green-500 hover:bg-green-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Open Day</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Closing Modal */}
+      {showClosingModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 bg-red-600 rounded-t-xl flex-shrink-0">
+              <h2 className="text-xl font-bold text-white">🌙 Closing Day</h2>
+              <button onClick={() => { setShowClosingModal(false); setClosingStep('report'); }} className="text-white hover:text-gray-200 text-2xl font-bold">✕</button>
+            </div>
+            <div className="p-5 flex-1 overflow-auto">
+              {closingStep === 'report' && (
+                <>
+                  <div className="mb-4 text-center">
+                    <p className="text-lg font-semibold text-gray-700">Z-Report Summary</p>
+                    <p className="text-sm text-gray-500">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                  </div>
+                  {isLoadingZReport ? <div className="flex items-center justify-center py-10"><div className="h-8 w-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin"></div></div> : zReportData ? (
+                    <div className="space-y-3 mb-4">
+                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Total Orders:</span><span className="font-bold">{zReportData.totalOrders || 0}</span></div>
+                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Gross Sales:</span><span className="font-bold">${(zReportData.grossSales || 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Discounts:</span><span className="font-bold text-red-600">-${(zReportData.discounts || 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Net Sales:</span><span className="font-bold">${(zReportData.netSales || 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Tax Collected:</span><span className="font-bold">${(zReportData.taxCollected || 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between p-3 bg-blue-50 rounded-lg border-2 border-blue-200"><span className="font-bold text-blue-700">Total Revenue:</span><span className="font-bold text-blue-700">${(zReportData.totalRevenue || 0).toFixed(2)}</span></div>
+                      <div className="border-t pt-3 mt-3">
+                        <div className="text-sm font-bold text-gray-600 mb-2">Payment Breakdown:</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex justify-between p-2 bg-green-50 rounded"><span>Cash:</span><span className="font-bold">${(zReportData.cashTotal || 0).toFixed(2)}</span></div>
+                          <div className="flex justify-between p-2 bg-blue-50 rounded"><span>Card:</span><span className="font-bold">${(zReportData.cardTotal || 0).toFixed(2)}</span></div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : <div className="text-center py-10 text-gray-500">No data available</div>}
+                  <button onClick={() => setClosingStep('cash')} className="w-full py-4 bg-red-500 hover:bg-red-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Next: Count Cash →</button>
+                </>
+              )}
+              {closingStep === 'cash' && (
+                <>
+                  <div className="mb-4 text-center">
+                    <p className="text-lg font-semibold text-gray-700">Count Cash Drawer</p>
+                  </div>
+                  <div className="grid grid-cols-5 gap-2 mb-4">
+                    {cashDenominations.map((denom) => (
+                      <div key={denom.key} onClick={() => setFocusedClosingDenom(denom.key)} className={`p-2 rounded-lg border-2 cursor-pointer text-center ${focusedClosingDenom === denom.key ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                        <div className="text-xs font-bold text-gray-600">{denom.label}</div>
+                        <div className="text-lg font-bold">{closingCashCounts[denom.key as keyof typeof closingCashCounts]}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 mb-4">
+                    {['7', '8', '9', 'C', '4', '5', '6', '⌫', '1', '2', '3', '0'].map((num) => (
+                      <button key={num} onClick={() => handleClosingNumpadClick(num)} className={`py-3 rounded-lg font-bold text-lg ${num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200' : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200' : 'bg-gray-100 hover:bg-gray-200'}`}>{num}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg mb-4">
+                    <span className="font-bold text-gray-700">Total Cash:</span>
+                    <span className="text-2xl font-bold text-red-600">${closingCashTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => setClosingStep('report')} className="flex-1 py-4 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-lg text-lg font-bold">← Back</button>
+                    <button onClick={handleCloseDay} className="flex-1 py-4 bg-red-500 hover:bg-red-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Close Day</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
         </>
       )}
 
