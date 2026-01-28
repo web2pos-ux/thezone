@@ -6455,13 +6455,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     guestNumber,
     rowIndex,
     orderLineId,
-    showAbove = false,  // 위쪽에 표시할지 여부
+    isNearBottom = false,
   }: {
     itemId: string;
     guestNumber: number;
     rowIndex: number;
     orderLineId?: string;
-    showAbove?: boolean;
+    isNearBottom?: boolean;
   }) => {
     const handleDiscount = () => {
       setSelectedOrderItemId(itemId);
@@ -6505,6 +6505,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       }
 
       setShowItemMemoModal(true);
+      // 모달이 열릴 때 키보드도 자동으로 열기
+      setTimeout(() => setSoftKbTarget('memo'), 100);
     };
 
     const handlePrice = () => {
@@ -6516,10 +6518,46 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       setShowEditPriceModal(true);
     };
 
+    // 🔧 맨 아래 아이템인 경우 위쪽에 표시
+    if (isNearBottom) {
+      return (
+        <div
+          className="floating-action-bar absolute left-0 right-0 z-50 bg-white border border-gray-300 rounded-2xl shadow-lg px-2 py-2 flex items-center justify-center gap-1 animate-fade-in"
+          style={{ bottom: '100%', marginBottom: '2px' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={handleMemo}
+            className="flex-1 min-h-[44px] py-2 px-2 hover:bg-blue-100 active:bg-blue-200 rounded-lg transition-colors text-blue-600 font-semibold text-sm text-center"
+            title="Memo"
+          >
+            Memo
+          </button>
+
+          <button
+            onClick={handlePrice}
+            className="flex-1 min-h-[44px] py-2 px-2 hover:bg-green-100 active:bg-green-200 rounded-lg transition-colors text-green-600 font-semibold text-sm text-center"
+            title="Edit Price"
+          >
+            Edit Price
+          </button>
+
+          <button
+            onClick={handleDiscount}
+            className="flex-1 min-h-[44px] py-2 px-2 hover:bg-orange-100 active:bg-orange-200 rounded-lg transition-colors text-orange-600 font-semibold text-sm text-center"
+            title="Item Discount"
+          >
+            Item D/C
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div
-        className={`${showAbove ? 'absolute left-0 right-0' : 'relative'} z-50 bg-white border border-gray-300 rounded-2xl shadow-lg px-2 py-2 flex items-center justify-center gap-1 animate-fade-in w-full`}
-        style={showAbove ? { bottom: '100%', marginBottom: '4px' } : { marginTop: '2px' }}
+        className="floating-action-bar relative z-50 bg-white border border-gray-300 rounded-2xl shadow-lg px-2 py-2 flex items-center justify-center gap-1 animate-fade-in w-full"
+        style={{ marginTop: '2px' }}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
@@ -7679,7 +7717,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         </div>
       </div>
       {/* Right Area - Canvas with Order Interface */}
-      <div className="flex-1 flex flex-col items-center justify-start">
+      <div 
+        className="flex-1 flex flex-col items-center justify-start relative z-50"
+        onClick={(e) => {
+          // FloatingActionBar 또는 order-item 외부 클릭 시 선택 해제
+          const target = e.target as HTMLElement;
+          if (!target.closest('.floating-action-bar') && !target.closest('[data-order-item]')) {
+            if (selectedOrderItemId || selectedOrderLineId) {
+              clearSelection();
+            }
+          }
+        }}
+      >
         {/* Canvas Container */}
          <div 
            ref={canvasRef}
@@ -7867,6 +7916,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           {guestRows.filter(row => row.it.type !== 'discount').map(({ it: item, idx: index }) => (
                             <DraggableDroppableOrderRow disabled={guestStatusMap[item.guestNumber || 1] === 'PAID'} guest={item.guestNumber || 1} idx={index} key={`${item.id}-${index}-${item.modifiers?.length || 0}-${(item as any).orderLineId || ''}-${item.splitDenominator || 'whole'}`}>
                               <div 
+                                  data-order-item="true"
                                   className={`relative transition-all duration-200 ${
                                    item.type === 'discount' || (item as any).type === 'void'
                                      ? 'cursor-default opacity-60' 
@@ -8150,7 +8200,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 guestNumber={item.guestNumber || 1} 
                                 rowIndex={index} 
                                 orderLineId={(item as any).orderLineId}
-                                showAbove={index >= orderItems.length - 3}  // 마지막 3개 아이템은 위쪽에 팝업 표시
+                                isNearBottom={index >= orderItems.length - 3}
                               />
                             )}
                           </div>
