@@ -2133,7 +2133,7 @@ const handleVoidPinClear = useCallback(() => {
     const items = (orderItems || []).filter((it:any) => it.type === 'item');
     const now = new Date();
     const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null }) });
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'QSR' }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
@@ -2151,7 +2151,8 @@ const handleVoidPinClear = useCallback(() => {
   const fetchOrderList = async (date: string) => {
     setOrderListLoading(true);
     try {
-      const response = await fetch(`${API_URL}/orders?date=${date}`);
+      // QSR 모드에서는 QSR 주문만 조회
+      const response = await fetch(`${API_URL}/orders?date=${date}&order_mode=QSR`);
       const data = await response.json();
       if (data.success && Array.isArray(data.orders)) {
         setOrderListOrders(data.orders);
@@ -2798,7 +2799,7 @@ const handleVoidPinClear = useCallback(() => {
       const now = new Date();
       const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
       if (!savedOrderIdRef.current) {
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null }) });
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: 'QSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;

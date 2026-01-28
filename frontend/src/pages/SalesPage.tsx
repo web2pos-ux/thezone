@@ -4072,10 +4072,11 @@ const SalesPage: React.FC = () => {
    */
   const fetchOrderList = async (date: string) => {
     console.log('[fetchOrderList] Fetching orders for date:', date);
-    console.log('[fetchOrderList] API URL:', `${API_URL}/orders?date=${date}`);
+    // FSR 모드에서는 FSR 주문만 조회
+    console.log('[fetchOrderList] API URL:', `${API_URL}/orders?date=${date}&order_mode=FSR`);
     setOrderListLoading(true);
     try {
-      const response = await fetch(`${API_URL}/orders?date=${date}`);
+      const response = await fetch(`${API_URL}/orders?date=${date}&order_mode=FSR`);
       const data = await response.json();
       console.log('[fetchOrderList] Response:', data);
       console.log('[fetchOrderList] Orders count:', data.orders?.length || 0);

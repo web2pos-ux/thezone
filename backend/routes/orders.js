@@ -75,6 +75,7 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_breakdown TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN adjustments_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN subtotal REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -242,10 +243,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const limit = q.limit || 500;
 			const customerPhone = q.customerPhone ? String(q.customerPhone).trim() : '';
 			const customerName = q.customerName ? String(q.customerName).trim() : '';
+			const orderMode = q.order_mode; // QSR or FSR filter
 			const clauses = [];
 			const params = [];
 			
-			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName });
+			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
 			
 			if (type) { clauses.push('order_type = ?'); params.push(String(type).toUpperCase()); }
 			if (status) { clauses.push('status = ?'); params.push(String(status).toUpperCase()); }
@@ -271,8 +273,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				clauses.push('LOWER(customer_name) LIKE ?');
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
+			// order_mode 필터 추가 (QSR/FSR 분리)
+			if (orderMode) {
+				clauses.push('UPPER(order_mode) = ?');
+				params.push(String(orderMode).toUpperCase());
+				console.log('[GET /orders] Order mode filter applied:', orderMode);
+			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.map(c => c.replace('order_type = ?', 'UPPER(order_type) = ?')).join(' AND ')) : '';
-			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, adjustments_json FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
+			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, adjustments_json, order_mode FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -592,11 +600,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
+			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode } = req.body || {};
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(
-				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null, kitchenNote || null]
+				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null, kitchenNote || null, orderMode || null]
 			);
 			const orderId = result.lastID;
 			for (const it of items) {
