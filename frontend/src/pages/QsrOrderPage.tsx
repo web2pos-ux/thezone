@@ -2452,7 +2452,7 @@ const handleVoidPinClear = useCallback(() => {
   const loadMenuHideCategories = useCallback(async () => {
     try {
       setMenuHideLoading(true);
-      const menuId = defaultMenu.menuId || localStorage.getItem('menuId') || '200005';
+      const menuId = localStorage.getItem('menuId') || '200005';
       const response = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${menuId}`);
       if (response.ok) {
         const data = await response.json();
@@ -2463,7 +2463,7 @@ const handleVoidPinClear = useCallback(() => {
     } finally {
       setMenuHideLoading(false);
     }
-  }, [API_URL, defaultMenu.menuId]);
+  }, [API_URL]);
 
   const loadMenuHideItems = useCallback(async (categoryId: string) => {
     try {
@@ -2493,7 +2493,7 @@ const handleVoidPinClear = useCallback(() => {
       if (response.ok) {
         setMenuHideItems(prev => prev.map(i => i.item_id === itemId ? { ...i, [field === 'online_visible' ? 'hidden_online' : 'hidden_delivery']: !newValue } : i));
         if (menuHideSelectedCategory) {
-          const catResponse = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${defaultMenu.menuId || localStorage.getItem('menuId') || '200005'}`);
+          const catResponse = await fetch(`${API_URL}/menu-visibility/categories?menu_id=${localStorage.getItem('menuId') || '200005'}`);
           if (catResponse.ok) {
             const catData = await catResponse.json();
             if (catData.success) setMenuHideCategories(catData.categories);
