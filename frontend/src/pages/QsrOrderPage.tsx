@@ -1217,6 +1217,17 @@ const QsrOrderPage = () => {
   const [giftCardCustomerPhone, setGiftCardCustomerPhone] = useState('');
   const [giftCardBalance, setGiftCardBalance] = useState<number | null>(null);
   const [giftCardError, setGiftCardError] = useState('');
+  
+  // Order History Modal States
+  const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
+  const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
+  const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
+  const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
+  const [orderListLoading, setOrderListLoading] = useState<boolean>(false);
+  const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
+  const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
+  
   const [selectedDiscountType, setSelectedDiscountType] = useState<string>('');
   const [discountPercentage, setDiscountPercentage] = useState<string>('');
   const [customDiscountPercentage, setCustomDiscountPercentage] = useState<string>('');
@@ -2067,6 +2078,249 @@ const handleVoidPinClear = useCallback(() => {
     window.dispatchEvent(new CustomEvent('orderCreated', { detail: { orderId: saved.orderId, tableId: tableIdForOrder } }));
     
     return saved.orderId;
+  };
+
+  /**
+   * Order History 관련 함수들
+   */
+  const fetchOrderList = async (date: string) => {
+    setOrderListLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/orders?date=${date}`);
+      const data = await response.json();
+      if (data.success && Array.isArray(data.orders)) {
+        setOrderListOrders(data.orders);
+      } else if (Array.isArray(data)) {
+        setOrderListOrders(data);
+      } else {
+        setOrderListOrders([]);
+      }
+    } catch (error) {
+      console.error('Failed to fetch order list:', error);
+      setOrderListOrders([]);
+    } finally {
+      setOrderListLoading(false);
+    }
+  };
+
+  const fetchOrderDetails = async (orderId: number) => {
+    try {
+      const response = await fetch(`${API_URL}/orders/${orderId}`);
+      const data = await response.json();
+      if (data.success) {
+        setOrderListSelectedOrder({ ...data.order, adjustments: data.adjustments || [] });
+        setOrderListSelectedItems(data.items || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch order details:', error);
+    }
+  };
+
+  const handleOrderListDateChange = (days: number) => {
+    const current = new Date(orderListDate);
+    current.setDate(current.getDate() + days);
+    const newDate = current.toISOString().split('T')[0];
+    setOrderListDate(newDate);
+    setOrderListSelectedOrder(null);
+    setOrderListSelectedItems([]);
+    fetchOrderList(newDate);
+  };
+
+  const orderListFormatTime = (dateStr: string) => {
+    if (!dateStr) return '--:--';
+    const d = new Date(dateStr);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  };
+
+  const orderListFormatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  const orderListGetChannelBadge = (order: any): { label: string; bgColor: string; textColor: string } => {
+    const type = (order.order_type || '').toUpperCase();
+    if (type === 'UBEREATS' || type === 'UBER' || type === 'DOORDASH' || type === 'SKIP' || type === 'SKIPTHEDISHES' || type === 'ONLINE' || type === 'WEB' || type === 'QR') {
+      return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
+    }
+    if (type === 'DELIVERY') {
+      return { label: 'Delivery', bgColor: 'bg-orange-500', textColor: 'text-white' };
+    }
+    if (type === 'TOGO' || type === 'PICKUP' || type === 'TAKEOUT' || type === 'FOR HERE' || type === 'FORHERE') {
+      return { label: 'Togo', bgColor: 'bg-teal-500', textColor: 'text-white' };
+    }
+    return { label: 'Dine-in', bgColor: 'bg-blue-600', textColor: 'text-white' };
+  };
+
+  const orderListGetTableOrCustomer = (order: any) => {
+    const parts: string[] = [];
+    if (order.table_id) parts.push(`Table ${order.table_id}`);
+    if (order.customer_name) parts.push(order.customer_name);
+    if (order.customer_phone) parts.push(order.customer_phone);
+    return parts.length > 0 ? parts.join(' / ') : '-';
+  };
+
+  const orderListCalculateTotals = () => {
+    const subtotal = orderListSelectedItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+    let itemDiscountTotal = 0;
+    let hasItemDiscount = false;
+    orderListSelectedItems.forEach((item: any) => {
+      if (item.discount_json || item.discount) {
+        const discount = typeof item.discount_json === 'string' ? JSON.parse(item.discount_json) : (item.discount_json || item.discount);
+        if (discount && discount.value > 0) {
+          hasItemDiscount = true;
+          const itemPrice = (item.price || 0) * (item.quantity || 1);
+          if (discount.mode === 'percent') {
+            itemDiscountTotal += itemPrice * (discount.value / 100);
+          } else {
+            itemDiscountTotal += Number(discount.value || 0);
+          }
+        }
+      }
+    });
+    itemDiscountTotal = Number(itemDiscountTotal.toFixed(2));
+    
+    let adjustments = orderListSelectedOrder?.adjustments || [];
+    if (orderListSelectedOrder?.adjustments_json) {
+      try {
+        const parsed = typeof orderListSelectedOrder.adjustments_json === 'string' ? JSON.parse(orderListSelectedOrder.adjustments_json) : orderListSelectedOrder.adjustments_json;
+        if (Array.isArray(parsed)) adjustments = [...adjustments, ...parsed];
+      } catch (e) { /* ignore */ }
+    }
+    
+    const adjustmentDiscountTotal = adjustments
+      .filter((a: any) => ['DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT'].includes(String(a.kind).toUpperCase()))
+      .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || a.amountApplied || a.value || 0)), 0);
+    
+    const discountTotal = itemDiscountTotal + adjustmentDiscountTotal;
+    const subtotalAfterDiscount = subtotal - discountTotal;
+    const storedTotal = Number(orderListSelectedOrder?.total || 0);
+    const calculatedTax = storedTotal > 0 ? Math.max(0, storedTotal - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
+    const tax = calculatedTax;
+    const total = storedTotal || (subtotalAfterDiscount + tax);
+    const promotionLabel = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
+    const discountLabel = hasItemDiscount ? 'Item Discount' : (promotionLabel || 'Discount');
+    
+    return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName: discountLabel };
+  };
+
+  const orderListGetDaysInMonth = (date: Date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const days: (Date | null)[] = [];
+    for (let i = 0; i < firstDay.getDay(); i++) days.push(null);
+    for (let d = 1; d <= lastDay.getDate(); d++) days.push(new Date(year, month, d));
+    return days;
+  };
+
+  const orderListHandleCalendarDateSelect = (date: Date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    setOrderListDate(dateStr);
+    setShowOrderListCalendar(false);
+    setOrderListSelectedOrder(null);
+    setOrderListSelectedItems([]);
+    fetchOrderList(dateStr);
+  };
+
+  const handleOrderListPrintBill = async () => {
+    if (!orderListSelectedOrder) return;
+    try {
+      const storeResponse = await fetch(`${API_URL}/admin-settings/business-profile`);
+      const storeData = await storeResponse.json();
+      const store = {
+        name: storeData?.business_name || 'Restaurant',
+        address: [storeData?.address_line1, storeData?.address_line2, storeData?.city, storeData?.state, storeData?.zip].filter(Boolean).join(', ') || '',
+        phone: storeData?.phone || ''
+      };
+      const taxResponse = await fetch(`${API_URL}/taxes`);
+      const taxes = await taxResponse.json();
+      const activeTaxes = Array.isArray(taxes) ? taxes.filter((t: any) => !t.is_deleted) : [];
+      const taxRate = activeTaxes.length > 0 ? (parseFloat(activeTaxes[0].rate) > 1 ? parseFloat(activeTaxes[0].rate) / 100 : parseFloat(activeTaxes[0].rate)) : 0.05;
+
+      const byGuest: { [guestNumber: number]: any[] } = {};
+      orderListSelectedItems.forEach((item: any) => {
+        const guestNum = item.guest_number || 1;
+        if (!byGuest[guestNum]) byGuest[guestNum] = [];
+        byGuest[guestNum].push({
+          name: item.name || 'Unknown Item',
+          quantity: item.quantity || 1,
+          unitPrice: item.price || 0,
+          total: (item.quantity || 1) * (item.price || 0),
+          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : []
+        });
+      });
+
+      const subtotal = orderListSelectedItems.reduce((sum: number, item: any) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+      const taxesTotal = subtotal * taxRate;
+      const total = subtotal + taxesTotal;
+
+      await fetch(`${API_URL}/printers/print-bill`, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          billData: {
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: new Date().toISOString(), orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id },
+            orderInfo: { channel: orderListSelectedOrder.order_type || 'POS', table: orderListSelectedOrder.table_id || undefined },
+            guestSections: Object.keys(byGuest).sort((a, b) => Number(a) - Number(b)).map(k => ({ guestNumber: Number(k), items: byGuest[Number(k)] })),
+            subtotal, adjustments: [], taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxesTotal }], taxesTotal, total,
+            footer: { message: 'Thank you!' }
+          },
+          copies: 1
+        }) 
+      });
+      console.log('Bill printed successfully');
+    } catch (error: any) {
+      console.error('Print bill error:', error);
+      alert(`Print failed: ${error.message}`);
+    }
+  };
+
+  const handleOrderListPrintKitchen = async () => {
+    if (!orderListSelectedOrder || orderListSelectedItems.length === 0) return;
+    try {
+      const printItems = orderListSelectedItems.map((item: any) => {
+        let modifiers: any[] = [];
+        if (item.modifiers_json) {
+          try {
+            const parsed = typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json;
+            if (Array.isArray(parsed)) modifiers = parsed;
+          } catch {}
+        }
+        let memo: string | null = null;
+        if (item.memo_json) {
+          try {
+            const parsed = typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json;
+            memo = parsed?.text || (typeof parsed === 'string' ? parsed : null);
+          } catch {}
+        }
+        return { id: item.item_id || 0, name: item.name || 'Unknown Item', qty: item.quantity || 1, guestNumber: item.guest_number || 1, modifiers, memo };
+      });
+
+      const rawOrderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const response = await fetch(`${API_URL}/printers/print-order`, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          items: printItems,
+          orderInfo: {
+            orderNumber: `#${orderListSelectedOrder.id}`,
+            table: orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '',
+            orderType: rawOrderType,
+            server: orderListSelectedOrder.server_name || ''
+          },
+          isReprint: true,
+          isPaid: orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'PAID'
+        }) 
+      });
+      const result = await response.json();
+      if (!result.success) {
+        alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
+      }
+    } catch (error: any) {
+      console.error('Print kitchen error:', error);
+      alert(`Print failed: ${error.message}`);
+    }
   };
 
   // Open Void modal
@@ -9830,7 +10084,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="grid grid-cols-9 gap-0.5 w-full">
                       <button
                         className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
-                        onClick={() => {/* Open Till */}}
+                        onClick={async () => {
+                          try {
+                            console.log('💰 Opening cash drawer...');
+                            const response = await fetch(`${API_URL}/printers/open-drawer`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' }
+                            });
+                            const result = await response.json();
+                            if (result.success) {
+                              console.log('💰 Cash drawer opened successfully');
+                            } else {
+                              console.error('Failed to open cash drawer:', result);
+                              alert('Failed to open cash drawer');
+                            }
+                          } catch (error) {
+                            console.error('Error opening cash drawer:', error);
+                            alert('Error opening cash drawer');
+                          }
+                        }}
                       >
                         Open Till
                       </button>
@@ -9872,7 +10144,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       </button>
                       <button
                         className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
-                        onClick={() => { navigate('/sales', { state: { showOrderHistory: true } }); }}
+                        onClick={() => { setShowOrderListModal(true); fetchOrderList(orderListDate); }}
                       >
                         Order History
                       </button>
@@ -12763,6 +13035,307 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <div className="col-span-2 flex justify-end gap-3 pt-4">
                   <button onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} className="min-w-[100px] px-6 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold">Cancel</button>
                   <button onClick={() => { handleSoldOutConfirm(); setSelectedExtendItemId(null); }} className="min-w-[100px] px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold">OK</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Order History Modal */}
+      {showOrderListModal && (() => {
+        const totals = orderListSelectedOrder ? orderListCalculateTotals() : null;
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div 
+              className="bg-gray-200 rounded-xl shadow-2xl w-full max-w-[1000px] h-full max-h-[740px] min-h-[400px] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0">
+                <h2 className="text-lg font-bold text-white">Order History</h2>
+                <div className="flex items-center gap-2 sm:gap-3 relative">
+                  <button
+                    onClick={() => handleOrderListDateChange(-1)}
+                    className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                  >
+                    ◀
+                  </button>
+                  <button
+                    onClick={() => {
+                      setOrderListCalendarMonth(new Date(orderListDate));
+                      setShowOrderListCalendar(!showOrderListCalendar);
+                    }}
+                    className="px-3 sm:px-5 py-2 sm:py-3 bg-white hover:bg-gray-50 border-2 border-gray-300 rounded-lg text-sm sm:text-base font-bold min-w-[150px] sm:min-w-[200px] text-center active:bg-gray-100"
+                  >
+                    📅 {orderListFormatDate(orderListDate)}
+                  </button>
+                  <button
+                    onClick={() => handleOrderListDateChange(1)}
+                    className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                  >
+                    ▶
+                  </button>
+                  {/* Calendar Dropdown */}
+                  {showOrderListCalendar && (
+                    <div className="absolute top-full mt-2 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-xl border border-gray-300 p-3 z-50" style={{ width: '300px' }}>
+                      <div className="flex items-center justify-between mb-3">
+                        <button
+                          onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() - 1))}
+                          className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
+                        >
+                          ◀
+                        </button>
+                        <span className="font-bold text-lg">
+                          {orderListCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                        </span>
+                        <button
+                          onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() + 1))}
+                          className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
+                        >
+                          ▶
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 text-center text-sm mb-2">
+                        {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(d => (
+                          <div key={d} className="font-bold text-gray-500 py-1">{d}</div>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-7 gap-1">
+                        {orderListGetDaysInMonth(orderListCalendarMonth).map((day, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => day && orderListHandleCalendarDateSelect(day)}
+                            disabled={!day}
+                            className={`p-2 rounded-lg text-sm font-medium ${
+                              !day ? '' :
+                              day.toISOString().split('T')[0] === orderListDate 
+                                ? 'bg-blue-600 text-white' 
+                                : 'hover:bg-gray-100'
+                            }`}
+                          >
+                            {day?.getDate() || ''}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    setShowOrderListModal(false);
+                    setShowOrderListCalendar(false);
+                    setOrderListSelectedOrder(null);
+                    setOrderListSelectedItems([]);
+                  }}
+                  className="px-4 sm:px-6 py-2 sm:py-3 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-lg text-base sm:text-lg font-bold"
+                >
+                  ✕ Close
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
+                {/* Left Panel - Order List (60%) */}
+                <div className="w-full md:w-[60%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
+                  <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center gap-1.5 flex-shrink-0">
+                    <span className="w-16 text-center">Channel</span>
+                    <span className="w-28">ID / Order#</span>
+                    <span className="w-20 text-center">Time</span>
+                    <span className="flex-1 ml-2">Table/Customer</span>
+                    <span className="w-18 text-right">Amount</span>
+                  </div>
+                  <div 
+                    className="flex-1 bg-slate-50 relative" 
+                    style={{ overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', minHeight: 0, maxHeight: '100%' }}
+                  >
+                    {orderListLoading ? (
+                      <div className="flex items-center justify-center h-32 text-gray-500 text-base">Loading...</div>
+                    ) : orderListOrders.length === 0 ? (
+                      <div className="flex items-center justify-center h-32 text-gray-500 text-base">No orders found</div>
+                    ) : (
+                      orderListOrders.map((order) => {
+                        const badge = orderListGetChannelBadge(order);
+                        return (
+                          <div
+                            key={order.id}
+                            onClick={(e) => { e.stopPropagation(); fetchOrderDetails(order.id); }}
+                            className={`flex items-center gap-1.5 px-2 py-3 text-sm cursor-pointer hover:bg-blue-100 border-b border-gray-200 ${
+                              orderListSelectedOrder?.id === order.id ? 'bg-blue-200' : 'bg-white'
+                            }`}
+                          >
+                            <span className={`w-16 px-1.5 py-1 rounded text-center text-xs font-bold ${badge.bgColor} ${badge.textColor}`}>
+                              {badge.label}
+                            </span>
+                            <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
+                              <span className="font-bold text-gray-700">#{order.id}</span>
+                              {order.order_number && (
+                                <span className="text-[10px] font-normal text-gray-400 ml-0.5">
+                                  {order.order_number.length > 12 ? order.order_number.slice(0, 12) + '...' : order.order_number}
+                                </span>
+                              )}
+                            </span>
+                            <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
+                            <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
+                            <span className="w-18 text-right font-bold">${Number(order.total || 0).toFixed(2)}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Panel - Order Details (40%) */}
+                <div className="w-full md:w-[40%] h-1/2 md:h-full bg-blue-50 rounded-xl shadow-lg border-2 border-blue-200 flex flex-col" style={{ overflow: 'hidden' }}>
+                  {!orderListSelectedOrder ? (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 text-base">
+                      Select an order to view details
+                    </div>
+                  ) : (
+                    <>
+                      {/* Action Buttons */}
+                      <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                        <button
+                          onClick={handleOrderListPrintBill}
+                          style={{ flex: 5 }}
+                          className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-base font-bold"
+                        >
+                          Print Bill
+                        </button>
+                        <button
+                          onClick={handleOrderListPrintKitchen}
+                          style={{ flex: 5 }}
+                          className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
+                        >
+                          Reprint
+                        </button>
+                      </div>
+
+                      {/* Channel Header */}
+                      <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 text-center flex-shrink-0">
+                        <span className="text-lg font-bold text-slate-700">
+                          {(orderListSelectedOrder.order_type || 'POS').toUpperCase()}
+                        </span>
+                      </div>
+
+                      {/* Order Info Header */}
+                      <div className="px-4 py-1 bg-white border-b border-gray-200 text-sm flex-shrink-0">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-gray-800">
+                            Server: {orderListSelectedOrder.server_name || '-'}
+                          </span>
+                          <span className="font-bold text-gray-800">
+                            #{orderListSelectedOrder.id}
+                          </span>
+                        </div>
+                        {(orderListSelectedOrder.customer_name || orderListSelectedOrder.customer_phone) && (
+                          <div className="text-xs text-gray-700 font-bold truncate">
+                            Customer: {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' • ')}
+                          </div>
+                        )}
+                        <div className="text-gray-600 text-xs">
+                          {orderListFormatDate(orderListSelectedOrder.created_at)} {orderListFormatTime(orderListSelectedOrder.created_at)}
+                        </div>
+                      </div>
+
+                      {/* Items List + Totals */}
+                      <div 
+                        className="flex-1 bg-white relative" 
+                        style={{ overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', minHeight: 0, maxHeight: '100%' }}
+                      >
+                        <div className="px-4 py-1">
+                          <table className="w-full text-sm" style={{ lineHeight: 1.2 }}>
+                            <thead>
+                              <tr className="border-b-2 border-gray-300 text-gray-700">
+                                <th className="text-left py-0.5 w-10 font-bold text-xs">Qty</th>
+                                <th className="text-left py-0.5 font-bold text-xs">Item</th>
+                                <th className="text-right py-0.5 w-16 font-bold text-xs">Price</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {orderListSelectedItems.map((item, idx) => {
+                                const rawModifiers = item.modifiers_json 
+                                  ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) 
+                                  : [];
+                                const modifierNames: string[] = [];
+                                if (Array.isArray(rawModifiers)) {
+                                  rawModifiers.forEach((m: any) => {
+                                    if (typeof m === 'string') modifierNames.push(m);
+                                    else if (m?.name) modifierNames.push(m.name);
+                                    else if (m?.modifierNames && Array.isArray(m.modifierNames)) modifierNames.push(...m.modifierNames);
+                                    else if (m?.selectedEntries && Array.isArray(m.selectedEntries)) {
+                                      m.selectedEntries.forEach((entry: any) => {
+                                        if (typeof entry === 'string') modifierNames.push(entry);
+                                        else if (entry?.name) modifierNames.push(entry.name);
+                                      });
+                                    }
+                                    else if (m?.groupName) modifierNames.push(m.groupName);
+                                  });
+                                }
+                                return (
+                                  <tr key={idx} className="border-b border-gray-100">
+                                    <td className="text-center font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>{item.quantity || 1}</td>
+                                    <td style={{ paddingTop: 2, paddingBottom: 2 }}>
+                                      <div className="font-medium text-sm" style={{ lineHeight: 1.15 }}>{item.name}</div>
+                                      {modifierNames.length > 0 && (
+                                        <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
+                                          {modifierNames.map((name: string, mi: number) => (
+                                            <div key={mi}>• {name}</div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="text-right font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>
+                                      ${((item.price || 0) * (item.quantity || 1)).toFixed(2)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Totals */}
+                        {totals && (
+                          <div className="px-4 py-1 bg-slate-100 border-t-2 border-gray-300 text-sm">
+                            <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                              <span className="font-medium text-xs">Sub Total:</span>
+                              <span className="font-medium text-xs">${totals.subtotal.toFixed(2)}</span>
+                            </div>
+                            {totals.discountTotal > 0 && (
+                              <>
+                                <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                                  <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? '🏷️' : '🎁'} {totals.promotionName || 'Discount'}:</span>
+                                  <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                                  <span className="font-medium text-xs">After Discount:</span>
+                                  <span className="font-medium text-xs">${totals.subtotalAfterDiscount.toFixed(2)}</span>
+                                </div>
+                              </>
+                            )}
+                            <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                              <span className="font-medium text-xs">Tax:</span>
+                              <span className="font-medium text-xs">${totals.tax.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between py-0.5 font-bold text-base border-t-2 border-gray-400 mt-0.5">
+                              <span>Total:</span>
+                              <span>${totals.total.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-center py-1">
+                              <span className={`px-5 py-1.5 rounded-lg text-sm font-bold ${
+                                orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID'
+                                  ? 'bg-green-500 text-white' 
+                                  : 'bg-yellow-400 text-gray-800'
+                              }`}>
+                                {orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID' ? 'PAID' : 'UNPAID'}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
