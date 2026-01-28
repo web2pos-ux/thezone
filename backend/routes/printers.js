@@ -71,7 +71,8 @@ function renderKitchenTicketImage(options) {
     isAdditionalOrder = false,
     isPaid = false,
     isReprint = false,
-    paperWidth = 80 // 80mm or 58mm
+    paperWidth = 80, // 80mm or 58mm
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
 
   // Paper width in pixels (203 DPI thermal printer)
@@ -582,7 +583,8 @@ function buildImageKitchenTicket(options) {
     isReprint = false,
     paperWidth = 80,
     printerName = '',  // 프린터 이름 (Front, Sushi Bar, Kitchen 등)
-    isServerTicket = false  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    isServerTicket = false,  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
 
   // ============ DPI 스케일링 ============
@@ -932,7 +934,31 @@ function buildImageKitchenTicket(options) {
   }
 
   // === MERGED ELEMENTS HANDLING ===
-  const mergedElements = layoutSettings.mergedElements || [];
+  let mergedElements = layoutSettings.mergedElements || [];
+  
+  // Delivery 주문: layoutSettings에 mergedElements가 없을 때만 기본값 사용
+  // 사용자가 Printer Settings > Ticket for Delivery에서 설정한 레이아웃을 우선 사용
+  if (isDelivery && mergedElements.length === 0) {
+    // Delivery 전용 기본 merged elements (설정이 없을 때만 사용)
+    // customerName/customerPhone은 사용자가 명시적으로 설정해야만 출력됨
+    mergedElements = [
+      {
+        leftElement: { key: 'deliveryChannel', fontSize: 26 },
+        rightElement: { key: 'externalOrderNumber', fontSize: 26 },
+        alignment: 'center-right',  // 프리뷰 기본값: C/R
+        gap: 16,
+        lineInverse: true  // LINE INV 강제 적용
+      },
+      {
+        leftElement: { key: 'pickupTime', fontSize: 20 },
+        rightElement: { key: 'posOrderNumber', fontSize: 20 },
+        alignment: 'center-right',  // 프리뷰 기본값: C/R
+        gap: 16,
+        lineInverse: false
+      }
+    ];
+  }
+  
   const mergedKeys = new Set();
   mergedElements.forEach(m => {
     if (m.leftElement?.key) mergedKeys.add(m.leftElement.key);
@@ -948,7 +974,13 @@ function buildImageKitchenTicket(options) {
     const isDelivery = ['DOORDASH', 'UBEREATS', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB', 'DELIVERY'].includes(channel);
     
     switch (key) {
-      case 'orderType': return (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
+      case 'orderType': {
+        // Delivery는 merged element (deliveryChannel + externalOrderNumber)에서 표시하므로 여기서는 빈 문자열
+        if (isDelivery) {
+          return '';
+        }
+        return (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
+      }
       case 'tableNumber': return orderInfo.table || '';
       case 'posOrderNumber': {
         // Togo/TZO: 빈 공간 (externalOrderNumber에서 이미 주문번호 표시)
@@ -979,20 +1011,20 @@ function buildImageKitchenTicket(options) {
       }
       // Kitchen for Takeout 요소들 추가
       case 'deliveryChannel': {
-        const channel = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
+        const ch = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
         // 딜리버리 채널 이름 축약
         const channelMap = {
-          'UBEREATS': 'Uber',
-          'UBER EATS': 'Uber',
-          'DOORDASH': 'DDash',
-          'DOOR DASH': 'DDash',
-          'SKIPTHEDISHES': 'Skip',
-          'SKIP THE DISHES': 'Skip',
-          'SKIP': 'Skip',
-          'FANTUAN': 'Ftan',
-          'FAN TUAN': 'Ftan'
+          'UBEREATS': 'UBER',
+          'UBER EATS': 'UBER',
+          'DOORDASH': 'D DASH',
+          'DOOR DASH': 'D DASH',
+          'SKIPTHEDISHES': 'SKIP',
+          'SKIP THE DISHES': 'SKIP',
+          'SKIP': 'SKIP',
+          'FANTUAN': 'F TUAN',
+          'FAN TUAN': 'F TUAN'
         };
-        return channelMap[channel] || channel;
+        return channelMap[ch] || ch;
       }
       case 'pickupTime': {
         // 라벨: Togo/TZO는 "PICKUP", 배달은 "READY"
@@ -1052,7 +1084,10 @@ function buildImageKitchenTicket(options) {
     
     // 기본값 설정 (값이 없을 경우)
     if (!leftValue && leftKey === 'orderType') leftValue = 'DINE-IN';
-    if (!rightValue && rightKey === 'tableNumber') rightValue = orderInfo.table || 'TABLE';
+    // tableNumber: 테이블이 빈 문자열이면 기본값 사용 안함 (QSR에서는 테이블 없음)
+    if (!rightValue && rightKey === 'tableNumber' && orderInfo.table) {
+      rightValue = orderInfo.table;
+    }
     
     if (!leftValue && !rightValue) return;
     
@@ -1069,11 +1104,48 @@ function buildImageKitchenTicket(options) {
     ctx.font = `bold ${leftFs}px Arial`;
     const leftWidth = ctx.measureText(leftValue).width;
     ctx.font = `bold ${rightFs}px Arial`;
-    const rightWidth = ctx.measureText(rightValue).width;
+    const rightWidth = rightValue ? ctx.measureText(rightValue).width : 0;
     
-    const gap = 20; // Gap between elements
+    // Gap: 설정값 사용 또는 기본값 16px (DPI 스케일링 적용)
+    const rawGap = merged.gap !== undefined ? merged.gap : 16;
+    const gap = rightValue ? Math.round(rawGap * DPI_SCALE) : 0;
     const totalWidth = leftWidth + gap + rightWidth;
-    const startX = (PAPER_WIDTH_PX - totalWidth) / 2;
+    
+    // H-Align 적용: merged.alignment 값에 따라 위치 계산
+    // left-center (L/C): left 왼쪽, right 중앙
+    // left-right (L/R): left 왼쪽, right 오른쪽
+    // center-center (C/C): 둘 다 중앙
+    // center-right (C/R): left 중앙왼쪽, right 오른쪽
+    const alignment = merged.alignment || 'center-center';
+    let leftX, rightX;
+    
+    // 오른쪽 마진 추가 (프린터 특성상 오른쪽이 잘릴 수 있음)
+    const RIGHT_MARGIN = MARGIN + 40;
+    
+    if (alignment === 'left-right') {
+      // Left on left margin, Right on right margin
+      leftX = MARGIN;
+      rightX = PAPER_WIDTH_PX - RIGHT_MARGIN - rightWidth;
+    } else if (alignment === 'left-center') {
+      // Left on left margin, Right in center
+      leftX = MARGIN;
+      rightX = (PAPER_WIDTH_PX - rightWidth) / 2;
+    } else if (alignment === 'center-right') {
+      // Left on left margin, Right on right margin (실질적으로 L/R과 동일하게 처리)
+      leftX = MARGIN;
+      rightX = PAPER_WIDTH_PX - RIGHT_MARGIN - rightWidth;
+    } else {
+      // center-center (default): Both centered together
+      leftX = (PAPER_WIDTH_PX - totalWidth) / 2;
+      rightX = leftX + leftWidth + gap;
+    }
+    
+    // 겹침 방지: leftX + leftWidth + gap이 rightX보다 크면 조정
+    if (rightValue && leftX + leftWidth + gap > rightX) {
+      rightX = leftX + leftWidth + gap;
+    }
+    
+    console.log(`🔍 [MERGED ALIGN] ${leftKey}+${rightKey}: alignment=${alignment}, leftX=${leftX}, rightX=${rightX}`);
     
     // LINE INV가 체크된 경우: 전체 너비 검은색 배경 (왼쪽 끝 ~ 오른쪽 끝)
     if (lineInverse) {
@@ -1085,15 +1157,17 @@ function buildImageKitchenTicket(options) {
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, y - barHeight/2, PAPER_WIDTH_PX, barHeight);
       
-      // Draw both texts in white, centered
+      // Draw texts in white with alignment
       ctx.fillStyle = '#FFFFFF';
       ctx.font = `bold ${leftFs}px Arial`;
       ctx.textAlign = 'left';
-      ctx.fillText(leftValue, startX, y + leftFs/4);
+      ctx.fillText(leftValue, leftX, y + leftFs/4);
       
-      ctx.font = `bold ${rightFs}px Arial`;
-      const rightX = startX + leftWidth + gap;
-      ctx.fillText(rightValue, rightX, y + rightFs/4);
+      // Only draw right value if it exists
+      if (rightValue) {
+        ctx.font = `bold ${rightFs}px Arial`;
+        ctx.fillText(rightValue, rightX, y + rightFs/4);
+      }
       
       ctx.fillStyle = '#000000';
     } else {
@@ -1107,21 +1181,21 @@ function buildImageKitchenTicket(options) {
           const lPadding = Math.max(24, Math.floor(leftFs * 0.6));
           const lh = leftFs + lPadding;
           ctx.fillStyle = '#000000';
-          ctx.fillRect(startX - 8, y - lh/2, lw, lh);
+          ctx.fillRect(leftX - 8, y - lh/2, lw, lh);
           ctx.fillStyle = '#FFFFFF';
           ctx.textAlign = 'left';
-          ctx.fillText(leftValue, startX, y + leftFs/4);
+          ctx.fillText(leftValue, leftX, y + leftFs/4);
           ctx.fillStyle = '#000000';
         } else {
           ctx.font = `bold ${leftFs}px Arial`;
           ctx.textAlign = 'left';
-          ctx.fillText(leftValue, startX, y + leftFs/4);
+          ctx.fillText(leftValue, leftX, y + leftFs/4);
         }
       }
       
       // Draw right element (with inverse if set)
       if (rightValue) {
-        const rightX = startX + leftWidth + gap + (leftEl.inverse ? 8 : 0);
+        const adjustedRightX = rightX + (leftEl.inverse ? 8 : 0);
         if (rightEl.inverse) {
           ctx.font = `bold ${rightFs}px Arial`;
           const rw = ctx.measureText(rightValue).width + 16;
@@ -1129,15 +1203,15 @@ function buildImageKitchenTicket(options) {
           const rPadding = Math.max(24, Math.floor(rightFs * 0.6));
           const rh = rightFs + rPadding;
           ctx.fillStyle = '#000000';
-          ctx.fillRect(rightX - 8, y - rh/2, rw, rh);
+          ctx.fillRect(adjustedRightX - 8, y - rh/2, rw, rh);
           ctx.fillStyle = '#FFFFFF';
           ctx.textAlign = 'left';
-          ctx.fillText(rightValue, rightX, y + rightFs/4);
+          ctx.fillText(rightValue, adjustedRightX, y + rightFs/4);
           ctx.fillStyle = '#000000';
         } else {
           ctx.font = `bold ${rightFs}px Arial`;
           ctx.textAlign = 'left';
-          ctx.fillText(rightValue, rightX, y + rightFs/4);
+          ctx.fillText(rightValue, adjustedRightX, y + rightFs/4);
         }
       }
     }
@@ -1212,10 +1286,10 @@ function buildImageKitchenTicket(options) {
   // === PAID STATUS IN HEADER === (show PAID or UNPAID)
   // Dine-in: 설정(visible, showInHeader)에 따라 출력
   // Take-out/Online: Server Ticket(Front)에서는 설정과 관계없이 항상 출력
-  // Delivery: PAID/UNPAID 표시하지 않음
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
   const currentOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
   const isDineIn = currentOrderType === 'DINE-IN' || currentOrderType === 'DINEIN';
-  const shouldShowPaidStatusInHeader = !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
+  const shouldShowPaidStatusInHeader = !hidePaidStatus && !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
                                        (paidStatusEl.showInHeader || (isServerTicket && !isDineIn));
   if (shouldShowPaidStatusInHeader) {
     // 마지막 merged element가 lineInverse이고, paidStatus도 inverse이면 간격 최소화 (흰 띠 제거)
@@ -1398,8 +1472,8 @@ function buildImageKitchenTicket(options) {
   }
 
   // === PAID STATUS === (show PAID or UNPAID in Footer if showInFooter is true)
-  // Delivery: PAID/UNPAID 표시하지 않음
-  if (!isDelivery && paidStatusEl.visible && paidStatusEl.showInFooter) {
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+  if (!hidePaidStatus && !isDelivery && paidStatusEl.visible && paidStatusEl.showInFooter) {
     // Top spacing 적용 (lineSpacing 값 그대로 사용)
     const footerTopSpacing = paidStatusEl.lineSpacing || 0;
     y += footerTopSpacing;
@@ -1443,7 +1517,8 @@ function buildEscPosKitchenTicket(options) {
     isPaid = false,
     isReprint = false,
     printerName = '',  // 프린터 이름 (Front, Sushi Bar, Kitchen 등)
-    isServerTicket = false  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    isServerTicket = false,  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
   
   // 딜리버리 주문 판단
@@ -1520,25 +1595,55 @@ function buildEscPosKitchenTicket(options) {
   };
   
   // Get merged elements
-  const mergedElements = layoutSettings.mergedElements || [];
+  let mergedElements = layoutSettings.mergedElements || [];
+  
+  // Delivery 주문: merged elements 순서 강제 설정
+  // 1. deliveryChannel + externalOrderNumber (LINE INV)
+  // 2. pickupTime + posOrderNumber
+  if (isDelivery) {
+    mergedElements = [
+      {
+        leftElement: { key: 'deliveryChannel', fontSize: 26 },
+        rightElement: { key: 'externalOrderNumber', fontSize: 26 },
+        lineInverse: true
+      },
+      {
+        leftElement: { key: 'pickupTime', fontSize: 20 },
+        rightElement: { key: 'posOrderNumber', fontSize: 20 },
+        lineInverse: false
+      }
+    ];
+  }
+  
   const mergedKeys = new Set();
   mergedElements.forEach(m => {
     if (m.leftElement) mergedKeys.add(m.leftElement.key);
     if (m.rightElement) mergedKeys.add(m.rightElement.key);
   });
   
+  // 채널명 약어 변환
+  const channelMap = {
+    'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+    'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+    'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+    'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
+  };
+  
   // Sample data mapping for merged elements
   const getElementValue = (key) => {
+    const ch = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
+    const shortChannel = channelMap[ch] || ch;
+    
     const sampleData = {
-      orderType: (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase(),
+      orderType: isDelivery ? '' : (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase(),
       tableNumber: orderInfo.table || '',
-      posOrderNumber: orderInfo.orderNumber ? `#${orderInfo.orderNumber}` : '',
-      externalOrderNumber: orderInfo.externalOrderNumber || '',
+      posOrderNumber: orderInfo.orderNumber ? `Order #: ${String(orderInfo.orderNumber).replace(/^#/, '').match(/\d+$/)?.[0] || orderInfo.orderNumber}` : '',
+      externalOrderNumber: orderInfo.deliveryOrderNumber || orderInfo.externalOrderNumber || '',
       serverName: orderInfo.server || '',
       dateTime: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
-      paidStatus: isPaid ? 'PAID' : 'UNPAID',
-      pickupTime: orderInfo.pickupTime || '',
-      deliveryChannel: orderInfo.deliveryChannel || orderInfo.channel || '',
+      paidStatus: isDelivery ? '' : (isPaid ? 'PAID' : 'UNPAID'),
+      pickupTime: orderInfo.pickupTime ? `READY: ${orderInfo.pickupTime}` : '',
+      deliveryChannel: shortChannel,
       customerName: orderInfo.customerName || '',
       customerPhone: orderInfo.customerPhone || '',
       deliveryAddress: orderInfo.deliveryAddress || '',
@@ -1717,10 +1822,10 @@ function buildEscPosKitchenTicket(options) {
   
   // Paid Status - skip if merged
   // Dine-in: 설정에 따라 출력, Take-out/Online: Server Ticket(Front)에서는 항상 출력
-  // Delivery: PAID/UNPAID 표시하지 않음
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
   const escOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
   const escIsDineIn = escOrderType === 'DINE-IN' || escOrderType === 'DINEIN';
-  const escShouldShowPaidStatus = !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible !== false && 
+  const escShouldShowPaidStatus = !hidePaidStatus && !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible !== false && 
                                   (paidStatusEl.showInHeader !== false || (isServerTicket && !escIsDineIn));
   if (escShouldShowPaidStatus) {
     // Top spacing 적용 (lineSpacing 값에 따라 줄바꿈 추가)
@@ -1886,8 +1991,8 @@ function buildEscPosKitchenTicket(options) {
   }
   
   // Paid Status (PAID / UNPAID) in Footer - show if showInFooter is true
-  // Delivery: PAID/UNPAID 표시하지 않음
-  if (!isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+  if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
     // Top spacing 적용
     const escFooterTopLines = Math.floor((paidStatusEl.lineSpacing || 1.2) / 4);
     for (let i = 0; i < escFooterTopLines; i++) {
@@ -2763,9 +2868,10 @@ module.exports = (db) => {
                       || !!orderInfo.deliveryCompany
                       || !!orderInfo.deliveryOrderNumber;
       
+      // PICKUP, FOR HERE도 QSR에서는 Take-out 레이아웃 사용
       const isTakeout = !isDelivery && (
-        ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK'].includes(orderType)
-        || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE'].includes(orderSource)
+        ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderType)
+        || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderSource)
       );
       
       console.log('isDelivery:', isDelivery);
@@ -2856,6 +2962,7 @@ module.exports = (db) => {
       const isAdditionalOrder = req.body.isAdditionalOrder || false;
       const isPaid = req.body.isPaid || false;
       const isReprint = req.body.isReprint || false;
+      const hidePaidStatus = req.body.hidePaidStatus || false;
 
       // Helper functions for text formatting
       const LINE_WIDTH = 32; // Standard 80mm thermal printer width
@@ -2934,9 +3041,9 @@ module.exports = (db) => {
       
       // Paid Status (PAID / UNPAID) - inverse
       // Dine-in: showInHeader 설정에 따라 출력, Take-out/Online: 항상 출력
-      // Delivery: PAID/UNPAID 표시하지 않음
+      // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
       const textIsDineIn = orderType === 'DINE-IN' || orderType === 'DINEIN' || orderType === '';
-      if (!isDelivery && paidStatusEl.visible !== false && (paidStatusEl.showInHeader || !textIsDineIn)) {
+      if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && (paidStatusEl.showInHeader || !textIsDineIn)) {
         const statusText = isPaid ? 'PAID' : 'UNPAID';
         printContent += inverseLine(statusText) + '\n';
       }
@@ -3032,8 +3139,8 @@ module.exports = (db) => {
       }
       
       // Paid Status in Footer (PAID / UNPAID)
-      // Delivery: PAID/UNPAID 표시하지 않음
-      if (!isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
+      // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+      if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
         const statusText = isPaid ? 'PAID' : 'UNPAID';
         printContent += inverseLine(statusText) + '\n';
       }
@@ -3075,7 +3182,8 @@ module.exports = (db) => {
                 isReprint,
                 paperWidth: printerLayout.paperWidth || 80,
                 printerName: displayPrinterName,  // 프린터 이름 전달
-                isServerTicket  // Server Ticket 여부
+                isServerTicket,  // Server Ticket 여부
+                hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
               });
               
               if (imageContent) {
@@ -3100,7 +3208,8 @@ module.exports = (db) => {
                 isPaid,
                 isReprint,
                 printerName: displayPrinterName,  // 프린터 이름 전달
-                isServerTicket  // Server Ticket 여부
+                isServerTicket,  // Server Ticket 여부
+                hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
               });
               
               // Send to printer using RAW mode
@@ -3163,7 +3272,7 @@ module.exports = (db) => {
   // POST /api/printers/print-order - 전체 주문을 프린터별로 통합하여 출력
   router.post('/print-order', async (req, res) => {
     try {
-      const { orderInfo = {}, items = [], isAdditionalOrder = false, isPaid = false, isReprint = false } = req.body;
+      const { orderInfo = {}, items = [], isAdditionalOrder = false, isPaid = false, isReprint = false, hidePaidStatus = false } = req.body;
 
       // 딜리버리/외부 주문의 경우 items가 없어도 주문 정보만으로 Kitchen Ticket 출력 허용
       const isDeliveryTicketOnly = orderInfo.deliveryCompany || orderInfo.deliveryOrderNumber || 
@@ -3399,9 +3508,10 @@ module.exports = (db) => {
                         || !!orderInfo.deliveryOrderNumber;
         
         // Takeout 주문 판단 (Ticket for Take-out 레이아웃 사용) - 딜리버리 제외
+        // PICKUP, FOR HERE도 QSR에서는 Take-out 레이아웃 사용
         const isTakeout = !isDelivery && (
-          ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK'].includes(orderType)
-          || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE'].includes(orderSource)
+          ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderType)
+          || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderSource)
         );
 
         // Server Ticket 여부 판단 (Front 프린터 = Server Ticket)
@@ -3484,7 +3594,8 @@ module.exports = (db) => {
               isReprint,
               printerName: '',  // 프린터 이름 출력 안함
               showGuestSeparator: hasMultipleGuests,  // 게스트 구분 표시 여부
-              isServerTicket  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              isServerTicket,  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
             });
 
             await printEscPosToWindows(printer.selected_printer, ticketImage);
@@ -3499,7 +3610,8 @@ module.exports = (db) => {
               isPaid,
               isReprint,
               printerName: '',  // 프린터 이름 출력 안함
-              isServerTicket  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              isServerTicket,  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
             });
 
             await printEscPosToWindows(printer.selected_printer, escPosContent);
@@ -4724,10 +4836,10 @@ module.exports = (db) => {
           const deliveryOrderNum = header.deliveryOrderNumber || orderInfo.deliveryOrderNumber || '';
           // 딜리버리 채널 이름 축약
           const channelMap = {
-            'UBEREATS': 'Uber', 'UBER EATS': 'Uber',
-            'DOORDASH': 'DDash', 'DOOR DASH': 'DDash',
-            'SKIPTHEDISHES': 'Skip', 'SKIP THE DISHES': 'Skip', 'SKIP': 'Skip',
-            'FANTUAN': 'Ftan', 'FAN TUAN': 'Ftan'
+            'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+            'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+            'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+            'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
           };
           const shortChannel = channelMap[deliveryCompany.toUpperCase()] || deliveryCompany;
           content += ESCPOS.BOLD_ON + `${shortChannel} #${deliveryOrderNum}\n` + ESCPOS.BOLD_OFF;
@@ -5110,10 +5222,10 @@ module.exports = (db) => {
           const deliveryOrderNum = header.deliveryOrderNumber || orderInfo.deliveryOrderNumber || '';
           // 딜리버리 채널 이름 축약
           const channelMap = {
-            'UBEREATS': 'Uber', 'UBER EATS': 'Uber',
-            'DOORDASH': 'DDash', 'DOOR DASH': 'DDash',
-            'SKIPTHEDISHES': 'Skip', 'SKIP THE DISHES': 'Skip', 'SKIP': 'Skip',
-            'FANTUAN': 'Ftan', 'FAN TUAN': 'Ftan'
+            'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+            'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+            'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+            'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
           };
           const shortChannel = channelMap[deliveryCompany.toUpperCase()] || deliveryCompany;
           const deliveryText = `${shortChannel} #${deliveryOrderNum}`;

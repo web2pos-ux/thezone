@@ -28,6 +28,7 @@ import SubPosSetupPage from './pages/SubPosSetupPage';
 import SubPosPage from './pages/SubPosPage';
 import QsrSetupPage from './pages/QsrSetupPage';
 import QsrPage from './pages/QsrPage';
+import QsrOrderPage from './pages/QsrOrderPage';
 import KioskOrderPage from './pages/KioskOrderPage';
 import TableReservationSettingsPage from './pages/TableReservationSettingsPage';
 import EmployeeManagerPage from './pages/EmployeeManagerPage';
@@ -90,8 +91,9 @@ function App() {
           
           {/* QSR / 카페 모드 */}
           <Route path="/qsr-setup" element={<QsrSetupPage />} />
-          <Route path="/qsr" element={<QsrPage />} />
-          <Route path="/cafe" element={<QsrPage />} />
+          <Route path="/qsr" element={<QsrOrderPage />} />
+          <Route path="/qsr-old" element={<QsrPage />} />
+          <Route path="/cafe" element={<QsrOrderPage />} />
           
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/order" element={

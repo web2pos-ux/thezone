@@ -555,13 +555,26 @@ useEffect(() => {
       const tagged = t.replace(/^Table\s+/i, '').trim();
       return { headerLeftLabel: (tagged ? `Dine - In - ${tagged}` : 'Dine - In'), headerRightLabel: '', isCenterHeader: true };
     }
+    // QSR: For Here
+    if (ch === 'forhere') {
+      const name = String(customerName || tableName || '');
+      return { headerLeftLabel: (name ? `For Here - ${name}` : 'For Here'), headerRightLabel: '', isCenterHeader: true };
+    }
     // Togo: left 'Togo', right customer name
     if (ch === 'togo') {
       return { headerLeftLabel: 'Togo', headerRightLabel: String(customerName || tableName || ''), isCenterHeader: false };
     }
+    // QSR: Pickup
+    if (ch === 'pickup') {
+      return { headerLeftLabel: 'Pickup', headerRightLabel: String(customerName || tableName || ''), isCenterHeader: false };
+    }
     // Online: left 'Online', right customer name
     if (ch.includes('online') || ch === 'web') {
       return { headerLeftLabel: 'Online', headerRightLabel: String(customerName || tableName || ''), isCenterHeader: false };
+    }
+    // QSR: Delivery
+    if (ch === 'delivery') {
+      return { headerLeftLabel: 'Delivery', headerRightLabel: String(customerName || tableName || ''), isCenterHeader: false };
     }
     // Fallback: show channel on left, customer/table on right
     return { headerLeftLabel: String(channel || ''), headerRightLabel: String(customerName || tableName || ''), isCenterHeader: false };
@@ -949,13 +962,15 @@ const addQuick = async (q: number) => {
 							<span className="flex items-center overflow-hidden text-ellipsis font-bold">Other</span>
 						</button>
                         <div className="h-2" />
-                        {/* Split Button - opens Split Bill modal */}
+                        {/* Split Button - opens Split Bill modal (only show if onSplitBill is provided) */}
+                        {typeof onSplitBill === 'function' && (
                         <button 
                           className="w-full flex items-center justify-center px-4 py-[0.71rem] rounded-lg border-2 border-purple-500 bg-purple-50 text-purple-700 hover:bg-purple-100 shadow font-bold" 
-                          onClick={() => { if (typeof onSplitBill === 'function') onSplitBill(); }}
+                          onClick={() => onSplitBill()}
                         >
                           Split
                           </button>
+                        )}
 					</div>
 				</div>
 			{/* Clamp info popup */}

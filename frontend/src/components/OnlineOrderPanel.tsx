@@ -4,14 +4,14 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-// 주문 상태 라벨
+// Order status labels
 const STATUS_LABELS: Record<string, { label: string; color: string; bgColor: string }> = {
-  pending: { label: '대기', color: 'text-yellow-800', bgColor: 'bg-yellow-100' },
-  confirmed: { label: '확인', color: 'text-blue-800', bgColor: 'bg-blue-100' },
-  preparing: { label: '준비중', color: 'text-orange-800', bgColor: 'bg-orange-100' },
-  ready: { label: '완료', color: 'text-green-800', bgColor: 'bg-green-100' },
-  completed: { label: '수령', color: 'text-gray-800', bgColor: 'bg-gray-100' },
-  cancelled: { label: '취소', color: 'text-red-800', bgColor: 'bg-red-100' }
+  pending: { label: 'Pending', color: 'text-yellow-800', bgColor: 'bg-yellow-100' },
+  confirmed: { label: 'Confirmed', color: 'text-blue-800', bgColor: 'bg-blue-100' },
+  preparing: { label: 'Preparing', color: 'text-orange-800', bgColor: 'bg-orange-100' },
+  ready: { label: 'Ready', color: 'text-green-800', bgColor: 'bg-green-100' },
+  completed: { label: 'Completed', color: 'text-gray-800', bgColor: 'bg-gray-100' },
+  cancelled: { label: 'Cancelled', color: 'text-red-800', bgColor: 'bg-red-100' }
 };
 
 // 주문 유형 라벨
@@ -360,18 +360,18 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       className="fixed right-0 top-0 h-full w-96 bg-white shadow-2xl z-50 flex flex-col"
       onClick={handlePanelClick}
     >
-      {/* 헤더 */}
+      {/* Header */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xl">🌐</span>
-          <h2 className="text-lg font-bold">온라인 주문</h2>
+          <h2 className="text-lg font-bold">Online Orders</h2>
           {connected && (
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="연결됨" />
+            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="Connected" />
           )}
           {soundEnabled && (
             <span 
               className={`text-sm ${audioUnlocked ? 'text-green-300' : 'text-yellow-300 animate-pulse cursor-pointer'}`}
-              title={audioUnlocked ? '알림음 활성화됨' : '클릭하여 알림음 활성화'}
+              title={audioUnlocked ? 'Sound enabled' : 'Click to enable sound'}
             >
               {audioUnlocked ? '🔔' : '🔕'}
             </span>
@@ -379,7 +379,8 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
         </div>
         <button 
           onClick={onClose}
-          className="text-white hover:bg-white/20 rounded-lg p-2 transition"
+          className="w-10 h-10 flex items-center justify-center rounded-full bg-transparent border-red-500 text-red-400 hover:bg-red-50 text-xl font-bold transition-colors"
+          style={{ borderWidth: '3px', borderStyle: 'solid' }}
         >
           ✕
         </button>
@@ -411,7 +412,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
         ) : orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 text-gray-400">
             <span className="text-3xl mb-2">📭</span>
-            <span>주문이 없습니다</span>
+            <span>No orders</span>
           </div>
         ) : (
           orders.map(order => (
@@ -571,15 +572,15 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
             </div>
           </div>
 
-          {/* 요청사항 */}
+          {/* Notes */}
           {selectedOrder.notes && (
             <div className="bg-yellow-50 rounded-lg p-3 mb-3 text-sm">
-              <div className="font-medium text-yellow-800">요청사항</div>
+              <div className="font-medium text-yellow-800">Special Request</div>
               <div className="text-yellow-700">{selectedOrder.notes}</div>
             </div>
           )}
 
-          {/* 액션 버튼 */}
+          {/* Action buttons */}
           <div className="flex gap-2">
             {selectedOrder.status === 'pending' && (
               <>
@@ -587,13 +588,13 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
                   onClick={() => confirmOrder(selectedOrder.id)}
                   className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition"
                 >
-                  ✓ 확인
+                  ✓ Confirm
                 </button>
                 <button
                   onClick={() => updateOrderStatus(selectedOrder.id, 'cancelled')}
                   className="px-4 bg-red-100 text-red-600 py-2 rounded-lg font-medium hover:bg-red-200 transition"
                 >
-                  취소
+                  Cancel
                 </button>
               </>
             )}
@@ -602,7 +603,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
                 onClick={() => updateOrderStatus(selectedOrder.id, 'preparing')}
                 className="flex-1 bg-orange-500 text-white py-2 rounded-lg font-medium hover:bg-orange-600 transition"
               >
-                🍳 준비 시작
+                🍳 Start Preparing
               </button>
             )}
             {selectedOrder.status === 'preparing' && (
@@ -610,7 +611,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
                 onClick={() => updateOrderStatus(selectedOrder.id, 'ready')}
                 className="flex-1 bg-green-500 text-white py-2 rounded-lg font-medium hover:bg-green-600 transition"
               >
-                ✓ 준비 완료
+                ✓ Ready
               </button>
             )}
             {selectedOrder.status === 'ready' && (
@@ -618,7 +619,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
                 onClick={() => updateOrderStatus(selectedOrder.id, 'completed')}
                 className="flex-1 bg-gray-600 text-white py-2 rounded-lg font-medium hover:bg-gray-700 transition"
               >
-                ✓ 수령 완료
+                ✓ Completed
               </button>
             )}
             <button
@@ -631,14 +632,14 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
         </div>
       )}
 
-      {/* 새로고침 버튼 */}
+      {/* Refresh button */}
       <div className="p-2 border-t bg-gray-50">
         <button
           onClick={fetchOrders}
           disabled={loading}
           className="w-full py-2 text-sm text-gray-600 hover:text-blue-600 transition"
         >
-          {loading ? '로딩...' : '🔄 새로고침'}
+          {loading ? 'Loading...' : '🔄 Refresh'}
         </button>
       </div>
     </div>
