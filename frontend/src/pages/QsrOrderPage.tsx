@@ -1217,6 +1217,11 @@ const QsrOrderPage = () => {
   const [giftCardCustomerPhone, setGiftCardCustomerPhone] = useState('');
   const [giftCardBalance, setGiftCardBalance] = useState<number | null>(null);
   const [giftCardError, setGiftCardError] = useState('');
+  const [giftCardInputFocus, setGiftCardInputFocus] = useState<'card' | 'amount' | 'pin'>('card');
+  const [giftCardSellerPin, setGiftCardSellerPin] = useState('');
+  const [giftCardIsReload, setGiftCardIsReload] = useState(false);
+  const [giftCardExistingBalance, setGiftCardExistingBalance] = useState<number | null>(null);
+  const [showGiftCardNameKeyboard, setShowGiftCardNameKeyboard] = useState(false);
   
   // Order History Modal States
   const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
@@ -1622,6 +1627,10 @@ const handleVoidPinClear = useCallback(() => {
     setGiftCardCustomerPhone('');
     setGiftCardBalance(null);
     setGiftCardError('');
+    setGiftCardInputFocus('card');
+    setGiftCardSellerPin('');
+    setGiftCardIsReload(false);
+    setGiftCardExistingBalance(null);
   };
 
   const handleOpenGiftCard = () => {
@@ -1656,6 +1665,10 @@ const handleVoidPinClear = useCallback(() => {
       setGiftCardError('Please enter a valid amount');
       return;
     }
+    if (!giftCardSellerPin) {
+      setGiftCardError('Please enter seller PIN');
+      return;
+    }
     
     setGiftCardError('');
     
@@ -1670,8 +1683,10 @@ const handleVoidPinClear = useCallback(() => {
           customer_name: giftCardCustomerName || null,
           customer_phone: giftCardCustomerPhone || null,
           sold_by: currentUser,
+          seller_pin: giftCardSellerPin,
           menu_id: menuId,
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          is_reload: giftCardIsReload
         })
       });
       
@@ -13623,10 +13638,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         );
       })()}
 
-      {/* Gift Card Modal */}
+      {/* Gift Card Modal - FSR style */}
       {showGiftCardModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[480px] max-h-[90vh] overflow-hidden">
+          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
             {/* Header */}
             <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3 flex justify-between items-center">
               <h3 className="text-lg font-bold text-white">Gift Card</h3>
@@ -13638,86 +13653,113 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               </button>
             </div>
 
-            <div className="p-4 space-y-4">
-              {/* Mode Toggle */}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { setGiftCardMode('sell'); setGiftCardBalance(null); setGiftCardError(''); }}
-                  className={`flex-1 py-3 rounded-lg font-semibold transition-all ${
-                    giftCardMode === 'sell'
-                      ? 'bg-amber-500 text-white shadow-md'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  Sell Gift Card
-                </button>
-                <button
-                  onClick={() => { setGiftCardMode('balance'); setGiftCardError(''); }}
-                  className={`flex-1 py-3 rounded-lg font-semibold transition-all ${
-                    giftCardMode === 'balance'
-                      ? 'bg-amber-500 text-white shadow-md'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  Check Balance
-                </button>
-              </div>
-
-              {/* Card Number Input - 4 groups of 4 digits */}
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Card Number</label>
-                <div className="flex gap-2">
-                  {[0, 1, 2, 3].map((idx) => (
-                    <input
-                      key={idx}
-                      id={`gift-card-input-${idx}`}
-                      type="text"
-                      maxLength={4}
-                      value={giftCardNumber[idx]}
-                      onChange={(e) => handleGiftCardNumberChange(idx, e.target.value)}
-                      className="flex-1 text-center text-lg font-mono border-2 border-gray-300 rounded-lg py-2 focus:border-amber-500 focus:outline-none"
-                      placeholder="0000"
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Balance Display (for balance mode) */}
-              {giftCardMode === 'balance' && giftCardBalance !== null && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
-                  <div className="text-sm text-green-600 mb-1">Available Balance</div>
-                  <div className="text-3xl font-bold text-green-700">${giftCardBalance.toFixed(2)}</div>
-                </div>
-              )}
-
-              {/* Sell Mode Fields */}
-              {giftCardMode === 'sell' && (
-                <>
-                  {/* Amount */}
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Amount</label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={giftCardAmount}
-                        onChange={(e) => setGiftCardAmount(e.target.value)}
-                        className="w-full pl-8 pr-3 py-2.5 text-lg border-2 border-gray-300 rounded-lg focus:border-amber-500 focus:outline-none"
-                        placeholder="0.00"
-                      />
+            <div className="p-3 space-y-2">
+              {/* Section 1: Card Number + Sell/Balance - Blue Background */}
+              <div className="bg-blue-50 rounded-lg p-3">
+                <div className="flex gap-3">
+                  {/* Card Number */}
+                  <div 
+                    className={`flex-1 p-3 rounded-lg cursor-pointer ${
+                      giftCardInputFocus === 'card' 
+                        ? 'bg-white border-2 border-blue-400 shadow-md' 
+                        : 'bg-blue-100 border-2 border-blue-200'
+                    }`}
+                    onClick={() => setGiftCardInputFocus('card')}
+                  >
+                    <div className="text-xs font-semibold text-blue-600 mb-1">Card Number</div>
+                    <div className="text-3xl font-mono tracking-wide text-gray-800 flex items-center">
+                      {[0, 1, 2, 3].map((groupIdx) => (
+                        <span key={groupIdx} className="flex items-center">
+                          {[0, 1, 2, 3].map((digitIdx) => {
+                            const char = giftCardNumber[groupIdx]?.[digitIdx] || '';
+                            return (
+                              <span 
+                                key={digitIdx} 
+                                className={`w-5 inline-flex justify-center ${char ? 'text-gray-800' : 'text-gray-300'}`}
+                              >
+                                {char || '_'}
+                              </span>
+                            );
+                          })}
+                          {groupIdx < 3 && <span className="text-gray-400 mx-1">-</span>}
+                        </span>
+                      ))}
                     </div>
-                    {/* Quick Amount Buttons */}
-                    <div className="flex gap-2 mt-2">
+                  </div>
+                  {/* Sell / Balance Buttons */}
+                  <div className="flex flex-col gap-2 w-28">
+                    <button
+                      onClick={() => { setGiftCardMode('sell'); setGiftCardBalance(null); setGiftCardError(''); }}
+                      className={`flex-1 py-3 rounded-lg font-bold text-base ${
+                        giftCardMode === 'sell'
+                          ? 'bg-amber-500 text-white shadow-md'
+                          : 'bg-white text-gray-700 hover:bg-gray-100 border border-blue-200'
+                      }`}
+                    >
+                      Sell
+                    </button>
+                    <button
+                      onClick={() => { 
+                        setGiftCardMode('balance'); 
+                        setGiftCardError(''); 
+                        const cardNum = giftCardNumber.join('');
+                        if (cardNum.length === 16) {
+                          (async () => {
+                            try {
+                              const response = await fetch(`${API_URL}/gift-cards/${encodeURIComponent(cardNum)}/balance`);
+                              if (response.ok) {
+                                const data = await response.json();
+                                setGiftCardBalance(data.balance);
+                              } else {
+                                setGiftCardError('Gift card not found');
+                              }
+                            } catch {
+                              setGiftCardError('Failed to connect to server');
+                            }
+                          })();
+                        }
+                      }}
+                      className={`flex-1 py-3 rounded-lg font-bold text-base ${
+                        giftCardMode === 'balance'
+                          ? 'bg-green-500 text-white shadow-md'
+                          : 'bg-white text-gray-700 hover:bg-gray-100 border border-blue-200'
+                      }`}
+                    >
+                      Balance
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2 & 3: Amount + Bill Buttons + Payment Method (Sell mode only) */}
+              {giftCardMode === 'sell' && (
+                <div className="flex gap-2 items-stretch h-[112px]">
+                  {/* Section 2: Amount + Quick Buttons - Gray Background */}
+                  <div className="bg-gray-200 rounded-lg p-2 flex gap-2">
+                    {/* Amount Display */}
+                    <div 
+                      className={`w-32 p-2 rounded-lg cursor-pointer flex flex-col justify-center ${
+                        giftCardInputFocus === 'amount' 
+                          ? 'bg-white border-2 border-amber-400 shadow-md' 
+                          : 'bg-gray-100 border-2 border-gray-300'
+                      }`}
+                      onClick={() => setGiftCardInputFocus('amount')}
+                    >
+                      <div className="text-xs font-semibold text-gray-600 mb-1">Amount</div>
+                      <div className="text-3xl font-bold text-amber-700 text-center py-2">
+                        ${giftCardAmount || '0'}
+                      </div>
+                    </div>
+                    {/* Quick Amount Buttons 2x2 */}
+                    <div className="grid grid-cols-2 gap-2">
                       {[25, 50, 100, 200].map((amt) => (
                         <button
                           key={amt}
-                          onClick={() => setGiftCardAmount(String(amt))}
-                          className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                          onClick={() => { setGiftCardAmount(String(amt)); setGiftCardInputFocus('amount'); }}
+                          className={`w-24 h-12 rounded-lg text-base font-bold transition-all ${
                             giftCardAmount === String(amt)
-                              ? 'bg-amber-500 text-white'
-                              : 'bg-gray-100 text-gray-700 hover:bg-amber-100'
+                              ? 'bg-amber-500 text-white shadow-md'
+                              : 'bg-white text-gray-700 hover:bg-amber-100 border border-gray-300'
                           }`}
                         >
                           ${amt}
@@ -13725,19 +13767,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       ))}
                     </div>
                   </div>
-
-                  {/* Payment Method */}
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Payment Method</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {(['Cash', 'Visa', 'MasterCard', 'Other'] as const).map((method) => (
+                  {/* Section 3: Payment Method 2x2 - Gray Background */}
+                  <div className="bg-gray-200 rounded-lg p-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['Cash', 'Visa', 'Master', 'Other'] as const).map((method) => (
                         <button
                           key={method}
-                          onClick={() => setGiftCardPaymentMethod(method)}
-                          className={`py-2.5 rounded-lg text-sm font-semibold transition-all ${
-                            giftCardPaymentMethod === method
-                              ? 'bg-amber-500 text-white shadow-md'
-                              : 'bg-gray-100 text-gray-700 hover:bg-amber-100 border border-gray-200'
+                          onClick={() => setGiftCardPaymentMethod(method === 'Master' ? 'MasterCard' : method as any)}
+                          className={`w-24 h-12 rounded-lg text-base font-bold transition-all ${
+                            (method === 'Master' ? giftCardPaymentMethod === 'MasterCard' : giftCardPaymentMethod === method)
+                              ? 'bg-blue-500 text-white shadow-md'
+                              : 'bg-white text-gray-700 hover:bg-blue-100 border border-gray-300'
                           }`}
                         >
                           {method}
@@ -13745,63 +13785,172 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       ))}
                     </div>
                   </div>
+                </div>
+              )}
 
-                  {/* Customer Info */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">Customer Name</label>
-                      <input
-                        type="text"
-                        value={giftCardCustomerName}
-                        onChange={(e) => setGiftCardCustomerName(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-amber-500 focus:outline-none"
-                        placeholder="Optional"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">Phone Number</label>
-                      <input
-                        type="tel"
-                        value={giftCardCustomerPhone}
-                        onChange={(e) => setGiftCardCustomerPhone(e.target.value)}
-                        className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-amber-500 focus:outline-none"
-                        placeholder="Optional"
-                      />
-                    </div>
+              {/* Balance Display (Balance mode only) */}
+              {giftCardMode === 'balance' && (
+                <div className="bg-green-50 border-2 border-green-200 rounded-lg p-2 h-[112px] flex flex-col justify-center text-center">
+                  <div className="text-xs text-green-600 mb-1">Available Balance</div>
+                  {giftCardBalance !== null ? (
+                    <div className="text-4xl font-bold text-green-600">${giftCardBalance.toFixed(2)}</div>
+                  ) : (
+                    <div className="text-base font-medium text-gray-400">Enter card number and check</div>
+                  )}
+                </div>
+              )}
+
+              {/* Section 4: Numpad - Gray Background */}
+              <div className="bg-gray-200 rounded-lg p-3">
+                <div className="grid grid-cols-4 gap-2">
+                  {['1', '2', '3', 'C', '4', '5', '6', '⌫', '7', '8', '9', '', '0', '00', '.', ''].map((key, idx) => (
+                    <button
+                      key={`numpad-${key}-${idx}`}
+                      onClick={() => {
+                        if (giftCardInputFocus === 'card') {
+                          const fullNumber = giftCardNumber.join('');
+                          if (key === 'C') {
+                            setGiftCardNumber(['', '', '', '']);
+                          } else if (key === '⌫') {
+                            const newNumber = fullNumber.slice(0, -1);
+                            const segments = [newNumber.slice(0, 4), newNumber.slice(4, 8), newNumber.slice(8, 12), newNumber.slice(12, 16)];
+                            setGiftCardNumber(segments);
+                          } else if (key !== '.' && key !== '00') {
+                            if (fullNumber.length < 16) {
+                              const newNumber = fullNumber + key;
+                              const segments = [newNumber.slice(0, 4), newNumber.slice(4, 8), newNumber.slice(8, 12), newNumber.slice(12, 16)];
+                              setGiftCardNumber(segments);
+                            }
+                          }
+                        } else if (giftCardInputFocus === 'amount') {
+                          if (key === 'C') {
+                            setGiftCardAmount('');
+                          } else if (key === '⌫') {
+                            setGiftCardAmount(prev => prev.slice(0, -1));
+                          } else if (key === '.') {
+                            if (!giftCardAmount.includes('.')) {
+                              setGiftCardAmount(prev => prev ? prev + '.' : '0.');
+                            }
+                          } else {
+                            setGiftCardAmount(prev => prev + key);
+                          }
+                        } else if (giftCardInputFocus === 'pin') {
+                          if (key === 'C') {
+                            setGiftCardSellerPin('');
+                          } else if (key === '⌫') {
+                            setGiftCardSellerPin(prev => prev.slice(0, -1));
+                          } else if (key !== '.' && key !== '00') {
+                            if (giftCardSellerPin.length < 6) {
+                              setGiftCardSellerPin(prev => prev + key);
+                            }
+                          }
+                        }
+                      }}
+                      className={`h-12 rounded-lg font-bold text-lg transition-all ${
+                        key === ''
+                          ? 'bg-transparent cursor-default'
+                          : key === 'C'
+                          ? 'bg-red-100 hover:bg-red-200 text-red-700'
+                          : key === '⌫'
+                          ? 'bg-gray-300 hover:bg-gray-400 text-gray-700'
+                          : 'bg-white hover:bg-gray-200 text-gray-800 border border-gray-300'
+                      }`}
+                      disabled={key === ''}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Reload Mode Indicator */}
+              {giftCardIsReload && giftCardMode === 'sell' && (
+                <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-2 text-center">
+                  <div className="text-blue-600 text-sm font-bold">
+                    🔄 Reload Mode - Existing Balance: ${giftCardExistingBalance?.toFixed(2)}
                   </div>
-                </>
+                </div>
               )}
 
               {/* Error Message */}
               {giftCardError && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-center">
                   <div className="text-red-600 text-sm font-medium">{giftCardError}</div>
                 </div>
               )}
 
-              {/* Action Buttons */}
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => { setShowGiftCardModal(false); resetGiftCardForm(); }}
-                  className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all"
-                >
-                  Cancel
-                </button>
-                {giftCardMode === 'sell' ? (
+              {/* Section 5: Bottom Row - Green Background */}
+              <div className="bg-teal-50 rounded-lg p-3">
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-teal-600 mb-1">Name</label>
+                    <input
+                      type="text"
+                      value={giftCardCustomerName}
+                      onChange={(e) => setGiftCardCustomerName(e.target.value)}
+                      className="w-full px-2 py-2 text-sm border-2 border-teal-200 rounded-lg focus:border-teal-400 focus:outline-none bg-white"
+                      placeholder="Touch to enter"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-teal-600 mb-1">Phone</label>
+                    <input
+                      type="tel"
+                      value={giftCardCustomerPhone}
+                      onChange={(e) => setGiftCardCustomerPhone(e.target.value)}
+                      className="w-full px-2 py-2 text-sm border-2 border-teal-200 rounded-lg focus:border-teal-400 focus:outline-none bg-white"
+                      placeholder="Optional"
+                    />
+                  </div>
+                  {giftCardMode === 'sell' && (
+                    <div 
+                      className="w-24 cursor-pointer"
+                      onClick={() => setGiftCardInputFocus('pin')}
+                    >
+                      <label className="block text-xs font-semibold text-red-600 mb-1">Seller PIN *</label>
+                      <div 
+                        className={`w-full px-2 py-2 text-sm rounded-lg bg-white text-center font-mono tracking-widest ${
+                          giftCardInputFocus === 'pin'
+                            ? 'border-2 border-red-500 shadow-md'
+                            : 'border-2 border-red-200'
+                        }`}
+                      >
+                        {giftCardSellerPin ? '●'.repeat(giftCardSellerPin.length) : <span className="text-gray-400">PIN</span>}
+                      </div>
+                    </div>
+                  )}
                   <button
-                    onClick={handleSellGiftCard}
-                    className="flex-1 py-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition-all"
+                    onClick={() => {
+                      setShowGiftCardModal(false);
+                      setGiftCardIsReload(false);
+                      setGiftCardExistingBalance(null);
+                      setGiftCardSellerPin('');
+                      resetGiftCardForm();
+                    }}
+                    className="px-6 py-2 rounded-lg bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold text-base transition-all"
                   >
-                    Sell Gift Card
+                    Cancel
                   </button>
-                ) : (
-                  <button
-                    onClick={handleCheckGiftCardBalance}
-                    className="flex-1 py-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition-all"
-                  >
-                    Check Balance
-                  </button>
-                )}
+                  {giftCardMode === 'sell' ? (
+                    <button
+                      onClick={handleSellGiftCard}
+                      className={`px-8 py-2 rounded-lg font-bold text-base transition-all ${
+                        giftCardIsReload 
+                          ? 'bg-blue-500 hover:bg-blue-600 text-white' 
+                          : 'bg-amber-500 hover:bg-amber-600 text-white'
+                      }`}
+                    >
+                      {giftCardIsReload ? 'Reload' : 'Ok'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleCheckGiftCardBalance}
+                      className="px-8 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-bold text-base transition-all"
+                    >
+                      Ok
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
