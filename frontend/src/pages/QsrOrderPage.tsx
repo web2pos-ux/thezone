@@ -31,6 +31,7 @@ import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
+import DayClosingModal from '../components/DayClosingModal';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
@@ -1278,9 +1279,6 @@ const QsrOrderPage = () => {
   });
   const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
   const [showClosingModal, setShowClosingModal] = useState<boolean>(false);
-  const [closingStep, setClosingStep] = useState<'report' | 'cash'>('report');
-  const [zReportData, setZReportData] = useState<any>(null);
-  const [isLoadingZReport, setIsLoadingZReport] = useState<boolean>(false);
   const cashDenominations = [
     { label: '1¢', key: 'cent1', value: 0.01 }, { label: '5¢', key: 'cent5', value: 0.05 },
     { label: '10¢', key: 'cent10', value: 0.10 }, { label: '25¢', key: 'cent25', value: 0.25 },
@@ -1289,14 +1287,10 @@ const QsrOrderPage = () => {
     { label: '$50', key: 'dollar50', value: 50 }, { label: '$100', key: 'dollar100', value: 100 }
   ];
   const [openingCashCounts, setOpeningCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
-  const [closingCashCounts, setClosingCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
   const [focusedOpeningDenom, setFocusedOpeningDenom] = useState<string | null>(null);
-  const [focusedClosingDenom, setFocusedClosingDenom] = useState<string | null>(null);
   const calculateCashTotal = (counts: typeof openingCashCounts) => cashDenominations.reduce((sum, d) => sum + (counts[d.key as keyof typeof counts] * d.value), 0);
   const openingCashTotal = calculateCashTotal(openingCashCounts);
-  const closingCashTotal = calculateCashTotal(closingCashCounts);
   const resetOpeningCashCounts = () => setOpeningCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
-  const resetClosingCashCounts = () => setClosingCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
   
   const [selectedDiscountType, setSelectedDiscountType] = useState<string>('');
   const [discountPercentage, setDiscountPercentage] = useState<string>('');
@@ -2540,83 +2534,62 @@ const handleVoidPinClear = useCallback(() => {
   /**
    * Opening/Closing 관련 함수들
    */
-  const handleOpeningNumpadClick = (num: string) => {
+  // Number pad handler for Opening (FSR과 동일)
+  const handleOpeningNumPad = (num: string) => {
     if (!focusedOpeningDenom) return;
     const currentValue = openingCashCounts[focusedOpeningDenom as keyof typeof openingCashCounts];
     let newValue: number;
-    if (num === 'C') { newValue = 0; }
-    else if (num === '⌫') { newValue = Math.floor(currentValue / 10); }
-    else { newValue = Math.min(999, currentValue * 10 + parseInt(num)); }
+    
+    if (num === 'C') {
+      newValue = 0;
+    } else if (num === '⌫') {
+      newValue = Math.floor(currentValue / 10);
+    } else {
+      newValue = currentValue * 10 + parseInt(num);
+      if (newValue > 9999) newValue = 9999;
+    }
+    
     setOpeningCashCounts(prev => ({ ...prev, [focusedOpeningDenom]: newValue }));
   };
 
-  const handleClosingNumpadClick = (num: string) => {
-    if (!focusedClosingDenom) return;
-    const currentValue = closingCashCounts[focusedClosingDenom as keyof typeof closingCashCounts];
-    let newValue: number;
-    if (num === 'C') { newValue = 0; }
-    else if (num === '⌫') { newValue = Math.floor(currentValue / 10); }
-    else { newValue = Math.min(999, currentValue * 10 + parseInt(num)); }
-    setClosingCashCounts(prev => ({ ...prev, [focusedClosingDenom]: newValue }));
-  };
-
-  const handleOpenDay = async () => {
+  // Opening handler (FSR과 동일한 API 사용)
+  const handleOpening = async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
-      await fetch(`${API_URL}/pos/open-day`, {
+      const response = await fetch(`${API_URL}/daily-closings/opening`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: today, openingCash: openingCashTotal, cashCounts: openingCashCounts })
+        body: JSON.stringify({ 
+          openingCash: openingCashTotal, 
+          cashBreakdown: openingCashCounts,
+          openedBy: '' 
+        })
       });
-      localStorage.setItem('pos_last_opened_date', today);
-      setIsDayClosed(false);
-      setShowOpeningModal(false);
-      resetOpeningCashCounts();
+      const result = await response.json();
+      
+      if (result.success) {
+        // Print opening report (also opens cash drawer)
+        await fetch(`${API_URL}/daily-closings/print-opening`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            openingCash: openingCashTotal, 
+            cashBreakdown: openingCashCounts 
+          })
+        });
+        
+        localStorage.removeItem('pos_last_closed_date');
+        localStorage.setItem('pos_last_opened_date', new Date().toISOString().split('T')[0]);
+        setIsDayClosed(false);
+        setShowOpeningModal(false);
+        resetOpeningCashCounts();
+      } else {
+        alert(result.error || 'Opening failed');
+      }
     } catch (error) {
-      console.error('Failed to open day:', error);
-      alert('Failed to open day');
+      console.error('Opening error:', error);
+      alert('Opening failed');
     }
   };
-
-  const handleCloseDay = async () => {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      await fetch(`${API_URL}/pos/close-day`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: today, closingCash: closingCashTotal, cashCounts: closingCashCounts, zReportData })
-      });
-      localStorage.setItem('pos_last_closed_date', today);
-      setIsDayClosed(true);
-      setShowClosingModal(false);
-      resetClosingCashCounts();
-      setClosingStep('report');
-    } catch (error) {
-      console.error('Failed to close day:', error);
-      alert('Failed to close day');
-    }
-  };
-
-  const fetchZReport = async () => {
-    setIsLoadingZReport(true);
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const response = await fetch(`${API_URL}/reports/z-report?date=${today}`);
-      const data = await response.json();
-      setZReportData(data);
-    } catch (error) {
-      console.error('Failed to fetch Z-Report:', error);
-    } finally {
-      setIsLoadingZReport(false);
-    }
-  };
-
-  // Closing Modal 열릴 때 Z-Report 로드
-  useEffect(() => {
-    if (showClosingModal && closingStep === 'report') {
-      fetchZReport();
-    }
-  }, [showClosingModal, closingStep]);
 
   // Open Void modal
   const handleOpenVoid = async () => {
@@ -14537,9 +14510,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-[644px]" onClick={(e) => e.stopPropagation()}>
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
+            <div className="flex items-center justify-center px-5 py-3 bg-slate-700 rounded-t-xl">
               <h2 className="text-lg font-bold text-white">Online Settings</h2>
-              <button onClick={() => setShowPrepTimeModal(false)} className="text-white hover:text-gray-300 text-xl font-bold">✕</button>
             </div>
             {/* Tabs */}
             <div className="flex gap-2 p-3 bg-gray-100">
@@ -14737,109 +14709,111 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         </div>
       )}
 
-      {/* Opening Modal */}
+      {/* Opening Modal - FSR과 동일 */}
       {showOpeningModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[500px]" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 bg-green-600 rounded-t-xl">
-              <h2 className="text-xl font-bold text-white">🌅 Opening Day</h2>
-              <button onClick={() => setShowOpeningModal(false)} className="text-white hover:text-gray-200 text-2xl font-bold">✕</button>
-            </div>
-            <div className="p-5">
-              <div className="mb-4 text-center">
-                <p className="text-lg font-semibold text-gray-700">Enter Starting Cash</p>
-                <p className="text-sm text-gray-500">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-              </div>
-              <div className="grid grid-cols-5 gap-2 mb-4">
-                {cashDenominations.map((denom) => (
-                  <div key={denom.key} onClick={() => setFocusedOpeningDenom(denom.key)} className={`p-2 rounded-lg border-2 cursor-pointer text-center ${focusedOpeningDenom === denom.key ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                    <div className="text-xs font-bold text-gray-600">{denom.label}</div>
-                    <div className="text-lg font-bold">{openingCashCounts[denom.key as keyof typeof openingCashCounts]}</div>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-[700px]">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4 text-center flex items-center justify-center gap-2">
+              🌅 Day Opening
+            </h2>
+            <p className="text-sm text-gray-500 text-center mb-4">Count your starting cash</p>
+            
+            <div className="flex gap-4">
+              {/* Left: Cash Denomination Grid */}
+              <div className="flex-1 bg-gray-50 rounded-lg p-3">
+                <div className="space-y-1">
+                  {cashDenominations.map((denom) => {
+                    const count = openingCashCounts[denom.key as keyof typeof openingCashCounts];
+                    const subtotal = count * denom.value;
+                    const isFocused = focusedOpeningDenom === denom.key;
+                    return (
+                      <div 
+                        key={denom.key} 
+                        className={`flex items-center gap-2 p-1 rounded cursor-pointer ${isFocused ? 'bg-blue-100 ring-2 ring-blue-500' : 'hover:bg-gray-100'}`}
+                        onClick={() => setFocusedOpeningDenom(denom.key)}
+                      >
+                        <div className={`w-16 px-2 py-1 border rounded text-center text-lg font-bold ${isFocused ? 'border-blue-500 bg-white' : 'border-gray-300 bg-gray-50'}`}>
+                          {count || 0}
+                        </div>
+                        <span className="text-gray-500 text-sm">×</span>
+                        <span className="w-14 text-right font-medium text-gray-700 text-sm">{denom.label}</span>
+                        <span className="text-gray-500 text-sm">=</span>
+                        <span className="flex-1 text-right font-bold text-green-600 text-sm">
+                          ${subtotal.toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {/* Total */}
+                <div className="border-t-2 border-gray-300 mt-2 pt-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-lg font-bold text-gray-700">Total:</span>
+                    <span className="text-xl font-bold text-green-600">
+                      ${openingCashTotal.toFixed(2)}
+                    </span>
                   </div>
-                ))}
+                </div>
               </div>
-              <div className="grid grid-cols-4 gap-2 mb-4">
-                {['7', '8', '9', 'C', '4', '5', '6', '⌫', '1', '2', '3', '0'].map((num) => (
-                  <button key={num} onClick={() => handleOpeningNumpadClick(num)} className={`py-3 rounded-lg font-bold text-lg ${num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200' : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200' : 'bg-gray-100 hover:bg-gray-200'}`}>{num}</button>
-                ))}
+              
+              {/* Right: Number Pad */}
+              <div className="w-48">
+                <div className="grid grid-cols-3 gap-2">
+                  {['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '⌫'].map((num) => (
+                    <button
+                      key={num}
+                      onClick={() => handleOpeningNumPad(num)}
+                      className={`h-14 text-2xl font-bold rounded-lg transition-colors ${
+                        num === 'C' 
+                          ? 'bg-red-100 hover:bg-red-200 text-red-600' 
+                          : num === '⌫' 
+                            ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'
+                            : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
+                      }`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+                
+                {/* Selected denomination indicator */}
+                <div className="mt-3 p-2 bg-blue-50 rounded-lg text-center">
+                  <span className="text-xs text-gray-500">Selected:</span>
+                  <div className="font-bold text-blue-600">
+                    {cashDenominations.find(d => d.key === focusedOpeningDenom)?.label || '-'}
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg mb-4">
-                <span className="font-bold text-gray-700">Total Cash:</span>
-                <span className="text-2xl font-bold text-green-600">${openingCashTotal.toFixed(2)}</span>
-              </div>
-              <button onClick={handleOpenDay} className="w-full py-4 bg-green-500 hover:bg-green-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Open Day</button>
+            </div>
+
+            <div className="flex gap-3 mt-4">
+              <button
+                onClick={() => {
+                  setShowOpeningModal(false);
+                  resetOpeningCashCounts();
+                }}
+                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleOpening}
+                className="flex-1 px-4 py-3 bg-green-500 hover:bg-green-600 rounded-lg font-semibold text-white transition-colors"
+              >
+                Open Day
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Closing Modal */}
-      {showClosingModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 bg-red-600 rounded-t-xl flex-shrink-0">
-              <h2 className="text-xl font-bold text-white">🌙 Closing Day</h2>
-              <button onClick={() => { setShowClosingModal(false); setClosingStep('report'); }} className="text-white hover:text-gray-200 text-2xl font-bold">✕</button>
-            </div>
-            <div className="p-5 flex-1 overflow-auto">
-              {closingStep === 'report' && (
-                <>
-                  <div className="mb-4 text-center">
-                    <p className="text-lg font-semibold text-gray-700">Z-Report Summary</p>
-                    <p className="text-sm text-gray-500">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
-                  </div>
-                  {isLoadingZReport ? <div className="flex items-center justify-center py-10"><div className="h-8 w-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin"></div></div> : zReportData ? (
-                    <div className="space-y-3 mb-4">
-                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Total Orders:</span><span className="font-bold">{zReportData.totalOrders || 0}</span></div>
-                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Gross Sales:</span><span className="font-bold">${(zReportData.grossSales || 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Discounts:</span><span className="font-bold text-red-600">-${(zReportData.discounts || 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Net Sales:</span><span className="font-bold">${(zReportData.netSales || 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between p-3 bg-gray-50 rounded-lg"><span className="font-medium">Tax Collected:</span><span className="font-bold">${(zReportData.taxCollected || 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between p-3 bg-blue-50 rounded-lg border-2 border-blue-200"><span className="font-bold text-blue-700">Total Revenue:</span><span className="font-bold text-blue-700">${(zReportData.totalRevenue || 0).toFixed(2)}</span></div>
-                      <div className="border-t pt-3 mt-3">
-                        <div className="text-sm font-bold text-gray-600 mb-2">Payment Breakdown:</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="flex justify-between p-2 bg-green-50 rounded"><span>Cash:</span><span className="font-bold">${(zReportData.cashTotal || 0).toFixed(2)}</span></div>
-                          <div className="flex justify-between p-2 bg-blue-50 rounded"><span>Card:</span><span className="font-bold">${(zReportData.cardTotal || 0).toFixed(2)}</span></div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : <div className="text-center py-10 text-gray-500">No data available</div>}
-                  <button onClick={() => setClosingStep('cash')} className="w-full py-4 bg-red-500 hover:bg-red-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Next: Count Cash →</button>
-                </>
-              )}
-              {closingStep === 'cash' && (
-                <>
-                  <div className="mb-4 text-center">
-                    <p className="text-lg font-semibold text-gray-700">Count Cash Drawer</p>
-                  </div>
-                  <div className="grid grid-cols-5 gap-2 mb-4">
-                    {cashDenominations.map((denom) => (
-                      <div key={denom.key} onClick={() => setFocusedClosingDenom(denom.key)} className={`p-2 rounded-lg border-2 cursor-pointer text-center ${focusedClosingDenom === denom.key ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                        <div className="text-xs font-bold text-gray-600">{denom.label}</div>
-                        <div className="text-lg font-bold">{closingCashCounts[denom.key as keyof typeof closingCashCounts]}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-4 gap-2 mb-4">
-                    {['7', '8', '9', 'C', '4', '5', '6', '⌫', '1', '2', '3', '0'].map((num) => (
-                      <button key={num} onClick={() => handleClosingNumpadClick(num)} className={`py-3 rounded-lg font-bold text-lg ${num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200' : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200' : 'bg-gray-100 hover:bg-gray-200'}`}>{num}</button>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg mb-4">
-                    <span className="font-bold text-gray-700">Total Cash:</span>
-                    <span className="text-2xl font-bold text-red-600">${closingCashTotal.toFixed(2)}</span>
-                  </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => setClosingStep('report')} className="flex-1 py-4 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-lg text-lg font-bold">← Back</button>
-                    <button onClick={handleCloseDay} className="flex-1 py-4 bg-red-500 hover:bg-red-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Close Day</button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Day Closing Modal - FSR과 동일한 컴포넌트 사용 */}
+      <DayClosingModal
+        isOpen={showClosingModal}
+        onClose={() => setShowClosingModal(false)}
+        onClosingComplete={() => setIsDayClosed(true)}
+      />
         </>
       )}
 
