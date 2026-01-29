@@ -4,6 +4,7 @@ import { MenuCacheProvider, prefetchMenuCache } from './contexts/MenuCacheContex
 
 import IntroPage from './pages/IntroPage';
 import InitialSetupPage from './pages/InitialSetupPage';
+import SetupPage from './pages/SetupPage';
 import SalesPage from './pages/SalesPage';
 import BackOfficeLayout from './components/BackOfficeLayout';
 import MenuListPage from './pages/MenuListPage';
@@ -74,6 +75,8 @@ function App() {
         <Routes>
           {/* 메인 페이지들 */}
           <Route path="/" element={<IntroPage />} />
+          <Route path="/intro" element={<IntroPage />} />
+          <Route path="/setup" element={<SetupPage />} />
           <Route path="/initial-setup" element={<InitialSetupPage />} />
           
           {/* 고객용 테이블 오더 페이지 */}

@@ -7,29 +7,27 @@
     "start": "electron .",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
-    "build:portable": "electron-builder --win portable",
-    "build:installer": "electron-builder --win nsis"
+    "build:portable": "electron-builder --win portable"
   },
   "author": "WEB2POS",
   "license": "MIT",
+  "dependencies": {
+    "express": "^5.1.0"
+  },
   "devDependencies": {
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1"
   },
-  "dependencies": {
-    "electron-store": "^8.1.0"
-  },
   "build": {
-    "appId": "com.thezone.pos",
+    "appId": "com.thezonepos.pos",
     "productName": "TheZonePOS",
     "directories": {
       "output": "dist"
     },
-    "icon": "icon.png",
     "files": [
       "main.js",
       "preload.js",
-      "frontend-build/**/*"
+      "updater.js"
     ],
     "extraResources": [
       {
@@ -38,23 +36,13 @@
         "filter": ["**/*"]
       },
       {
-        "from": "node.exe",
-        "to": "node.exe"
-      },
-      {
         "from": "backend",
         "to": "backend",
-        "filter": [
-          "**/*",
-          "!node_modules/.cache/**",
-          "!uploads/**",
-          "!**/test/**",
-          "!**/*.map"
-        ]
+        "filter": ["**/*"]
       },
       {
         "from": "frontend-build",
-        "to": "frontend-build",
+        "to": "frontend/build",
         "filter": ["**/*"]
       }
     ],
@@ -68,14 +56,14 @@
           "target": "portable",
           "arch": ["x64"]
         }
-      ]
+      ],
+      "icon": "icon.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "TheZonePOS"
+      "createStartMenuShortcut": true
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"

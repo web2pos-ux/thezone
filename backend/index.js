@@ -556,6 +556,14 @@ app.use('/api/delivery-channels', deliveryChannelsRoutes);
 app.use('/api/menu-visibility', menuVisibilityRoutes);
 app.use('/api/daily-closings', dailyClosingsRoutes);
 
+// App Update Routes (앱 자동 업데이트)
+const appUpdateRoutes = require('./routes/app-update');
+app.use('/api/app-update', appUpdateRoutes);
+
+// Firebase Setup Routes (매장별 Firebase 설정)
+const firebaseSetupRoutes = require('./routes/firebase-setup');
+app.use('/api/firebase-setup', firebaseSetupRoutes);
+
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
 app.use('/api/remote-sync', remoteSyncRoutes);

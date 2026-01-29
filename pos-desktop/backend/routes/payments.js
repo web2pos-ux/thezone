@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const firebaseService = require('../services/firebaseService');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -8,6 +9,19 @@ module.exports = (db) => {
 	const dbAll = (sql, params=[]) => new Promise((resolve, reject) => {
 		db.all(sql, params, (err, rows) => { if (err) reject(err); else resolve(rows); });
 	});
+	const dbGet = (sql, params=[]) => new Promise((resolve, reject) => {
+		db.get(sql, params, (err, row) => { if (err) reject(err); else resolve(row); });
+	});
+
+	// Firebase restaurantId 가져오기
+	const getRestaurantId = async () => {
+		try {
+			const row = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+			return row?.firebase_restaurant_id || null;
+		} catch (e) {
+			return null;
+		}
+	};
 
 	// create table if not exists
 	dbRun(`CREATE TABLE IF NOT EXISTS payments (
@@ -41,6 +55,32 @@ module.exports = (db) => {
 			}
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(`INSERT INTO payments(order_id, method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
+			
+			// Firebase에도 결제 데이터 저장
+			try {
+				const restaurantId = await getRestaurantId();
+				if (restaurantId) {
+					await firebaseService.savePaymentToFirebase(restaurantId, {
+						paymentId: result.lastID,
+						orderId,
+						method,
+						amount,
+						tip,
+						ref,
+						status,
+						guestNumber,
+						createdAt
+					});
+					
+					// 게스트 번호가 있으면 게스트 결제 상태도 저장
+					if (guestNumber !== null) {
+						await firebaseService.saveGuestPaymentStatus(restaurantId, orderId, guestNumber, 'PAID');
+					}
+				}
+			} catch (firebaseErr) {
+				console.warn('Firebase payment sync failed (non-fatal):', firebaseErr.message);
+			}
+			
 			res.json({ success:true, paymentId: result.lastID, createdAt });
 		} catch (e) {
 			console.error('Failed to create payment:', e);

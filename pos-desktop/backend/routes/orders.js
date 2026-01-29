@@ -75,6 +75,7 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN tax_breakdown TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN adjustments_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN subtotal REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -242,10 +243,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const limit = q.limit || 500;
 			const customerPhone = q.customerPhone ? String(q.customerPhone).trim() : '';
 			const customerName = q.customerName ? String(q.customerName).trim() : '';
+			const orderMode = q.order_mode; // QSR or FSR filter
 			const clauses = [];
 			const params = [];
 			
-			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName });
+			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
 			
 			if (type) { clauses.push('order_type = ?'); params.push(String(type).toUpperCase()); }
 			if (status) { clauses.push('status = ?'); params.push(String(status).toUpperCase()); }
@@ -271,8 +273,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				clauses.push('LOWER(customer_name) LIKE ?');
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
+			// order_mode 필터 추가 (QSR/FSR 분리)
+			if (orderMode) {
+				clauses.push('UPPER(order_mode) = ?');
+				params.push(String(orderMode).toUpperCase());
+				console.log('[GET /orders] Order mode filter applied:', orderMode);
+			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.map(c => c.replace('order_type = ?', 'UPPER(order_type) = ?')).join(' AND ')) : '';
-			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, adjustments_json FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
+			const sql = `SELECT id, order_number, order_type, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, adjustments_json, order_mode FROM orders ${whereClause} ORDER BY id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -287,6 +295,108 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		}
 	});
 
+	// ============ Delivery Orders (must be before /:id) ============
+	
+	// POST /api/orders/delivery-orders - Save delivery order metadata
+	router.post('/delivery-orders', async (req, res) => {
+		try {
+			const {
+				id, storeId, type, time, createdAt, name, status,
+				deliveryCompany, deliveryOrderNumber, readyTimeLabel, prepTime
+			} = req.body;
+
+			if (!id) {
+				return res.status(400).json({ success: false, error: 'id is required' });
+			}
+
+			// Check if exists
+			const existing = await dbGet('SELECT id FROM delivery_orders WHERE id = ?', [id]);
+			
+			if (existing) {
+				// Update
+				await dbRun(`UPDATE delivery_orders SET
+					store_id = ?, type = ?, time = ?, created_at = ?,
+					name = ?, status = ?, delivery_company = ?, delivery_order_number = ?,
+					ready_time_label = ?, prep_time = ?
+					WHERE id = ?`, [
+					storeId || 'STORE001', type || 'Delivery', time, createdAt,
+					name || '', status || 'pending', deliveryCompany || '', deliveryOrderNumber || '',
+					readyTimeLabel || '', prepTime || 0, id
+				]);
+			} else {
+				// Insert
+				await dbRun(`INSERT INTO delivery_orders (
+					id, store_id, type, time, created_at, name, status,
+					delivery_company, delivery_order_number, ready_time_label, prep_time
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+					id, storeId || 'STORE001', type || 'Delivery', time, createdAt,
+					name || '', status || 'pending', deliveryCompany || '', deliveryOrderNumber || '',
+					readyTimeLabel || '', prepTime || 0
+				]);
+			}
+
+			// Firebase sync - Delivery Order
+			try {
+				const restaurantId = remoteSyncService.restaurantId;
+				if (restaurantId) {
+					await firebaseService.uploadOrder(restaurantId, {
+						orderNumber: `DL${id}`,
+						orderType: 'DELIVERY',
+						status: 'pending',
+						items: [],
+						total: 0,
+						tableId: `DL${id}`,
+						customerName: name || `${deliveryCompany} #${deliveryOrderNumber}`,
+						customerPhone: '',
+						source: 'POS',
+						deliveryCompany: deliveryCompany || '',
+						deliveryOrderNumber: deliveryOrderNumber || '',
+						prepTime: prepTime || 0,
+						readyTimeLabel: readyTimeLabel || ''
+					});
+					console.log(`[Delivery-Orders] Order uploaded to Firebase: DL${id}`);
+				}
+			} catch (fbErr) {
+				console.error('[Delivery-Orders] Firebase upload failed:', fbErr.message);
+			}
+
+			res.json({ success: true, id });
+		} catch (e) {
+			console.error('Failed to save delivery order:', e);
+			res.status(500).json({ success: false, error: 'Failed to save delivery order' });
+		}
+	});
+
+	// GET /api/orders/delivery-orders - Get all delivery orders
+	router.get('/delivery-orders', async (req, res) => {
+		try {
+			const rows = await dbAll('SELECT * FROM delivery_orders ORDER BY created_at DESC');
+			res.json({ success: true, orders: rows });
+		} catch (e) {
+			console.error('Failed to get delivery orders:', e);
+			res.status(500).json({ success: false, error: 'Failed to get delivery orders' });
+		}
+	});
+
+	// PATCH /api/orders/delivery-orders/:id/link - Link delivery_orders to orders table
+	router.patch('/delivery-orders/:id/link', async (req, res) => {
+		try {
+			const deliveryOrderId = req.params.id;
+			const { orderId } = req.body;
+			
+			if (!orderId) {
+				return res.status(400).json({ success: false, error: 'orderId is required' });
+			}
+			
+			await dbRun('UPDATE delivery_orders SET order_id = ? WHERE id = ?', [orderId, deliveryOrderId]);
+			console.log(`[Delivery] Linked delivery_order ${deliveryOrderId} to order ${orderId}`);
+			res.json({ success: true });
+		} catch (e) {
+			console.error('Failed to link delivery order:', e);
+			res.status(500).json({ success: false, error: 'Failed to link delivery order' });
+		}
+	});
+
 	// Get order with items by id
 	router.get('/:id', async (req, res) => {
 		try {
@@ -295,6 +405,85 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, order_line_id, item_source FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
+			
+			// 각 아이템의 세금 정보 조회
+			for (const item of items) {
+				try {
+					// 1. menu_tax_links에서 아이템별 세금 그룹 ID 조회
+					let taxGroupIds = [];
+					try {
+						const taxLinks = await dbAll(
+							'SELECT tax_group_id FROM menu_tax_links WHERE item_id = ?',
+							[item.item_id]
+						);
+						taxGroupIds = taxLinks.map(r => r.tax_group_id);
+					} catch (e) {
+						// menu_item_tax_links 테이블 시도
+						try {
+							const taxLinks = await dbAll(
+								'SELECT menu_tax_group_id as tax_group_id FROM menu_item_tax_links WHERE item_id = ?',
+								[item.item_id]
+							);
+							taxGroupIds = taxLinks.map(r => r.tax_group_id);
+						} catch (e2) {}
+					}
+					
+					// 2. 아이템별 세금 없으면 카테고리 세금 조회
+					if (taxGroupIds.length === 0) {
+						try {
+							// 아이템의 카테고리 ID 조회
+							const menuItem = await dbGet(
+								'SELECT category_id FROM menu_items WHERE item_id = ?',
+								[item.item_id]
+							);
+							if (menuItem?.category_id) {
+								const categoryTaxLinks = await dbAll(
+									'SELECT tax_group_id FROM category_tax_links WHERE category_id = ?',
+									[menuItem.category_id]
+								);
+								taxGroupIds = categoryTaxLinks.map(r => r.tax_group_id);
+							}
+						} catch (e) {}
+					}
+					
+					// 3. 카테고리 세금도 없으면 기본 세금 그룹 (id=1, Food) 사용
+					if (taxGroupIds.length === 0) {
+						taxGroupIds = [1]; // 기본 Food 세금 그룹
+					}
+					
+					// 세금 그룹에 연결된 세금 정보 조회
+					let totalTaxRate = 0;
+					const taxDetails = [];
+					for (const groupId of taxGroupIds) {
+						const taxes = await dbAll(
+							`SELECT t.name, t.rate FROM taxes t
+							 JOIN tax_group_links tgl ON t.id = tgl.tax_id
+							 WHERE tgl.group_id = ? AND t.is_active = 1`,
+							[groupId]
+						);
+						for (const tax of taxes) {
+							// rate가 1보다 크면 백분율(5%), 아니면 소수(0.05)
+							const rate = tax.rate > 1 ? tax.rate / 100 : tax.rate;
+							totalTaxRate += rate;
+							taxDetails.push({ name: tax.name, rate: rate * 100 }); // 백분율로 저장
+						}
+					}
+					
+					// 4. 세금 정보가 여전히 없으면 기본 GST 5%
+					if (taxDetails.length === 0) {
+						totalTaxRate = 0.05;
+						taxDetails.push({ name: 'GST', rate: 5 });
+					}
+					
+					item.taxRate = totalTaxRate; // 소수 (예: 0.05)
+					item.taxDetails = taxDetails; // [{name: 'GST', rate: 5}, {name: 'PST', rate: 7}]
+				} catch (e) {
+					// 세금 정보 조회 실패 시 기본값 사용
+					item.taxRate = 0.05; // 기본 5%
+					item.taxDetails = [{ name: 'GST', rate: 5 }];
+				}
+			}
+			
 			res.json({ success:true, order, items, adjustments });
 		} catch (e) {
 			console.error('Failed to fetch order:', e);
@@ -411,11 +600,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
+			const { orderNumber, orderType, total, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode } = req.body || {};
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(
-				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null, kitchenNote || null]
+				`INSERT INTO orders(order_number, order_type, total, created_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[orderNumber || null, orderType || null, total || 0, createdAt, tableId || null, serverId || null, serverName || null, customerPhone || null, customerName || null, fulfillmentMode ? String(fulfillmentMode).toUpperCase() : null, readyTime || null, Number.isFinite(pickupMinutes) ? Number(pickupMinutes) : null, kitchenNote || null, orderMode || null]
 			);
 			const orderId = result.lastID;
 			for (const it of items) {
@@ -474,6 +663,35 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			res.status(500).json({ success:false, error: 'Failed to save order' });
 		}
 	});
+
+	// ============ DELIVERY ORDERS ============
+	
+	// Create delivery_orders table if not exists
+	(async () => {
+		try {
+			await dbRun(`CREATE TABLE IF NOT EXISTS delivery_orders (
+				id INTEGER PRIMARY KEY,
+				store_id TEXT,
+				type TEXT DEFAULT 'Delivery',
+				time TEXT,
+				created_at TEXT,
+				name TEXT,
+				status TEXT DEFAULT 'pending',
+				delivery_company TEXT,
+				delivery_order_number TEXT,
+				ready_time_label TEXT,
+				prep_time INTEGER,
+				order_id INTEGER
+			)`);
+			// Add order_id column if not exists (for existing tables)
+			try {
+				await dbRun(`ALTER TABLE delivery_orders ADD COLUMN order_id INTEGER`);
+			} catch (e) { /* Column already exists */ }
+			console.log('[Orders] delivery_orders table ready');
+		} catch (e) {
+			console.error('Failed to create delivery_orders table:', e.message);
+		}
+	})();
 
 	return router;
 }; 

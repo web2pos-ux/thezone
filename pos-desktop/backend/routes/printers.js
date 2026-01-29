@@ -71,7 +71,8 @@ function renderKitchenTicketImage(options) {
     isAdditionalOrder = false,
     isPaid = false,
     isReprint = false,
-    paperWidth = 80 // 80mm or 58mm
+    paperWidth = 80, // 80mm or 58mm
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
 
   // Paper width in pixels (203 DPI thermal printer)
@@ -582,7 +583,8 @@ function buildImageKitchenTicket(options) {
     isReprint = false,
     paperWidth = 80,
     printerName = '',  // 프린터 이름 (Front, Sushi Bar, Kitchen 등)
-    isServerTicket = false  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    isServerTicket = false,  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
 
   // ============ DPI 스케일링 ============
@@ -593,11 +595,23 @@ function buildImageKitchenTicket(options) {
   // 폰트 사이즈 스케일링 함수
   const scaleFontSize = (size) => Math.round((size || 16) * DPI_SCALE);
 
+  // 딜리버리 주문 판단
+  const orderType = (orderInfo.orderType || orderInfo.channel || '').toUpperCase();
+  const orderSource = (orderInfo.orderSource || '').toUpperCase();
+  const deliveryChannel = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || '').toUpperCase();
+  const deliveryChannels = ['DELIVERY', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'];
+  const isDelivery = deliveryChannels.includes(orderType) 
+                  || deliveryChannels.includes(orderSource)
+                  || deliveryChannels.includes(deliveryChannel)
+                  || !!orderInfo.deliveryCompany
+                  || !!orderInfo.deliveryOrderNumber;
+
   // DEBUG: Log received layout settings and items
   console.log('=== buildImageKitchenTicket DEBUG ===');
   console.log('orderInfo:', JSON.stringify(orderInfo));
   console.log('isPaid:', isPaid);
   console.log('isServerTicket:', isServerTicket);
+  console.log('isDelivery:', isDelivery);
   console.log('items count:', items.length);
   console.log('paidStatus setting:', JSON.stringify(layoutSettings.paidStatus));
   console.log('dateTime setting:', JSON.stringify(layoutSettings.dateTime));
@@ -678,7 +692,7 @@ function buildImageKitchenTicket(options) {
   // Calculate dynamic height based on actual settings
   let totalHeight = TOP_MARGIN;
   if (printerName) totalHeight += scaleFontSize(16) + 25;  // 프린터 이름 높이
-  if (isReprint) totalHeight += 45;
+  if (isReprint) totalHeight += scaleFontSize(18) + 12 + 15; // REPRINT 배너 높이 + 간격
   if (isAdditionalOrder) totalHeight += 45;
   
   // Check for merged elements
@@ -696,17 +710,39 @@ function buildImageKitchenTicket(options) {
     const isLineInverse = merged.lineInverse === true;
     const nextIsLineInverse = nextMerged?.lineInverse === true;
     
+    // merged element의 실제 폰트 크기 가져오기
+    const leftMergedFsH = merged.leftElement?.fontSize || 24;
+    const rightMergedFsH = merged.rightElement?.fontSize || 24;
+    const maxMergedFsH = scaleFontSize(Math.max(leftMergedFsH, rightMergedFsH));
+    
+    // 폰트 크기에 비례한 패딩 계산 (70%)
+    const mergedPaddingH = Math.max(28, Math.floor(maxMergedFsH * 0.7));
+    
     if (isLineInverse && nextIsLineInverse) {
       // 연속된 inverse - 간격 축소
-      totalHeight += scaleFontSize(24) / 2 + 8;
+      totalHeight += maxMergedFsH / 2 + mergedPaddingH / 2;
     } else {
-      totalHeight += scaleFontSize(24) + 15;
+      totalHeight += maxMergedFsH + mergedPaddingH;
     }
   });
   
   // Individual elements (skip if merged)
   if (!mergedKeysForHeight.has('orderType') && orderTypeEl.visible && orderTypeEl.showInHeader) totalHeight += getLineHeight(orderTypeEl) + 10;
   if (!mergedKeysForHeight.has('tableNumber') && tableNumberEl.visible && tableNumberEl.showInHeader && orderInfo.table) totalHeight += getLineHeight(tableNumberEl) + 10;
+  // Delivery Channel + External Order # 높이 추가
+  const hasDeliveryChannel = orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource;
+  if (!mergedKeysForHeight.has('deliveryChannel') && deliveryChannelEl.visible && hasDeliveryChannel) {
+    totalHeight += getLineHeight(deliveryChannelEl) + 15; // inverse 요소는 추가 패딩 필요
+  }
+  const hasExtOrderNum = orderInfo.deliveryOrderNumber || orderInfo.externalOrderNumber || orderInfo.orderNumber;
+  if (!mergedKeysForHeight.has('externalOrderNumber') && externalOrderNumberEl.visible && hasExtOrderNum) {
+    totalHeight += getLineHeight(externalOrderNumberEl) + 15;
+  }
+  // Pickup Time + POS Order # 높이 추가
+  const hasPickupTime = orderInfo.pickupTime || orderInfo.readyTime || orderInfo.ready_time;
+  if (!mergedKeysForHeight.has('pickupTime') && pickupTimeEl.visible && hasPickupTime) {
+    totalHeight += getLineHeight(pickupTimeEl) + 15;
+  }
   if (!mergedKeysForHeight.has('posOrderNumber') && posOrderNumberEl.visible && posOrderNumberEl.showInHeader && orderInfo.orderNumber) totalHeight += getLineHeight(posOrderNumberEl) + 5;
   if (!mergedKeysForHeight.has('serverName') && serverNameEl.visible && serverNameEl.showInHeader && orderInfo.server) totalHeight += getLineHeight(serverNameEl) + 5;
   if (!mergedKeysForHeight.has('dateTime') && dateTimeEl.visible && dateTimeEl.showInHeader) totalHeight += getLineHeight(dateTimeEl) + 5;
@@ -778,7 +814,7 @@ function buildImageKitchenTicket(options) {
     totalHeight += getFontHeight(paidStatusEl) + paidFooterTopSpacing + 10;
   }
   if (specialInstructionsEl.visible && orderInfo.specialInstructions) totalHeight += getLineHeight(specialInstructionsEl) + 10;
-  totalHeight -= 18; // Bottom margin reduced further (half of previous)
+  totalHeight += 40; // Bottom margin: 5mm (40px @ 203 DPI)
 
   // Create canvas
   const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
@@ -869,10 +905,10 @@ function buildImageKitchenTicket(options) {
     ctx.setLineDash([]);
   };
 
-  // === REPRINT BANNER === (전체 너비 검은 띠)
+  // === REPRINT BANNER === (전체 너비 검은 띠, 헤더와 겹치지 않도록 별도 공간)
   if (isReprint) {
-    const bannerFs = scaleFontSize(22);
-    const bannerH = bannerFs + 16;
+    const bannerFs = scaleFontSize(18); // 약간 작게
+    const bannerH = bannerFs + 12;
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, y - bannerH / 2, PAPER_WIDTH_PX, bannerH);
     ctx.fillStyle = '#FFFFFF';
@@ -880,7 +916,7 @@ function buildImageKitchenTicket(options) {
     ctx.textAlign = 'center';
     ctx.fillText('** REPRINT **', centerX, y + bannerFs / 4);
     ctx.fillStyle = '#000000';
-    y += 40;
+    y += bannerH + 15; // 배너 높이 + 간격으로 헤더와 분리
   }
 
   // === ADDITIONAL ORDER BANNER === (전체 너비 검은 띠)
@@ -898,7 +934,31 @@ function buildImageKitchenTicket(options) {
   }
 
   // === MERGED ELEMENTS HANDLING ===
-  const mergedElements = layoutSettings.mergedElements || [];
+  let mergedElements = layoutSettings.mergedElements || [];
+  
+  // Delivery 주문: layoutSettings에 mergedElements가 없을 때만 기본값 사용
+  // 사용자가 Printer Settings > Ticket for Delivery에서 설정한 레이아웃을 우선 사용
+  if (isDelivery && mergedElements.length === 0) {
+    // Delivery 전용 기본 merged elements (설정이 없을 때만 사용)
+    // customerName/customerPhone은 사용자가 명시적으로 설정해야만 출력됨
+    mergedElements = [
+      {
+        leftElement: { key: 'deliveryChannel', fontSize: 26 },
+        rightElement: { key: 'externalOrderNumber', fontSize: 26 },
+        alignment: 'center-right',  // 프리뷰 기본값: C/R
+        gap: 16,
+        lineInverse: true  // LINE INV 강제 적용
+      },
+      {
+        leftElement: { key: 'pickupTime', fontSize: 20 },
+        rightElement: { key: 'posOrderNumber', fontSize: 20 },
+        alignment: 'center-right',  // 프리뷰 기본값: C/R
+        gap: 16,
+        lineInverse: false
+      }
+    ];
+  }
+  
   const mergedKeys = new Set();
   mergedElements.forEach(m => {
     if (m.leftElement?.key) mergedKeys.add(m.leftElement.key);
@@ -914,21 +974,58 @@ function buildImageKitchenTicket(options) {
     const isDelivery = ['DOORDASH', 'UBEREATS', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB', 'DELIVERY'].includes(channel);
     
     switch (key) {
-      case 'orderType': return (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
+      case 'orderType': {
+        // Delivery는 merged element (deliveryChannel + externalOrderNumber)에서 표시하므로 여기서는 빈 문자열
+        if (isDelivery) {
+          return '';
+        }
+        return (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
+      }
       case 'tableNumber': return orderInfo.table || '';
       case 'posOrderNumber': {
         // Togo/TZO: 빈 공간 (externalOrderNumber에서 이미 주문번호 표시)
         if (isTogoOrTZO && !isDelivery) {
           return '';
         }
-        // 배달/다인인: 기존처럼 표시
-        return orderInfo.orderNumber ? `Order #: ${orderInfo.orderNumber.replace('#', '')}` : '';
+        // 배달: POS 주문 순번 (posOrderId = orders 테이블의 id)
+        // 배달 주문의 경우 posOrderId가 실제 주문 순번
+        const posOrderId = orderInfo.posOrderId || orderInfo.localOrderId || orderInfo.orderId;
+        if (posOrderId) {
+          return `Order #: ${posOrderId}`;
+        }
+        // 기존 orderNumber에서 숫자만 추출 시도
+        if (orderInfo.orderNumber) {
+          const numMatch = String(orderInfo.orderNumber).match(/\d+$/);
+          if (numMatch) {
+            return `Order #: ${numMatch[0]}`;
+          }
+        }
+        return '';
       }
       case 'serverName': return orderInfo.server || '';
       case 'dateTime': return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-      case 'paidStatus': return isPaid ? 'PAID' : '';
+      case 'paidStatus': {
+        // 딜리버리 주문은 PAID/UNPAID 표시하지 않음
+        if (isDelivery) return '';
+        return isPaid ? 'PAID' : '';
+      }
       // Kitchen for Takeout 요소들 추가
-      case 'deliveryChannel': return (orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
+      case 'deliveryChannel': {
+        const ch = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
+        // 딜리버리 채널 이름 축약
+        const channelMap = {
+          'UBEREATS': 'UBER',
+          'UBER EATS': 'UBER',
+          'DOORDASH': 'D DASH',
+          'DOOR DASH': 'D DASH',
+          'SKIPTHEDISHES': 'SKIP',
+          'SKIP THE DISHES': 'SKIP',
+          'SKIP': 'SKIP',
+          'FANTUAN': 'F TUAN',
+          'FAN TUAN': 'F TUAN'
+        };
+        return channelMap[ch] || ch;
+      }
       case 'pickupTime': {
         // 라벨: Togo/TZO는 "PICKUP", 배달은 "READY"
         const label = isTogoOrTZO && !isDelivery ? 'PICKUP' : 'READY';
@@ -957,8 +1054,8 @@ function buildImageKitchenTicket(options) {
           // Togo/TZO: POS 주문번호를 여기에 표시 (#916 형식)
           return orderInfo.orderNumber || '';
         }
-        // 배달: 외부 주문번호 사용 (#DD-78542 형식)
-        return orderInfo.externalOrderNumber || '';
+        // 배달: 외부 주문번호 사용 (딜리버리모달의 Order #)
+        return orderInfo.deliveryOrderNumber || orderInfo.externalOrderNumber || '';
       }
       case 'customerName': return orderInfo.customerName || '';
       case 'customerPhone': return orderInfo.customerPhone || '';
@@ -987,7 +1084,10 @@ function buildImageKitchenTicket(options) {
     
     // 기본값 설정 (값이 없을 경우)
     if (!leftValue && leftKey === 'orderType') leftValue = 'DINE-IN';
-    if (!rightValue && rightKey === 'tableNumber') rightValue = orderInfo.table || 'TABLE';
+    // tableNumber: 테이블이 빈 문자열이면 기본값 사용 안함 (QSR에서는 테이블 없음)
+    if (!rightValue && rightKey === 'tableNumber' && orderInfo.table) {
+      rightValue = orderInfo.table;
+    }
     
     if (!leftValue && !rightValue) return;
     
@@ -1004,29 +1104,70 @@ function buildImageKitchenTicket(options) {
     ctx.font = `bold ${leftFs}px Arial`;
     const leftWidth = ctx.measureText(leftValue).width;
     ctx.font = `bold ${rightFs}px Arial`;
-    const rightWidth = ctx.measureText(rightValue).width;
+    const rightWidth = rightValue ? ctx.measureText(rightValue).width : 0;
     
-    const gap = 20; // Gap between elements
+    // Gap: 설정값 사용 또는 기본값 16px (DPI 스케일링 적용)
+    const rawGap = merged.gap !== undefined ? merged.gap : 16;
+    const gap = rightValue ? Math.round(rawGap * DPI_SCALE) : 0;
     const totalWidth = leftWidth + gap + rightWidth;
-    const startX = (PAPER_WIDTH_PX - totalWidth) / 2;
+    
+    // H-Align 적용: merged.alignment 값에 따라 위치 계산
+    // left-center (L/C): left 왼쪽, right 중앙
+    // left-right (L/R): left 왼쪽, right 오른쪽
+    // center-center (C/C): 둘 다 중앙
+    // center-right (C/R): left 중앙왼쪽, right 오른쪽
+    const alignment = merged.alignment || 'center-center';
+    let leftX, rightX;
+    
+    // 오른쪽 마진 추가 (프린터 특성상 오른쪽이 잘릴 수 있음)
+    const RIGHT_MARGIN = MARGIN + 40;
+    
+    if (alignment === 'left-right') {
+      // Left on left margin, Right on right margin
+      leftX = MARGIN;
+      rightX = PAPER_WIDTH_PX - RIGHT_MARGIN - rightWidth;
+    } else if (alignment === 'left-center') {
+      // Left on left margin, Right in center
+      leftX = MARGIN;
+      rightX = (PAPER_WIDTH_PX - rightWidth) / 2;
+    } else if (alignment === 'center-right') {
+      // Left on left margin, Right on right margin (실질적으로 L/R과 동일하게 처리)
+      leftX = MARGIN;
+      rightX = PAPER_WIDTH_PX - RIGHT_MARGIN - rightWidth;
+    } else {
+      // center-center (default): Both centered together
+      leftX = (PAPER_WIDTH_PX - totalWidth) / 2;
+      rightX = leftX + leftWidth + gap;
+    }
+    
+    // 겹침 방지: leftX + leftWidth + gap이 rightX보다 크면 조정
+    if (rightValue && leftX + leftWidth + gap > rightX) {
+      rightX = leftX + leftWidth + gap;
+    }
+    
+    console.log(`🔍 [MERGED ALIGN] ${leftKey}+${rightKey}: alignment=${alignment}, leftX=${leftX}, rightX=${rightX}`);
     
     // LINE INV가 체크된 경우: 전체 너비 검은색 배경 (왼쪽 끝 ~ 오른쪽 끝)
     if (lineInverse) {
-      const barHeight = maxFs + 16;
+      // 폰트 크기에 비례한 여백 적용 (최소 28px, 폰트의 70%)
+      const padding = Math.max(28, Math.floor(maxFs * 0.7));
+      const barHeight = maxFs + padding;
       
       // Draw FULL WIDTH black bar (from edge to edge)
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, y - barHeight/2, PAPER_WIDTH_PX, barHeight);
       
-      // Draw both texts in white, centered
+      // Draw texts in white with alignment
       ctx.fillStyle = '#FFFFFF';
       ctx.font = `bold ${leftFs}px Arial`;
       ctx.textAlign = 'left';
-      ctx.fillText(leftValue, startX, y + leftFs/4);
+      ctx.fillText(leftValue, leftX, y + leftFs/4);
       
-      ctx.font = `bold ${rightFs}px Arial`;
-      const rightX = startX + leftWidth + gap;
-      ctx.fillText(rightValue, rightX, y + rightFs/4);
+      // Only draw right value if it exists
+      if (rightValue) {
+        ctx.font = `bold ${rightFs}px Arial`;
+        ctx.fillText(rightValue, rightX, y + rightFs/4);
+      }
       
       ctx.fillStyle = '#000000';
     } else {
@@ -1036,37 +1177,41 @@ function buildImageKitchenTicket(options) {
         if (leftEl.inverse) {
           ctx.font = `bold ${leftFs}px Arial`;
           const lw = ctx.measureText(leftValue).width + 16;
-          const lh = leftFs + 10;
+          // 폰트 크기에 비례한 여백 적용 (최소 24px, 폰트의 60%)
+          const lPadding = Math.max(24, Math.floor(leftFs * 0.6));
+          const lh = leftFs + lPadding;
           ctx.fillStyle = '#000000';
-          ctx.fillRect(startX - 8, y - lh/2, lw, lh);
+          ctx.fillRect(leftX - 8, y - lh/2, lw, lh);
           ctx.fillStyle = '#FFFFFF';
           ctx.textAlign = 'left';
-          ctx.fillText(leftValue, startX, y + leftFs/4);
+          ctx.fillText(leftValue, leftX, y + leftFs/4);
           ctx.fillStyle = '#000000';
         } else {
           ctx.font = `bold ${leftFs}px Arial`;
           ctx.textAlign = 'left';
-          ctx.fillText(leftValue, startX, y + leftFs/4);
+          ctx.fillText(leftValue, leftX, y + leftFs/4);
         }
       }
       
       // Draw right element (with inverse if set)
       if (rightValue) {
-        const rightX = startX + leftWidth + gap + (leftEl.inverse ? 8 : 0);
+        const adjustedRightX = rightX + (leftEl.inverse ? 8 : 0);
         if (rightEl.inverse) {
           ctx.font = `bold ${rightFs}px Arial`;
           const rw = ctx.measureText(rightValue).width + 16;
-          const rh = rightFs + 10;
+          // 폰트 크기에 비례한 여백 적용 (최소 24px, 폰트의 60%)
+          const rPadding = Math.max(24, Math.floor(rightFs * 0.6));
+          const rh = rightFs + rPadding;
           ctx.fillStyle = '#000000';
-          ctx.fillRect(rightX - 8, y - rh/2, rw, rh);
+          ctx.fillRect(adjustedRightX - 8, y - rh/2, rw, rh);
           ctx.fillStyle = '#FFFFFF';
           ctx.textAlign = 'left';
-          ctx.fillText(rightValue, rightX, y + rightFs/4);
+          ctx.fillText(rightValue, adjustedRightX, y + rightFs/4);
           ctx.fillStyle = '#000000';
         } else {
           ctx.font = `bold ${rightFs}px Arial`;
           ctx.textAlign = 'left';
-          ctx.fillText(rightValue, rightX, y + rightFs/4);
+          ctx.fillText(rightValue, adjustedRightX, y + rightFs/4);
         }
       }
     }
@@ -1075,11 +1220,14 @@ function buildImageKitchenTicket(options) {
     const nextMerged = mergedElements[mergedIdx + 1];
     const nextIsLineInverse = nextMerged?.lineInverse === true;
     
+    // 폰트 크기에 비례한 y 진행량 계산 (70%)
+    const linePadding = Math.max(28, Math.floor(maxFs * 0.7));
+    
     if (lineInverse && nextIsLineInverse) {
       // 연속된 inverse - 간격 없이 바로 붙임
-      y += maxFs / 2 + 8;  // 절반 높이만 이동 (다음 요소가 나머지 절반 차지)
+      y += maxFs / 2 + linePadding / 2;  // 절반 높이만 이동 (다음 요소가 나머지 절반 차지)
     } else {
-      y += maxFs + 12;
+      y += maxFs + linePadding;
     }
   });
 
@@ -1138,9 +1286,10 @@ function buildImageKitchenTicket(options) {
   // === PAID STATUS IN HEADER === (show PAID or UNPAID)
   // Dine-in: 설정(visible, showInHeader)에 따라 출력
   // Take-out/Online: Server Ticket(Front)에서는 설정과 관계없이 항상 출력
-  const orderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
-  const isDineIn = orderType === 'DINE-IN' || orderType === 'DINEIN';
-  const shouldShowPaidStatusInHeader = !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+  const currentOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
+  const isDineIn = currentOrderType === 'DINE-IN' || currentOrderType === 'DINEIN';
+  const shouldShowPaidStatusInHeader = !hidePaidStatus && !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible && 
                                        (paidStatusEl.showInHeader || (isServerTicket && !isDineIn));
   if (shouldShowPaidStatusInHeader) {
     // 마지막 merged element가 lineInverse이고, paidStatus도 inverse이면 간격 최소화 (흰 띠 제거)
@@ -1323,7 +1472,8 @@ function buildImageKitchenTicket(options) {
   }
 
   // === PAID STATUS === (show PAID or UNPAID in Footer if showInFooter is true)
-  if (paidStatusEl.visible && paidStatusEl.showInFooter) {
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+  if (!hidePaidStatus && !isDelivery && paidStatusEl.visible && paidStatusEl.showInFooter) {
     // Top spacing 적용 (lineSpacing 값 그대로 사용)
     const footerTopSpacing = paidStatusEl.lineSpacing || 0;
     y += footerTopSpacing;
@@ -1367,8 +1517,20 @@ function buildEscPosKitchenTicket(options) {
     isPaid = false,
     isReprint = false,
     printerName = '',  // 프린터 이름 (Front, Sushi Bar, Kitchen 등)
-    isServerTicket = false  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    isServerTicket = false,  // Server Ticket 여부 (Front 프린터 = Server Ticket, PAID/UNPAID 출력)
+    hidePaidStatus = false  // QSR 모드에서 PAID/UNPAID 숨기기
   } = options;
+  
+  // 딜리버리 주문 판단
+  const orderType = (orderInfo.orderType || orderInfo.channel || '').toUpperCase();
+  const orderSource = (orderInfo.orderSource || '').toUpperCase();
+  const deliveryChannel = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || '').toUpperCase();
+  const deliveryChannels = ['DELIVERY', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'];
+  const isDelivery = deliveryChannels.includes(orderType) 
+                  || deliveryChannels.includes(orderSource)
+                  || deliveryChannels.includes(deliveryChannel)
+                  || !!orderInfo.deliveryCompany
+                  || !!orderInfo.deliveryOrderNumber;
   
   // Extract element settings from layoutSettings
   const orderTypeEl = layoutSettings.orderType || { visible: true, inverse: true };
@@ -1433,25 +1595,55 @@ function buildEscPosKitchenTicket(options) {
   };
   
   // Get merged elements
-  const mergedElements = layoutSettings.mergedElements || [];
+  let mergedElements = layoutSettings.mergedElements || [];
+  
+  // Delivery 주문: merged elements 순서 강제 설정
+  // 1. deliveryChannel + externalOrderNumber (LINE INV)
+  // 2. pickupTime + posOrderNumber
+  if (isDelivery) {
+    mergedElements = [
+      {
+        leftElement: { key: 'deliveryChannel', fontSize: 26 },
+        rightElement: { key: 'externalOrderNumber', fontSize: 26 },
+        lineInverse: true
+      },
+      {
+        leftElement: { key: 'pickupTime', fontSize: 20 },
+        rightElement: { key: 'posOrderNumber', fontSize: 20 },
+        lineInverse: false
+      }
+    ];
+  }
+  
   const mergedKeys = new Set();
   mergedElements.forEach(m => {
     if (m.leftElement) mergedKeys.add(m.leftElement.key);
     if (m.rightElement) mergedKeys.add(m.rightElement.key);
   });
   
+  // 채널명 약어 변환
+  const channelMap = {
+    'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+    'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+    'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+    'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
+  };
+  
   // Sample data mapping for merged elements
   const getElementValue = (key) => {
+    const ch = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderInfo.channel || orderInfo.orderSource || '').toUpperCase();
+    const shortChannel = channelMap[ch] || ch;
+    
     const sampleData = {
-      orderType: (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase(),
+      orderType: isDelivery ? '' : (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase(),
       tableNumber: orderInfo.table || '',
-      posOrderNumber: orderInfo.orderNumber ? `#${orderInfo.orderNumber}` : '',
-      externalOrderNumber: orderInfo.externalOrderNumber || '',
+      posOrderNumber: orderInfo.orderNumber ? `Order #: ${String(orderInfo.orderNumber).replace(/^#/, '').match(/\d+$/)?.[0] || orderInfo.orderNumber}` : '',
+      externalOrderNumber: orderInfo.deliveryOrderNumber || orderInfo.externalOrderNumber || '',
       serverName: orderInfo.server || '',
       dateTime: new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }),
-      paidStatus: isPaid ? 'PAID' : 'UNPAID',
-      pickupTime: orderInfo.pickupTime || '',
-      deliveryChannel: orderInfo.deliveryChannel || orderInfo.channel || '',
+      paidStatus: isDelivery ? '' : (isPaid ? 'PAID' : 'UNPAID'),
+      pickupTime: orderInfo.pickupTime ? `READY: ${orderInfo.pickupTime}` : '',
+      deliveryChannel: shortChannel,
       customerName: orderInfo.customerName || '',
       customerPhone: orderInfo.customerPhone || '',
       deliveryAddress: orderInfo.deliveryAddress || '',
@@ -1630,9 +1822,10 @@ function buildEscPosKitchenTicket(options) {
   
   // Paid Status - skip if merged
   // Dine-in: 설정에 따라 출력, Take-out/Online: Server Ticket(Front)에서는 항상 출력
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
   const escOrderType = (orderInfo.orderType || orderInfo.channel || 'DINE-IN').toUpperCase();
   const escIsDineIn = escOrderType === 'DINE-IN' || escOrderType === 'DINEIN';
-  const escShouldShowPaidStatus = !mergedKeys.has('paidStatus') && paidStatusEl.visible !== false && 
+  const escShouldShowPaidStatus = !hidePaidStatus && !isDelivery && !mergedKeys.has('paidStatus') && paidStatusEl.visible !== false && 
                                   (paidStatusEl.showInHeader !== false || (isServerTicket && !escIsDineIn));
   if (escShouldShowPaidStatus) {
     // Top spacing 적용 (lineSpacing 값에 따라 줄바꿈 추가)
@@ -1798,7 +1991,8 @@ function buildEscPosKitchenTicket(options) {
   }
   
   // Paid Status (PAID / UNPAID) in Footer - show if showInFooter is true
-  if (paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
+  // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+  if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
     // Top spacing 적용
     const escFooterTopLines = Math.floor((paidStatusEl.lineSpacing || 1.2) / 4);
     for (let i = 0; i < escFooterTopLines; i++) {
@@ -2656,25 +2850,57 @@ module.exports = (db) => {
       console.log('layoutSettings keys:', layoutSettings ? Object.keys(layoutSettings) : 'null');
       console.log('has externalKitchen:', !!layoutSettings?.externalKitchen);
       console.log('has dineInKitchen:', !!layoutSettings?.dineInKitchen);
+      console.log('has deliveryKitchen:', !!layoutSettings?.deliveryKitchen);
       
       // ============ 프린터 레이아웃 선택 로직 ============
       // Kitchen Ticket (Dine-In): 매장 내 식사
       //   - DINE-IN, TABLE-ORDER, QR-ORDER, POS
-      // Kitchen Ticket (Takeout): 매장 외
-      //   - TOGO, ONLINE, KIOSK, DELIVERY, SKIPTHEDISHES, DOORDASH, UBEREATS 등
+      // Kitchen Ticket (Takeout): 매장 외 (Togo, Online)
+      //   - TOGO, ONLINE, KIOSK
+      // Kitchen Ticket (Delivery): 배달
+      //   - DELIVERY, SKIPTHEDISHES, DOORDASH, UBEREATS 등
       
-      const isTakeout = ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'DELIVERY', 
-                         'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'].includes(orderType)
-                     || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
+      const deliveryChannel = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || '').toUpperCase();
+      const deliveryChannels = ['DELIVERY', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'];
+      const isDelivery = deliveryChannels.includes(orderType) 
+                      || deliveryChannels.includes(orderSource)
+                      || deliveryChannels.includes(deliveryChannel)
+                      || !!orderInfo.deliveryCompany
+                      || !!orderInfo.deliveryOrderNumber;
       
+      // PICKUP, FOR HERE도 QSR에서는 Take-out 레이아웃 사용
+      const isTakeout = !isDelivery && (
+        ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderType)
+        || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderSource)
+      );
+      
+      console.log('isDelivery:', isDelivery);
       console.log('isTakeout:', isTakeout);
       
       // 프린터별 레이아웃 선택 함수
       const getLayoutForPrinter = (printerName) => {
         const isServerTicket = (printerName || '').toLowerCase().includes('front');
-        console.log(`📋 [getLayoutForPrinter] printerName: "${printerName}", isServerTicket: ${isServerTicket}, isTakeout: ${isTakeout}`);
+        console.log(`📋 [getLayoutForPrinter] printerName: "${printerName}", isServerTicket: ${isServerTicket}, isDelivery: ${isDelivery}, isTakeout: ${isTakeout}`);
         
-        if (isTakeout) {
+        if (isDelivery) {
+          // Delivery → deliveryKitchen 설정 사용
+          if (isServerTicket) {
+            console.log(`📋 [${printerName}] Using deliveryKitchen.waitressPrinter (Delivery Server Ticket)`);
+            return layoutSettings?.deliveryKitchen?.waitressPrinter 
+                || layoutSettings?.deliveryKitchen?.kitchenPrinter 
+                || layoutSettings?.deliveryKitchen 
+                || layoutSettings?.externalKitchen?.waitressPrinter
+                || layoutSettings?.kitchenLayout 
+                || {};
+          } else {
+            console.log(`📋 [${printerName}] Using deliveryKitchen.kitchenPrinter (Delivery Kitchen Ticket)`);
+            return layoutSettings?.deliveryKitchen?.kitchenPrinter 
+                || layoutSettings?.deliveryKitchen 
+                || layoutSettings?.externalKitchen?.kitchenPrinter
+                || layoutSettings?.kitchenLayout 
+                || {};
+          }
+        } else if (isTakeout) {
           if (isServerTicket) {
             console.log(`📋 [${printerName}] Using externalKitchen.waitressPrinter (Server Ticket)`);
             return layoutSettings?.externalKitchen?.waitressPrinter 
@@ -2708,9 +2934,11 @@ module.exports = (db) => {
       };
       
       // 기본 레이아웃 (fallback용)
-      let kitchenLayout = isTakeout 
-        ? (layoutSettings?.externalKitchen?.kitchenPrinter || layoutSettings?.externalKitchen || layoutSettings?.kitchenLayout || {})
-        : (layoutSettings?.dineInKitchen?.kitchenPrinter || layoutSettings?.dineInKitchen || layoutSettings?.kitchenLayout || {});
+      let kitchenLayout = isDelivery
+        ? (layoutSettings?.deliveryKitchen?.kitchenPrinter || layoutSettings?.deliveryKitchen || layoutSettings?.externalKitchen?.kitchenPrinter || layoutSettings?.kitchenLayout || {})
+        : isTakeout 
+          ? (layoutSettings?.externalKitchen?.kitchenPrinter || layoutSettings?.externalKitchen || layoutSettings?.kitchenLayout || {})
+          : (layoutSettings?.dineInKitchen?.kitchenPrinter || layoutSettings?.dineInKitchen || layoutSettings?.kitchenLayout || {});
       
       console.log('=== END DEBUG ===');
       
@@ -2734,6 +2962,7 @@ module.exports = (db) => {
       const isAdditionalOrder = req.body.isAdditionalOrder || false;
       const isPaid = req.body.isPaid || false;
       const isReprint = req.body.isReprint || false;
+      const hidePaidStatus = req.body.hidePaidStatus || false;
 
       // Helper functions for text formatting
       const LINE_WIDTH = 32; // Standard 80mm thermal printer width
@@ -2812,8 +3041,9 @@ module.exports = (db) => {
       
       // Paid Status (PAID / UNPAID) - inverse
       // Dine-in: showInHeader 설정에 따라 출력, Take-out/Online: 항상 출력
+      // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
       const textIsDineIn = orderType === 'DINE-IN' || orderType === 'DINEIN' || orderType === '';
-      if (paidStatusEl.visible !== false && (paidStatusEl.showInHeader || !textIsDineIn)) {
+      if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && (paidStatusEl.showInHeader || !textIsDineIn)) {
         const statusText = isPaid ? 'PAID' : 'UNPAID';
         printContent += inverseLine(statusText) + '\n';
       }
@@ -2909,7 +3139,8 @@ module.exports = (db) => {
       }
       
       // Paid Status in Footer (PAID / UNPAID)
-      if (paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
+      // Delivery: PAID/UNPAID 표시하지 않음, QSR 모드(hidePaidStatus)에서도 표시하지 않음
+      if (!hidePaidStatus && !isDelivery && paidStatusEl.visible !== false && paidStatusEl.showInFooter) {
         const statusText = isPaid ? 'PAID' : 'UNPAID';
         printContent += inverseLine(statusText) + '\n';
       }
@@ -2951,7 +3182,8 @@ module.exports = (db) => {
                 isReprint,
                 paperWidth: printerLayout.paperWidth || 80,
                 printerName: displayPrinterName,  // 프린터 이름 전달
-                isServerTicket  // Server Ticket 여부
+                isServerTicket,  // Server Ticket 여부
+                hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
               });
               
               if (imageContent) {
@@ -2976,7 +3208,8 @@ module.exports = (db) => {
                 isPaid,
                 isReprint,
                 printerName: displayPrinterName,  // 프린터 이름 전달
-                isServerTicket  // Server Ticket 여부
+                isServerTicket,  // Server Ticket 여부
+                hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
               });
               
               // Send to printer using RAW mode
@@ -3039,15 +3272,24 @@ module.exports = (db) => {
   // POST /api/printers/print-order - 전체 주문을 프린터별로 통합하여 출력
   router.post('/print-order', async (req, res) => {
     try {
-      const { orderInfo = {}, items = [], isAdditionalOrder = false, isPaid = false, isReprint = false } = req.body;
+      const { orderInfo = {}, items = [], isAdditionalOrder = false, isPaid = false, isReprint = false, hidePaidStatus = false } = req.body;
 
+      // 딜리버리/외부 주문의 경우 items가 없어도 주문 정보만으로 Kitchen Ticket 출력 허용
+      const isDeliveryTicketOnly = orderInfo.deliveryCompany || orderInfo.deliveryOrderNumber || 
+                              (orderInfo.orderType || '').toUpperCase() === 'DELIVERY' ||
+                              (orderInfo.channel || '').toUpperCase() === 'DELIVERY';
+      
       if (!Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ success: false, error: 'items array is required' });
+        if (!isDeliveryTicketOnly) {
+          return res.status(400).json({ success: false, error: 'items array is required' });
+        }
+        console.log('🚗 딜리버리 주문 - items 없이 주문 정보만으로 Kitchen Ticket 출력');
       }
 
       console.log('=== PRINT-ORDER REQUEST ===');
       console.log('orderInfo:', JSON.stringify(orderInfo));
       console.log('items count:', items.length);
+      console.log('isDeliveryTicketOnly:', isDeliveryTicketOnly);
       console.log('isReprint:', isReprint);
 
       // 1. 각 아이템의 프린터 그룹에서 실제 프린터 조회하여 프린터별로 그룹화
@@ -3075,6 +3317,32 @@ module.exports = (db) => {
             })),
             printerGroupNames: new Set(['All Items'])
           });
+        }
+      }
+      
+      // ============ 딜리버리 주문: items가 없어도 Kitchen 프린터에 출력 ============
+      if (isDeliveryTicketOnly && items.length === 0) {
+        // Kitchen 프린터 그룹 찾기
+        const kitchenGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
+        if (kitchenGroup) {
+          const kitchenPrinterLinks = await dbAll('SELECT printer_id FROM printer_group_links WHERE group_id = ?', [kitchenGroup.id]);
+          for (const link of kitchenPrinterLinks) {
+            const printer = await dbGet(
+              'SELECT id, name, type, selected_printer FROM printers WHERE id = ? AND is_active = 1',
+              [link.printer_id]
+            );
+            if (printer && printer.selected_printer) {
+              const isFrontPrinter = (printer.name || '').toLowerCase().includes('front');
+              if (!isFrontPrinter && !printerItemsMap.has(printer.id)) {
+                console.log(`🚗 딜리버리 주문 - Kitchen 프린터 "${printer.name}" 에 주문 정보만 출력`);
+                printerItemsMap.set(printer.id, {
+                  printer,
+                  items: [], // 빈 아이템 - 헤더 정보만 출력됨
+                  printerGroupNames: new Set(['Delivery'])
+                });
+              }
+            }
+          }
         }
       }
       
@@ -3226,22 +3494,53 @@ module.exports = (db) => {
           console.warn('Could not load layout settings:', e.message);
         }
 
-        // Dine-In/Takeout 구분
+        // Dine-In/Takeout/Delivery 구분
         const orderType = (orderInfo.orderType || orderInfo.channel || '').toUpperCase();
         const orderSource = (orderInfo.orderSource || '').toUpperCase();
-        const isTakeout = ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'DELIVERY', 
-                          'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'].includes(orderType)
-                      || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB', 'THEZONE'].includes(orderSource);
+        const deliveryChannel = (orderInfo.deliveryCompany || orderInfo.deliveryChannel || '').toUpperCase();
+        
+        // 딜리버리 주문 판단 (Ticket for Delivery 레이아웃 사용)
+        const deliveryChannels = ['DELIVERY', 'SKIPTHEDISHES', 'SKIP', 'DOORDASH', 'UBEREATS', 'FANTUAN', 'GRUBHUB'];
+        const isDelivery = deliveryChannels.includes(orderType) 
+                        || deliveryChannels.includes(orderSource)
+                        || deliveryChannels.includes(deliveryChannel)
+                        || !!orderInfo.deliveryCompany
+                        || !!orderInfo.deliveryOrderNumber;
+        
+        // Takeout 주문 판단 (Ticket for Take-out 레이아웃 사용) - 딜리버리 제외
+        // PICKUP, FOR HERE도 QSR에서는 Take-out 레이아웃 사용
+        const isTakeout = !isDelivery && (
+          ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'KIOSK', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderType)
+          || ['TOGO', 'TAKEOUT', 'TO-GO', 'ONLINE', 'THEZONE', 'PICKUP', 'FOR HERE', 'FORHERE'].includes(orderSource)
+        );
 
         // Server Ticket 여부 판단 (Front 프린터 = Server Ticket)
         const isServerTicket = (printer.name || '').toLowerCase().includes('front');
-        console.log(`📋 [group print] printer.name: "${printer.name}", isServerTicket: ${isServerTicket}, isTakeout: ${isTakeout}`);
+        console.log(`📋 [group print] printer.name: "${printer.name}", isServerTicket: ${isServerTicket}, isTakeout: ${isTakeout}, isDelivery: ${isDelivery}`);
 
         // 프린터 유형에 따라 적절한 레이아웃 설정 선택
         // Server Ticket (Front 프린터) → waitressPrinter 설정 사용
         // Kitchen Ticket → kitchenPrinter 설정 사용
         let kitchenLayout;
-        if (isTakeout) {
+        if (isDelivery) {
+          // Delivery 주문 → deliveryKitchen 설정 사용
+          if (isServerTicket) {
+            kitchenLayout = layoutSettings?.deliveryKitchen?.waitressPrinter 
+                         || layoutSettings?.deliveryKitchen?.kitchenPrinter 
+                         || layoutSettings?.deliveryKitchen 
+                         || layoutSettings?.externalKitchen?.waitressPrinter 
+                         || layoutSettings?.kitchenLayout 
+                         || {};
+            console.log('📋 Using deliveryKitchen.waitressPrinter (Delivery Server Ticket)');
+          } else {
+            kitchenLayout = layoutSettings?.deliveryKitchen?.kitchenPrinter 
+                         || layoutSettings?.deliveryKitchen 
+                         || layoutSettings?.externalKitchen?.kitchenPrinter 
+                         || layoutSettings?.kitchenLayout 
+                         || {};
+            console.log('📋 Using deliveryKitchen.kitchenPrinter (Delivery Kitchen Ticket)');
+          }
+        } else if (isTakeout) {
           if (isServerTicket) {
             // Takeout Server Ticket → externalKitchen.waitressPrinter
             kitchenLayout = layoutSettings?.externalKitchen?.waitressPrinter 
@@ -3295,7 +3594,8 @@ module.exports = (db) => {
               isReprint,
               printerName: '',  // 프린터 이름 출력 안함
               showGuestSeparator: hasMultipleGuests,  // 게스트 구분 표시 여부
-              isServerTicket  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              isServerTicket,  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
             });
 
             await printEscPosToWindows(printer.selected_printer, ticketImage);
@@ -3310,7 +3610,8 @@ module.exports = (db) => {
               isPaid,
               isReprint,
               printerName: '',  // 프린터 이름 출력 안함
-              isServerTicket  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              isServerTicket,  // Server Ticket 여부 (Front 프린터만 PAID/UNPAID 출력)
+              hidePaidStatus  // QSR 모드에서 PAID/UNPAID 숨기기
             });
 
             await printEscPosToWindows(printer.selected_printer, escPosContent);
@@ -3327,121 +3628,8 @@ module.exports = (db) => {
       const successCount = results.filter(r => r.success).length;
 
       // ============ 배달 주문(Delivery) Bill + Receipt 자동 출력 ============
-      // tryotter, Urban Piper를 통한 배달 주문 (UberEats, DoorDash, SkipTheDishes 등)
-      // 이미 결제가 완료된 상태이므로 Bill과 Receipt를 함께 출력
-      const deliveryChannels = ['DOORDASH', 'UBEREATS', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB', 'DELIVERY'];
-      const currentOrderSource = (orderInfo.orderSource || orderInfo.deliveryChannel || orderInfo.channel || '').toUpperCase();
-      const currentOrderType = (orderInfo.orderType || '').toUpperCase();
-      const isDeliveryOrder = deliveryChannels.includes(currentOrderSource) || 
-                              deliveryChannels.includes(currentOrderType) ||
-                              currentOrderType === 'DELIVERY';
-
-      if (isDeliveryOrder && !isReprint) {
-        console.log(`🚚 Delivery order detected (${currentOrderSource || currentOrderType}) - printing Bill and Receipt`);
-        
-        try {
-          const http = require('http');
-          
-          // Bill/Receipt 데이터 구성
-          const subtotal = items.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
-          const taxLines = orderInfo.taxBreakdown || [];
-          const taxTotal = orderInfo.tax || taxLines.reduce((sum, t) => sum + (t.amount || 0), 0);
-          const total = orderInfo.total || (subtotal + taxTotal);
-
-          const billData = {
-            header: {
-              orderNumber: orderInfo.orderNumber || orderInfo.externalOrderNumber || '',
-              channel: currentOrderSource || currentOrderType || 'DELIVERY',
-              tableName: currentOrderSource || 'DELIVERY',
-              serverName: ''
-            },
-            orderInfo: {
-              channel: currentOrderSource || currentOrderType || 'DELIVERY',
-              tableName: currentOrderSource || 'DELIVERY',
-              serverName: '',
-              customerName: orderInfo.customerName || '',
-              customerPhone: orderInfo.customerPhone || ''
-            },
-            items: items.map(item => ({
-              name: item.name || 'Unknown',
-              quantity: item.quantity || 1,
-              price: item.price || 0,
-              totalPrice: (item.price || 0) * (item.quantity || 1),
-              modifiers: (item.modifiers || []).map(mod => ({
-                name: mod.name || '',
-                price: mod.price || 0
-              }))
-            })),
-            guestSections: [],
-            subtotal: subtotal,
-            adjustments: [],
-            taxLines: taxLines,
-            taxesTotal: taxTotal,
-            total: total,
-            footer: {}
-          };
-
-          // Print Bill via internal API
-          const billPrintData = JSON.stringify({ billData });
-          const billReq = http.request({
-            hostname: 'localhost',
-            port: 3177,
-            path: '/api/printers/print-bill',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(billPrintData)
-            }
-          }, (billRes) => {
-            let responseData = '';
-            billRes.on('data', chunk => { responseData += chunk; });
-            billRes.on('end', () => {
-              console.log(`🧾 Delivery Bill printed: ${orderInfo.orderNumber}`);
-            });
-          });
-          billReq.on('error', (err) => {
-            console.error('🧾 Delivery Bill print error:', err.message);
-          });
-          billReq.write(billPrintData);
-          billReq.end();
-
-          // Print Receipt via internal API (with payment info)
-          const receiptData = {
-            ...billData,
-            payments: [{
-              method: orderInfo.paymentMethod || 'Online Payment',
-              amount: total
-            }],
-            change: 0
-          };
-          
-          const receiptPrintData = JSON.stringify({ receiptData });
-          const receiptReq = http.request({
-            hostname: 'localhost',
-            port: 3177,
-            path: '/api/printers/print-receipt',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(receiptPrintData)
-            }
-          }, (receiptRes) => {
-            let responseData = '';
-            receiptRes.on('data', chunk => { responseData += chunk; });
-            receiptRes.on('end', () => {
-              console.log(`🧾 Delivery Receipt printed: ${orderInfo.orderNumber}`);
-            });
-          });
-          receiptReq.on('error', (err) => {
-            console.error('🧾 Delivery Receipt print error:', err.message);
-          });
-          receiptReq.write(receiptPrintData);
-          receiptReq.end();
-
-        } catch (deliveryPrintErr) {
-          console.error('🧾 Delivery Bill/Receipt print error (ignored):', deliveryPrintErr.message);
-        }
-      }
+      // Note: Delivery 주문의 Bill/Receipt는 프론트엔드(OrderPage.tsx)에서 명시적으로 출력함
+      // 백엔드에서 자동 출력하면 중복되므로 제거됨
 
       res.json({
         success: successCount > 0,
@@ -3459,10 +3647,10 @@ module.exports = (db) => {
   // ============ PRINT BILL ============
   
   // POST /api/printers/print-bill - Print bill/pre-bill using billLayout settings
-  // copies: 출력 매수 (기본값 2장)
+  // copies: 출력 매수 (기본값 1장)
   router.post('/print-bill', async (req, res) => {
     try {
-      const { billData, copies = 2 } = req.body;
+      const { billData, copies = 1 } = req.body;
       
       if (!billData) {
         return res.status(400).json({ success: false, error: 'billData is required' });
@@ -3954,16 +4142,62 @@ module.exports = (db) => {
         if (item.discount && item.discount.amount > 0) {
           totalHeight += Math.round(discountFontSizeForHeight * fontScale) + (billLayout.discount?.lineSpacing || 0);
         }
-        if (item.modifiers) totalHeight += item.modifiers.length * Math.round(18 * fontScale);
+        // Modifiers: count actual lines (handle nested selectedEntries structure)
+        if (item.modifiers) {
+          let modifierLineCount = 0;
+          (item.modifiers || []).forEach(mod => {
+            if (typeof mod === 'string') {
+              modifierLineCount += 1;
+            } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+              modifierLineCount += mod.selectedEntries.length;
+            } else if (mod.name) {
+              modifierLineCount += 1;
+            }
+          });
+          const modFontSize = billLayout.modifiers?.fontSize || 10;
+          const modLineSpacing = billLayout.modifiers?.lineSpacing || 0;
+          totalHeight += modifierLineCount * (Math.round(modFontSize * fontScale) + modLineSpacing + 2);
+        }
         if (item.memo) totalHeight += Math.round(18 * fontScale);
       });
     });
     
-    // Totals + Greeting
-    totalHeight += Math.round(50 * fontScale);
+    // Totals - calculate based on actual elements
+    // Separator3
+    if (billLayout.separator3?.visible !== false) {
+      totalHeight += Math.round(8 * fontScale);
+    }
+    // Subtotal
+    if (billLayout.subtotal?.visible !== false) {
+      totalHeight += Math.round((billLayout.subtotal?.fontSize || 12) * fontScale) + (billLayout.subtotal?.lineSpacing || 2) + 5;
+    }
+    // Adjustments (discounts)
+    if (billLayout.discount?.visible !== false && adjustments.length > 0) {
+      totalHeight += adjustments.length * (Math.round((billLayout.discount?.fontSize || 11) * fontScale) + (billLayout.discount?.lineSpacing || 0) + 2);
+    }
+    // Tax lines
+    if (taxLines.length > 0) {
+      totalHeight += taxLines.length * (Math.round((billLayout.taxGST?.fontSize || 11) * fontScale) + (billLayout.taxGST?.lineSpacing || 0) + 5);
+    }
+    // Total
+    if (billLayout.total?.visible !== false) {
+      totalHeight += Math.round((billLayout.total?.fontSize || 14) * fontScale) + (billLayout.total?.lineSpacing || 2) + 5;
+    }
+    // Separator4
+    if (billLayout.separator4?.visible !== false) {
+      totalHeight += Math.round(8 * fontScale);
+    }
+    // Greeting
+    if (billLayout.greeting?.visible !== false) {
+      totalHeight += Math.round((billLayout.greeting?.fontSize || 11) * fontScale) + (billLayout.greeting?.lineSpacing || 0) + 10;
+    }
+    // Extra buffer for safety
+    totalHeight += 100;
     
     // Footer (하단 여백)
     totalHeight += BOTTOM_MARGIN;
+
+    console.log(`📏 [Bill] Calculated totalHeight: ${totalHeight}px, taxLines: ${taxLines.length}, items: ${items.length}`);
 
     const canvas = createCanvas(PAPER_WIDTH_PX, totalHeight);
     const ctx = canvas.getContext('2d');
@@ -4331,6 +4565,8 @@ module.exports = (db) => {
       y += Math.round(fontSize * fontScale) + lineSpacing;
     }
 
+    console.log(`📏 [Bill] Final y: ${y}px, totalHeight: ${totalHeight}px, overflow: ${y > totalHeight ? 'YES!' : 'No'}`);
+
     // Convert to ESC/POS
     return canvasToEscPosBitmap(canvas);
   }
@@ -4340,7 +4576,7 @@ module.exports = (db) => {
   // POST /api/printers/print-receipt - Print receipt after payment completion
   router.post('/print-receipt', async (req, res) => {
     try {
-      const { receiptData, copies = 2 } = req.body;
+      const { receiptData, copies = 1 } = req.body;
       
       if (!receiptData) {
         return res.status(400).json({ success: false, error: 'receiptData is required' });
@@ -4491,6 +4727,32 @@ module.exports = (db) => {
         // Initialize
         content += ESCPOS.INIT;
         
+        // Receipt Title (if provided)
+        if (header.title) {
+          content += ESCPOS.ALIGN_CENTER;
+          content += ESCPOS.DOUBLE_SIZE;
+          content += ESCPOS.BOLD_ON;
+          content += centerText(header.title, true) + '\n';
+          content += ESCPOS.BOLD_OFF;
+          content += ESCPOS.NORMAL_SIZE;
+          content += '\n';
+        }
+        
+        // Delivery Info (if provided)
+        if (header.deliveryCompany || header.deliveryOrderNumber) {
+          content += ESCPOS.ALIGN_CENTER;
+          content += ESCPOS.BOLD_ON;
+          const deliveryLine = `${header.deliveryCompany || 'Delivery'} #${header.deliveryOrderNumber || ''}`;
+          content += centerText(deliveryLine, false) + '\n';
+          content += ESCPOS.BOLD_OFF;
+          
+          // Ready Time from orderInfo
+          if (orderInfo && orderInfo.readyTime) {
+            content += centerText(`Ready: ${orderInfo.readyTime}`, false) + '\n';
+          }
+          content += '\n';
+        }
+        
         // Header - Store Info - Store Name이 길면 여러 줄로 분할 (공백 또는 문자 단위)
         if (receiptLayout.storeName?.visible !== false && storeInfo.name) {
           const style = applyFontStyle(receiptLayout.storeName);
@@ -4568,6 +4830,21 @@ module.exports = (db) => {
         
         content += ESCPOS.ALIGN_LEFT;
         
+        // Delivery Info (Channel + External Order #) - 볼드체
+        if (header.deliveryCompany || header.deliveryOrderNumber || orderInfo.deliveryCompany || orderInfo.deliveryOrderNumber) {
+          const deliveryCompany = header.deliveryCompany || orderInfo.deliveryCompany || '';
+          const deliveryOrderNum = header.deliveryOrderNumber || orderInfo.deliveryOrderNumber || '';
+          // 딜리버리 채널 이름 축약
+          const channelMap = {
+            'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+            'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+            'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+            'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
+          };
+          const shortChannel = channelMap[deliveryCompany.toUpperCase()] || deliveryCompany;
+          content += ESCPOS.BOLD_ON + `${shortChannel} #${deliveryOrderNum}\n` + ESCPOS.BOLD_OFF;
+        }
+        
         // Order Info
         if (receiptLayout.orderNumber?.visible !== false && header.orderNumber) {
           const style = applyFontStyle(receiptLayout.orderNumber);
@@ -4586,6 +4863,11 @@ module.exports = (db) => {
         if (receiptLayout.serverName?.visible !== false && (header.serverName || orderInfo.serverName)) {
           const style = applyFontStyle(receiptLayout.serverName);
           content += style.prefix + `Server: ${header.serverName || orderInfo.serverName}\n` + style.suffix;
+        }
+        
+        // Guest Number (for split bill individual guest receipt)
+        if (header.guestNumber) {
+          content += ESCPOS.BOLD_ON + `Guest #${header.guestNumber}\n` + ESCPOS.BOLD_OFF;
         }
         
         if (receiptLayout.dateTime?.visible !== false) {
@@ -4932,6 +5214,24 @@ module.exports = (db) => {
           y += Math.round(8 * fontScale);
           drawLine(y, receiptLayout.separator1?.style || 'solid');
           y += Math.round(12 * fontScale);
+        }
+
+        // Delivery Info (Channel + External Order #) - 볼드체
+        if (header.deliveryCompany || header.deliveryOrderNumber || orderInfo.deliveryCompany || orderInfo.deliveryOrderNumber) {
+          const deliveryCompany = header.deliveryCompany || orderInfo.deliveryCompany || '';
+          const deliveryOrderNum = header.deliveryOrderNumber || orderInfo.deliveryOrderNumber || '';
+          // 딜리버리 채널 이름 축약
+          const channelMap = {
+            'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
+            'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
+            'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
+            'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
+          };
+          const shortChannel = channelMap[deliveryCompany.toUpperCase()] || deliveryCompany;
+          const deliveryText = `${shortChannel} #${deliveryOrderNum}`;
+          const deliveryFontSize = 12;
+          drawText(deliveryText, MARGIN, y, deliveryFontSize, 'bold', 'left');
+          y += Math.round(deliveryFontSize * fontScale) + 2;
         }
 
         // Order Info (with fontScale)

@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "releaseDate": "2026-01-29",
+  "releaseNotes": "Initial release\n- POS 기본 기능\n- QSR/FSR 모드 지원\n- 온라인 주문 연동\n- Firebase 연동",
+  "downloadUrl": "/build.zip",
+  "mandatory": false,
+  "minVersion": "1.0.0"
+}

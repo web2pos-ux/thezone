@@ -10,10 +10,22 @@ const IntroPage: React.FC = () => {
   const [pinVerified, setPinVerified] = useState(false);
   const navigate = useNavigate();
 
-  // Check if initial setup is needed
+  // Check if Firebase setup and initial setup is needed
   useEffect(() => {
-    const checkInitialSetup = async () => {
+    const checkSetupStatus = async () => {
       try {
+        // 1. Firebase 설정 상태 확인
+        const firebaseResponse = await fetch(`${API_URL}/firebase-setup/status`);
+        if (firebaseResponse.ok) {
+          const firebaseData = await firebaseResponse.json();
+          if (firebaseData.success && firebaseData.data.needsSetup) {
+            // Firebase 설정이 필요하면 Setup 페이지로 이동
+            navigate('/setup');
+            return;
+          }
+        }
+
+        // 2. 기존 Initial Setup 상태 확인
         const response = await fetch(`${API_URL}/admin-settings/initial-setup-status`);
         if (response.ok) {
           const data = await response.json();
@@ -25,13 +37,13 @@ const IntroPage: React.FC = () => {
           setServiceType(data.serviceType);
         }
       } catch (error) {
-        console.error('Failed to check initial setup status:', error);
+        console.error('Failed to check setup status:', error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    checkInitialSetup();
+    checkSetupStatus();
   }, [navigate]);
 
   const handlePinInput = (digit: string) => {

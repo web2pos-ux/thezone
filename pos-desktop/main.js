@@ -1,364 +1,189 @@
 /**
- * TheZonePOS - Restaurant POS System
- * Electron Main Process
- * 
- * 이 앱은 백엔드 서버와 프론트엔드를 통합하여
- * 하나의 Windows 데스크톱 앱으로 실행합니다.
+ * WEB2POS - Main Electron Process
+ * 하이브리드 방식: Backend + Frontend를 앱 내부에서 실행
+ * + 자동 업데이트 기능
  */
 
-const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
+const { runUpdateProcess, APP_VERSION } = require('./updater');
 
-// 개발 모드 확인
-const isDev = !app.isPackaged;
+// 서버 프로세스
+let frontendServer = null;
+let mainWindow = null;
 
 // 포트 설정
 const BACKEND_PORT = 3177;
-const FRONTEND_PORT = 3000;
+const FRONTEND_PORT = 3088;
 
-let mainWindow;
-let backendProcess = null;
-let splashWindow = null;
+// 앱 경로 (개발/프로덕션 모두 지원)
+const isDev = !app.isPackaged;
+const appPath = isDev ? path.join(__dirname, '..') : process.resourcesPath;
 
-// 앱 경로 설정
-function getAppPaths() {
-  if (isDev) {
-    return {
-      backend: path.join(__dirname, '..', 'backend'),
-      frontend: path.join(__dirname, '..', 'frontend', 'build'),
-      db: path.join(__dirname, '..', 'db'),
-    };
-  } else {
-    // 패키징된 앱 - extraResources에서 백엔드 실행
-    const resourcesPath = process.resourcesPath;
-    return {
-      backend: path.join(resourcesPath, 'backend'),
-      frontend: path.join(resourcesPath, 'frontend-build'),
-      db: path.join(resourcesPath, 'db'),
-    };
-  }
-}
-
-// 스플래시 화면 생성
-function createSplashWindow() {
-  splashWindow = new BrowserWindow({
-    width: 400,
-    height: 300,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  splashWindow.loadURL(`data:text/html;charset=utf-8,
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body {
-          margin: 0;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          align-items: center;
-          height: 100vh;
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-          color: white;
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          border-radius: 12px;
-        }
-        h1 {
-          font-size: 36px;
-          margin-bottom: 10px;
-          background: linear-gradient(90deg, #4facfe, #00f2fe);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-        }
-        .loading {
-          font-size: 14px;
-          color: #888;
-          margin-top: 20px;
-        }
-        .spinner {
-          width: 40px;
-          height: 40px;
-          border: 3px solid #333;
-          border-top: 3px solid #4facfe;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
-          margin-top: 30px;
-        }
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      </style>
-    </head>
-    <body>
-      <h1>TheZonePOS</h1>
-      <p style="color:#aaa;font-size:14px;">Restaurant POS System</p>
-      <div class="spinner"></div>
-      <p class="loading" id="status">Starting server...</p>
-    </body>
-    </html>
-  `);
-}
-
-// 백엔드 서버 시작
+/**
+ * Backend 서버 시작 (직접 require로 실행)
+ */
 function startBackend() {
   return new Promise((resolve, reject) => {
-    const paths = getAppPaths();
+    // extraResources 경로 사용
+    const backendPath = isDev 
+      ? path.join(__dirname, '..', 'backend')
+      : path.join(process.resourcesPath, 'backend');
     
-    console.log('[Backend] Starting server...');
-    console.log('[Backend] Path:', paths.backend);
+    const dbPath = isDev 
+      ? path.join(__dirname, '..', 'db', 'tzp.db')
+      : path.join(process.resourcesPath, 'db', 'tzp.db');
     
-    // Node.js 실행 경로 (패키징 시 extraResources에서 node.exe 사용)
-    const nodePath = isDev ? 'node' : path.join(process.resourcesPath, 'node.exe');
-    console.log('[Backend] Node path:', nodePath);
-    const serverPath = path.join(paths.backend, 'index.js');
+    console.log('[Backend] Starting from:', backendPath);
+    console.log('[Backend] DB path:', dbPath);
     
     // 환경 변수 설정
-    const env = {
-      ...process.env,
-      PORT: BACKEND_PORT.toString(),
-      NODE_ENV: isDev ? 'development' : 'production',
-      DB_PATH: path.join(paths.db, 'web2pos.db'),
-    };
-
-    // 개발 모드에서는 이미 실행 중인 서버 사용
-    if (isDev) {
-      checkServerReady(BACKEND_PORT, 30)
-        .then(() => {
-          console.log('[Backend] Using existing dev server');
-          resolve();
-        })
-        .catch(() => {
-          // 서버가 없으면 시작
-          backendProcess = spawn('node', ['index.js'], {
-            cwd: paths.backend,
-            env,
-            stdio: 'pipe',
-          });
-
-          backendProcess.stdout.on('data', (data) => {
-            console.log(`[Backend] ${data.toString().trim()}`);
-          });
-
-          backendProcess.stderr.on('data', (data) => {
-            console.error(`[Backend Error] ${data.toString().trim()}`);
-          });
-
-          backendProcess.on('close', (code) => {
-            console.log(`[Backend] Server exited with code ${code}`);
-          });
-
-          // 서버 시작 대기
-          checkServerReady(BACKEND_PORT, 30)
-            .then(resolve)
-            .catch(reject);
+    process.env.PORT = BACKEND_PORT;
+    process.env.DB_PATH = dbPath;
+    
+    // 작업 디렉토리 변경 (backend 폴더 기준으로 경로 해결)
+    const originalCwd = process.cwd();
+    process.chdir(backendPath);
+    
+    try {
+      // Backend 직접 require (자동으로 서버 시작됨)
+      require(path.join(backendPath, 'index.js'));
+      console.log('[Backend] Module loaded successfully');
+      
+      // 서버가 준비될 때까지 대기
+      const checkServer = setInterval(() => {
+        http.get(`http://localhost:${BACKEND_PORT}/api/health`, (res) => {
+          if (res.statusCode === 200) {
+            clearInterval(checkServer);
+            process.chdir(originalCwd); // 작업 디렉토리 복원
+            console.log('[Backend] Server is ready!');
+            resolve();
+          }
+        }).on('error', () => {
+          // 아직 준비 안됨, 계속 대기
         });
-    } else {
-      // 프로덕션 모드: 번들된 백엔드 시작 (포함된 node.exe 사용)
-      console.log('[Backend] Starting with bundled Node.js:', nodePath);
-      backendProcess = spawn(nodePath, [serverPath], {
-        cwd: paths.backend,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
+      }, 500);
 
-      backendProcess.stdout.on('data', (data) => {
-        console.log(`[Backend] ${data.toString().trim()}`);
-      });
-
-      backendProcess.stderr.on('data', (data) => {
-        console.error(`[Backend Error] ${data.toString().trim()}`);
-      });
-
-      backendProcess.on('close', (code) => {
-        console.log(`[Backend] Server exited with code ${code}`);
-        if (code !== 0 && code !== null) {
-          dialog.showErrorBox('Server Error', 'Backend server crashed. Please restart the application.');
-        }
-      });
-
-      // 서버 시작 대기
-      checkServerReady(BACKEND_PORT, 30)
-        .then(resolve)
-        .catch(reject);
+      // 타임아웃 (30초)
+      setTimeout(() => {
+        clearInterval(checkServer);
+        process.chdir(originalCwd); // 작업 디렉토리 복원
+        reject(new Error('Backend startup timeout'));
+      }, 30000);
+      
+    } catch (err) {
+      process.chdir(originalCwd);
+      console.error('[Backend] Failed to load:', err);
+      reject(err);
     }
   });
 }
 
-// 서버 준비 상태 확인
-function checkServerReady(port, maxAttempts) {
+/**
+ * Frontend 정적 파일 서빙 (serve 대신 간단한 http 서버)
+ */
+function startFrontend() {
   return new Promise((resolve, reject) => {
-    let attempts = 0;
+    const express = require('express');
+    const frontendApp = express();
+    
+    // extraResources 경로 사용
+    const buildPath = isDev
+      ? path.join(__dirname, '..', 'frontend', 'build')
+      : path.join(process.resourcesPath, 'frontend', 'build');
+    
+    console.log('[Frontend] Serving from:', buildPath);
+    
+    // 정적 파일 서빙
+    frontendApp.use(express.static(buildPath));
+    
+    // SPA를 위한 fallback (Express 5.x 호환)
+    frontendApp.get('/{*path}', (req, res) => {
+      res.sendFile(path.join(buildPath, 'index.html'));
+    });
+    
+    frontendServer = frontendApp.listen(FRONTEND_PORT, () => {
+      console.log('[Frontend] Server is ready on port', FRONTEND_PORT);
+      resolve();
+    });
 
-    const check = () => {
-      attempts++;
-      
-      const req = http.request({
-        hostname: 'localhost',
-        port: port,
-        path: '/api/health',
-        method: 'GET',
-        timeout: 1000,
-      }, (res) => {
-        if (res.statusCode === 200) {
-          console.log(`[Server] Ready on port ${port}`);
-          resolve();
-        } else {
-          retry();
-        }
-      });
-
-      req.on('error', () => {
-        retry();
-      });
-
-      req.on('timeout', () => {
-        req.destroy();
-        retry();
-      });
-
-      req.end();
-    };
-
-    const retry = () => {
-      if (attempts >= maxAttempts) {
-        reject(new Error(`Server not ready after ${maxAttempts} attempts`));
-      } else {
-        setTimeout(check, 1000);
-      }
-    };
-
-    check();
+    frontendServer.on('error', (err) => {
+      console.error('[Frontend] Server error:', err);
+      reject(err);
+    });
   });
 }
 
-// 메인 윈도우 생성
-function createMainWindow() {
+/**
+ * 메인 윈도우 생성
+ */
+function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1920,
+    height: 1080,
     minWidth: 1024,
     minHeight: 768,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
     },
-    show: false,
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     autoHideMenuBar: true,
-    fullscreen: true,           // 전체화면 모드
-    fullscreenable: true,       // F11로 전체화면 토글 가능
+    show: false,
+    title: 'WEB2POS'
   });
 
-  // 개발 모드: localhost:3000
-  // 프로덕션: localhost:3177 (백엔드가 프론트엔드 서빙)
-  const url = isDev
-    ? `http://localhost:${FRONTEND_PORT}`
-    : `http://localhost:${BACKEND_PORT}`;
-
-  console.log('[App] Loading URL:', url);
-  mainWindow.loadURL(url);
+  // 풀스크린 모드
+  mainWindow.setFullScreen(false);
+  
+  // POS 페이지 로드
+  mainWindow.loadURL(`http://localhost:${FRONTEND_PORT}`);
 
   mainWindow.once('ready-to-show', () => {
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
     mainWindow.show();
     mainWindow.maximize();
-    
-    // 화면 크기에 맞게 자동 줌 조절
-    autoFitZoom();
   });
-  
-  // 화면 크기 변경 시 자동 줌 조절
-  mainWindow.on('resize', () => {
-    autoFitZoom();
+
+  // 외부 링크는 기본 브라우저로 열기
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
   });
-  
-  // 화면 크기에 맞게 자동 줌 계산
-  function autoFitZoom() {
-    if (!mainWindow) return;
-    const { width, height } = mainWindow.getContentBounds();
-    // 기준 해상도: 1920x1080 (100% 줌)
-    const baseWidth = 1920;
-    const baseHeight = 1080;
-    
-    // 너비와 높이 중 작은 비율로 줌 계산
-    const zoomWidth = width / baseWidth;
-    const zoomHeight = height / baseHeight;
-    const zoomFactor = Math.min(zoomWidth, zoomHeight, 1.5); // 최대 150%
-    
-    mainWindow.webContents.setZoomFactor(Math.max(0.5, zoomFactor)); // 최소 50%
-  }
+
+  // 개발자 도구 단축키 (F12)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-
-  // 외부 링크는 기본 브라우저에서 열기
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://localhost') || url.startsWith('https://localhost')) {
-      return { action: 'allow' };
-    }
-    shell.openExternal(url);
-    return { action: 'deny' };
-  });
 }
 
-// 메뉴 설정
+/**
+ * 메뉴 생성
+ */
 function createMenu() {
   const template = [
     {
-      label: 'File',
+      label: 'WEB2POS',
       submenu: [
-        { role: 'quit', label: 'Exit TheZonePOS' }
+        { label: 'About', click: showAbout },
+        { type: 'separator' },
+        { label: 'Quit', accelerator: 'Alt+F4', click: () => app.quit() }
       ]
     },
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
+        { label: 'Reload', accelerator: 'Ctrl+R', click: () => mainWindow?.reload() },
+        { label: 'Toggle Fullscreen', accelerator: 'F11', click: () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()) },
         { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About TheZonePOS',
-          click: () => {
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'About TheZonePOS',
-              message: 'TheZonePOS',
-              detail: `Version: ${app.getVersion()}\n\nRestaurant POS System\n\n© 2024-2026 TheZone`
-            });
-          }
-        },
-        { type: 'separator' },
-        {
-          label: 'Developer Tools',
-          accelerator: 'F12',
-          click: () => {
-            mainWindow?.webContents.toggleDevTools();
-          }
-        }
+        { label: 'Developer Tools', accelerator: 'F12', click: () => mainWindow?.webContents.toggleDevTools() }
       ]
     }
   ];
@@ -367,58 +192,137 @@ function createMenu() {
   Menu.setApplicationMenu(menu);
 }
 
-// 앱 시작
+/**
+ * About 다이얼로그
+ */
+function showAbout() {
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'About WEB2POS',
+    message: 'WEB2POS - Restaurant POS System',
+    detail: `Version: ${app.getVersion()}\n\nA modern POS system for restaurants.\n\n© 2024 WEB2POS`
+  });
+}
+
+/**
+ * 스플래시 스크린 (로딩 중 표시)
+ */
+function createSplash() {
+  const splash = new BrowserWindow({
+    width: 400,
+    height: 300,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    webPreferences: {
+      nodeIntegration: true
+    }
+  });
+
+  splash.loadURL(`data:text/html,
+    <html>
+      <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a5f,#2d5a87);border-radius:20px;font-family:Arial;">
+        <div style="text-align:center;color:white;">
+          <h1 style="font-size:32px;margin-bottom:10px;">🍽️ WEB2POS</h1>
+          <p style="font-size:14px;opacity:0.8;">Starting servers...</p>
+          <div style="margin-top:20px;width:200px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;">
+            <div style="width:0%;height:100%;background:white;border-radius:2px;animation:loading 2s ease-in-out infinite;"></div>
+          </div>
+        </div>
+        <style>
+          @keyframes loading {
+            0% { width: 0%; }
+            50% { width: 70%; }
+            100% { width: 100%; }
+          }
+        </style>
+      </body>
+    </html>
+  `);
+
+  return splash;
+}
+
+/**
+ * 앱 시작
+ */
 async function startApp() {
+  const splash = createSplash();
+
   try {
-    createSplashWindow();
+    // Backend 시작
+    await startBackend();
+    
+    // Frontend 시작
+    await startFrontend();
+    
+    // 스플래시 닫기
+    splash.close();
+    
+    // 🔄 업데이트 확인 (Backend가 준비된 후)
+    console.log('[App] Checking for updates...');
+    try {
+      const updated = await runUpdateProcess();
+      if (updated) {
+        // 업데이트 후 재시작되면 여기서 종료됨
+        return;
+      }
+    } catch (updateError) {
+      console.log('[App] Update check skipped:', updateError.message);
+      // 업데이트 실패해도 앱은 계속 실행
+    }
+    
+    // 메인 윈도우 생성
+    createWindow();
     createMenu();
     
-    await startBackend();
-    createMainWindow();
+    // 앱 시작 완료
+    isAppStarting = false;
+    console.log('[App] Startup complete!');
+    
   } catch (error) {
     console.error('[App] Startup error:', error);
-    dialog.showErrorBox('Startup Error', `Failed to start the application:\n\n${error.message}`);
+    splash.close();
+    
+    dialog.showErrorBox(
+      'Startup Error',
+      `Failed to start WEB2POS:\n\n${error.message}\n\nPlease restart the application.`
+    );
+    
     app.quit();
   }
 }
 
-// 앱 종료 시 백엔드 프로세스 정리
-function cleanupBackend() {
-  if (backendProcess) {
-    console.log('[Backend] Stopping server...');
-    backendProcess.kill('SIGTERM');
-    backendProcess = null;
+/**
+ * 앱 종료 시 정리
+ */
+function cleanup() {
+  console.log('[App] Cleaning up...');
+  
+  // Frontend 서버 종료
+  if (frontendServer) {
+    frontendServer.close();
+    frontendServer = null;
   }
+  
+  // Backend는 같은 프로세스에서 실행되므로 앱 종료 시 자동으로 종료됨
 }
 
 // ==================== 앱 생명주기 ====================
 
 app.whenReady().then(startApp);
 
-// IPC 이벤트 핸들러 - 프론트엔드에서 호출 (preload.js와 일치)
-ipcMain.on('window-minimize', () => {
-  if (mainWindow) {
-    mainWindow.minimize();
-  }
-});
-
-ipcMain.on('window-maximize', () => {
-  if (mainWindow) {
-    if (mainWindow.isMaximized()) {
-      mainWindow.unmaximize();
-    } else {
-      mainWindow.maximize();
-    }
-  }
-});
-
-ipcMain.on('app-quit', () => {
-  cleanupBackend();
-  app.quit();
-});
+// 앱 시작 중 플래그 (splash 닫힐 때 종료 방지)
+let isAppStarting = true;
 
 app.on('window-all-closed', () => {
-  cleanupBackend();
+  // 앱 시작 중이면 종료하지 않음
+  if (isAppStarting) {
+    console.log('[App] Ignoring window-all-closed during startup');
+    return;
+  }
+  
+  cleanup();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -426,16 +330,13 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    createMainWindow();
+    startApp();
   }
 });
 
-app.on('before-quit', () => {
-  cleanupBackend();
-});
+app.on('before-quit', cleanup);
 
 // 예외 처리
 process.on('uncaughtException', (error) => {
   console.error('[App] Uncaught exception:', error);
-  cleanupBackend();
 });
