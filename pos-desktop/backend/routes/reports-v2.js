@@ -2,17 +2,15 @@
 // 통합 레포트 시스템 V2 - 그룹화된 레포트 + Firebase 동기화 + 엑셀 다운로드
 
 const express = require('express');
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
 const admin = require('firebase-admin');
 
 const router = express.Router();
 
-// 데이터베이스 연결
-const getDatabase = () => {
-  const dbPath = path.join(__dirname, '..', '..', 'db', 'web2pos.db');
-  return new sqlite3.Database(dbPath);
-};
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db } = require('../db');
+
+// 데이터베이스 연결 (레거시 호환)
+const getDatabase = () => db;
 
 // Firebase Firestore
 const getFirestore = () => {

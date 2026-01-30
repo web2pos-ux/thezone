@@ -6601,7 +6601,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // }
 
   return (
-    <div className="orderpage-scope h-screen bg-gray-100 flex" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+    <div className="orderpage-scope h-screen bg-gray-100 flex fixed inset-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
       {/* Background overlay to close FloatingActionBar on outside click */}
       {((selectedOrderItemId != null) || (selectedOrderLineId != null)) && (
         <div

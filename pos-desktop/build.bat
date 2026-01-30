@@ -52,12 +52,21 @@ call npm install --production
 echo Backend dependencies installed.
 echo.
 
-echo [5/5] Copying Database...
+echo [5/5] Copying Empty Database for New Restaurant...
 echo ------------------------------------------------
 if exist "%DESKTOP_DIR%db" rmdir /s /q "%DESKTOP_DIR%db"
 mkdir "%DESKTOP_DIR%db"
-copy /y "%ROOT_DIR%\db\web2pos.db" "%DESKTOP_DIR%db\"
-echo Database copied.
+
+REM Copy empty database for fresh installation
+copy /y "%DESKTOP_DIR%db-empty\web2pos.db" "%DESKTOP_DIR%db\"
+echo Empty database copied for new restaurant installation.
+
+echo.
+echo [6/6] Resetting Setup Status for Fresh Installation...
+echo ------------------------------------------------
+REM Reset setup-status.json for fresh installation
+echo {"isFirstRun":true,"setupCompleted":false,"storeName":"","restaurantId":null,"setupDate":null} > "%DESKTOP_DIR%backend\config\setup-status.json"
+echo Setup status reset for new restaurant.
 echo.
 
 echo ================================================

@@ -2,17 +2,15 @@
 // 레스토랑 레포트 API - 40개 레포트 시스템
 
 const express = require('express');
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
 const reportSyncService = require('../services/reportSyncService');
 
 const router = express.Router();
 
-// 데이터베이스 연결
-const getDatabase = () => {
-  const dbPath = path.join(__dirname, '..', '..', 'db', 'web2pos.db');
-  return new sqlite3.Database(dbPath);
-};
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db } = require('../db');
+
+// 데이터베이스 연결 (레거시 호환)
+const getDatabase = () => db;
 
 // ==================== 유틸리티 함수 ====================
 

@@ -8,12 +8,19 @@ const router = express.Router();
 const fs = require('fs');
 const path = require('path');
 
-// 현재 버전 정보 파일 경로
-const VERSION_FILE = path.join(__dirname, '..', 'app-version.json');
-const UPDATE_DIR = path.join(__dirname, '..', 'updates');
+// 현재 버전 정보 파일 경로 (환경 변수 CONFIG_PATH 사용, 빌드된 앱 호환)
+const CONFIG_DIR = process.env.CONFIG_PATH || path.join(__dirname, '..');
+const VERSION_FILE = path.join(CONFIG_DIR, 'app-version.json');
+const UPDATE_DIR = path.join(CONFIG_DIR, 'updates');
+console.log('[App Update] Config directory:', CONFIG_DIR);
 
 // 버전 정보 초기화
 function initVersionFile() {
+  // config 폴더 생성
+  if (!fs.existsSync(CONFIG_DIR)) {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  }
+  
   if (!fs.existsSync(VERSION_FILE)) {
     const defaultVersion = {
       version: "1.0.0",

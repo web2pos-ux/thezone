@@ -24,10 +24,11 @@ const fs = require('fs');
 const XLSX = require('xlsx');
 const { generateMenuCategoryId, generateMenuItemId, generateModifierMenuLinkId, generateTaxMenuLinkId, generatePrinterMenuLinkId, generateCategoryModifierLinkId, generateCategoryTaxLinkId, generateCategoryPrinterLinkId, ID_RANGES, generateNextId, generateCategoryId } = require('../utils/idGenerator');
 
-// --- Multer Setup for Image Uploads ---
+// --- Multer Setup for Image Uploads (환경 변수 UPLOADS_PATH 사용, 빌드된 앱 호환) ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../uploads/'));
+    const uploadsDir = process.env.UPLOADS_PATH || path.join(__dirname, '../uploads/');
+    cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -1989,15 +1990,15 @@ router.delete('/items/:id', (req, res) => {
           backupType: 'pre_import'
         };
 
-        // Generate backup filename
+        // Generate backup filename (환경 변수 BACKUPS_PATH 사용, 빌드된 앱 호환)
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const backupFilename = `backup_menu_${menuId}_${timestamp}.json`;
-        const backupPath = `./backups/${backupFilename}`;
-
-        // Ensure backups directory exists
         const fs = require('fs');
         const path = require('path');
-        const backupDir = path.dirname(backupPath);
+        const backupDir = process.env.BACKUPS_PATH || path.resolve('./backups');
+        const backupPath = path.join(backupDir, backupFilename);
+
+        // Ensure backups directory exists
         if (!fs.existsSync(backupDir)) {
           fs.mkdirSync(backupDir, { recursive: true });
         }
@@ -2826,14 +2827,14 @@ router.delete('/items/:id', (req, res) => {
     }
   });
 
-  // GET /api/menu/:menuId/backups - Get list of backup files
+  // GET /api/menu/:menuId/backups - Get list of backup files (환경 변수 BACKUPS_PATH 사용)
   router.get('/:menuId/backups', async (req, res) => {
     const { menuId } = req.params;
     
     try {
       const fs = require('fs');
       const path = require('path');
-      const backupDir = './backups';
+      const backupDir = process.env.BACKUPS_PATH || path.resolve('./backups');
       
       if (!fs.existsSync(backupDir)) {
         return res.json({ backups: [] });
@@ -2861,14 +2862,14 @@ router.delete('/items/:id', (req, res) => {
     }
   });
 
-  // GET /api/menu/:menuId/backups/:filename - Download backup file
+  // GET /api/menu/:menuId/backups/:filename - Download backup file (환경 변수 BACKUPS_PATH 사용)
   router.get('/:menuId/backups/:filename', async (req, res) => {
     const { menuId, filename } = req.params;
     
     try {
       const fs = require('fs');
       const path = require('path');
-      const backupDir = './backups';
+      const backupDir = process.env.BACKUPS_PATH || path.resolve('./backups');
       const filePath = path.join(backupDir, filename);
       
       // Validate filename to prevent directory traversal
@@ -3044,13 +3045,13 @@ router.delete('/items/:id', (req, res) => {
       process.env.OPEN_PRICE_APPROVAL_LIMIT = approval_limit.toString();
       process.env.OPEN_PRICE_NOTE_LIMIT = note_limit.toString();
 
-      // Optionally save to a config file for persistence
+      // Optionally save to a config file for persistence (환경 변수 CONFIG_PATH 사용, 빌드된 앱 호환)
       const fs = require("fs");
       const path = require("path");
-      const configPath = path.join(__dirname, "..", "config", "open-price-config.json");
+      const configDir = process.env.CONFIG_PATH || path.join(__dirname, "..", "config");
+      const configPath = path.join(configDir, "open-price-config.json");
       
       // Ensure config directory exists
-      const configDir = path.dirname(configPath);
       if (!fs.existsSync(configDir)) {
         fs.mkdirSync(configDir, { recursive: true });
       }

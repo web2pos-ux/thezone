@@ -10,41 +10,26 @@ const IntroPage: React.FC = () => {
   const [pinVerified, setPinVerified] = useState(false);
   const navigate = useNavigate();
 
-  // Check if Firebase setup and initial setup is needed
+  // Load service type on mount (setup already completed if we're here)
   useEffect(() => {
-    const checkSetupStatus = async () => {
+    const loadServiceType = async () => {
       try {
-        // 1. Firebase 설정 상태 확인
-        const firebaseResponse = await fetch(`${API_URL}/firebase-setup/status`);
-        if (firebaseResponse.ok) {
-          const firebaseData = await firebaseResponse.json();
-          if (firebaseData.success && firebaseData.data.needsSetup) {
-            // Firebase 설정이 필요하면 Setup 페이지로 이동
-            navigate('/setup');
-            return;
-          }
-        }
-
-        // 2. 기존 Initial Setup 상태 확인
-        const response = await fetch(`${API_URL}/admin-settings/initial-setup-status`);
+        const response = await fetch(`${API_URL}/admin-settings/service-type`);
         if (response.ok) {
           const data = await response.json();
-          if (data.needsSetup) {
-            // Redirect to initial setup page
-            navigate('/initial-setup');
-            return;
+          if (data.serviceType) {
+            setServiceType(data.serviceType);
           }
-          setServiceType(data.serviceType);
         }
       } catch (error) {
-        console.error('Failed to check setup status:', error);
+        console.error('Failed to load service type:', error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    checkSetupStatus();
-  }, [navigate]);
+    loadServiceType();
+  }, []);
 
   const handlePinInput = (digit: string) => {
     if (pin.length < 4) {
@@ -72,11 +57,26 @@ const IntroPage: React.FC = () => {
     }
   };
 
-  const handleNavigate = (destination: 'sales' | 'backoffice') => {
+  const handleNavigate = async (destination: 'sales' | 'backoffice') => {
     if (!pinVerified) return;
     
     if (destination === 'sales') {
-      if (serviceType === 'QSR') {
+      // If serviceType is not loaded, fetch it again
+      let currentServiceType = serviceType;
+      if (!currentServiceType) {
+        try {
+          const response = await fetch(`${API_URL}/admin-settings/service-type`);
+          if (response.ok) {
+            const data = await response.json();
+            currentServiceType = data.serviceType;
+            setServiceType(data.serviceType);
+          }
+        } catch (error) {
+          console.error('Failed to fetch service type:', error);
+        }
+      }
+      
+      if (currentServiceType === 'QSR') {
         navigate('/qsr');
       } else {
         navigate('/sales');

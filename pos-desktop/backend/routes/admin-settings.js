@@ -1,35 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 
-// Database connection
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
-const db = new sqlite3.Database(dbPath);
-
-// Helper functions for database operations
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err);
-    else resolve(this);
-  });
-});
-
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err);
-    else resolve(rows);
-  });
-});
-
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err);
-    else resolve(row);
-  });
-});
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db, dbRun, dbAll, dbGet } = require('../db');
 
 // Simple role guard (expects X-Role header: ADMIN or MANAGER)
 function requireManager(req, res, next) {
@@ -114,11 +90,138 @@ async function initBusinessProfile() {
 
 initBusinessProfile();
 
-// Multer for logo uploads (store under backend/uploads/logos)
+// ===== DATABASE RESET (Complete Factory Reset) =====
+// WARNING: This will delete ALL data and reset to factory state
+router.post('/factory-reset', requireManager, async (req, res) => {
+  console.log('⚠️ [FACTORY RESET] Initiating complete database reset...');
+  
+  try {
+    // Tables to clear (order matters for foreign key constraints)
+    const tablesToClear = [
+      // Order related
+      'order_items',
+      'order_adjustments',
+      'payments',
+      'voids',
+      'refunds',
+      'orders',
+      
+      // Menu related links
+      'menu_modifier_links',
+      'menu_tax_links',
+      'menu_printer_links',
+      'category_modifier_links',
+      'category_tax_links',
+      'category_printer_links',
+      'modifier_group_links',
+      'tax_group_links',
+      'printer_group_links',
+      
+      // Menu items
+      'menu_items',
+      'menu_categories',
+      'base_menus',
+      'derived_menus',
+      'derived_menu_categories',
+      'derived_menu_items',
+      'derived_menu_modifier_overrides',
+      
+      // Modifiers, Taxes, Printers
+      'modifiers',
+      'modifier_groups',
+      'taxes',
+      'tax_groups',
+      'printers',
+      'printer_groups',
+      
+      // Table map
+      'table_map_elements',
+      'table_devices',
+      'table_settings',
+      
+      // Reservations
+      'reservations',
+      'reservation_time_slots',
+      'reservation_settings',
+      
+      // Employees
+      'employees',
+      'employee_shifts',
+      'time_off_requests',
+      'shift_swaps',
+      'work_schedule',
+      
+      // Settings
+      'channel_settings',
+      'business_hours',
+      'layout_settings',
+      'screen_settings',
+      
+      // Daily operations
+      'daily_closings',
+      'gift_cards',
+      'gift_card_transactions',
+      
+      // Firebase sync
+      'firebase_sync_log',
+      'menu_visibility',
+      'sold_out_items',
+      
+      // Other
+      'waiting_list',
+      'call_server_requests',
+      'table_move_history',
+      'promotions',
+      'labels',
+      'open_price_settings',
+    ];
+    
+    // Clear all tables
+    for (const table of tablesToClear) {
+      try {
+        await dbRun(`DELETE FROM ${table}`);
+        console.log(`✓ Cleared table: ${table}`);
+      } catch (e) {
+        // Table might not exist, skip silently
+        console.log(`- Skipped table (may not exist): ${table}`);
+      }
+    }
+    
+    // Reset business_profile to empty state (keep structure)
+    await dbRun(`UPDATE business_profile SET
+      business_name = NULL,
+      tax_number = NULL,
+      phone = NULL,
+      address_line1 = NULL,
+      address_line2 = NULL,
+      city = NULL,
+      state = NULL,
+      zip = NULL,
+      logo_url = NULL,
+      firebase_restaurant_id = NULL,
+      service_type = NULL,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = 1`);
+    
+    console.log('✅ [FACTORY RESET] Complete! Database reset to factory state.');
+    
+    res.json({ 
+      success: true, 
+      message: 'Factory reset complete. All data has been cleared.',
+      tablesCleared: tablesToClear.length
+    });
+  } catch (e) {
+    console.error('❌ [FACTORY RESET] Failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Multer for logo uploads (환경 변수 UPLOADS_PATH 사용, 빌드된 앱 호환)
 const logoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      const dir = path.resolve(__dirname, '..', 'uploads', 'logos');
+      const uploadsBase = process.env.UPLOADS_PATH || path.resolve(__dirname, '..', 'uploads');
+      const dir = path.join(uploadsBase, 'logos');
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     } catch (e) {
@@ -378,12 +481,13 @@ router.post('/business-profile/sync-from-firebase', async (req, res) => {
 // Check if initial setup is needed (service_type not set)
 router.get('/initial-setup-status', async (req, res) => {
   try {
-    const row = await dbGet('SELECT service_type, business_name FROM business_profile WHERE id = 1');
-    const needsSetup = !row || !row.service_type;
+    const row = await dbGet('SELECT service_type, business_name, firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const needsSetup = !row || !row.service_type || !row.firebase_restaurant_id;
     res.json({ 
       needsSetup, 
       serviceType: row?.service_type || null,
-      businessName: row?.business_name || null
+      businessName: row?.business_name || null,
+      restaurantId: row?.firebase_restaurant_id || null
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -403,26 +507,33 @@ router.get('/service-type', async (req, res) => {
 // Set service type (QSR or FSR) - Initial setup
 router.post('/service-type', async (req, res) => {
   try {
-    const { serviceType, businessName } = req.body;
+    const { serviceType, businessName, restaurantId } = req.body;
     
     // Validate service type
     if (!serviceType || !['QSR', 'FSR'].includes(serviceType.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid service type. Must be QSR or FSR.' });
     }
     
+    // Validate restaurant ID
+    if (!restaurantId || String(restaurantId).trim() === '') {
+      return res.status(400).json({ error: 'Restaurant ID is required.' });
+    }
+    
     const type = serviceType.toUpperCase();
     const name = businessName ? String(businessName).trim() : '';
+    const restId = String(restaurantId).trim();
     
-    await dbRun(`INSERT INTO business_profile (id, service_type, business_name, updated_at)
-      VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+    await dbRun(`INSERT INTO business_profile (id, service_type, business_name, firebase_restaurant_id, updated_at)
+      VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(id) DO UPDATE SET 
         service_type = excluded.service_type,
         business_name = CASE WHEN excluded.business_name != '' THEN excluded.business_name ELSE business_name END,
+        firebase_restaurant_id = excluded.firebase_restaurant_id,
         updated_at = CURRENT_TIMESTAMP
-    `, [type, name]);
+    `, [type, name, restId]);
     
     const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
-    res.json({ success: true, serviceType: type, profile: saved });
+    res.json({ success: true, serviceType: type, restaurantId: restId, profile: saved });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

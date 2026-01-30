@@ -3,37 +3,21 @@
 
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 const firebaseService = require('../services/firebaseService');
 const { SyncLogService, SYNC_STATUS, SYNC_DIRECTION, SYNC_TYPE } = require('../services/syncLogService');
 const idMapperService = require('../services/idMapperService');
 
-// Database connection
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
-const db = new sqlite3.Database(dbPath);
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
+const { db, dbRun, dbAll, dbGet } = require('../db');
 
-// Helper functions
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err);
-    else resolve(this);
-  });
-});
-
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err);
-    else resolve(rows);
-  });
-});
-
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err);
-    else resolve(row);
-  });
-});
+// 백업 디렉토리 경로 (환경 변수 BACKUPS_PATH 사용, 빌드된 앱 호환)
+function getBackupDir(subDir = 'pos-menu') {
+  const backupsBase = process.env.BACKUPS_PATH || path.resolve(__dirname, '..', '..', 'backups');
+  const backupDir = path.join(backupsBase, subDir);
+  return backupDir;
+}
 
 // Simple role guard
 function requireManager(req, res, next) {
@@ -147,8 +131,6 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     }
     
     const firestore = firebaseService.getFirestore();
-    const fs = require('fs');
-    const path = require('path');
     
     console.log(`🔄 Firebase → POS 메뉴 동기화 시작: ${restaurantId}`);
     
@@ -185,8 +167,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     const posPrinterGroupsBackup = await dbAll('SELECT * FROM printer_groups WHERE is_active = 1');
     backupData.printerGroups = posPrinterGroupsBackup;
     
-    // 백업 디렉토리 생성
-    const backupDir = path.resolve(__dirname, '..', '..', 'backups', 'pos-menu');
+    // 백업 디렉토리 생성 (Electron 앱 호환)
+    const backupDir = getBackupDir('pos-menu');
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
     }

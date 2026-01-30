@@ -4,7 +4,9 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const dbPath = path.resolve(__dirname, '..', 'db', 'web2pos.db');
+// DB 경로: 환경 변수 우선, 없으면 기본 경로 사용 (Electron 앱 호환)
+const dbPath = process.env.DB_PATH || path.resolve(__dirname, '..', 'db', 'web2pos.db');
+console.log('[db.js] Using database:', dbPath);
 
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {

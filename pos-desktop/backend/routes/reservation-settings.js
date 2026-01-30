@@ -1,11 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 
-// Database connection
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
-const db = new sqlite3.Database(dbPath);
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db, dbRun, dbAll, dbGet } = require('../db');
+
 // Ensure reservation_policy table exists
 db.serialize(() => {
   db.run(`
@@ -28,28 +26,6 @@ db.serialize(() => {
   db.run(`ALTER TABLE reservation_policy ADD COLUMN phone_quota_pct INTEGER NOT NULL DEFAULT 40`, () => {});
   db.run(`ALTER TABLE reservation_policy ADD COLUMN walkin_quota_pct INTEGER NOT NULL DEFAULT 30`, () => {});
   db.run(`ALTER TABLE reservation_policy ADD COLUMN no_show_grace_minutes INTEGER NOT NULL DEFAULT 10`, () => {});
-});
-
-// Helper functions for database operations
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err);
-    else resolve(this);
-  });
-});
-
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err);
-    else resolve(rows);
-  });
-});
-
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err);
-    else resolve(row);
-  });
 });
 
 // ===== BUSINESS HOURS MANAGEMENT =====

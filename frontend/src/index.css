@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* POS 화면 전체화면 설정 - 상단 여백 제거 */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
 @keyframes slide-in-right {
   from {
     transform: translateX(100%);

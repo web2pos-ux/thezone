@@ -1,26 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
-const db = new sqlite3.Database(dbPath);
-
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err); else resolve(this);
-  });
-});
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err); else resolve(rows);
-  });
-});
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err); else resolve(row);
-  });
-});
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db, dbRun, dbAll, dbGet } = require('../db');
 
 // Ensure waiting_list table
 const ensureTable = async () => {

@@ -9622,7 +9622,7 @@ const SalesPage: React.FC = () => {
             
             {/* Buttons */}
             <div className="p-6 space-y-3">
-              {/* Back Office 버튼 */}
+              {/* Go to Back Office 버튼 */}
               <button
                 onClick={() => {
                   setShowExitModal(false);
@@ -9631,48 +9631,28 @@ const SalesPage: React.FC = () => {
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
                 <span className="text-2xl">🏢</span>
-                Back Office
+                Go to Back Office
               </button>
               
-              {/* Go to Windows 버튼 */}
+              {/* Go to Windows 버튼 (앱 종료) */}
               <button
                 onClick={() => {
                   setShowExitModal(false);
                   try {
-                    // @ts-ignore
-                    const electron = window.require('electron');
-                    electron.ipcRenderer.send('window-minimize');
-                    console.log('Minimize command sent');
+                    if (window.electron && window.electron.quit) {
+                      window.electron.quit();
+                    } else {
+                      window.close();
+                    }
                   } catch (e) {
-                    console.error('Minimize failed:', e);
-                    alert('Electron 환경이 아닙니다: ' + e);
+                    console.error('Quit failed:', e);
+                    window.close();
                   }
                 }}
                 className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
                 <span className="text-2xl">🪟</span>
                 Go to Windows
-              </button>
-              
-              {/* Power Off 버튼 */}
-              <button
-                onClick={() => {
-                  if (window.confirm('Are you sure you want to quit the app?')) {
-                    setShowExitModal(false);
-                    try {
-                      // @ts-ignore
-                      const electron = window.require('electron');
-                      electron.ipcRenderer.send('app-quit');
-                    } catch (e) {
-                      console.error('Quit failed:', e);
-                      window.close();
-                    }
-                  }
-                }}
-                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">⏻</span>
-                Power Off
               </button>
             </div>
             

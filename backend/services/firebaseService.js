@@ -12,11 +12,19 @@ let isInitialized = false;
 
 // Firebase 초기화
 function initializeFirebase() {
-  if (isInitialized) {
+  if (isInitialized && db) {
     return db;
   }
 
   try {
+    // 이미 초기화된 앱이 있는지 확인
+    if (admin.apps.length > 0) {
+      console.log('🔥 Firebase Admin SDK 이미 초기화됨 - 기존 앱 재사용');
+      db = admin.firestore();
+      isInitialized = true;
+      return db;
+    }
+
     const serviceAccount = require(serviceAccountPath);
     
     admin.initializeApp({

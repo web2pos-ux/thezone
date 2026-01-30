@@ -1,34 +1,10 @@
 // backend/services/idMapperService.js
 // 통합 ID 매핑 서비스 - SQLite, Firebase, 3rd Party ID 간 변환
 
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
 const { v4: uuidv4 } = require('uuid');
 
-// SQLite 연결
-const dbPath = path.resolve(__dirname, '..', 'db', 'web2pos.db');
-const db = new sqlite3.Database(dbPath);
-
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err);
-    else resolve(this);
-  });
-});
-
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err);
-    else resolve(rows);
-  });
-});
-
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err);
-    else resolve(row);
-  });
-});
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
+const { db, dbRun, dbAll, dbGet } = require('../db');
 
 /**
  * ID Mapper Service

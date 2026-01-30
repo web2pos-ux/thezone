@@ -169,16 +169,16 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
       
       {/* Header row for price columns */}
       <div className="flex items-center space-x-2 text-xs text-gray-500 font-medium mb-1">
-        <div className="flex-1 mr-2">Option Name</div>
-        <div className="w-20 text-center">Price_Modi1</div>
-        <div className="w-20 text-center">Price_Modi2</div>
+        <div className="flex-1 min-w-[120px] mr-2">Option Name</div>
+        <div className="w-16 text-center">Price_Modi1</div>
+        <div className="w-16 text-center">Price_Modi2</div>
         <div className="w-8"></div>
       </div>
       
       <div className="space-y-1">
         {rows.map((row, index) => (
           <div key={row.id} className="flex items-center space-x-2">
-            <div className="flex-1 mr-2">
+            <div className="flex-1 min-w-[120px] mr-2">
               <input
                 ref={(el) => { inputRefs.current[row.id] = el; }}
                 type="text"
@@ -189,7 +189,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
                 className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div className="w-20">
+            <div className="w-16">
               <input
                 type="number"
                 value={row.rate}
@@ -201,7 +201,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
                 className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div className="w-20">
+            <div className="w-16">
               <input
                 type="number"
                 value={row.rate2 ?? 0}

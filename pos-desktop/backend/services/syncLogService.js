@@ -2,33 +2,15 @@
 // 동기화 로그 서비스 - 모든 동기화 작업 이력 관리
 
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
 
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
+const sharedDb = require('../db');
 
-const getDb = () => new sqlite3.Database(dbPath);
-
-const dbRun = (db, sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    if (err) reject(err);
-    else resolve(this);
-  });
-});
-
-const dbGet = (db, sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => {
-    if (err) reject(err);
-    else resolve(row);
-  });
-});
-
-const dbAll = (db, sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => {
-    if (err) reject(err);
-    else resolve(rows);
-  });
-});
+// 레거시 호환을 위한 래퍼 함수들
+const dbRun = (db, sql, params = []) => sharedDb.dbRun(sql, params);
+const dbGet = (db, sql, params = []) => sharedDb.dbGet(sql, params);
+const dbAll = (db, sql, params = []) => sharedDb.dbAll(sql, params);
+const getDb = () => sharedDb.db;
 
 /**
  * 동기화 상태 상수

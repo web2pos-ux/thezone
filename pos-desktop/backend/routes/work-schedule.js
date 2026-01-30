@@ -1,14 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 
-const dbPath = path.join(__dirname, '..', 'db', 'web2pos.db');
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db } = require('../db');
 
-// Helper function to get database connection
-const getDb = () => {
-  return new sqlite3.Database(dbPath);
-};
+// Helper function to get database connection (레거시 호환)
+const getDb = () => db;
 
 // ======================
 // EMPLOYEES ENDPOINTS

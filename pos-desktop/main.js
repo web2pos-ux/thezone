@@ -1,11 +1,12 @@
 /**
- * WEB2POS - Main Electron Process
+ * TheZonePOS - Main Electron Process
  * 하이브리드 방식: Backend + Frontend를 앱 내부에서 실행
  * + 자동 업데이트 기능
  */
 
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const { runUpdateProcess, APP_VERSION } = require('./updater');
 
@@ -32,15 +33,51 @@ function startBackend() {
       : path.join(process.resourcesPath, 'backend');
     
     const dbPath = isDev 
-      ? path.join(__dirname, '..', 'db', 'tzp.db')
-      : path.join(process.resourcesPath, 'db', 'tzp.db');
+      ? path.join(__dirname, '..', 'db', 'web2pos.db')
+      : path.join(process.resourcesPath, 'db', 'web2pos.db');
+    
+    // 쓰기 가능한 경로 설정 (빌드된 앱에서는 userData 폴더 사용)
+    const userDataPath = app.getPath('userData');
+    const uploadsPath = isDev 
+      ? path.join(__dirname, '..', 'backend', 'uploads')
+      : path.join(userDataPath, 'uploads');
+    const configPath = isDev 
+      ? path.join(__dirname, '..', 'backend', 'config')
+      : path.join(userDataPath, 'config');
+    const backupsPath = isDev 
+      ? path.join(__dirname, '..', 'backups')
+      : path.join(userDataPath, 'backups');
+    
+    // 빌드된 앱: config 폴더 초기화 (extraResources에서 복사)
+    if (!isDev) {
+      const sourceConfigPath = path.join(process.resourcesPath, 'backend', 'config');
+      
+      // config 폴더가 없으면 생성
+      if (!fs.existsSync(configPath)) {
+        fs.mkdirSync(configPath, { recursive: true });
+      }
+      
+      // setup-status.json이 없으면 extraResources에서 복사 (첫 실행)
+      const sourceSetupStatus = path.join(sourceConfigPath, 'setup-status.json');
+      const destSetupStatus = path.join(configPath, 'setup-status.json');
+      if (!fs.existsSync(destSetupStatus) && fs.existsSync(sourceSetupStatus)) {
+        fs.copyFileSync(sourceSetupStatus, destSetupStatus);
+        console.log('[Backend] Setup status initialized for first run');
+      }
+    }
     
     console.log('[Backend] Starting from:', backendPath);
     console.log('[Backend] DB path:', dbPath);
+    console.log('[Backend] Uploads path:', uploadsPath);
+    console.log('[Backend] Config path:', configPath);
+    console.log('[Backend] Backups path:', backupsPath);
     
     // 환경 변수 설정
     process.env.PORT = BACKEND_PORT;
     process.env.DB_PATH = dbPath;
+    process.env.UPLOADS_PATH = uploadsPath;
+    process.env.CONFIG_PATH = configPath;
+    process.env.BACKUPS_PATH = backupsPath;
     
     // 작업 디렉토리 변경 (backend 폴더 기준으로 경로 해결)
     const originalCwd = process.cwd();
@@ -132,18 +169,16 @@ function createWindow() {
     icon: path.join(__dirname, 'assets', 'icon.png'),
     autoHideMenuBar: true,
     show: false,
-    title: 'WEB2POS'
+    title: 'TheZonePOS',
+    frame: false,  // 타이틀바 숨기기 (접기, 줄이기, 닫기 버튼 제거)
+    fullscreen: true  // 전체화면 모드
   });
 
-  // 풀스크린 모드
-  mainWindow.setFullScreen(false);
-  
   // POS 페이지 로드
   mainWindow.loadURL(`http://localhost:${FRONTEND_PORT}`);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    mainWindow.maximize();
   });
 
   // 외부 링크는 기본 브라우저로 열기
@@ -165,12 +200,45 @@ function createWindow() {
 }
 
 /**
+ * IPC 이벤트 핸들러 설정
+ */
+function setupIpcHandlers() {
+  // 앱 종료
+  ipcMain.on('app-quit', () => {
+    app.quit();
+  });
+
+  // 창 최소화 (Go to Windows)
+  ipcMain.on('window-minimize', () => {
+    if (mainWindow) {
+      mainWindow.minimize();
+    }
+  });
+
+  // 창 최대화/복원
+  ipcMain.on('window-maximize', () => {
+    if (mainWindow) {
+      if (mainWindow.isMaximized()) {
+        mainWindow.unmaximize();
+      } else {
+        mainWindow.maximize();
+      }
+    }
+  });
+
+  // 앱 버전 조회
+  ipcMain.handle('get-version', () => {
+    return APP_VERSION;
+  });
+}
+
+/**
  * 메뉴 생성
  */
 function createMenu() {
   const template = [
     {
-      label: 'WEB2POS',
+      label: 'TheZonePOS',
       submenu: [
         { label: 'About', click: showAbout },
         { type: 'separator' },
@@ -198,9 +266,9 @@ function createMenu() {
 function showAbout() {
   dialog.showMessageBox(mainWindow, {
     type: 'info',
-    title: 'About WEB2POS',
-    message: 'WEB2POS - Restaurant POS System',
-    detail: `Version: ${app.getVersion()}\n\nA modern POS system for restaurants.\n\n© 2024 WEB2POS`
+    title: 'About TheZonePOS',
+    message: 'TheZonePOS - Restaurant POS System',
+    detail: `Version: ${app.getVersion()}\n\nA modern POS system for restaurants.\n\n© 2024 TheZonePOS`
   });
 }
 
@@ -210,7 +278,7 @@ function showAbout() {
 function createSplash() {
   const splash = new BrowserWindow({
     width: 400,
-    height: 300,
+    height: 350,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -219,11 +287,15 @@ function createSplash() {
     }
   });
 
+  // 로고 이미지 경로
+  const logoPath = path.join(__dirname, 'assets', 'icon.png').replace(/\\/g, '/');
+
   splash.loadURL(`data:text/html,
     <html>
       <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a5f,#2d5a87);border-radius:20px;font-family:Arial;">
         <div style="text-align:center;color:white;">
-          <h1 style="font-size:32px;margin-bottom:10px;">🍽️ WEB2POS</h1>
+          <img src="file:///${logoPath}" style="width:80px;height:80px;object-fit:contain;margin-bottom:15px;" onerror="this.style.display='none'"/>
+          <h1 style="font-size:28px;margin:0 0 10px 0;">TheZonePOS</h1>
           <p style="font-size:14px;opacity:0.8;">Starting servers...</p>
           <div style="margin-top:20px;width:200px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;">
             <div style="width:0%;height:100%;background:white;border-radius:2px;animation:loading 2s ease-in-out infinite;"></div>
@@ -275,6 +347,7 @@ async function startApp() {
     // 메인 윈도우 생성
     createWindow();
     createMenu();
+    setupIpcHandlers();
     
     // 앱 시작 완료
     isAppStarting = false;
@@ -286,7 +359,7 @@ async function startApp() {
     
     dialog.showErrorBox(
       'Startup Error',
-      `Failed to start WEB2POS:\n\n${error.message}\n\nPlease restart the application.`
+      `Failed to start TheZonePOS:\n\n${error.message}\n\nPlease restart the application.`
     );
     
     app.quit();

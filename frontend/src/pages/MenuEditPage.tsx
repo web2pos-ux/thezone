@@ -94,6 +94,24 @@ const MenuEditPage = () => {
   // 프린터 그룹 펼침/접힘 상태
   const [expandedPrinterGroups, setExpandedPrinterGroups] = useState<Set<number>>(new Set());
   
+  // 사이드바 접힘 상태 (BackOfficeLayout에서 공유)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('backoffice_sidebar_collapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const collapsed = localStorage.getItem('backoffice_sidebar_collapsed') === '1';
+      setSidebarCollapsed(collapsed);
+    };
+    window.addEventListener('storage', handleStorageChange);
+    // Check periodically for same-window updates
+    const interval = setInterval(handleStorageChange, 200);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
+  
   // 강조 효과를 계속 유지할 그룹 ID
   const [persistentHighlight, setPersistentHighlight] = useState<{type: string, groupId: number} | null>(null);
 
@@ -3783,7 +3801,7 @@ Import때 참고해야하는것,
           </div>
           
           {/* Right Panel - 옵션 관리 */}
-          <div className="w-[30%] flex flex-col bg-white border-l border-gray-200 relative">
+          <div className={`${sidebarCollapsed ? 'w-[38%]' : 'w-[30%]'} flex flex-col bg-white border-l border-gray-200 relative transition-all duration-300`}>
             <div className="p-4 border-b border-gray-200">
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-lg font-semibold text-gray-800">Menu Options</h2>

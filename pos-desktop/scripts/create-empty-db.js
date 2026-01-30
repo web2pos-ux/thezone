@@ -16,326 +16,306 @@ if (fs.existsSync(dbPath)) {
 const db = new sqlite3.Database(dbPath);
 
 db.serialize(() => {
-  // 스키마 파일 읽기
-  const schemaPath = path.join(__dirname, '..', '..', 'db', 'schema.sql');
+  // ====== Core Menu Tables ======
   
-  // 기본 테이블 생성
-  const createTables = `
-    -- 기본 테이블 생성
-    PRAGMA foreign_keys = ON;
-    
-    -- Base Menus
-    CREATE TABLE IF NOT EXISTS base_menus (
-        menu_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        is_active INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Menu Categories
-    CREATE TABLE IF NOT EXISTS menu_categories (
-        category_id INTEGER PRIMARY KEY,
-        menu_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        sort_order INTEGER DEFAULT 0
-    );
-    
-    -- Menu Items
-    CREATE TABLE IF NOT EXISTS menu_items (
-        item_id INTEGER PRIMARY KEY,
-        menu_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        description TEXT,
-        price REAL NOT NULL,
-        category_id INTEGER NOT NULL,
-        sort_order INTEGER DEFAULT 0
-    );
-    
-    -- Modifier Groups
-    CREATE TABLE IF NOT EXISTS modifier_groups (
-        group_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        selection_type TEXT NOT NULL,
-        min_selection INTEGER DEFAULT 0,
-        max_selection INTEGER DEFAULT 1,
-        menu_id INTEGER,
-        is_deleted INTEGER DEFAULT 0
-    );
-    
-    -- Modifiers
-    CREATE TABLE IF NOT EXISTS modifiers (
-        modifier_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        price_delta REAL DEFAULT 0,
-        type TEXT NOT NULL,
-        is_deleted INTEGER DEFAULT 0,
-        sort_order INTEGER DEFAULT 0
-    );
-    
-    -- Modifier Group Links
-    CREATE TABLE IF NOT EXISTS modifier_group_links (
-        modifier_group_id INTEGER NOT NULL,
-        modifier_id INTEGER NOT NULL,
-        PRIMARY KEY (modifier_group_id, modifier_id)
-    );
-    
-    -- Menu Modifier Links
-    CREATE TABLE IF NOT EXISTS menu_modifier_links (
-        link_id INTEGER PRIMARY KEY,
-        item_id INTEGER NOT NULL,
-        modifier_group_id INTEGER NOT NULL,
-        is_ambiguous INTEGER DEFAULT 0,
-        UNIQUE (item_id, modifier_group_id)
-    );
-    
-    -- Tax Groups
-    CREATE TABLE IF NOT EXISTS tax_groups (
-        group_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        menu_id INTEGER,
-        is_deleted INTEGER DEFAULT 0
-    );
-    
-    -- Taxes
-    CREATE TABLE IF NOT EXISTS taxes (
-        tax_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        rate REAL NOT NULL,
-        type TEXT NOT NULL,
-        is_deleted INTEGER DEFAULT 0
-    );
-    
-    -- Tax Group Links
-    CREATE TABLE IF NOT EXISTS tax_group_links (
-        tax_group_id INTEGER NOT NULL,
-        tax_id INTEGER NOT NULL,
-        PRIMARY KEY (tax_group_id, tax_id)
-    );
-    
-    -- Menu Tax Links
-    CREATE TABLE IF NOT EXISTS menu_tax_links (
-        link_id INTEGER PRIMARY KEY,
-        item_id INTEGER NOT NULL,
-        tax_group_id INTEGER NOT NULL,
-        is_ambiguous INTEGER DEFAULT 0,
-        UNIQUE (item_id, tax_group_id)
-    );
-    
-    -- Printers
-    CREATE TABLE IF NOT EXISTS printers (
-        printer_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        ip_address TEXT UNIQUE,
-        is_deleted INTEGER DEFAULT 0
-    );
-    
-    -- Printer Groups
-    CREATE TABLE IF NOT EXISTS printer_groups (
-        group_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        menu_id INTEGER,
-        is_deleted INTEGER DEFAULT 0
-    );
-    
-    -- Printer Group Links
-    CREATE TABLE IF NOT EXISTS printer_group_links (
-        printer_group_id INTEGER NOT NULL,
-        printer_id INTEGER NOT NULL,
-        PRIMARY KEY (printer_group_id, printer_id)
-    );
-    
-    -- Menu Printer Links
-    CREATE TABLE IF NOT EXISTS menu_printer_links (
-        link_id INTEGER PRIMARY KEY,
-        item_id INTEGER NOT NULL,
-        printer_group_id INTEGER NOT NULL,
-        is_ambiguous INTEGER DEFAULT 0,
-        UNIQUE (item_id, printer_group_id)
-    );
-    
-    -- Channels
-    CREATE TABLE IF NOT EXISTS channels (
-        channel_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    );
-    
-    -- Employees
-    CREATE TABLE IF NOT EXISTS employees (
-        employee_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        pin_hash TEXT NOT NULL,
-        role TEXT NOT NULL,
-        channel_id INTEGER
-    );
-    
-    -- Table Map Elements
-    CREATE TABLE IF NOT EXISTS table_map_elements (
-        element_id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        x_pos INTEGER,
-        y_pos INTEGER,
-        width INTEGER,
-        height INTEGER
-    );
-    
-    -- Orders
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_number TEXT,
-        table_id TEXT,
-        table_name TEXT,
-        order_type TEXT,
-        status TEXT DEFAULT 'OPEN',
-        subtotal REAL DEFAULT 0,
-        tax REAL DEFAULT 0,
-        total REAL DEFAULT 0,
-        paid_amount REAL DEFAULT 0,
-        customer_name TEXT,
-        customer_phone TEXT,
-        customer_address TEXT,
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        closed_at TIMESTAMP,
-        employee_id INTEGER,
-        channel TEXT,
-        firebase_id TEXT,
-        ready_time TEXT,
-        external_order_number TEXT
-    );
-    
-    -- Order Items
-    CREATE TABLE IF NOT EXISTS order_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id INTEGER NOT NULL,
-        item_id INTEGER,
-        name TEXT NOT NULL,
-        quantity INTEGER DEFAULT 1,
-        price REAL NOT NULL,
-        modifiers TEXT,
-        memo TEXT,
-        guest_number INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        is_voided INTEGER DEFAULT 0,
-        void_reason TEXT,
-        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
-    );
-    
-    -- Payments
-    CREATE TABLE IF NOT EXISTS payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        order_id INTEGER NOT NULL,
-        payment_method TEXT NOT NULL,
-        amount REAL NOT NULL,
-        tip REAL DEFAULT 0,
-        reference_number TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        guest_number INTEGER,
-        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
-    );
-    
-    -- Settings
-    CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Restaurant Info
-    CREATE TABLE IF NOT EXISTS restaurant_info (
-        id INTEGER PRIMARY KEY DEFAULT 1,
-        name TEXT,
-        address TEXT,
-        phone TEXT,
-        email TEXT,
-        website TEXT,
-        logo_url TEXT,
-        tax_id TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Business Hours
-    CREATE TABLE IF NOT EXISTS business_hours (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        day_of_week INTEGER NOT NULL,
-        open_time TEXT,
-        close_time TEXT,
-        is_closed INTEGER DEFAULT 0
-    );
-    
-    -- Promotions
-    CREATE TABLE IF NOT EXISTS promotions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        value REAL NOT NULL,
-        start_date TEXT,
-        end_date TEXT,
-        is_active INTEGER DEFAULT 1,
-        conditions TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Screen Settings (for table map)
-    CREATE TABLE IF NOT EXISTS screen_settings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        screen_id TEXT NOT NULL,
-        floor_id TEXT,
-        settings TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Printer Layouts
-    CREATE TABLE IF NOT EXISTS printer_layouts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        layout_type TEXT NOT NULL,
-        settings TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Clock In/Out Records
-    CREATE TABLE IF NOT EXISTS clock_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        employee_id INTEGER NOT NULL,
-        clock_in TIMESTAMP,
-        clock_out TIMESTAMP,
-        total_hours REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
+  // Menus (Main Menu Table)
+  db.run(`CREATE TABLE IF NOT EXISTS menus (
+    menu_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    is_active INTEGER DEFAULT 0,
+    sales_channels TEXT DEFAULT '[]',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
   
-  // 테이블 생성
-  db.exec(createTables, (err) => {
-    if (err) {
-      console.error('Error creating tables:', err);
-    } else {
-      console.log('✅ Empty database created successfully!');
-      
-      // 기본 채널 삽입
-      db.run("INSERT INTO channels (channel_id, name) VALUES (1, 'POS')");
-      db.run("INSERT INTO channels (channel_id, name) VALUES (2, 'TOGO')");
-      db.run("INSERT INTO channels (channel_id, name) VALUES (3, 'ONLINE')");
-      db.run("INSERT INTO channels (channel_id, name) VALUES (4, 'DELIVERY')");
-      
-      // 기본 관리자 계정 (PIN: 0000)
-      db.run("INSERT INTO employees (employee_id, name, pin_hash, role) VALUES (5200, 'Admin', '0000', 'Admin')");
-      
-      // 빈 레스토랑 정보
-      db.run("INSERT INTO restaurant_info (id, name) VALUES (1, 'New Restaurant')");
-      
-      // 기본 영업시간 (월-일)
-      for (let i = 0; i < 7; i++) {
-        db.run(`INSERT INTO business_hours (day_of_week, open_time, close_time, is_closed) VALUES (${i}, '09:00', '21:00', 0)`);
-      }
-      
-      console.log('✅ Default data inserted!');
-    }
+  // Menu Categories
+  db.run(`CREATE TABLE IF NOT EXISTS menu_categories (
+    category_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    menu_id INTEGER NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    image_url TEXT,
+    FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE
+  )`);
+  
+  // Menu Items
+  db.run(`CREATE TABLE IF NOT EXISTS menu_items (
+    item_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    short_name TEXT,
+    price REAL NOT NULL DEFAULT 0,
+    price2 REAL DEFAULT 0,
+    description TEXT,
+    category_id INTEGER NOT NULL,
+    menu_id INTEGER NOT NULL,
+    is_open_price INTEGER DEFAULT 0,
+    image_url TEXT,
+    sort_order INTEGER DEFAULT 0,
+    FOREIGN KEY (category_id) REFERENCES menu_categories(category_id) ON DELETE CASCADE,
+    FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE
+  )`);
+  
+  // ====== Modifier Tables ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS modifier_groups (
+    group_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    selection_type TEXT NOT NULL DEFAULT 'SINGLE',
+    min_selection INTEGER DEFAULT 0,
+    max_selection INTEGER DEFAULT 1,
+    menu_id INTEGER,
+    is_deleted INTEGER DEFAULT 0
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS modifiers (
+    modifier_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    price_delta REAL DEFAULT 0,
+    type TEXT NOT NULL DEFAULT 'OPTION',
+    is_deleted INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS modifier_group_links (
+    modifier_group_id INTEGER NOT NULL,
+    modifier_id INTEGER NOT NULL,
+    PRIMARY KEY (modifier_group_id, modifier_id)
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS menu_modifier_links (
+    link_id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL,
+    modifier_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    UNIQUE (item_id, modifier_group_id)
+  )`);
+  
+  // ====== Tax Tables ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS tax_groups (
+    group_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    menu_id INTEGER,
+    is_deleted INTEGER DEFAULT 0
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS taxes (
+    tax_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    rate REAL NOT NULL DEFAULT 0,
+    type TEXT NOT NULL DEFAULT 'PERCENTAGE',
+    is_deleted INTEGER DEFAULT 0
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS tax_group_links (
+    tax_group_id INTEGER NOT NULL,
+    tax_id INTEGER NOT NULL,
+    PRIMARY KEY (tax_group_id, tax_id)
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS menu_tax_links (
+    link_id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL,
+    tax_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    UNIQUE (item_id, tax_group_id)
+  )`);
+  
+  // ====== Printer Tables ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS printers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL DEFAULT '',
+    type TEXT DEFAULT '',
+    selected_printer TEXT DEFAULT '',
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS printer_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS printer_group_links (
+    group_id INTEGER NOT NULL,
+    printer_id INTEGER NOT NULL,
+    PRIMARY KEY (group_id, printer_id)
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS menu_printer_links (
+    link_id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL,
+    printer_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    UNIQUE (item_id, printer_group_id)
+  )`);
+  
+  // ====== Business Profile ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS business_profile (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    business_name TEXT,
+    tax_number TEXT,
+    phone TEXT,
+    email TEXT,
+    address_line1 TEXT,
+    address_line2 TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    logo_url TEXT,
+    banner_url TEXT,
+    firebase_restaurant_id TEXT,
+    service_type TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // ====== Channel Settings ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS channel_settings (
+    channel TEXT PRIMARY KEY,
+    discount_enabled INTEGER DEFAULT 0,
+    discount_mode TEXT DEFAULT 'percent',
+    discount_value REAL DEFAULT 0,
+    bag_fee_enabled INTEGER DEFAULT 0,
+    bag_fee_mode TEXT DEFAULT 'amount',
+    bag_fee_value REAL DEFAULT 0,
+    discount_stage TEXT DEFAULT 'pre-tax',
+    bag_fee_taxable INTEGER DEFAULT 0,
+    discount_scope TEXT DEFAULT 'all',
+    discount_item_ids TEXT,
+    discount_category_ids TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // ====== Orders ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_number TEXT,
+    table_id TEXT,
+    table_name TEXT,
+    order_type TEXT,
+    status TEXT DEFAULT 'OPEN',
+    subtotal REAL DEFAULT 0,
+    tax REAL DEFAULT 0,
+    total REAL DEFAULT 0,
+    paid_amount REAL DEFAULT 0,
+    customer_name TEXT,
+    customer_phone TEXT,
+    customer_address TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMP,
+    employee_id INTEGER,
+    channel TEXT,
+    firebase_id TEXT,
+    ready_time TEXT,
+    external_order_number TEXT
+  )`);
+  
+  db.run(`CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    item_id INTEGER,
+    name TEXT NOT NULL,
+    quantity INTEGER DEFAULT 1,
+    price REAL NOT NULL,
+    modifiers TEXT,
+    memo TEXT,
+    guest_number INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_voided INTEGER DEFAULT 0,
+    void_reason TEXT,
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+  )`);
+  
+  // ====== Payments ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    payment_method TEXT NOT NULL,
+    amount REAL NOT NULL,
+    tip REAL DEFAULT 0,
+    reference_number TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    guest_number INTEGER,
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+  )`);
+  
+  // ====== Channels ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS channels (
+    channel_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+  )`);
+  
+  // ====== Employees ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS employees (
+    employee_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    pin_hash TEXT NOT NULL,
+    role TEXT NOT NULL,
+    channel_id INTEGER
+  )`);
+  
+  // ====== Table Map ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS table_map_elements (
+    element_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    x_pos INTEGER,
+    y_pos INTEGER,
+    width INTEGER,
+    height INTEGER
+  )`);
+  
+  // ====== Business Hours ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS business_hours (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day_of_week INTEGER NOT NULL,
+    open_time TEXT,
+    close_time TEXT,
+    is_open INTEGER DEFAULT 1,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // ====== Insert Default Data ======
+  
+  console.log('Creating tables...');
+  
+  // Insert empty business profile (triggers initial setup)
+  db.run("INSERT INTO business_profile (id) VALUES (1)", (err) => {
+    if (err) console.log('business_profile insert skipped:', err.message);
   });
+  
+  // Default channels
+  db.run("INSERT INTO channels (channel_id, name) VALUES (1, 'POS')");
+  db.run("INSERT INTO channels (channel_id, name) VALUES (2, 'TOGO')");
+  db.run("INSERT INTO channels (channel_id, name) VALUES (3, 'ONLINE')");
+  db.run("INSERT INTO channels (channel_id, name) VALUES (4, 'DELIVERY')");
+  
+  // Default admin (PIN: 0000)
+  db.run("INSERT INTO employees (employee_id, name, pin_hash, role) VALUES (5200, 'Admin', '0000', 'Admin')");
+  
+  // Default business hours (Mon-Sun, 9AM-9PM)
+  for (let i = 0; i < 7; i++) {
+    db.run(`INSERT INTO business_hours (day_of_week, open_time, close_time, is_open) VALUES (${i}, '09:00', '21:00', 1)`);
+  }
+  
+  console.log('✅ Empty database created successfully!');
+  console.log('✅ Default data inserted (Admin PIN: 0000)');
 });
 
 db.close((err) => {

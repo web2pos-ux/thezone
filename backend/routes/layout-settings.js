@@ -1,22 +1,16 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 
 const router = express.Router();
-const dbPath = path.resolve(__dirname, '..', '..', 'db', 'web2pos.db');
 
-// 데이터베이스 연결 함수
-const connectDB = () => {
-  return new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-      console.error('Error opening database:', err.message);
-    }
-  });
-};
+// 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
+const { db } = require('../db');
+
+// 데이터베이스 연결 함수 (레거시 호환)
+const connectDB = () => db;
 
 // 레이아웃 설정 테이블 생성 (테이블이 없을 경우)
 const initializeLayoutSettingsTable = () => {
-  const db = connectDB();
+  const dbConn = connectDB();
   
   const createTableSQL = `
     CREATE TABLE IF NOT EXISTS layout_settings (
@@ -27,15 +21,14 @@ const initializeLayoutSettingsTable = () => {
     )
   `;
   
-  db.run(createTableSQL, (err) => {
+  dbConn.run(createTableSQL, (err) => {
     if (err) {
       console.error('Error creating layout_settings table:', err.message);
     } else {
       console.log('Layout settings table initialized successfully');
     }
   });
-  
-  db.close();
+  // db.close() 제거 - 공유 DB 연결은 닫으면 안 됨
 };
 
 // 테이블 초기화 실행

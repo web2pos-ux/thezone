@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import ReportIcon from './icons/ReportIcon';
 import UserPlusIcon from './icons/UserPlusIcon';
 import TableIcon from './icons/TableIcon';
 import MenuIcon from './icons/MenuIcon';
 import OrderIcon from './icons/OrderIcon';
+import { API_URL } from '../config/constants';
 
 const navLinks = [
   { path: '/backoffice/basic-info', label: 'Business Info', icon: 'custom' },
@@ -61,9 +62,28 @@ const BackOfficeLayout = () => {
   const [tableMenuExpanded, setTableMenuExpanded] = useState(false);
   const [orderMenuExpanded, setOrderMenuExpanded] = useState(false);
   const [showExitModal, setShowExitModal] = useState(false);
+  const [serviceType, setServiceType] = useState<string | null>(null);
+
+  // Fetch service type on mount
+  useEffect(() => {
+    const fetchServiceType = async () => {
+      try {
+        const response = await fetch(`${API_URL}/admin-settings/service-type`);
+        if (response.ok) {
+          const data = await response.json();
+          setServiceType(data.serviceType);
+        }
+      } catch (error) {
+        console.error('Failed to fetch service type:', error);
+      }
+    };
+    fetchServiceType();
+  }, []);
 
   const toggleSidebar = () => {
-    setSidebarCollapsed(!sidebarCollapsed);
+    const newState = !sidebarCollapsed;
+    setSidebarCollapsed(newState);
+    localStorage.setItem('backoffice_sidebar_collapsed', newState ? '1' : '0');
   };
 
   const toggleEmployeeMenu = () => {
@@ -428,57 +448,41 @@ const BackOfficeLayout = () => {
             
             {/* Buttons */}
             <div className="p-6 space-y-3">
-              {/* Go to Sales 버튼 */}
+              {/* Go to Sales 버튼 - QSR이면 /qsr, FSR이면 /sales */}
               <button
                 onClick={() => {
                   setShowExitModal(false);
-                  navigate('/sales');
+                  if (serviceType === 'QSR') {
+                    navigate('/qsr');
+                  } else {
+                    navigate('/sales');
+                  }
                 }}
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
                 <span className="text-2xl">🏪</span>
-                Go to Sales
+                {serviceType === 'QSR' ? 'Go to QSR' : 'Go to Sales'}
               </button>
               
-              {/* Go to Windows 버튼 */}
+              {/* Go to Windows 버튼 (앱 종료) */}
               <button
                 onClick={() => {
                   setShowExitModal(false);
                   try {
-                    // @ts-ignore
-                    const electron = window.require('electron');
-                    electron.ipcRenderer.send('window-minimize');
-                    console.log('Minimize command sent');
+                    if (window.electron && window.electron.quit) {
+                      window.electron.quit();
+                    } else {
+                      window.close();
+                    }
                   } catch (e) {
-                    console.error('Minimize failed:', e);
-                    alert('Electron 환경이 아닙니다: ' + e);
+                    console.error('Quit failed:', e);
+                    window.close();
                   }
                 }}
                 className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
                 <span className="text-2xl">🪟</span>
                 Go to Windows
-              </button>
-              
-              {/* Power Off 버튼 */}
-              <button
-                onClick={() => {
-                  if (window.confirm('Are you sure you want to quit the app?')) {
-                    setShowExitModal(false);
-                    try {
-                      // @ts-ignore
-                      const electron = window.require('electron');
-                      electron.ipcRenderer.send('app-quit');
-                    } catch (e) {
-                      console.error('Quit failed:', e);
-                      window.close();
-                    }
-                  }
-                }}
-                className="w-full py-4 bg-red-600 hover:bg-red-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">⏻</span>
-                Power Off
               </button>
             </div>
             

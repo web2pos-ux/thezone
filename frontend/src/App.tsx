@@ -73,8 +73,8 @@ function App() {
     <MenuCacheProvider>
       <BrowserRouter>
         <Routes>
-          {/* 메인 페이지들 */}
-          <Route path="/" element={<IntroPage />} />
+          {/* 메인 페이지들 - 첫 실행 시 SetupPage로 시작 */}
+          <Route path="/" element={<SetupPage />} />
           <Route path="/intro" element={<IntroPage />} />
           <Route path="/setup" element={<SetupPage />} />
           <Route path="/initial-setup" element={<InitialSetupPage />} />

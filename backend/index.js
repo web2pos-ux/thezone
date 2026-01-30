@@ -21,9 +21,11 @@ const dbPath = process.env.DB_PATH || path.resolve(__dirname, '..', 'db', 'web2p
 console.log(`[Backend] Using Database: ${dbPath}`);
 console.log(`[Backend] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
 
-const uploadsDir = path.join(__dirname, 'uploads');
+// uploads 경로: 환경 변수 우선, 없으면 기본 경로 (빌드된 앱 호환)
+const uploadsDir = process.env.UPLOADS_PATH || path.join(__dirname, 'uploads');
+console.log(`[Backend] Uploads directory: ${uploadsDir}`);
 if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
+  fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
 // === 카테고리 이미지 업로드 폴더 및 multer 설정 ===

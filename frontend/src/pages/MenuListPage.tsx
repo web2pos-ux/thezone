@@ -1471,6 +1471,7 @@ const MenuListPage = () => {
   const [copyMenuChannels, setCopyMenuChannels] = useState<string[]>([]);
   
   const SALES_CHANNELS = [
+    { id: 'qsr', label: 'QSR (Quick Service)' },
     { id: 'dine-in', label: 'Dine-In' },
     { id: 'table-order', label: 'Table Order' },
     { id: 'online', label: 'Online' },
@@ -1687,11 +1688,146 @@ const MenuListPage = () => {
         {/* Menus Tab Content */}
         {activeTab === 'menus' && (
           <div className="space-y-4">
-            {menus.length === 0 ? (
-              <div className="py-10 text-center text-gray-500">
-                메뉴가 없습니다.
+            {/* Add New Menu Button */}
+            {!isAdding && (
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setIsAdding(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+                >
+                  <Plus className="w-5 h-5" />
+                  New Menu
+                </button>
               </div>
-            ) : (
+            )}
+
+            {/* New Menu Form */}
+            {isAdding && (
+              <div className="bg-white rounded-lg border shadow-sm p-6">
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">Create New Menu</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Menu Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newMenuName}
+                      onChange={(e) => setNewMenuName(e.target.value)}
+                      placeholder="Enter menu name (e.g., Main Menu)"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Description
+                    </label>
+                    <input
+                      type="text"
+                      value={newMenuDescription}
+                      onChange={(e) => setNewMenuDescription(e.target.value)}
+                      placeholder="Optional description"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Sales Channels <span className="text-red-500">*</span>
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      {SALES_CHANNELS.map(channel => (
+                        <label key={channel.id} className="flex items-center gap-2 cursor-pointer bg-gray-50 px-3 py-2 rounded-lg hover:bg-gray-100">
+                          <input
+                            type="checkbox"
+                            checked={newMenuChannels.includes(channel.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setNewMenuChannels(prev => [...prev, channel.id]);
+                              } else {
+                                setNewMenuChannels(prev => prev.filter(c => c !== channel.id));
+                              }
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded"
+                          />
+                          <span className="text-sm text-gray-700">{channel.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {newMenuChannels.length === 0 && (
+                      <p className="text-xs text-red-500 mt-1">At least one channel must be selected</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setIsAdding(false);
+                      setNewMenuName('');
+                      setNewMenuDescription('');
+                      setNewMenuChannels([]);
+                    }}
+                    className="px-4 py-2 text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!newMenuName.trim()) {
+                        alert('Menu name is required');
+                        return;
+                      }
+                      if (newMenuChannels.length === 0) {
+                        alert('Please select at least one sales channel');
+                        return;
+                      }
+                      try {
+                        const response = await fetch(`${API_URL}/menus`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            name: newMenuName.trim(),
+                            description: newMenuDescription.trim(),
+                            sales_channels: newMenuChannels
+                          })
+                        });
+                        if (!response.ok) {
+                          const err = await response.json();
+                          throw new Error(err.error || 'Failed to create menu');
+                        }
+                        const newMenu = await response.json();
+                        setMenus(prev => [...prev, newMenu]);
+                        setIsAdding(false);
+                        setNewMenuName('');
+                        setNewMenuDescription('');
+                        setNewMenuChannels([]);
+                        // Navigate to edit the new menu
+                        navigate(`/backoffice/menu/edit/${newMenu.menu_id}`);
+                      } catch (error: any) {
+                        console.error('Failed to create menu:', error);
+                        alert(error?.message || 'Failed to create menu');
+                      }
+                    }}
+                    disabled={!newMenuName.trim() || newMenuChannels.length === 0}
+                    className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+                      !newMenuName.trim() || newMenuChannels.length === 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    Create Menu
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {menus.length === 0 && !isAdding ? (
+              <div className="py-10 text-center text-gray-500">
+                <div className="mb-4 text-6xl">📋</div>
+                <p className="text-lg mb-2">메뉴가 없습니다.</p>
+                <p className="text-sm text-gray-400">위의 "New Menu" 버튼을 클릭하여 새 메뉴를 만드세요.</p>
+              </div>
+            ) : menus.length > 0 ? (
               <div className="bg-white rounded-lg border shadow-sm">
                 <div className="px-4 py-3 border-b text-sm font-medium text-gray-700">
                   Menus
@@ -1716,7 +1852,7 @@ const MenuListPage = () => {
                   ))}
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
         )}
 

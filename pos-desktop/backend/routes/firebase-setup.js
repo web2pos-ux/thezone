@@ -11,12 +11,17 @@ const path = require('path');
 // Firebase Admin SDK
 const admin = require('firebase-admin');
 
-// Firebase 설정 파일 경로
-const CONFIG_DIR = path.join(__dirname, '..', 'config');
-const FIREBASE_CONFIG_PATH = path.join(CONFIG_DIR, 'firebase-service-account.json');
+// Firebase 설정 파일 경로 (읽기 전용 파일은 빌드된 위치, 쓰기 파일은 환경 변수 경로)
+// FIREBASE_CONFIG_PATH: 빌드에 포함된 서비스 계정 파일 (읽기 전용)
+// CONFIG_DIR: 쓰기 가능한 설정 폴더 (setup-status.json 등)
+const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
+const CONFIG_DIR = process.env.CONFIG_PATH || RESOURCES_CONFIG_DIR;
+const FIREBASE_CONFIG_PATH = path.join(RESOURCES_CONFIG_DIR, 'firebase-service-account.json');
 const SETUP_STATUS_PATH = path.join(CONFIG_DIR, 'setup-status.json');
+console.log('[Firebase Setup] Resources config:', RESOURCES_CONFIG_DIR);
+console.log('[Firebase Setup] Writable config:', CONFIG_DIR);
 
-// config 폴더 확인
+// 쓰기 가능한 config 폴더 확인 및 생성
 if (!fs.existsSync(CONFIG_DIR)) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
 }
@@ -183,7 +188,7 @@ router.post('/verify-restaurant', async (req, res) => {
  */
 router.post('/save-restaurant', async (req, res) => {
   try {
-    const { restaurantId, storeName } = req.body;
+    const { restaurantId, storeName, serviceMode } = req.body;
     
     if (!restaurantId) {
       return res.status(400).json({ 
@@ -198,20 +203,38 @@ router.post('/save-restaurant', async (req, res) => {
       setupCompleted: true,
       storeName: storeName || '',
       restaurantId: restaurantId,
+      serviceMode: serviceMode || 'FSR',
       setupDate: new Date().toISOString()
     };
     
     fs.writeFileSync(SETUP_STATUS_PATH, JSON.stringify(setupStatus, null, 2));
     
-    // localStorage에 저장할 수 있도록 storeId도 설정
-    // (POS에서 사용하는 storeId와 연동)
+    // Update business_profile table in SQLite
+    const { dbRun } = require('../db');
+    try {
+      await dbRun(`UPDATE business_profile SET 
+        firebase_restaurant_id = ?,
+        business_name = ?
+        WHERE id = 1`, [restaurantId, storeName || 'New Restaurant']);
+      console.log('[Setup] business_profile updated with restaurantId:', restaurantId);
+    } catch (err) {
+      console.log('[Setup] business_profile update error:', err.message);
+      // Try insert if update fails
+      try {
+        await dbRun(`INSERT OR REPLACE INTO business_profile (id, firebase_restaurant_id, business_name) VALUES (1, ?, ?)`,
+          [restaurantId, storeName || 'New Restaurant']);
+      } catch (err2) {
+        console.log('[Setup] business_profile insert error:', err2.message);
+      }
+    }
     
     res.json({ 
       success: true, 
       message: 'Restaurant connected successfully',
       data: {
         restaurantId,
-        storeName
+        storeName,
+        serviceMode
       }
     });
   } catch (error) {
@@ -277,6 +300,68 @@ router.get('/current', async (req, res) => {
       }
     });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/firebase-setup/clear-data
+ * Clear local database (menu, categories, modifiers, etc.)
+ */
+router.post('/clear-data', async (req, res) => {
+  try {
+    // Get database connection
+    const { dbRun } = require('../db');
+    
+    console.log('[Setup] Clearing local database...');
+    
+    // Tables to clear (in order to avoid foreign key issues)
+    const tablesToClear = [
+      'order_items',
+      'orders',
+      'menu_modifier_link',
+      'menu_tax_link',
+      'menu_printer_link',
+      'category_modifier_link',
+      'category_tax_link',
+      'category_printer_link',
+      'menu_items',
+      'menu_categories',
+      'modifiers',
+      'modifier_groups',
+      'tax_groups',
+      'printer_groups'
+    ];
+    
+    // Clear each table
+    for (const table of tablesToClear) {
+      try {
+        await dbRun(`DELETE FROM ${table}`);
+        console.log(`[Setup] Cleared table: ${table}`);
+      } catch (e) {
+        console.log(`[Setup] Table ${table} not found or error:`, e.message);
+        // Continue even if table doesn't exist
+      }
+    }
+    
+    // Reset business profile (keep the table but clear Firebase connection)
+    try {
+      await dbRun(`UPDATE business_profile SET 
+        firebase_restaurant_id = NULL,
+        business_name = 'New Restaurant'
+        WHERE id = 1`);
+    } catch (err) {
+      console.log('[Setup] business_profile update error:', err.message);
+    }
+    
+    console.log('[Setup] Database cleared successfully');
+    
+    res.json({ 
+      success: true, 
+      message: 'Local database cleared successfully' 
+    });
+  } catch (error) {
+    console.error('[Setup] Clear data error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
