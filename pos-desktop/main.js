@@ -171,7 +171,7 @@ function createWindow() {
     show: false,
     title: 'TheZonePOS',
     frame: false,  // 타이틀바 숨기기 (접기, 줄이기, 닫기 버튼 제거)
-    fullscreen: true  // 전체화면 모드
+    kiosk: true  // 완전한 전체화면 모드 (taskbar 숨김)
   });
 
   // POS 페이지 로드
