@@ -125,6 +125,15 @@ const db = new sqlite3.Database(dbPath, async (err) => {
             FOREIGN KEY (tax_id) REFERENCES taxes(id) ON DELETE CASCADE
         )`);
 
+        // Modifier Labels (for modifier groups)
+        db.run(`CREATE TABLE IF NOT EXISTS modifier_labels (
+            label_id INTEGER PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            label_name TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES modifier_groups(group_id) ON DELETE CASCADE
+        )`);
+
         console.log('[Backend] 테이블 초기화 완료');
         
         // 테이블 확인

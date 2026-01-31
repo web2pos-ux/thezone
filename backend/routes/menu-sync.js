@@ -2863,5 +2863,110 @@ router.get('/id-mappings/stats', async (req, res) => {
   }
 });
 
+// 개별 Modifier Group Firebase 동기화
+router.post('/sync-modifiers', async (req, res) => {
+  try {
+    const { groupId } = req.body;
+    
+    if (!groupId) {
+      return res.status(400).json({ error: 'groupId is required' });
+    }
+    
+    // 레스토랑 ID 가져오기
+    const storeInfo = await dbGet('SELECT store_id FROM store_info LIMIT 1');
+    if (!storeInfo || !storeInfo.store_id) {
+      return res.status(400).json({ error: 'Store not configured for Firebase sync' });
+    }
+    
+    const restaurantId = storeInfo.store_id;
+    const firestore = firebaseService.getFirestore();
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    
+    // SQLite에서 modifier group 정보 가져오기
+    const group = await dbGet(`
+      SELECT 
+        mg.group_id,
+        mg.name,
+        mg.selection_type,
+        mg.min_selection,
+        mg.max_selection
+      FROM modifier_groups mg
+      WHERE mg.group_id = ? AND mg.is_deleted = 0
+    `, [groupId]);
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Modifier group not found' });
+    }
+    
+    // modifier options 가져오기
+    const options = await dbAll(`
+      SELECT 
+        m.modifier_id,
+        m.name,
+        m.price_delta,
+        m.price_delta2,
+        m.sort_order
+      FROM modifiers m
+      JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id
+      WHERE mgl.modifier_group_id = ? AND m.is_deleted = 0
+      ORDER BY m.sort_order, m.name
+    `, [groupId]);
+    
+    // label 가져오기
+    const labels = await dbAll('SELECT label_name FROM modifier_labels WHERE group_id = ?', [groupId]);
+    
+    // Firebase에서 기존 그룹 찾기 (posGroupId로)
+    const existingQuery = await restaurantRef
+      .collection('modifierGroups')
+      .where('posGroupId', '==', groupId)
+      .limit(1)
+      .get();
+    
+    const firebaseData = {
+      restaurantId,
+      name: group.name,
+      label: labels.length > 0 ? labels[0].label_name : '',
+      min_selection: group.min_selection || 0,
+      max_selection: group.max_selection || 0,
+      selection_type: group.selection_type || 'OPTIONAL',
+      posGroupId: groupId,
+      options: options.map(opt => ({
+        name: opt.name,
+        price: opt.price_delta || 0,
+        price2: opt.price_delta2 || 0,
+        posModifierId: opt.modifier_id
+      })),
+      updatedAt: new Date().toISOString()
+    };
+    
+    let firebaseId;
+    if (!existingQuery.empty) {
+      // 기존 문서 업데이트
+      firebaseId = existingQuery.docs[0].id;
+      await restaurantRef.collection('modifierGroups').doc(firebaseId).update(firebaseData);
+      console.log(`✅ Firebase Modifier Group 업데이트: ${firebaseId}`);
+    } else {
+      // 새 문서 생성
+      const docRef = await restaurantRef.collection('modifierGroups').add({
+        ...firebaseData,
+        createdAt: new Date().toISOString()
+      });
+      firebaseId = docRef.id;
+      console.log(`✅ Firebase Modifier Group 생성: ${firebaseId}`);
+    }
+    
+    res.json({
+      success: true,
+      message: 'Modifier group synced to Firebase',
+      groupId,
+      firebaseId
+    });
+    
+  } catch (e) {
+    console.error('Error syncing modifier to Firebase:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
 

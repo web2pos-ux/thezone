@@ -2,12 +2,28 @@
  * SetupPage - Initial Setup Page
  * Firebase connection via Restaurant ID
  * QSR/FSR Mode Selection & Data Initialization
+ * 
+ * 저장 방식: localStorage (빠른 체크) + 백엔드 DB (영구 저장)
  */
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177';
+
+// localStorage 저장 키
+const SETUP_CONFIG_KEY = 'pos_setup_config';
+
+// localStorage 설정 인터페이스
+interface LocalSetupConfig {
+  isSetupComplete: boolean;
+  restaurantId: string;
+  operationMode: 'FSR' | 'QSR';
+  storeName: string;
+  emptyDate: string;
+  dataSource: 'empty' | 'theZonePOS';
+  savedAt: string;
+}
 
 interface SetupStatus {
   isFirstRun: boolean;
@@ -29,13 +45,53 @@ interface RestaurantInfo {
 type ServiceMode = 'QSR' | 'FSR';
 type DataOption = 'empty' | 'cloud';
 
+// ========== localStorage 유틸리티 함수 ==========
+
+/**
+ * localStorage에서 설정 읽기 (빠른 동기 체크)
+ */
+const getLocalConfig = (): LocalSetupConfig | null => {
+  try {
+    const stored = localStorage.getItem(SETUP_CONFIG_KEY);
+    if (!stored) return null;
+    return JSON.parse(stored) as LocalSetupConfig;
+  } catch (e) {
+    console.warn('[Setup] Failed to read localStorage:', e);
+    return null;
+  }
+};
+
+/**
+ * localStorage에 설정 저장
+ */
+const saveLocalConfig = (config: LocalSetupConfig): void => {
+  try {
+    localStorage.setItem(SETUP_CONFIG_KEY, JSON.stringify(config));
+    console.log('[Setup] Config saved to localStorage:', config);
+  } catch (e) {
+    console.error('[Setup] Failed to save to localStorage:', e);
+  }
+};
+
+/**
+ * localStorage 설정 삭제
+ */
+const clearLocalConfig = (): void => {
+  try {
+    localStorage.removeItem(SETUP_CONFIG_KEY);
+    console.log('[Setup] localStorage config cleared');
+  } catch (e) {
+    console.error('[Setup] Failed to clear localStorage:', e);
+  }
+};
+
 const SetupPage: React.FC = () => {
   const navigate = useNavigate();
   
   // States
-  const [step, setStep] = useState<'welcome' | 'connect' | 'options' | 'loading' | 'complete'>('welcome');
+  const [step, setStep] = useState<'welcome' | 'connect' | 'options' | 'loading' | 'complete' | 'checking'>('checking');
   const [restaurantId, setRestaurantId] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; restaurant?: RestaurantInfo } | null>(null);
   const [error, setError] = useState('');
@@ -47,8 +103,110 @@ const SetupPage: React.FC = () => {
   const [dataOption, setDataOption] = useState<DataOption>('empty');
   const [setupProgress, setSetupProgress] = useState({ status: '', progress: 0 });
 
-  // 첫 실행 시 항상 셋업 화면 표시 (API 체크 없음)
-  // 설정 완료 후 completeSetup에서 직접 POS로 이동
+  // 앱 시작 시 setup 상태 확인 및 자동 리다이렉트
+  // ✅ 1단계: localStorage 먼저 체크 (동기, 1-2ms)
+  // ✅ 2단계: 백엔드 API 체크 (비동기, 백업용)
+  useEffect(() => {
+    const checkSetupAndRedirect = async () => {
+      try {
+        // ========== 1단계: localStorage 빠른 체크 (동기) ==========
+        const localConfig = getLocalConfig();
+        
+        if (localConfig && localConfig.isSetupComplete && localConfig.restaurantId) {
+          console.log('[Setup] localStorage config found:', localConfig);
+          
+          // localStorage에 설정이 있으면 즉시 해당 모드로 이동
+          const mode = localConfig.operationMode;
+          
+          if (mode === 'QSR') {
+            console.log('[Setup] Redirecting to QSR mode (from localStorage)');
+            navigate('/qsr', { replace: true });
+          } else {
+            console.log('[Setup] Redirecting to FSR mode (from localStorage)');
+            navigate('/sales', { replace: true });
+          }
+          return; // 바로 리턴 - 백엔드 체크 불필요
+        }
+        
+        console.log('[Setup] No localStorage config, checking backend...');
+        
+        // ========== 2단계: 백엔드 API 체크 (localStorage 없을 때) ==========
+        // 1. Setup 상태 확인
+        const statusRes = await fetch(`${API_URL}/api/firebase-setup/status`);
+        const statusData = await statusRes.json();
+        
+        if (!statusData.success || !statusData.data) {
+          // API 실패 시 Setup 화면 표시
+          setStep('welcome');
+          setIsLoading(false);
+          return;
+        }
+
+        const { setupCompleted, restaurantId: savedRestaurantId } = statusData.data;
+
+        // 첫 실행이거나 setup이 완료되지 않은 경우 → Setup 화면
+        if (!setupCompleted || !savedRestaurantId) {
+          setStep('welcome');
+          setIsLoading(false);
+          return;
+        }
+
+        // 2. Service Type 확인
+        const serviceRes = await fetch(`${API_URL}/api/admin-settings/service-type`);
+        const serviceData = await serviceRes.json();
+        
+        if (!serviceData.serviceType) {
+          // Service Type이 없으면 → Setup 화면
+          setStep('welcome');
+          setIsLoading(false);
+          return;
+        }
+
+        // 3. 메뉴 데이터 확인 (카테고리가 있는지)
+        const menuRes = await fetch(`${API_URL}/api/categories`);
+        const menuData = await menuRes.json();
+        
+        const hasMenuData = Array.isArray(menuData) && menuData.length > 0;
+
+        if (!hasMenuData) {
+          // 메뉴 데이터가 없으면 → Setup 화면
+          setStep('welcome');
+          setIsLoading(false);
+          return;
+        }
+
+        // ========== 백엔드에 설정이 있으면 localStorage에 복구 ==========
+        const recoveredConfig: LocalSetupConfig = {
+          isSetupComplete: true,
+          restaurantId: savedRestaurantId,
+          operationMode: serviceData.serviceType as 'FSR' | 'QSR',
+          storeName: statusData.data.storeName || '',
+          emptyDate: '',
+          dataSource: 'empty',
+          savedAt: new Date().toISOString()
+        };
+        saveLocalConfig(recoveredConfig);
+        console.log('[Setup] Recovered config to localStorage from backend');
+
+        // 모든 조건 충족 → 바로 POS로 이동
+        if (serviceData.serviceType === 'QSR') {
+          console.log('[Setup] Redirecting to QSR mode (from backend)');
+          navigate('/qsr', { replace: true });
+        } else {
+          console.log('[Setup] Redirecting to FSR mode (from backend)');
+          navigate('/sales', { replace: true });
+        }
+
+      } catch (err) {
+        console.error('Setup check failed:', err);
+        // 오류 시 Setup 화면 표시
+        setStep('welcome');
+        setIsLoading(false);
+      }
+    };
+
+    checkSetupAndRedirect();
+  }, [navigate]);
 
   // Test connection with Restaurant ID
   const testConnection = async () => {
@@ -102,6 +260,7 @@ const SetupPage: React.FC = () => {
   };
 
   // Complete setup with options
+  // ✅ localStorage + 백엔드 DB 동시 저장
   const completeSetup = async () => {
     if (!testResult?.success || !testResult.restaurant) {
       setError('Please verify the connection first.');
@@ -124,7 +283,7 @@ const SetupPage: React.FC = () => {
       
       setSetupProgress({ status: 'Saving restaurant info...', progress: 40 });
 
-      // Step 2: Save restaurant connection
+      // Step 2: Save restaurant connection to backend DB
       const saveResponse = await fetch(`${API_URL}/api/firebase-setup/save-restaurant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -143,7 +302,7 @@ const SetupPage: React.FC = () => {
 
       setSetupProgress({ status: 'Setting up service mode...', progress: 60 });
 
-      // Step 3: Save service type (QSR/FSR)
+      // Step 3: Save service type (QSR/FSR) to backend DB
       await fetch(`${API_URL}/api/admin-settings/service-type`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
@@ -153,6 +312,19 @@ const SetupPage: React.FC = () => {
           businessName: testResult.restaurant.name
         })
       });
+
+      // ========== localStorage에도 설정 저장 (빠른 체크용) ==========
+      const localConfig: LocalSetupConfig = {
+        isSetupComplete: true,
+        restaurantId: restaurantId.trim(),
+        operationMode: serviceMode,
+        storeName: testResult.restaurant.name,
+        emptyDate: new Date().toISOString().split('T')[0],
+        dataSource: dataOption === 'cloud' ? 'theZonePOS' : 'empty',
+        savedAt: new Date().toISOString()
+      };
+      saveLocalConfig(localConfig);
+      console.log('[Setup] Config saved to localStorage + backend DB');
 
       // Step 4: If cloud option selected, download menu from Firebase
       if (dataOption === 'cloud') {
@@ -192,39 +364,41 @@ const SetupPage: React.FC = () => {
   };
 
   // Start POS - Navigate based on selected service mode
+  // ✅ localStorage에서 모드를 읽어서 정확한 페이지로 이동
   const startPOS = () => {
-    // Navigate directly to QSR or Sales based on the service mode selected during setup
-    if (serviceMode === 'QSR') {
-      navigate('/qsr');
+    // localStorage에서 저장된 모드 확인 (가장 신뢰할 수 있는 소스)
+    const localConfig = getLocalConfig();
+    const mode = localConfig?.operationMode || serviceMode;
+    
+    console.log('[Setup] Starting POS with mode:', mode);
+    
+    // Navigate directly to QSR or Sales based on the service mode
+    if (mode === 'QSR') {
+      navigate('/qsr', { replace: true });
     } else {
-      navigate('/sales');
+      navigate('/sales', { replace: true });
     }
   };
 
-  // Reset setup
-  const resetSetup = async () => {
-    if (!window.confirm('Are you sure you want to reset the setup? All local data will be cleared.')) {
-      return;
-    }
-
-    try {
-      await fetch(`${API_URL}/api/firebase-setup/reset`, { method: 'DELETE' });
-      setStep('welcome');
-      setRestaurantId('');
-      setTestResult(null);
-      setConnectedRestaurant(null);
-      setSetupStatus(null);
-      setServiceMode('FSR');
-      setDataOption('empty');
-    } catch (err) {
-      console.error('Reset failed:', err);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-2xl">
         
+        {/* Checking Step - 시작 시 로딩 */}
+        {step === 'checking' && (
+          <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20 text-center">
+            <img 
+              src="/images/logo.png" 
+              alt="TheZonePOS Logo" 
+              className="w-20 h-20 mx-auto mb-4 object-contain"
+            />
+            <h1 className="text-3xl font-bold text-white mb-4">TheZonePOS</h1>
+            <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-blue-200">Starting...</p>
+          </div>
+        )}
+
         {/* Welcome Step */}
         {step === 'welcome' && (
           <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20">
@@ -532,16 +706,9 @@ const SetupPage: React.FC = () => {
 
             <button
               onClick={startPOS}
-              className="w-full py-4 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold text-xl rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl mb-4"
+              className="w-full py-4 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold text-xl rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl"
             >
               🚀 Start POS
-            </button>
-
-            <button
-              onClick={resetSetup}
-              className="text-sm text-blue-300 hover:text-white underline"
-            >
-              Change to another restaurant
             </button>
           </div>
         )}

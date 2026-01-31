@@ -9213,7 +9213,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         {/* Canvas Container */}
          <div 
            ref={canvasRef}
-           className="flex-none flex flex-col bg-white shadow-lg my-4 rounded-lg overflow-hidden"
+           className={`flex-none flex flex-col bg-white shadow-lg ${isQsrMode ? '' : 'my-4'} rounded-lg overflow-hidden`}
           style={{ 
             width: isQsrMode ? '1024px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[0] ? `${p[0]}px` : '800px'; })()),
             height: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[1] ? `${p[1]}px` : '600px'; })()),
@@ -9223,7 +9223,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             maxHeight: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined),
             overflow: 'hidden',
             position: 'relative',
-            transform: isQsrMode ? 'scale(1)' : (isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)'),
+            transform: isQsrMode ? `scale(${Math.min(actualScreenSize.width / 1024, actualScreenSize.height / 768)})` : (isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)'),
             transformOrigin: 'top left',
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'

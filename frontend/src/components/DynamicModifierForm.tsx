@@ -76,6 +76,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
   };
 
   const handleInputChange = (id: string, field: 'name' | 'rate' | 'rate2', value: string) => {
+    console.log('🔍 handleInputChange:', { id, field, value });
     setRows(prevRows => 
       prevRows.map(row => {
         if (row.id === id) {
@@ -83,9 +84,9 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
             // Auto-capitalize name input
             return { ...row, [field]: capitalizeInput(value) };
           } else if (field === 'rate' || field === 'rate2') {
-            // Allow empty string or valid number for rate/rate2
-            const numValue = value === '' ? '' : parseFloat(value);
-            return { ...row, [field]: isNaN(numValue as number) ? '' : numValue };
+            // Keep value as string during input to allow typing decimals like "1."
+            // The value will be parsed to number in handleSave
+            return { ...row, [field]: value };
           }
         }
         return row;
@@ -119,34 +120,32 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
   };
 
   const handleSave = () => {
-    // Validate: ensure all rows have names and valid rates
+    // Validate: ensure all rows have names (rate can be empty, defaults to 0)
     const validRows = rows.filter(row => {
       const name = row.name.trim();
-      const rate = typeof row.rate === 'string' ? parseFloat(row.rate) : row.rate;
-      // Allow 0 as valid rate
-      return name && !isNaN(rate) && isFinite(rate);
+      // Only require name - empty rate will be treated as 0
+      return name.length > 0;
     });
 
     if (validRows.length === 0) {
-      alert('Please add at least one valid option with a name and price.');
+      alert('Please add at least one valid option with a name.');
       return;
     }
 
-    // Check for duplicate names (removed - allowing duplicate names)
-    // const names = validRows.map(row => row.name.trim().toLowerCase());
-    // const duplicateNames = names.filter((name, index) => names.indexOf(name) !== index);
-    // if (duplicateNames.length > 0) {
-    //   alert('Duplicate option names are not allowed.');
-    //   return;
-    // }
+    // Convert to final format - ensure empty/invalid rates become 0
+    const finalData = validRows.map(row => {
+      const rateStr = String(row.rate ?? '');
+      const rate2Str = String(row.rate2 ?? '');
+      const rateValue = rateStr === '' ? 0 : parseFloat(rateStr);
+      const rate2Value = rate2Str === '' ? 0 : parseFloat(rate2Str);
+      return {
+        name: row.name.trim(),
+        rate: isNaN(rateValue) ? 0 : rateValue,
+        rate2: isNaN(rate2Value) ? 0 : rate2Value
+      };
+    });
 
-    // Convert to final format
-    const finalData = validRows.map(row => ({
-      name: row.name.trim(),
-      rate: typeof row.rate === 'string' ? parseFloat(row.rate) || 0 : row.rate,
-      rate2: typeof row.rate2 === 'string' ? parseFloat(row.rate2) || 0 : (row.rate2 || 0)
-    }));
-
+    console.log('🔍 DynamicModifierForm - 저장할 데이터:', finalData);
     onSave(finalData);
   };
 
@@ -191,26 +190,26 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
             </div>
             <div className="w-16">
               <input
-                type="number"
+                type="text"
+                inputMode="decimal"
                 value={row.rate}
                 onChange={(e) => handleInputChange(row.id, 'rate', e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="0"
-                step="0.25"
                 title="Price 1"
-                className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-center"
               />
             </div>
             <div className="w-16">
               <input
-                type="number"
-                value={row.rate2 ?? 0}
+                type="text"
+                inputMode="decimal"
+                value={row.rate2 ?? ''}
                 onChange={(e) => handleInputChange(row.id, 'rate2', e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="0"
-                step="0.25"
                 title="Price 2"
-                className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500 border-green-200"
+                className="w-full p-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500 border-green-200 text-center"
               />
             </div>
             <button

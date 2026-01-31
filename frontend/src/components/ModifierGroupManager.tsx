@@ -373,7 +373,7 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
     }
   };
 
-  const handleSave = async (groupData: { name: string, min_selections: number, max_selections: number, modifiers: { name: string, price_adjustment: number }[], label?: string }) => {
+  const handleSave = async (groupData: { name: string, min_selections: number, max_selections: number, modifiers: { name: string, price_adjustment: number, price_adjustment_2?: number }[], label?: string }) => {
     setIsSaving(true);
     try {
       const isNew = editingGroup === 'new';
@@ -381,13 +381,38 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
       const method = isNew ? 'POST' : 'PUT';
       
       const requestBody = menuId ? { ...groupData, menu_id: menuId } : groupData;
+      console.log('🔍 ModifierGroupManager - API 요청:', { url, method, body: requestBody });
+      
       const response = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
       });
 
-      if (!response.ok) throw new Error(`Failed to ${isNew ? 'create' : 'update'} modifier group`);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('❌ API 응답 오류:', errorData);
+        throw new Error(`Failed to ${isNew ? 'create' : 'update'} modifier group: ${errorData.error || response.statusText}`);
+      }
+
+      const savedData = await response.json();
+      console.log('✅ SQLite 저장 완료:', savedData);
+
+      // Firebase 동기화 시도
+      try {
+        const syncResponse = await fetch(`${API_URL}/menu-sync/sync-modifiers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groupId: savedData.id }),
+        });
+        if (syncResponse.ok) {
+          console.log('✅ Firebase 동기화 완료');
+        } else {
+          console.warn('⚠️ Firebase 동기화 실패 (SQLite는 저장됨)');
+        }
+      } catch (syncError) {
+        console.warn('⚠️ Firebase 동기화 오류 (SQLite는 저장됨):', syncError);
+      }
 
       await fetchModifierGroups();
       setEditingGroup(null);
