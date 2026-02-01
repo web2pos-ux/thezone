@@ -38,6 +38,8 @@ const formatCurrency = (amount: number) => {
   }).format(amount || 0);
 };
 
+const formatMoney = (amt: number) => `$${(amt || 0).toFixed(2)}`;
+
 // Cent denominations
 const centDenominations = [
   { key: 'cent1', label: '1¢', value: 0.01 },
@@ -71,12 +73,15 @@ type CashCounts = {
   dollar100: number;
 };
 
+type ViewMode = 'cash-count' | 'print-preview';
+
 const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onClosingComplete }) => {
   const [zReportData, setZReportData] = useState<ZReportData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const [hasUnpaidOrders, setHasUnpaidOrders] = useState(false);
   const [unpaidOrderCount, setUnpaidOrderCount] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>('cash-count');
   
   const [cashCounts, setCashCounts] = useState<CashCounts>({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
@@ -116,6 +121,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
       });
       setFocusedDenom('dollar1');
+      setViewMode('cash-count');
       fetchZReport();
       checkUnpaidOrders();
     }
@@ -169,14 +175,17 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     }
   };
 
-  const handleCloseDay = async () => {
-    // Re-check for unpaid orders before closing
+  const handleShowPreview = async () => {
+    // Check for unpaid orders before showing preview
     const stillHasUnpaid = await checkUnpaidOrders();
     if (stillHasUnpaid) {
       alert('There are unpaid orders remaining. Please complete all payments before closing the day.');
       return;
     }
-    
+    setViewMode('print-preview');
+  };
+
+  const handlePrintAndClose = async () => {
     setIsClosing(true);
     try {
       const response = await fetch(`${API_URL}/daily-closings/closing`, {
@@ -191,7 +200,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       const result = await response.json();
       
       if (result.success) {
-        // Print Z-Report after closing
+        // Print Z-Report
         await printZReport();
         const today = new Date().toISOString().split('T')[0];
         localStorage.setItem('pos_last_closed_date', today);
@@ -237,134 +246,246 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     );
   };
 
+  // Receipt style line helpers
+  const LINE_WIDTH = 42;
+  const receiptLine = (char: string = '=') => char.repeat(LINE_WIDTH);
+  const receiptCenter = (text: string) => {
+    const pad = Math.max(0, Math.floor((LINE_WIDTH - text.length) / 2));
+    return ' '.repeat(pad) + text;
+  };
+  const receiptLeftRight = (left: string, right: string) => {
+    const spaces = Math.max(1, LINE_WIDTH - left.length - right.length);
+    return left + ' '.repeat(spaces) + right;
+  };
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-2xl shadow-2xl w-[720px]">
+      <div className="bg-white rounded-2xl shadow-2xl w-[720px] max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="bg-slate-800 text-white px-4 py-3 rounded-t-2xl">
+        <div className="bg-slate-800 text-white px-5 py-3 flex-shrink-0">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">🌙 Day Closing - Count Cash</h2>
+            <h2 className="text-xl font-bold">
+              {viewMode === 'cash-count' ? '🌙 Day Closing - Cash Count' : '🌙 Day Closing - Z Report'}
+            </h2>
             <span className="text-slate-400 text-sm">
               {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
             </span>
           </div>
         </div>
 
-        {/* Content */}
-        <div className="p-4">
-          {isLoading ? (
-            <div className="py-8 text-center">
-              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="text-gray-500 text-sm mt-2">Loading...</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {/* Summary Row */}
-              <div className="grid grid-cols-3 gap-2">
-                <div className="bg-blue-50 rounded-lg p-2 text-center border border-blue-200">
-                  <div className="text-[10px] text-blue-600">Counted</div>
-                  <div className="text-lg font-bold text-blue-700">{formatCurrency(closingCashTotal)}</div>
+        {viewMode === 'cash-count' ? (
+          /* ========== CASH COUNT VIEW ========== */
+          <>
+            {/* Content */}
+            <div className="p-5 flex-1 overflow-y-auto">
+              {isLoading ? (
+                <div className="py-8 text-center">
+                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                  <p className="text-gray-500 text-sm mt-2">Loading...</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-2 text-center border border-gray-200">
-                  <div className="text-[10px] text-gray-600">Expected</div>
-                  <div className="text-lg font-bold text-gray-700">{formatCurrency(expectedCash)}</div>
-                </div>
-                <div className={`rounded-lg p-2 text-center border ${
-                  cashDifference === 0 ? 'bg-green-50 border-green-200' : cashDifference > 0 ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200'
-                }`}>
-                  <div className={`text-[10px] ${cashDifference === 0 ? 'text-green-600' : cashDifference > 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                    Diff
+              ) : (
+                <div className="space-y-3">
+                  {/* Cash Summary Row */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-200">
+                      <div className="text-xs text-blue-600 font-medium">Counted Cash</div>
+                      <div className="text-2xl font-bold text-blue-700">{formatCurrency(closingCashTotal)}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-3 text-center border border-gray-200">
+                      <div className="text-xs text-gray-600 font-medium">Expected Cash</div>
+                      <div className="text-2xl font-bold text-gray-700">{formatCurrency(expectedCash)}</div>
+                    </div>
+                    <div className={`rounded-xl p-3 text-center border ${
+                      cashDifference === 0 ? 'bg-green-50 border-green-200' : cashDifference > 0 ? 'bg-blue-50 border-blue-200' : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className={`text-xs font-medium ${cashDifference === 0 ? 'text-green-600' : cashDifference > 0 ? 'text-blue-600' : 'text-red-600'}`}>
+                        Difference
+                      </div>
+                      <div className={`text-2xl font-bold ${cashDifference === 0 ? 'text-green-700' : cashDifference > 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                        {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference)}
+                      </div>
+                    </div>
                   </div>
-                  <div className={`text-lg font-bold ${cashDifference === 0 ? 'text-green-700' : cashDifference > 0 ? 'text-blue-700' : 'text-red-700'}`}>
-                    {cashDifference >= 0 ? '+' : ''}{formatCurrency(cashDifference)}
-                  </div>
-                </div>
-              </div>
 
-              {/* Cash Input + Number Pad 50:50 */}
+                  {/* Cash Input + Number Pad */}
+                  <div className="flex gap-4">
+                    {/* Left: Denominations */}
+                    <div className="flex-1 space-y-3">
+                      {/* Coins */}
+                      <div className="bg-amber-50/50 rounded-xl border border-amber-200 p-3">
+                        <div className="text-xs font-bold text-amber-700 mb-2">🪙 Coins</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {centDenominations.map(d => renderDenomItem(d, true))}
+                        </div>
+                      </div>
+                      {/* Bills */}
+                      <div className="bg-green-50/50 rounded-xl border border-green-200 p-3">
+                        <div className="text-xs font-bold text-green-700 mb-2">💵 Bills</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {dollarDenominations.map(d => renderDenomItem(d, false))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right: Number Pad */}
+                    <div className="w-[280px]">
+                      <div className="grid grid-cols-3 gap-2 h-full">
+                        {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(num => (
+                          <button
+                            key={num}
+                            onClick={() => handleNumPad(num)}
+                            className={`rounded-xl font-bold text-2xl transition-all flex items-center justify-center ${
+                              num === 'C' 
+                                ? 'bg-red-100 text-red-600 hover:bg-red-200 active:bg-red-300' 
+                                : num === '⌫' 
+                                  ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
+                                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
+                            }`}
+                            style={{ minHeight: '60px' }}
+                          >
+                            {num}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-4 border-t bg-gray-50 flex-shrink-0">
+              {hasUnpaidOrders && (
+                <div className="mb-3 p-3 bg-red-100 border border-red-300 rounded-xl flex items-center gap-3">
+                  <span className="text-red-500 text-xl">⚠️</span>
+                  <div className="flex-1">
+                    <p className="text-red-700 font-semibold text-sm">
+                      Cannot close day - {unpaidOrderCount} unpaid order{unpaidOrderCount !== 1 ? 's' : ''} remaining
+                    </p>
+                    <p className="text-red-600 text-xs mt-0.5">
+                      Please complete all payments before closing the day.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={checkUnpaidOrders}
+                    className="px-4 py-2 bg-red-200 hover:bg-red-300 rounded-lg text-red-700 text-xs font-semibold"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
               <div className="flex gap-3">
-                {/* Left: Denominations */}
-                <div className="flex-1 space-y-2">
-                  {/* Coins */}
-                  <div className="bg-amber-50/50 rounded-lg border border-amber-200 p-2">
-                    <div className="grid grid-cols-2 gap-1">
-                      {centDenominations.map(d => renderDenomItem(d, true))}
-                    </div>
-                  </div>
-                  {/* Bills */}
-                  <div className="bg-green-50/50 rounded-lg border border-green-200 p-2">
-                    <div className="grid grid-cols-2 gap-1">
-                      {dollarDenominations.map(d => renderDenomItem(d, false))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: Number Pad */}
-                <div className="flex-1">
-                  <div className="grid grid-cols-3 gap-1.5 h-full">
-                    {['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '⌫'].map(num => (
-                      <button
-                        key={num}
-                        onClick={() => handleNumPad(num)}
-                        className={`rounded-lg font-bold text-xl transition-all flex items-center justify-center ${
-                          num === 'C' 
-                            ? 'bg-red-100 text-red-600 hover:bg-red-200 active:bg-red-300' 
-                            : num === '⌫' 
-                              ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
-                              : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
-                        }`}
-                        style={{ minHeight: '52px' }}
-                      >
-                        {num}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <button 
+                  onClick={onClose} 
+                  className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-xl font-semibold text-gray-700"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleShowPreview} 
+                  disabled={isLoading || hasUnpaidOrders} 
+                  className={`flex-[2] px-4 py-3 rounded-xl font-bold text-white ${
+                    hasUnpaidOrders 
+                      ? 'bg-gray-400 cursor-not-allowed' 
+                      : 'bg-red-500 hover:bg-red-600 disabled:bg-gray-300'
+                  }`}
+                >
+                  {hasUnpaidOrders ? '⛔ Complete Payments First' : 'Close Day & Z-Report →'}
+                </button>
               </div>
             </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-4 py-3 border-t bg-gray-50 rounded-b-2xl">
-          {hasUnpaidOrders && (
-            <div className="mb-3 p-3 bg-red-100 border border-red-300 rounded-lg flex items-center gap-2">
-              <span className="text-red-500 text-xl">⚠️</span>
-              <div className="flex-1">
-                <p className="text-red-700 font-semibold text-sm">
-                  Cannot close day - {unpaidOrderCount} unpaid order{unpaidOrderCount !== 1 ? 's' : ''} remaining
-                </p>
-                <p className="text-red-600 text-xs mt-0.5">
-                  Please complete all payments before closing the day.
-                </p>
+          </>
+        ) : (
+          /* ========== PRINT PREVIEW VIEW ========== */
+          <>
+            {/* Top Buttons */}
+            <div className="px-5 py-3 border-b bg-gray-100 flex-shrink-0">
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setViewMode('cash-count')} 
+                  className="flex-1 px-4 py-3 bg-gray-300 hover:bg-gray-400 rounded-xl font-semibold text-gray-700"
+                >
+                  ← Back
+                </button>
+                <button 
+                  onClick={handlePrintAndClose} 
+                  disabled={isClosing} 
+                  className="flex-[2] px-4 py-3 bg-slate-800 hover:bg-slate-900 disabled:bg-gray-400 rounded-xl font-bold text-white"
+                >
+                  {isClosing ? 'Processing...' : '🖨️ Print & Close Day'}
+                </button>
               </div>
-              <button 
-                onClick={checkUnpaidOrders}
-                className="px-3 py-1.5 bg-red-200 hover:bg-red-300 rounded text-red-700 text-xs font-semibold"
-              >
-                Refresh
-              </button>
             </div>
-          )}
-          <div className="flex gap-2">
-            <button onClick={onClose} className="flex-1 px-3 py-2.5 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 text-sm">
-              Cancel
-            </button>
-            <button 
-              onClick={handleCloseDay} 
-              disabled={isClosing || isLoading || hasUnpaidOrders} 
-              className={`flex-[2] px-3 py-2.5 rounded-lg font-bold text-white ${
-                hasUnpaidOrders 
-                  ? 'bg-gray-400 cursor-not-allowed' 
-                  : 'bg-red-500 hover:bg-red-600 disabled:bg-gray-300'
-              }`}
-            >
-              {isClosing ? 'Closing...' : hasUnpaidOrders ? '⛔ Complete Payments First' : '✓ Close Day & Print Z-Report'}
-            </button>
-          </div>
-        </div>
+
+            {/* Receipt Preview - Scrollable */}
+            <div className="flex-1 overflow-y-auto bg-gray-200 p-6">
+              <div className="max-w-[320px] mx-auto bg-white shadow-lg">
+                {/* Receipt Paper Style */}
+                <pre className="font-mono text-xs leading-relaxed p-4 whitespace-pre-wrap text-black">
+{receiptLine('=')}{'\n'}
+{receiptCenter('*** Z-REPORT ***')}{'\n'}
+{receiptCenter('DAY CLOSING REPORT')}{'\n'}
+{receiptLine('=')}{'\n'}
+{receiptCenter(new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }))}{'\n'}
+{receiptCenter(`Printed: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`)}{'\n'}
+{receiptLine('=')}{'\n'}
+{'\n'}
+{receiptCenter('-- SALES SUMMARY --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('Total Orders:', `${zReportData?.order_count || 0}`)}{'\n'}
+{receiptLeftRight('Total Sales:', formatMoney(zReportData?.total_sales || 0))}{'\n'}
+{receiptLeftRight('Tax Collected:', formatMoney(zReportData?.tax_total || 0))}{'\n'}
+{receiptLeftRight('Tips:', formatMoney(zReportData?.tip_total || 0))}{'\n'}
+{'\n'}
+{receiptCenter('-- SALES BY CHANNEL --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('Dine-In:', formatMoney(zReportData?.dine_in_sales || 0))}{'\n'}
+{receiptLeftRight('Togo:', formatMoney(zReportData?.togo_sales || 0))}{'\n'}
+{receiptLeftRight('Online:', formatMoney(zReportData?.online_sales || 0))}{'\n'}
+{receiptLeftRight('Delivery:', formatMoney(zReportData?.delivery_sales || 0))}{'\n'}
+{'\n'}
+{receiptCenter('-- PAYMENT BREAKDOWN --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('Cash:', formatMoney(zReportData?.cash_sales || 0))}{'\n'}
+{receiptLeftRight('Card:', formatMoney(zReportData?.card_sales || 0))}{'\n'}
+{receiptLeftRight('Other:', formatMoney(zReportData?.other_sales || 0))}{'\n'}
+{'\n'}
+{receiptCenter('-- ADJUSTMENTS --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight(`Refunds (${zReportData?.refund_count || 0}):`, `-${formatMoney(zReportData?.refund_total || 0)}`)}{'\n'}
+{receiptLeftRight(`Voids (${zReportData?.void_count || 0}):`, `-${formatMoney(zReportData?.void_total || 0)}`)}{'\n'}
+{receiptLeftRight('Discounts:', `-${formatMoney(zReportData?.discount_total || 0)}`)}{'\n'}
+{'\n'}
+{receiptCenter('-- CASH DRAWER --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('Opening Cash:', formatMoney(zReportData?.opening_cash || 0))}{'\n'}
+{receiptLeftRight('Cash Sales:', formatMoney(zReportData?.cash_sales || 0))}{'\n'}
+{receiptLeftRight('Expected Cash:', formatMoney(expectedCash))}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptCenter('ACTUAL CASH COUNT')}{'\n'}
+{cashCounts.cent1 > 0 ? receiptLeftRight(`1 Cent x ${cashCounts.cent1}`, formatMoney(cashCounts.cent1 * 0.01)) + '\n' : ''}
+{cashCounts.cent5 > 0 ? receiptLeftRight(`5 Cents x ${cashCounts.cent5}`, formatMoney(cashCounts.cent5 * 0.05)) + '\n' : ''}
+{cashCounts.cent10 > 0 ? receiptLeftRight(`10 Cents x ${cashCounts.cent10}`, formatMoney(cashCounts.cent10 * 0.10)) + '\n' : ''}
+{cashCounts.cent25 > 0 ? receiptLeftRight(`25 Cents x ${cashCounts.cent25}`, formatMoney(cashCounts.cent25 * 0.25)) + '\n' : ''}
+{cashCounts.dollar1 > 0 ? receiptLeftRight(`$1 Bills x ${cashCounts.dollar1}`, formatMoney(cashCounts.dollar1 * 1)) + '\n' : ''}
+{cashCounts.dollar5 > 0 ? receiptLeftRight(`$5 Bills x ${cashCounts.dollar5}`, formatMoney(cashCounts.dollar5 * 5)) + '\n' : ''}
+{cashCounts.dollar10 > 0 ? receiptLeftRight(`$10 Bills x ${cashCounts.dollar10}`, formatMoney(cashCounts.dollar10 * 10)) + '\n' : ''}
+{cashCounts.dollar20 > 0 ? receiptLeftRight(`$20 Bills x ${cashCounts.dollar20}`, formatMoney(cashCounts.dollar20 * 20)) + '\n' : ''}
+{cashCounts.dollar50 > 0 ? receiptLeftRight(`$50 Bills x ${cashCounts.dollar50}`, formatMoney(cashCounts.dollar50 * 50)) + '\n' : ''}
+{cashCounts.dollar100 > 0 ? receiptLeftRight(`$100 Bills x ${cashCounts.dollar100}`, formatMoney(cashCounts.dollar100 * 100)) + '\n' : ''}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('ACTUAL CASH:', formatMoney(closingCashTotal))}{'\n'}
+{receiptLeftRight('DIFFERENCE:', `${cashDifference >= 0 ? '+' : ''}${formatMoney(cashDifference)}`)}{'\n'}
+{receiptLine('=')}{'\n'}
+{'\n'}
+{'\n'}
+                </pre>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

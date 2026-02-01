@@ -330,10 +330,10 @@ export function useMenuData(menuId?: number, orderType: string = 'pos', priceTyp
   const fetchMenuTaxes = useCallback(async (menuId: number) => {
     try {
       // 글로벌 세금 그룹을 가져옴 (Menu Manager -> Tax Settings에서 정의)
-      const response = await fetch(`${API_URL}/taxes/groups`);
+      // MenuEditPage와 동일한 API 사용 (/api/tax-groups) - 세금 그룹 내 개별 세금(GST, PST 등)이 포함됨
+      const response = await fetch(`${API_URL}/tax-groups`);
       if (!response.ok) return;
       const taxGroups = await response.json();
-      console.log('Fetched tax groups:', taxGroups);
       setMenuTaxes(taxGroups);
     } catch (e) {
       console.error('Failed to fetch tax groups:', e);

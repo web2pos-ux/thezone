@@ -13,14 +13,11 @@ const getDatabase = () => db;
   try {
     const db = getDatabase();
     db.all(`PRAGMA table_info(table_map_elements)`, [], (err, rows) => {
-      if (err) { db.close(); return; }
+      if (err) { return; }
       const names = Array.isArray(rows) ? rows.map(r => r.name) : [];
       if (!names.includes('current_order_id')) {
         db.run(`ALTER TABLE table_map_elements ADD COLUMN current_order_id INTEGER`, [], (e) => {
-          db.close();
         });
-      } else {
-        db.close();
       }
     });
   } catch {}
@@ -34,17 +31,14 @@ const getDatabase = () => db;
     // Check schema for Payment Pending support
     db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='table_map_elements'", [], (err, row) => {
        if (err) { 
-         try { db.close(); } catch {}
          return; 
        }
        if (!row) {
-         try { db.close(); } catch {}
          return;
        }
        
        // If 'Payment Pending' is already in the CHECK constraint, skip
        if (row.sql && row.sql.includes("'Payment Pending'")) {
-         try { db.close(); } catch {}
          return;
        }
 
@@ -87,7 +81,6 @@ const getDatabase = () => db;
            } else {
              console.log('✅ table_map_elements updated to support Payment Pending.');
            }
-           try { db.close(); } catch {}
         });
        });
     });
@@ -132,7 +125,7 @@ router.get('/elements', (req, res) => {
   `;
   
   db.all(query, [floor], (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     if (err) {
       console.error(`❌ ${floor} 요소 조회 API: 500 (데이터베이스 오류)`, err);
@@ -191,7 +184,7 @@ router.patch('/elements/:id/status', (req, res) => {
 
   const query = 'UPDATE table_map_elements SET status = ? WHERE element_id = ?';
   db.run(query, [status, id], function(err) {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       console.error('요소 상태 업데이트 오류:', err);
       return res.status(500).json({ error: '요소 상태 업데이트 실패' });
@@ -209,7 +202,7 @@ router.get('/elements/:id', (req, res) => {
   const db = getDatabase();
   const q = `SELECT element_id, floor, type, x_pos, y_pos, width, height, rotation, name, fontSize, color, status, current_order_id FROM table_map_elements WHERE element_id = ?`;
   db.get(q, [id], (err, row) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) return res.status(500).json({ error: '조회 실패' });
     if (!row) return res.status(404).json({ error: 'not found' });
     res.json({
@@ -235,7 +228,7 @@ router.patch('/elements/:id/current-order', (req, res) => {
   const db = getDatabase();
   const q = 'UPDATE table_map_elements SET current_order_id = ? WHERE element_id = ?';
   db.run(q, [orderId || null, id], function(err){
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) return res.status(500).json({ error: '업데이트 실패' });
     if (this.changes === 0) return res.status(404).json({ error: 'not found' });
     res.json({ success:true, elementId: Number(id), current_order_id: orderId || null });
@@ -265,7 +258,7 @@ router.post('/elements', (req, res) => {
     const deleteQuery = 'DELETE FROM table_map_elements WHERE floor = ?';
     
     db.run(deleteQuery, [floor], function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       
       if (err) {
         console.error('Floor 요소 삭제 오류:', err);
@@ -320,7 +313,7 @@ router.post('/elements', (req, res) => {
       if (err) {
         console.error('기존 요소 삭제 오류:', err);
         db.run('ROLLBACK');
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: '데이터 저장 실패' });
       }
       
@@ -364,12 +357,12 @@ router.post('/elements', (req, res) => {
       stmt.finalize(() => {
         if (errorOccurred) {
           db.run('ROLLBACK');
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           return res.status(500).json({ error: '데이터 저장 실패' });
         }
         
         db.run('COMMIT', (err) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             console.error('트랜잭션 커밋 오류:', err);
             return res.status(500).json({ error: '데이터 저장 실패' });
@@ -398,7 +391,7 @@ router.post('/elements', (req, res) => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`, (err) => {
       if (err) console.error('Failed to create table_map_screen_settings:', err);
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
     });
   } catch (e) {
     console.error('Error creating table_map_screen_settings:', e);
@@ -416,7 +409,7 @@ router.get('/screen-size', (req, res) => {
     'SELECT width, height, scale FROM table_map_screen_settings WHERE floor = ?',
     [targetFloor],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       
       if (err) {
         console.error('Screen size 조회 오류:', err);
@@ -469,7 +462,7 @@ router.post('/screen-size', (req, res) => {
        updated_at = CURRENT_TIMESTAMP`,
     [targetFloor, targetWidth, targetHeight, targetScale],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       
       if (err) {
         console.error('Screen size 저장 오류:', err);
@@ -497,7 +490,7 @@ router.get('/screen-size/all', (req, res) => {
     'SELECT floor, width, height, scale FROM table_map_screen_settings ORDER BY floor',
     [],
     (err, rows) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       
       if (err) {
         console.error('Screen size 전체 조회 오류:', err);

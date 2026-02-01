@@ -529,7 +529,7 @@ router.get('/:reportId', async (req, res) => {
         data = await getGenericReportData(db, reportId, start, end);
     }
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     res.json({
       report: reportDef,
@@ -572,7 +572,7 @@ router.get('/:reportId/print', async (req, res) => {
         printText = 'Report format not available';
     }
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     res.type('text/plain').send(printText);
   } catch (error) {

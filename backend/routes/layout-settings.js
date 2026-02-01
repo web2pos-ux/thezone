@@ -93,7 +93,7 @@ router.post('/', (req, res) => {
       });
     }
     
-    db.close();
+    // db.close() 제거 - 공유 DB 연결은 닫으면 안 됨
   });
 });
 
@@ -138,7 +138,7 @@ router.get('/', (req, res) => {
       });
     }
     
-    db.close();
+    // db.close() 제거 - 공유 DB 연결은 닫으면 안 됨
   });
 });
 
@@ -163,7 +163,7 @@ router.delete('/', (req, res) => {
       deletedCount: this.changes
     });
     
-    db.close();
+    // db.close() 제거 - 공유 DB 연결은 닫으면 안 됨
   });
 });
 

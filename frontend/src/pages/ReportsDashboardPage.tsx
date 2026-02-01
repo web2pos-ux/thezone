@@ -554,7 +554,7 @@ const ReportsDashboardPage: React.FC = () => {
               { key: 'printable', label: 'Printable', count: reports.printable.length, icon: Printer },
               { key: 'sales', label: 'Sales', count: reports.sales.length, icon: DollarSign },
               { key: 'employee', label: 'Employee', count: reports.employee.length, icon: Users },
-            ].map(tab => (
+            ].filter(tab => tab.key === 'all' || tab.count > 0).map(tab => (
               <button
                 key={tab.key}
                 onClick={() => setSelectedCategory(tab.key as any)}

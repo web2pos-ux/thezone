@@ -156,29 +156,21 @@ module.exports = (db) => {
   router.get('/:id/tax-group', async (req, res) => {
     const { id } = req.params;
     try {
-      // Find the tax group linked to the menu
-      const menuTaxGroup = await dbGet('SELECT tax_group_id FROM Menu_TaxGroups WHERE menu_id = ?', [id]);
-
-      if (!menuTaxGroup || !menuTaxGroup.tax_group_id) {
-        return res.status(200).json({ taxes: [] });
-      }
-
-      const taxGroupId = menuTaxGroup.tax_group_id;
-
-      // Get the tax group details
-      const taxGroup = await dbGet('SELECT id as tax_group_id, name as group_name FROM TaxGroups WHERE id = ? AND is_deleted = 0', [taxGroupId]);
+      // Find the tax group linked to the menu - look in tax_groups table with menu_id
+      const taxGroup = await dbGet('SELECT tax_group_id, name as group_name FROM tax_groups WHERE menu_id = ? AND is_deleted = 0 LIMIT 1', [id]);
 
       if (!taxGroup) {
-        // This case might happen if the group was deleted but the link remains.
         return res.status(200).json({ taxes: [] });
       }
+
+      const taxGroupId = taxGroup.tax_group_id;
 
       // Get all taxes associated with the tax group
       const taxes = await dbAll(`
-        SELECT T.id as tax_id, T.name, T.rate
-        FROM Taxes T
-        JOIN TaxGroup_Items TGI ON T.id = TGI.tax_id
-        WHERE TGI.tax_group_id = ? AND T.is_deleted = 0
+        SELECT T.tax_id, T.name, T.rate
+        FROM taxes T
+        JOIN tax_group_links TGL ON T.tax_id = TGL.tax_id
+        WHERE TGL.tax_group_id = ? AND T.is_deleted = 0
       `, [taxGroupId]);
 
       res.json({
@@ -201,9 +193,9 @@ module.exports = (db) => {
       return res.status(400).json({ error: 'Request body must be an object with a "taxes" array.' });
     }
 
-    // Get the current tax group linked to the menu, for cleanup later.
-    const oldLink = await dbGet('SELECT tax_group_id FROM Menu_TaxGroups WHERE menu_id = ?', [menuId]);
-    const oldTaxGroupId = oldLink ? oldLink.tax_group_id : null;
+    // Get the current tax group linked to the menu
+    const oldTaxGroup = await dbGet('SELECT tax_group_id FROM tax_groups WHERE menu_id = ? AND is_deleted = 0', [menuId]);
+    const oldTaxGroupId = oldTaxGroup ? oldTaxGroup.tax_group_id : null;
     
     let newTaxGroupId = null;
 
@@ -215,15 +207,15 @@ module.exports = (db) => {
         // Step 2: Find or create each individual tax and get their IDs.
         const finalTaxIds = await Promise.all(taxes.map(async (tax) => {
           const existingTax = await dbGet(
-            'SELECT id FROM Taxes WHERE name = ? AND rate = ? AND is_deleted = 0',
+            'SELECT tax_id FROM taxes WHERE name = ? AND rate = ? AND is_deleted = 0',
             [tax.name, tax.rate]
           );
           if (existingTax) {
-            return existingTax.id;
+            return existingTax.tax_id;
           } else {
             const newTaxId = await generateNextId(db, ID_RANGES.TAX);
             await dbRun(
-              'INSERT INTO Taxes (id, name, rate) VALUES (?, ?, ?)',
+              'INSERT INTO taxes (tax_id, name, rate) VALUES (?, ?, ?)',
               [newTaxId, tax.name, tax.rate]
             );
             return newTaxId;
@@ -231,60 +223,44 @@ module.exports = (db) => {
         }));
         finalTaxIds.sort((a, b) => a - b); // Sort for canonical representation.
 
-        // Step 3: Find an existing tax group with the exact same set of taxes.
-        const allGroupsWithSameTaxCount = await dbAll(
-          'SELECT tax_group_id, GROUP_CONCAT(tax_id ORDER BY tax_id) as group_key FROM TaxGroup_Items GROUP BY tax_group_id HAVING COUNT(tax_id) = ?',
-          [finalTaxIds.length]
-        );
-        
-        const canonicalKey = finalTaxIds.join(',');
-        const matchingGroup = allGroupsWithSameTaxCount.find(g => g.group_key === canonicalKey);
-
-        if (matchingGroup) {
-          newTaxGroupId = matchingGroup.tax_group_id;
+        // Step 3: Find an existing tax group for this menu
+        if (oldTaxGroupId) {
+          newTaxGroupId = oldTaxGroupId;
+          const groupName = taxes.map(t => t.name).join(' + ');
+          await dbRun('UPDATE tax_groups SET name = ? WHERE tax_group_id = ?', [groupName, newTaxGroupId]);
+          
+          // Refresh links
+          await dbRun('DELETE FROM tax_group_links WHERE tax_group_id = ?', [newTaxGroupId]);
+          for (const taxId of finalTaxIds) {
+            await dbRun('INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [newTaxGroupId, taxId]);
+          }
         } else {
-          // Step 4: If no matching group, create a new one.
+          // Create new group
           newTaxGroupId = await generateNextId(db, ID_RANGES.TAX_GROUP);
           const groupName = taxes.map(t => t.name).join(' + ');
-
-          await dbRun('INSERT INTO TaxGroups (id, name) VALUES (?, ?)', [newTaxGroupId, groupName]);
+          await dbRun('INSERT INTO tax_groups (tax_group_id, name, menu_id) VALUES (?, ?, ?)', [newTaxGroupId, groupName, menuId]);
           
-          await Promise.all(finalTaxIds.map(taxId => {
-            return dbRun('INSERT INTO TaxGroup_Items (tax_group_id, tax_id) VALUES (?, ?)', [newTaxGroupId, taxId]);
-          }));
+          for (const taxId of finalTaxIds) {
+            await dbRun('INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [newTaxGroupId, taxId]);
+          }
         }
-      }
-
-      // Step 5: Update the link in the Menu_TaxGroups table.
-      // Unlink the old group first.
-      await dbRun('DELETE FROM Menu_TaxGroups WHERE menu_id = ?', [menuId]);
-
-      // If there's a new group to link, link it.
-      if (newTaxGroupId) {
-        await dbRun('INSERT INTO Menu_TaxGroups (menu_id, tax_group_id) VALUES (?, ?)', [menuId, newTaxGroupId]);
-      }
-
-      // Step 6: Clean up the old tax group if it's no longer used.
-      if (oldTaxGroupId && oldTaxGroupId !== newTaxGroupId) {
-        const usage = await dbGet('SELECT 1 FROM Menu_TaxGroups WHERE tax_group_id = ?', [oldTaxGroupId]);
-        if (!usage) {
-          // The ON DELETE CASCADE on the foreign key in TaxGroup_Items will handle item deletion.
-          await dbRun('DELETE FROM TaxGroups WHERE id = ?', [oldTaxGroupId]);
-        }
+      } else if (oldTaxGroupId) {
+        // If taxes are cleared, soft delete the group
+        await dbRun('UPDATE tax_groups SET is_deleted = 1 WHERE tax_group_id = ?', [oldTaxGroupId]);
       }
 
       await dbRun('COMMIT');
 
       // Step 7: Respond with the final state.
-      if (!newTaxGroupId) {
+      if (!newTaxGroupId || taxes.length === 0) {
         return res.status(200).json({ taxes: [] });
       }
 
-      const finalGroup = await dbGet('SELECT id as tax_group_id, name as group_name FROM TaxGroups WHERE id = ?', [newTaxGroupId]);
+      const finalGroup = await dbGet('SELECT tax_group_id, name as group_name FROM tax_groups WHERE tax_group_id = ?', [newTaxGroupId]);
       const finalTaxes = await dbAll(`
-        SELECT T.id as tax_id, T.name, T.rate
-        FROM Taxes T JOIN TaxGroup_Items TGI ON T.id = TGI.tax_id
-        WHERE TGI.tax_group_id = ? AND T.is_deleted = 0
+        SELECT T.tax_id, T.name, T.rate
+        FROM taxes T JOIN tax_group_links TGL ON T.tax_id = TGL.tax_id
+        WHERE TGL.tax_group_id = ? AND T.is_deleted = 0
       `, [newTaxGroupId]);
       
       res.status(200).json({ ...finalGroup, taxes: finalTaxes });
@@ -610,10 +586,10 @@ module.exports = (db) => {
           const newGroupId = await generateNextId(db, ID_RANGES.MODIFIER_GROUP);
           
           await dbRun(
-            'INSERT INTO modifier_groups (group_id, name, selection_type, min_selection, max_selection, menu_id) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO modifier_groups (modifier_group_id, name, selection_type, min_selection, max_selection, menu_id) VALUES (?, ?, ?, ?, ?, ?)',
             [newGroupId, originalGroup.name, originalGroup.selection_type, originalGroup.min_selection, originalGroup.max_selection, newMenuId]
           );
-          console.log(`✓ Menu-level modifier group copied: ${originalGroup.name} (${originalGroup.group_id} -> ${newGroupId})`);
+          console.log(`✓ Menu-level modifier group copied: ${originalGroup.name} (${originalGroup.modifier_group_id} -> ${newGroupId})`);
 
           // Copy options from the original group using modifier_group_links
           const originalOptions = await dbAll(`
@@ -622,7 +598,7 @@ module.exports = (db) => {
             JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id 
             WHERE mgl.modifier_group_id = ? AND m.is_deleted = 0
             ORDER BY m.sort_order
-          `, [originalGroup.group_id]);
+          `, [originalGroup.modifier_group_id]);
           
           for (const option of originalOptions) {
             const newOptionId = await generateNextId(db, ID_RANGES.MODIFIER);
@@ -640,11 +616,11 @@ module.exports = (db) => {
           }
 
           // Copy labels from the original group
-          const originalLabels = await dbAll('SELECT * FROM modifier_labels WHERE group_id = ?', [originalGroup.group_id]);
+          const originalLabels = await dbAll('SELECT * FROM modifier_labels WHERE modifier_group_id = ?', [originalGroup.modifier_group_id]);
           for (const label of originalLabels) {
             const newLabelId = await generateNextId(db, ID_RANGES.MODIFIER_LABEL);
             await dbRun(
-              'INSERT INTO modifier_labels (label_id, group_id, label_name) VALUES (?, ?, ?)',
+              'INSERT INTO modifier_labels (label_id, modifier_group_id, label_name) VALUES (?, ?, ?)',
               [newLabelId, newGroupId, label.label_name]
             );
             console.log(`✓ Menu-level modifier label copied: ${label.label_name} (${label.label_id} -> ${newLabelId})`);
@@ -659,10 +635,10 @@ module.exports = (db) => {
           const newGroupId = await generateNextId(db, ID_RANGES.TAX_GROUP);
           
           await dbRun(
-            'INSERT INTO tax_groups (group_id, name, menu_id) VALUES (?, ?, ?)',
+            'INSERT INTO tax_groups (tax_group_id, name, menu_id) VALUES (?, ?, ?)',
             [newGroupId, originalGroup.name, newMenuId]
           );
-          console.log(`✓ Menu-level tax group copied: ${originalGroup.name} (${originalGroup.group_id} -> ${newGroupId})`);
+          console.log(`✓ Menu-level tax group copied: ${originalGroup.name} (${originalGroup.tax_group_id} -> ${newGroupId})`);
 
           // Copy taxes from the original group using tax_group_links
           const originalTaxes = await dbAll(`
@@ -670,7 +646,7 @@ module.exports = (db) => {
             FROM taxes T 
             JOIN tax_group_links TGL ON T.tax_id = TGL.tax_id 
             WHERE TGL.tax_group_id = ? AND T.is_deleted = 0
-          `, [originalGroup.group_id]);
+          `, [originalGroup.tax_group_id]);
           
           for (const tax of originalTaxes) {
             // Check if tax already exists, if not create it
@@ -704,22 +680,22 @@ module.exports = (db) => {
           const newGroupId = await generateNextId(db, ID_RANGES.PRINTER_GROUP);
           
           await dbRun(
-            'INSERT INTO printer_groups (group_id, name, menu_id) VALUES (?, ?, ?)',
+            'INSERT INTO printer_groups (printer_group_id, name, menu_id) VALUES (?, ?, ?)',
             [newGroupId, originalGroup.name, newMenuId]
           );
-          console.log(`✓ Menu-level printer group copied: ${originalGroup.name} (${originalGroup.group_id} -> ${newGroupId})`);
+          console.log(`✓ Menu-level printer group copied: ${originalGroup.name} (${originalGroup.printer_group_id} -> ${newGroupId})`);
 
           // Copy printers from the original group using printer_group_links
           const originalPrinters = await dbAll(`
-            SELECT P.printer_id, P.name, P.type, P.ip_address, P.selected_printer
+            SELECT P.printer_id, P.name, P.type, P.selected_printer
             FROM printers P 
             JOIN printer_group_links PGL ON P.printer_id = PGL.printer_id 
-            WHERE PGL.printer_group_id = ? AND P.is_deleted = 0
-          `, [originalGroup.group_id]);
+            WHERE PGL.printer_group_id = ? AND P.is_active = 1
+          `, [originalGroup.printer_group_id]);
           
           for (const printer of originalPrinters) {
             // Check if printer already exists, if not create it
-            let existingPrinter = await dbGet('SELECT printer_id FROM printers WHERE name = ? AND type = ? AND is_deleted = 0', [printer.name, printer.type]);
+            let existingPrinter = await dbGet('SELECT printer_id FROM printers WHERE name = ? AND type = ? AND is_active = 1', [printer.name, printer.type]);
             let printerId;
             
             if (existingPrinter) {
@@ -727,8 +703,8 @@ module.exports = (db) => {
             } else {
               printerId = await generateNextId(db, ID_RANGES.PRINTER);
               await dbRun(
-                'INSERT INTO printers (printer_id, name, type, ip_address, selected_printer) VALUES (?, ?, ?, ?, ?)',
-                [printerId, printer.name, printer.type, printer.ip_address, printer.selected_printer]
+                'INSERT INTO printers (printer_id, name, type, selected_printer) VALUES (?, ?, ?, ?)',
+                [printerId, printer.name, printer.type, printer.selected_printer]
               );
             }
             
@@ -831,11 +807,11 @@ module.exports = (db) => {
 
     try {
       // First, remove any existing tax group links for this item
-      await dbRun('DELETE FROM MenuItem_TaxGroups WHERE item_id = ?', [itemId]);
+      await dbRun('DELETE FROM menu_tax_links WHERE item_id = ?', [itemId]);
 
       // If a new tax group is provided, create the link
       if (tax_group_id) {
-        await dbRun('INSERT INTO MenuItem_TaxGroups (item_id, tax_group_id) VALUES (?, ?)', [itemId, tax_group_id]);
+        await dbRun('INSERT INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)', [itemId, tax_group_id]);
       }
 
       res.status(200).json({ 
@@ -857,11 +833,11 @@ module.exports = (db) => {
 
     try {
       // First, remove any existing printer group links for this item
-      await dbRun('DELETE FROM MenuItem_PrinterGroups WHERE item_id = ?', [itemId]);
+      await dbRun('DELETE FROM menu_printer_links WHERE item_id = ?', [itemId]);
 
       // If a new printer group is provided, create the link
       if (printer_group_id) {
-        await dbRun('INSERT INTO MenuItem_PrinterGroups (item_id, printer_group_id) VALUES (?, ?)', [itemId, printer_group_id]);
+        await dbRun('INSERT INTO menu_printer_links (item_id, printer_group_id) VALUES (?, ?)', [itemId, printer_group_id]);
       }
 
       res.status(200).json({ 

@@ -97,7 +97,7 @@ module.exports = (db) => {
 
       // Tax groups (active only)
       const taxGroups = await new Promise((resolve, reject) => {
-        db.all('SELECT id as tax_group_id, name FROM TaxGroups WHERE is_deleted = 0 ORDER BY name', [], (err, rows) => {
+        db.all('SELECT tax_group_id, name FROM tax_groups WHERE is_deleted = 0 ORDER BY name', [], (err, rows) => {
           if (err) reject(err); else resolve(rows);
         });
       });
@@ -105,14 +105,14 @@ module.exports = (db) => {
       // Printer groups: only for this menu, must have at least one active printer, de-dup by name
       const printerGroups = await new Promise((resolve, reject) => {
         const sql = `
-          SELECT MIN(pg.group_id) AS printer_group_id, pg.name
+          SELECT MIN(pg.printer_group_id) AS printer_group_id, pg.name
           FROM printer_groups pg
           WHERE pg.menu_id = ?
             AND EXISTS (
               SELECT 1
               FROM printer_group_links pgl
               JOIN printers p ON p.printer_id = pgl.printer_id
-              WHERE pgl.printer_group_id = pg.group_id AND p.is_deleted = 0
+              WHERE pgl.printer_group_id = pg.printer_group_id AND p.is_active = 1
             )
           GROUP BY pg.name
           ORDER BY pg.name

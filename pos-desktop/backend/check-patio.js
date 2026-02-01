@@ -1,5 +1,5 @@
 const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('./web2pos.db');
+const db = new sqlite3.Database(path.resolve(__dirname, '..', 'db', 'web2pos.db'));
 
 console.log('🔍 Patio 층의 테이블 맵 요소들을 확인합니다...\n');
 

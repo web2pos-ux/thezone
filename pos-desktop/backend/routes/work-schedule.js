@@ -19,7 +19,7 @@ router.get('/employees', (req, res) => {
     'SELECT * FROM employees WHERE status = "active" ORDER BY name',
     [],
     (err, rows) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -36,7 +36,7 @@ router.get('/employees/:id', (req, res) => {
     'SELECT * FROM employees WHERE id = ?',
     [req.params.id],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -64,7 +64,7 @@ router.post('/employees', (req, res) => {
     [id, name, role, department, email, phone, hire_date, pin, permit_level || 2],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
@@ -72,7 +72,7 @@ router.post('/employees', (req, res) => {
         'SELECT * FROM employees WHERE id = ?',
         [id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -103,12 +103,12 @@ router.put('/employees/:id', (req, res) => {
     [name, role, department, email, phone, status, pin, permit_level, req.params.id],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
       if (this.changes === 0) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(404).json({ error: 'Employee not found' });
       }
       
@@ -116,7 +116,7 @@ router.put('/employees/:id', (req, res) => {
         'SELECT * FROM employees WHERE id = ?',
         [req.params.id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -141,18 +141,18 @@ router.put('/employees/:id/pin', (req, res) => {
     [pin, req.params.id],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       if (this.changes === 0) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(404).json({ error: 'Employee not found' });
       }
       db.get(
         'SELECT id, pin FROM employees WHERE id = ?',
         [req.params.id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -171,7 +171,7 @@ router.delete('/employees/:id', (req, res) => {
     `UPDATE employees SET status = 'inactive', updated_at = datetime('now') WHERE id = ?`,
     [req.params.id],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -213,7 +213,7 @@ router.get('/schedules', (req, res) => {
   query += ' ORDER BY date, employee_id';
   
   db.all(query, params, (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -229,7 +229,7 @@ router.get('/schedules/:id', (req, res) => {
     'SELECT * FROM work_schedules WHERE id = ?',
     [req.params.id],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -265,7 +265,7 @@ router.post('/schedules', (req, res) => {
     [employeeId, date, scheduledStart, scheduledEnd, workedStart, workedEnd, swappedWith, notes],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
@@ -273,7 +273,7 @@ router.post('/schedules', (req, res) => {
         'SELECT * FROM work_schedules WHERE employee_id = ? AND date = ?',
         [employeeId, date],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -302,12 +302,12 @@ router.put('/schedules/:id', (req, res) => {
     [scheduledStart, scheduledEnd, workedStart, workedEnd, swappedWith, notes, req.params.id],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
       if (this.changes === 0) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(404).json({ error: 'Schedule not found' });
       }
       
@@ -315,7 +315,7 @@ router.put('/schedules/:id', (req, res) => {
         'SELECT * FROM work_schedules WHERE id = ?',
         [req.params.id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -334,7 +334,7 @@ router.delete('/schedules/:id', (req, res) => {
     'DELETE FROM work_schedules WHERE id = ?',
     [req.params.id],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -391,7 +391,7 @@ router.post('/schedules/bulk', (req, res) => {
     stmt.finalize((err) => {
       if (err || errors.length > 0) {
         db.run('ROLLBACK', () => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           return res.status(500).json({ 
             error: 'Failed to insert schedules', 
             details: errors 
@@ -399,7 +399,7 @@ router.post('/schedules/bulk', (req, res) => {
         });
       } else {
         db.run('COMMIT', (err) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -437,7 +437,7 @@ router.get('/shift-swaps', (req, res) => {
   query += ' ORDER BY requested_date DESC';
   
   db.all(query, params, (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -453,7 +453,7 @@ router.get('/shift-swaps/:id', (req, res) => {
     'SELECT * FROM shift_swap_requests WHERE id = ?',
     [req.params.id],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -502,7 +502,7 @@ router.post('/shift-swaps', (req, res) => {
     ],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
@@ -510,7 +510,7 @@ router.post('/shift-swaps', (req, res) => {
         'SELECT * FROM shift_swap_requests WHERE id = ?',
         [id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -537,12 +537,12 @@ router.put('/shift-swaps/:id', (req, res) => {
     [status, approver, approvedDate, notes, req.params.id],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
       if (this.changes === 0) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(404).json({ error: 'Shift swap request not found' });
       }
       
@@ -550,7 +550,7 @@ router.put('/shift-swaps/:id', (req, res) => {
         'SELECT * FROM shift_swap_requests WHERE id = ?',
         [req.params.id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -569,7 +569,7 @@ router.delete('/shift-swaps/:id', (req, res) => {
     'DELETE FROM shift_swap_requests WHERE id = ?',
     [req.params.id],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -616,7 +616,7 @@ router.get('/time-off', (req, res) => {
   query += ' ORDER BY requested_date DESC';
   
   db.all(query, params, (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -632,7 +632,7 @@ router.get('/time-off/:id', (req, res) => {
     'SELECT * FROM time_off_requests WHERE id = ?',
     [req.params.id],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -678,7 +678,7 @@ router.post('/time-off', (req, res) => {
     ],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
@@ -686,7 +686,7 @@ router.post('/time-off', (req, res) => {
         'SELECT * FROM time_off_requests WHERE id = ?',
         [id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -713,12 +713,12 @@ router.put('/time-off/:id', (req, res) => {
     [status, approver, approvedDate, reason, req.params.id],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
       if (this.changes === 0) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(404).json({ error: 'Time off request not found' });
       }
       
@@ -726,7 +726,7 @@ router.put('/time-off/:id', (req, res) => {
         'SELECT * FROM time_off_requests WHERE id = ?',
         [req.params.id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -745,7 +745,7 @@ router.delete('/time-off/:id', (req, res) => {
     'DELETE FROM time_off_requests WHERE id = ?',
     [req.params.id],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -775,7 +775,7 @@ router.post('/verify-pin', (req, res) => {
     'SELECT id, name, role, department FROM employees WHERE pin = ? AND status = "active"',
     [pin],
     (err, row) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -805,11 +805,11 @@ router.post('/clock-in', (req, res) => {
     [employeeId, pin],
     (err, employee) => {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       if (!employee) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(401).json({ error: 'Invalid credentials' });
       }
       
@@ -819,11 +819,11 @@ router.post('/clock-in', (req, res) => {
         [employeeId, today],
         (err, existingRecord) => {
           if (err) {
-            db.close();
+            // db.close(); // Shared DB 연결은 닫으면 안 됨
             return res.status(500).json({ error: err.message });
           }
           if (existingRecord) {
-            db.close();
+            // db.close(); // Shared DB 연결은 닫으면 안 됨
             return res.status(400).json({ error: 'Already clocked in today' });
           }
           
@@ -841,7 +841,7 @@ router.post('/clock-in', (req, res) => {
                 [employeeId, employeeName || employee.name, now, scheduleId],
                 function(err) {
                   if (err) {
-                    db.close();
+                    // db.close(); // Shared DB 연결은 닫으면 안 됨
                     return res.status(500).json({ error: err.message });
                   }
                   
@@ -851,7 +851,7 @@ router.post('/clock-in', (req, res) => {
                       'UPDATE work_schedules SET worked_start = ? WHERE id = ?',
                       [now, scheduleId],
                       (err) => {
-                        db.close();
+                        // db.close(); // Shared DB 연결은 닫으면 안 됨
                         if (err) {
                           console.error('Error updating schedule:', err);
                         }
@@ -864,7 +864,7 @@ router.post('/clock-in', (req, res) => {
                       }
                     );
                   } else {
-                    db.close();
+                    // db.close(); // Shared DB 연결은 닫으면 안 됨
                     res.status(201).json({
                       message: 'Clocked in successfully (no schedule found)',
                       recordId: this.lastID,
@@ -900,11 +900,11 @@ router.post('/clock-out', (req, res) => {
     [employeeId, pin],
     (err, employee) => {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       if (!employee) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(401).json({ error: 'Invalid credentials' });
       }
       
@@ -914,11 +914,11 @@ router.post('/clock-out', (req, res) => {
         [employeeId, today],
         (err, record) => {
           if (err) {
-            db.close();
+            // db.close(); // Shared DB 연결은 닫으면 안 됨
             return res.status(500).json({ error: err.message });
           }
           if (!record) {
-            db.close();
+            // db.close(); // Shared DB 연결은 닫으면 안 됨
             return res.status(400).json({ error: 'No active clock in record found' });
           }
           
@@ -940,7 +940,7 @@ router.post('/clock-out', (req, res) => {
             [now, totalHours.toFixed(2), approvedBy || null, earlyOutReason || null, record.id],
             function(err) {
               if (err) {
-                db.close();
+                // db.close(); // Shared DB 연결은 닫으면 안 됨
                 return res.status(500).json({ error: err.message });
               }
               
@@ -961,7 +961,7 @@ router.post('/clock-out', (req, res) => {
                    WHERE id = ?`,
                   [now, notes, notes, record.scheduled_shift_id],
                   (err) => {
-                    db.close();
+                    // db.close(); // Shared DB 연결은 닫으면 안 됨
                     if (err) {
                       console.error('Error updating schedule:', err);
                     }
@@ -974,7 +974,7 @@ router.post('/clock-out', (req, res) => {
                   }
                 );
               } else {
-                db.close();
+                // db.close(); // Shared DB 연결은 닫으면 안 됨
                 res.json({
                   message: 'Clocked out successfully',
                   clockOutTime: now,
@@ -1010,7 +1010,7 @@ router.get('/clocked-in', (req, res) => {
      ORDER BY cr.clock_in_time`,
     [today],
     (err, rows) => {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }
@@ -1041,7 +1041,7 @@ router.get('/clock-history/:employeeId', (req, res) => {
   params.push(parseInt(limit));
   
   db.all(query, params, (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -1085,7 +1085,7 @@ router.get('/activity-logs', (req, res) => {
   params.push(parseInt(limit));
   
   db.all(query, params, (err, rows) => {
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -1109,7 +1109,7 @@ router.post('/activity-logs', (req, res) => {
     [id, type, action, employeeId, employeeName, details, timestamp, user],
     function(err) {
       if (err) {
-        db.close();
+        // db.close(); // Shared DB 연결은 닫으면 안 됨
         return res.status(500).json({ error: err.message });
       }
       
@@ -1117,7 +1117,7 @@ router.post('/activity-logs', (req, res) => {
         'SELECT * FROM activity_logs WHERE id = ?',
         [id],
         (err, row) => {
-          db.close();
+          // db.close(); // Shared DB 연결은 닫으면 안 됨
           if (err) {
             return res.status(500).json({ error: err.message });
           }
@@ -1136,7 +1136,7 @@ router.delete('/activity-logs/:id', (req, res) => {
     'DELETE FROM activity_logs WHERE id = ?',
     [req.params.id],
     function(err) {
-      db.close();
+      // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {
         return res.status(500).json({ error: err.message });
       }

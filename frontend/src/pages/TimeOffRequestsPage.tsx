@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar, Clock, Plus, Check, X } from 'lucide-react';
+import { API_URL } from '../config/constants';
 
 interface TimeOffRequest {
   id: string;
@@ -49,7 +50,7 @@ const TimeOffRequestsPage = () => {
 
   const loadEmployees = async () => {
     try {
-      const response = await fetch('http://localhost:3177/api/work-schedule/employees');
+      const response = await fetch('${API_URL}/work-schedule/employees');
       if (!response.ok) throw new Error('Failed to load employees');
       const data = await response.json();
       setEmployees(data.map((emp: any) => ({ id: emp.id, name: emp.name })));
@@ -60,7 +61,7 @@ const TimeOffRequestsPage = () => {
 
   const loadTimeOffRequests = async () => {
     try {
-      const response = await fetch('http://localhost:3177/api/work-schedule/time-off');
+      const response = await fetch('${API_URL}/work-schedule/time-off');
       if (!response.ok) throw new Error('Failed to load time off requests');
       const data = await response.json();
       setTimeOffRequests(data);
@@ -93,7 +94,7 @@ const TimeOffRequestsPage = () => {
         partialEndTime: formData.partialEndTime || null
       };
 
-      const response = await fetch('http://localhost:3177/api/work-schedule/time-off', {
+      const response = await fetch('${API_URL}/work-schedule/time-off', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestData)
@@ -113,7 +114,7 @@ const TimeOffRequestsPage = () => {
 
   const handleApprove = async (requestId: string) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/work-schedule/time-off/${requestId}`, {
+      const response = await fetch(`${API_URL}/work-schedule/time-off/${requestId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -135,7 +136,7 @@ const TimeOffRequestsPage = () => {
 
   const handleReject = async (requestId: string) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/work-schedule/time-off/${requestId}`, {
+      const response = await fetch(`${API_URL}/work-schedule/time-off/${requestId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

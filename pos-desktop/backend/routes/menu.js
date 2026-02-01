@@ -38,6 +38,24 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 module.exports = (db) => {
+  // Helper for async db operations
+  const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve(this);
+    });
+  });
+
+  const dbAllAsync = (sql, params = []) => new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+
+  // Initialize all required tables for category links (HANDLED BY dbInit.js)
+
+
   // GET /api/menu/categories?menu_id=:menu_id
   router.get('/categories', (req, res) => {
     const { menu_id } = req.query;
@@ -94,7 +112,7 @@ module.exports = (db) => {
         mg.min_selection,
         mg.max_selection
               FROM menu_modifier_links mml
-      JOIN modifier_groups mg ON mml.modifier_group_id = mg.group_id
+      JOIN modifier_groups mg ON mml.modifier_group_id = mg.modifier_group_id
       JOIN menu_items bmi ON mml.item_id = bmi.item_id
       WHERE bmi.menu_id = ?
       ORDER BY mml.item_id, mml.modifier_group_id
@@ -432,7 +450,7 @@ router.delete('/items/:id', (req, res) => {
 
   // GET /api/menu/items/:id/options - Get all options for a specific menu item
   router.get('/items/:id/options', async (req, res) => {
-    const { id } = req.params;
+    const id = Number(req.params.id);
     
     try {
       // 1. 직접 연결된 모디파이어 그룹들 (최우선) - including invalid ones
@@ -452,7 +470,7 @@ router.delete('/items/:id', (req, res) => {
               ELSE 0
             END as is_invalid
           FROM menu_modifier_links mml
-          LEFT JOIN modifier_groups mg ON mg.group_id = mml.modifier_group_id
+          LEFT JOIN modifier_groups mg ON mg.modifier_group_id = mml.modifier_group_id
           WHERE mml.item_id = ?
           ORDER BY mg.name
         `, [id], (err, rows) => {
@@ -465,18 +483,18 @@ router.delete('/items/:id', (req, res) => {
       const inheritedModifiers = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            mg.group_id as modifier_group_id,
+            mg.modifier_group_id as modifier_group_id,
             mg.name,
             mg.selection_type,
             mg.min_selection,
             mg.max_selection,
             COALESCE(cml.is_ambiguous, 0) as is_ambiguous
           FROM modifier_groups mg
-          JOIN category_modifier_links cml ON mg.group_id = cml.modifier_group_id
+          JOIN category_modifier_links cml ON mg.modifier_group_id = cml.modifier_group_id
           JOIN menu_items mi ON cml.category_id = mi.category_id
           WHERE mi.item_id = ? 
             AND COALESCE(mg.is_deleted, 0) = 0
-            AND mg.group_id NOT IN (
+            AND mg.modifier_group_id NOT IN (
               SELECT modifier_group_id FROM menu_modifier_links WHERE item_id = ?
             )
           ORDER BY mg.name
@@ -519,16 +537,16 @@ router.delete('/items/:id', (req, res) => {
         })
       );
 
-      // Get tax groups
+      // Get tax groups (support both old 'id' and new 'group_id' schema)
       const taxGroups = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            tg.id as tax_group_id,
+            tg.tax_group_id as tax_group_id,
             tg.name,
             COALESCE(mtl.is_ambiguous, 0) as is_ambiguous
           FROM tax_groups tg
-          JOIN menu_tax_links mtl ON tg.id = mtl.tax_group_id
-          WHERE mtl.item_id = ?
+          JOIN menu_tax_links mtl ON tg.tax_group_id = mtl.tax_group_id
+          WHERE mtl.item_id = ? AND (tg.is_deleted = 0 OR tg.is_deleted IS NULL)
           ORDER BY tg.name
         `, [id], (err, rows) => {
           if (err) reject(err);
@@ -540,11 +558,11 @@ router.delete('/items/:id', (req, res) => {
       const printerGroups = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            pg.id as printer_group_id,
+            pg.printer_group_id as printer_group_id,
             pg.name,
             COALESCE(mpl.is_ambiguous, 0) as is_ambiguous
           FROM printer_groups pg
-          JOIN menu_printer_links mpl ON pg.id = mpl.printer_group_id
+          JOIN menu_printer_links mpl ON pg.printer_group_id = mpl.printer_group_id
           WHERE mpl.item_id = ?
           ORDER BY pg.name
         `, [id], (err, rows) => {
@@ -592,7 +610,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if modifier group exists
       const modifierGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT group_id FROM modifier_groups WHERE group_id = ?', [modifier_group_id], (err, row) => {
+        db.get('SELECT modifier_group_id FROM modifier_groups WHERE modifier_group_id = ?', [modifier_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -615,10 +633,10 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Modifier group is already linked to this item.' });
       }
 
-      // Create link
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
       const linkId = await generateModifierMenuLinkId(db);
       await new Promise((resolve, reject) => {
-        db.run('INSERT INTO menu_modifier_links (link_id, item_id, modifier_group_id) VALUES (?, ?, ?)', 
+        db.run('INSERT OR REPLACE INTO menu_modifier_links (link_id, item_id, modifier_group_id) VALUES (?, ?, ?)', 
           [linkId, id, modifier_group_id], function(err) {
           if (err) reject(err);
           else resolve(this);
@@ -687,7 +705,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if tax group exists
       const taxGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT id FROM tax_groups WHERE id = ? AND is_active = 1', [tax_group_id], (err, row) => {
+        db.get('SELECT tax_group_id FROM tax_groups WHERE tax_group_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)', [tax_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -710,10 +728,10 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Tax group is already linked to this item.' });
       }
 
-      // Create link
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
       const linkId = await generateTaxMenuLinkId(db);
       await new Promise((resolve, reject) => {
-        db.run('INSERT INTO menu_tax_links (link_id, item_id, tax_group_id) VALUES (?, ?, ?)', 
+        db.run('INSERT OR REPLACE INTO menu_tax_links (link_id, item_id, tax_group_id) VALUES (?, ?, ?)', 
           [linkId, id, tax_group_id], function(err) {
           if (err) reject(err);
           else resolve(this);
@@ -782,7 +800,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if printer group exists
       const printerGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT id FROM printer_groups WHERE id = ? AND is_active = 1', [printer_group_id], (err, row) => {
+        db.get('SELECT printer_group_id FROM printer_groups WHERE printer_group_id = ? AND is_active = 1', [printer_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -805,10 +823,10 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Printer group is already linked to this item.' });
       }
 
-      // Create link
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
       const linkId = await generatePrinterMenuLinkId(db);
       await new Promise((resolve, reject) => {
-        db.run('INSERT INTO menu_printer_links (link_id, item_id, printer_group_id) VALUES (?, ?, ?)', 
+        db.run('INSERT OR REPLACE INTO menu_printer_links (link_id, item_id, printer_group_id) VALUES (?, ?, ?)', 
           [linkId, id, printer_group_id], function(err) {
           if (err) reject(err);
           else resolve(this);
@@ -858,7 +876,7 @@ router.delete('/items/:id', (req, res) => {
     try {
       // Get all modifier groups
       const modifierGroups = await new Promise((resolve, reject) => {
-        db.all('SELECT group_id, name, selection_type, min_selection, max_selection FROM modifier_groups ORDER BY name', [], (err, rows) => {
+        db.all('SELECT modifier_group_id, name, selection_type, min_selection, max_selection FROM modifier_groups ORDER BY name', [], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         });
@@ -866,7 +884,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Get all tax groups
       const taxGroups = await new Promise((resolve, reject) => {
-        db.all('SELECT id as tax_group_id, name FROM TaxGroups WHERE is_deleted = 0 ORDER BY name', [], (err, rows) => {
+        db.all('SELECT tax_group_id, name FROM tax_groups WHERE is_deleted = 0 ORDER BY name', [], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         });
@@ -893,18 +911,18 @@ router.delete('/items/:id', (req, res) => {
   });
 
   // =========================================================================
-  // 카테고리 레벨 연결 API
+  // Category-level Connection APIs
   // =========================================================================
 
   // GET /api/menu/categories/:categoryId/modifiers - Get modifiers linked to a category
   router.get('/categories/:categoryId/modifiers', async (req, res) => {
-    const { categoryId } = req.params;
+    const categoryId = Number(req.params.categoryId);
     
     try {
       const links = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            cml.link_id,
+            cml.id as link_id,
             cml.category_id,
             cml.modifier_group_id,
             mg.name as group_name,
@@ -912,7 +930,7 @@ router.delete('/items/:id', (req, res) => {
             mg.min_selection,
             mg.max_selection
           FROM category_modifier_links cml
-          JOIN modifier_groups mg ON cml.modifier_group_id = mg.group_id
+          JOIN modifier_groups mg ON cml.modifier_group_id = mg.modifier_group_id
           WHERE cml.category_id = ?
           ORDER BY mg.name
         `, [categoryId], (err, rows) => {
@@ -953,7 +971,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if modifier group exists
       const modifierGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT group_id FROM modifier_groups WHERE group_id = ?', [modifier_group_id], (err, row) => {
+        db.get('SELECT modifier_group_id FROM modifier_groups WHERE modifier_group_id = ?', [modifier_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -965,7 +983,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if link already exists
       const existingLink = await new Promise((resolve, reject) => {
-        db.get('SELECT link_id FROM category_modifier_links WHERE category_id = ? AND modifier_group_id = ?', 
+        db.get('SELECT id FROM category_modifier_links WHERE category_id = ? AND modifier_group_id = ?', 
           [categoryId, modifier_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
@@ -976,19 +994,19 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Modifier group is already linked to this category.' });
       }
 
-      // Create link
-      const linkId = await generateCategoryModifierLinkId(db);
-      await new Promise((resolve, reject) => {
-        db.run('INSERT INTO category_modifier_links (link_id, category_id, modifier_group_id) VALUES (?, ?, ?)', 
-          [linkId, categoryId, modifier_group_id], function(err) {
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
+      const insertResult = await new Promise((resolve, reject) => {
+        db.run('INSERT OR REPLACE INTO category_modifier_links (category_id, modifier_group_id) VALUES (?, ?)', 
+          [categoryId, modifier_group_id], function(err) {
           if (err) reject(err);
-          else resolve(this);
+          else resolve({ lastID: this.lastID });
         });
       });
+      const linkId = insertResult.lastID;
 
-      // 2. 해당 카테고리의 모든 메뉴 아이템에 자동 상속
+      // 2. Automatic inheritance to all menu items in the category
       const items = await new Promise((resolve, reject) => {
-        db.all('SELECT item_id FROM base_menu_items WHERE category_id = ?', [categoryId], (err, rows) => {
+        db.all('SELECT item_id FROM menu_items WHERE category_id = ?', [categoryId], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         });
@@ -997,7 +1015,7 @@ router.delete('/items/:id', (req, res) => {
       let inheritedCount = 0;
       
       for (const item of items) {
-        // 이미 직접 연결된 옵션이 있는지 확인
+        // Check if directly linked option already exists
         const existingDirectLink = await new Promise((resolve, reject) => {
           db.get('SELECT link_id FROM menu_modifier_links WHERE item_id = ? AND modifier_group_id = ?', 
             [item.item_id, modifier_group_id], (err, row) => {
@@ -1006,11 +1024,11 @@ router.delete('/items/:id', (req, res) => {
           });
         });
         
-        // 직접 연결이 없으면 상속으로 추가
+        // Add as inheritance if no direct link exists
         if (!existingDirectLink) {
           const itemLinkId = await generateModifierMenuLinkId(db);
           await new Promise((resolve, reject) => {
-            db.run('INSERT INTO menu_modifier_links (link_id, item_id, modifier_group_id) VALUES (?, ?, ?)', 
+            db.run('INSERT OR REPLACE INTO menu_modifier_links (link_id, item_id, modifier_group_id) VALUES (?, ?, ?)', 
               [itemLinkId, item.item_id, modifier_group_id], function(err) {
               if (err) reject(err);
               else resolve(this);
@@ -1040,6 +1058,7 @@ router.delete('/items/:id', (req, res) => {
     const { categoryId, groupId } = req.params;
 
     try {
+      // 1. Delete category link
       const result = await new Promise((resolve, reject) => {
         db.run('DELETE FROM category_modifier_links WHERE category_id = ? AND modifier_group_id = ?', 
           [categoryId, groupId], function(err) {
@@ -1052,6 +1071,18 @@ router.delete('/items/:id', (req, res) => {
         return res.status(404).json({ error: 'Modifier group link not found.' });
       }
 
+      // 2. Automatically delete from all menu items in that category (Remove inheritance)
+      await new Promise((resolve, reject) => {
+        db.run(`
+          DELETE FROM menu_modifier_links 
+          WHERE modifier_group_id = ? 
+          AND item_id IN (SELECT item_id FROM menu_items WHERE category_id = ?)
+        `, [groupId, categoryId], function(err) {
+          if (err) reject(err);
+          else resolve(this);
+        });
+      });
+
       res.json({ message: 'Modifier group unlinked from category successfully' });
 
     } catch (error) {
@@ -1062,18 +1093,18 @@ router.delete('/items/:id', (req, res) => {
 
   // GET /api/menu/categories/:categoryId/taxes - Get tax groups linked to a category
   router.get('/categories/:categoryId/taxes', async (req, res) => {
-    const { categoryId } = req.params;
+    const categoryId = Number(req.params.categoryId);
     
     try {
       const links = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            ctl.link_id,
+            ctl.id as link_id,
             ctl.category_id,
             ctl.tax_group_id,
             tg.name as group_name
           FROM category_tax_links ctl
-          LEFT JOIN tax_groups tg ON ctl.tax_group_id = tg.id
+          LEFT JOIN tax_groups tg ON ctl.tax_group_id = tg.tax_group_id
           WHERE ctl.category_id = ?
           ORDER BY tg.name
         `, [categoryId], (err, rows) => {
@@ -1112,9 +1143,9 @@ router.delete('/items/:id', (req, res) => {
         return res.status(404).json({ error: 'Category not found.' });
       }
 
-      // Check if tax group exists
+      // Check if tax group exists (support both old 'id' and new 'group_id' schema)
       const taxGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT id FROM tax_groups WHERE id = ? AND is_active = 1', [tax_group_id], (err, row) => {
+        db.get('SELECT tax_group_id FROM tax_groups WHERE tax_group_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)', [tax_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -1126,7 +1157,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if link already exists
       const existingLink = await new Promise((resolve, reject) => {
-        db.get('SELECT link_id FROM category_tax_links WHERE category_id = ? AND tax_group_id = ?', 
+        db.get('SELECT id FROM category_tax_links WHERE category_id = ? AND tax_group_id = ?', 
           [categoryId, tax_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
@@ -1137,21 +1168,56 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Tax group is already linked to this category.' });
       }
 
-            // Create link
-      const linkId = await generateCategoryTaxLinkId(db);
-      await new Promise((resolve, reject) => {
-        db.run('INSERT INTO category_tax_links (link_id, category_id, tax_group_id) VALUES (?, ?, ?)',
-          [linkId, categoryId, tax_group_id], function(err) {
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
+      const insertResult = await new Promise((resolve, reject) => {
+        db.run('INSERT OR REPLACE INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)',
+          [categoryId, tax_group_id], function(err) {
           if (err) reject(err);
-          else resolve(this);
+          else resolve({ lastID: this.lastID });
+        });
+      });
+      const linkId = insertResult.lastID;
+
+      // 2. Automatic inheritance to all menu items in the category
+      const items = await new Promise((resolve, reject) => {
+        db.all('SELECT item_id FROM menu_items WHERE category_id = ?', [categoryId], (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
         });
       });
 
+      let inheritedCount = 0;
+      for (const item of items) {
+        // Check if directly linked tax already exists
+        const existingDirectLink = await new Promise((resolve, reject) => {
+          db.get('SELECT link_id FROM menu_tax_links WHERE item_id = ? AND tax_group_id = ?', 
+            [item.item_id, tax_group_id], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        });
+        
+        // Add as inheritance if no direct link exists
+        if (!existingDirectLink) {
+          const itemLinkId = await generateTaxMenuLinkId(db);
+          await new Promise((resolve, reject) => {
+            db.run('INSERT OR REPLACE INTO menu_tax_links (link_id, item_id, tax_group_id) VALUES (?, ?, ?)', 
+              [itemLinkId, item.item_id, tax_group_id], function(err) {
+              if (err) reject(err);
+              else resolve(this);
+            });
+          });
+          inheritedCount++;
+        }
+      }
+
       res.status(201).json({ 
-        message: 'Tax group linked to category successfully',
+        message: 'Tax group linked to category and inherited to items',
         link_id: linkId,
         category_id: categoryId,
-        tax_group_id: tax_group_id
+        tax_group_id: tax_group_id,
+        inherited_items: inheritedCount,
+        total_items: items.length
       });
 
     } catch (error) {
@@ -1165,6 +1231,7 @@ router.delete('/items/:id', (req, res) => {
     const { categoryId, groupId } = req.params;
 
     try {
+      // 1. Delete category link
       const result = await new Promise((resolve, reject) => {
         db.run('DELETE FROM category_tax_links WHERE category_id = ? AND tax_group_id = ?', 
           [categoryId, groupId], function(err) {
@@ -1177,6 +1244,18 @@ router.delete('/items/:id', (req, res) => {
         return res.status(404).json({ error: 'Tax group link not found.' });
       }
 
+      // 2. Automatically delete from all menu items in that category (Remove inheritance)
+      await new Promise((resolve, reject) => {
+        db.run(`
+          DELETE FROM menu_tax_links 
+          WHERE tax_group_id = ? 
+          AND item_id IN (SELECT item_id FROM menu_items WHERE category_id = ?)
+        `, [groupId, categoryId], function(err) {
+          if (err) reject(err);
+          else resolve(this);
+        });
+      });
+
       res.json({ message: 'Tax group unlinked from category successfully' });
 
     } catch (error) {
@@ -1187,18 +1266,18 @@ router.delete('/items/:id', (req, res) => {
 
   // GET /api/menu/categories/:categoryId/printers - Get printers linked to a category
   router.get('/categories/:categoryId/printers', async (req, res) => {
-    const { categoryId } = req.params;
+    const categoryId = Number(req.params.categoryId);
     
     try {
       const links = await new Promise((resolve, reject) => {
         db.all(`
           SELECT 
-            cpl.link_id,
+            cpl.id as link_id,
             cpl.category_id,
             cpl.printer_group_id,
             pg.name as printer_group_name
           FROM category_printer_links cpl
-          JOIN printer_groups pg ON cpl.printer_group_id = pg.id
+          JOIN printer_groups pg ON cpl.printer_group_id = pg.printer_group_id
           WHERE cpl.category_id = ?
           ORDER BY pg.name
         `, [categoryId], (err, rows) => {
@@ -1239,7 +1318,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if printer group exists
       const printerGroup = await new Promise((resolve, reject) => {
-        db.get('SELECT id FROM printer_groups WHERE id = ? AND is_active = 1', [printer_group_id], (err, row) => {
+        db.get('SELECT printer_group_id FROM printer_groups WHERE printer_group_id = ? AND is_active = 1', [printer_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
         });
@@ -1251,7 +1330,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Check if link already exists
       const existingLink = await new Promise((resolve, reject) => {
-        db.get('SELECT link_id FROM category_printer_links WHERE category_id = ? AND printer_group_id = ?', 
+        db.get('SELECT id FROM category_printer_links WHERE category_id = ? AND printer_group_id = ?', 
           [categoryId, printer_group_id], (err, row) => {
           if (err) reject(err);
           else resolve(row);
@@ -1262,21 +1341,56 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Printer group is already linked to this category.' });
       }
 
-      // Create link
-      const linkId = await generateCategoryPrinterLinkId(db);
-      await new Promise((resolve, reject) => {
-        db.run('INSERT INTO category_printer_links (link_id, category_id, printer_group_id) VALUES (?, ?, ?)', 
-          [linkId, categoryId, printer_group_id], function(err) {
+      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
+      const insertResult = await new Promise((resolve, reject) => {
+        db.run('INSERT OR REPLACE INTO category_printer_links (category_id, printer_group_id) VALUES (?, ?)', 
+          [categoryId, printer_group_id], function(err) {
           if (err) reject(err);
-          else resolve(this);
+          else resolve({ lastID: this.lastID });
+        });
+      });
+      const linkId = insertResult.lastID;
+
+      // 2. Automatic inheritance to all menu items in the category
+      const items = await new Promise((resolve, reject) => {
+        db.all('SELECT item_id FROM menu_items WHERE category_id = ?', [categoryId], (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
         });
       });
 
+      let inheritedCount = 0;
+      for (const item of items) {
+        // Check if directly linked printer already exists
+        const existingDirectLink = await new Promise((resolve, reject) => {
+          db.get('SELECT link_id FROM menu_printer_links WHERE item_id = ? AND printer_group_id = ?', 
+            [item.item_id, printer_group_id], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        });
+        
+        // Add as inheritance if no direct link exists
+        if (!existingDirectLink) {
+          const itemLinkId = await generatePrinterMenuLinkId(db);
+          await new Promise((resolve, reject) => {
+            db.run('INSERT OR REPLACE INTO menu_printer_links (link_id, item_id, printer_group_id) VALUES (?, ?, ?)', 
+              [itemLinkId, item.item_id, printer_group_id], function(err) {
+              if (err) reject(err);
+              else resolve(this);
+            });
+          });
+          inheritedCount++;
+        }
+      }
+
       res.status(201).json({ 
-        message: 'Printer group linked to category successfully',
+        message: 'Printer group linked to category and inherited to items',
         link_id: linkId,
         category_id: categoryId,
-        printer_group_id: printer_group_id
+        printer_group_id: printer_group_id,
+        inherited_items: inheritedCount,
+        total_items: items.length
       });
 
     } catch (error) {
@@ -1290,6 +1404,7 @@ router.delete('/items/:id', (req, res) => {
     const { categoryId, groupId } = req.params;
 
     try {
+      // 1. Delete category link
       const result = await new Promise((resolve, reject) => {
         db.run('DELETE FROM category_printer_links WHERE category_id = ? AND printer_group_id = ?', 
           [categoryId, groupId], function(err) {
@@ -1301,6 +1416,18 @@ router.delete('/items/:id', (req, res) => {
       if (result.changes === 0) {
         return res.status(404).json({ error: 'Printer group link not found.' });
       }
+
+      // 2. Automatically delete from all menu items in that category (Remove inheritance)
+      await new Promise((resolve, reject) => {
+        db.run(`
+          DELETE FROM menu_printer_links 
+          WHERE printer_group_id = ? 
+          AND item_id IN (SELECT item_id FROM menu_items WHERE category_id = ?)
+        `, [groupId, categoryId], function(err) {
+          if (err) reject(err);
+          else resolve(this);
+        });
+      });
 
       res.json({ message: 'Printer group unlinked from category successfully' });
 
@@ -1364,7 +1491,7 @@ router.delete('/items/:id', (req, res) => {
           SELECT m.*, mgl.modifier_group_id 
           FROM modifiers m 
           JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id 
-          WHERE mgl.modifier_group_id IN (${modifierGroups.map(g => g.group_id).join(',')}) AND m.is_deleted = 0
+          WHERE mgl.modifier_group_id IN (${modifierGroups.map(g => g.modifier_group_id).join(',')}) AND m.is_deleted = 0
         `, (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1376,7 +1503,7 @@ router.delete('/items/:id', (req, res) => {
         db.all(`
           SELECT ml.* 
           FROM modifier_labels ml 
-          WHERE ml.group_id IN (${modifierGroups.map(g => g.group_id).join(',')})
+          WHERE ml.modifier_group_id IN (${modifierGroups.map(g => g.modifier_group_id).join(',')})
         `, (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1396,7 +1523,7 @@ router.delete('/items/:id', (req, res) => {
           SELECT t.*, tgl.tax_group_id 
           FROM taxes t 
           JOIN tax_group_links tgl ON t.tax_id = tgl.tax_id 
-          WHERE tgl.tax_group_id IN (${taxGroups.map(g => g.group_id).join(',')}) AND t.is_deleted = 0
+          WHERE tgl.tax_group_id IN (${taxGroups.map(g => g.tax_group_id).join(',')}) AND t.is_deleted = 0
         `, (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1405,7 +1532,7 @@ router.delete('/items/:id', (req, res) => {
 
       // Get all printer groups and their printers
       const printerGroups = await new Promise((resolve, reject) => {
-        db.all('SELECT * FROM printer_groups WHERE menu_id = ? AND is_deleted = 0', [menuId], (err, rows) => {
+        db.all('SELECT * FROM printer_groups WHERE is_active = 1', [], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
         });
@@ -1416,7 +1543,7 @@ router.delete('/items/:id', (req, res) => {
           SELECT p.*, pgl.printer_group_id 
           FROM printers p 
           JOIN printer_group_links pgl ON p.printer_id = pgl.printer_id 
-          WHERE pgl.printer_group_id IN (${printerGroups.map(g => g.group_id).join(',')}) AND p.is_deleted = 0
+          WHERE pgl.printer_group_id IN (${printerGroups.map(g => g.printer_group_id).join(',')}) AND p.is_deleted = 0
         `, (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1544,19 +1671,19 @@ router.delete('/items/:id', (req, res) => {
         // Get category's connected modifier groups
         const categoryConnectedModifierGroups = categoryModifierConnections
           .filter(conn => conn.category_id === category.category_id)
-          .map(conn => modifierGroups.find(group => group.group_id === conn.modifier_group_id))
+          .map(conn => modifierGroups.find(group => group.modifier_group_id === conn.modifier_group_id))
           .filter(Boolean);
 
         // Get category's connected tax groups
         const categoryConnectedTaxGroups = categoryTaxConnections
           .filter(conn => conn.category_id === category.category_id)
-          .map(conn => taxGroups.find(group => group.group_id === conn.tax_group_id))
+          .map(conn => taxGroups.find(group => group.tax_group_id === conn.tax_group_id))
           .filter(Boolean);
 
         // Get category's connected printer groups
         const categoryConnectedPrinterGroups = categoryPrinterConnections
           .filter(conn => conn.category_id === category.category_id)
-          .map(conn => printerGroups.find(group => group.group_id === conn.printer_group_id))
+          .map(conn => printerGroups.find(group => group.printer_group_id === conn.printer_group_id))
           .filter(Boolean);
 
         const categoryHeaderRow = {
@@ -1587,12 +1714,12 @@ router.delete('/items/:id', (req, res) => {
           // Get connected modifier groups for this item (direct connections first, then category connections)
           const itemConnectedModifierGroups = itemModifierConnections
             .filter(conn => conn.item_id === item.item_id)
-            .map(conn => modifierGroups.find(group => group.group_id === conn.modifier_group_id))
+            .map(conn => modifierGroups.find(group => group.modifier_group_id === conn.modifier_group_id))
             .filter(Boolean);
 
           const categoryConnectedModifierGroups = categoryModifierConnections
             .filter(conn => conn.category_id === item.category_id)
-            .map(conn => modifierGroups.find(group => group.group_id === conn.modifier_group_id))
+            .map(conn => modifierGroups.find(group => group.modifier_group_id === conn.modifier_group_id))
             .filter(Boolean);
 
           // Use item connections first, then fall back to category connections
@@ -1603,12 +1730,12 @@ router.delete('/items/:id', (req, res) => {
           // Get connected tax groups for this item (direct connections first, then category connections)
           const itemConnectedTaxGroups = itemTaxConnections
             .filter(conn => conn.item_id === item.item_id)
-            .map(conn => taxGroups.find(group => group.group_id === conn.tax_group_id))
+            .map(conn => taxGroups.find(group => group.tax_group_id === conn.tax_group_id))
             .filter(Boolean);
 
           const categoryConnectedTaxGroups = categoryTaxConnections
             .filter(conn => conn.category_id === item.category_id)
-            .map(conn => taxGroups.find(group => group.group_id === conn.tax_group_id))
+            .map(conn => taxGroups.find(group => group.tax_group_id === conn.tax_group_id))
             .filter(Boolean);
 
           // Use item connections first, then fall back to category connections
@@ -1619,12 +1746,12 @@ router.delete('/items/:id', (req, res) => {
           // Get connected printer groups for this item (direct connections first, then category connections)
           const itemConnectedPrinterGroups = itemPrinterConnections
             .filter(conn => conn.item_id === item.item_id)
-            .map(conn => printerGroups.find(group => group.group_id === conn.printer_group_id))
+            .map(conn => printerGroups.find(group => group.printer_group_id === conn.printer_group_id))
             .filter(Boolean);
 
           const categoryConnectedPrinterGroups = categoryPrinterConnections
             .filter(conn => conn.category_id === item.category_id)
-            .map(conn => printerGroups.find(group => group.group_id === conn.printer_group_id))
+            .map(conn => printerGroups.find(group => group.printer_group_id === conn.printer_group_id))
             .filter(Boolean);
 
           // Use item connections first, then fall back to category connections
@@ -2103,7 +2230,7 @@ router.delete('/items/:id', (req, res) => {
                 await new Promise((resolve, reject) => {
                   db.run(
                     'INSERT INTO category_modifier_links (category_id, modifier_group_id, is_ambiguous) VALUES (?, ?, ?)',
-                    [category.name, modifierGroup['Group ID'], 1],
+                    [category.categoryId, modifierGroup['Group ID'], 1],
                     (err) => {
                       if (err) reject(err);
                       else resolve();
@@ -2123,7 +2250,7 @@ router.delete('/items/:id', (req, res) => {
                   await new Promise((resolve, reject) => {
                     db.run(
                       'INSERT INTO category_modifier_links (category_id, modifier_group_id, is_ambiguous) VALUES (?, ?, ?)',
-                      [category.name, modifierGroup['Group ID'], 0],
+                      [category.categoryId, modifierGroup['Group ID'], 0],
                       (err) => {
                         if (err) reject(err);
                         else resolve();
@@ -2156,7 +2283,7 @@ router.delete('/items/:id', (req, res) => {
                   await new Promise((resolve, reject) => {
                     db.run(
                       'INSERT INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)',
-                      [category.name, taxGroup['Group ID']],
+                      [category.categoryId, taxGroup['Group ID']],
                       (err) => {
                         if (err) reject(err);
                         else resolve();
@@ -2189,7 +2316,7 @@ router.delete('/items/:id', (req, res) => {
                   await new Promise((resolve, reject) => {
                     db.run(
                       'INSERT INTO category_printer_links (category_id, printer_group_id) VALUES (?, ?)',
-                      [category.name, printerGroup['Group ID']],
+                      [category.categoryId, printerGroup['Group ID']],
                       (err) => {
                         if (err) reject(err);
                         else resolve();
@@ -2352,7 +2479,7 @@ router.delete('/items/:id', (req, res) => {
             // Get category's linked modifier groups
             const categoryModifierGroups = await new Promise((resolve, reject) => {
               db.all(
-                'SELECT mg.name FROM modifier_groups mg JOIN category_modifier_links cml ON mg.group_id = cml.modifier_group_id WHERE cml.category_id = ?',
+                'SELECT mg.name FROM modifier_groups mg JOIN category_modifier_links cml ON mg.modifier_group_id = cml.modifier_group_id WHERE cml.category_id = ?',
                 [categoryName],
                 (err, rows) => {
                   if (err) reject(err);
@@ -2438,7 +2565,7 @@ router.delete('/items/:id', (req, res) => {
             // Get category's linked tax groups
             const categoryTaxGroups = await new Promise((resolve, reject) => {
               db.all(
-                'SELECT tg.name FROM tax_groups tg JOIN category_tax_links ctl ON tg.id = ctl.tax_group_id WHERE ctl.category_id = ?',
+                'SELECT tg.name FROM tax_groups tg JOIN category_tax_links ctl ON tg.tax_group_id = ctl.tax_group_id WHERE ctl.category_id = ?',
                 [categoryName],
                 (err, rows) => {
                   if (err) reject(err);
@@ -2500,7 +2627,7 @@ router.delete('/items/:id', (req, res) => {
             // Get category's linked printer groups
             const categoryPrinterGroups = await new Promise((resolve, reject) => {
               db.all(
-                'SELECT pg.name FROM printer_groups pg JOIN category_printer_links cpl ON pg.id = cpl.printer_group_id WHERE cpl.category_id = ?',
+                'SELECT pg.name FROM printer_groups pg JOIN category_printer_links cpl ON pg.printer_group_id = cpl.printer_group_id WHERE cpl.category_id = ?',
                 [categoryName],
                 (err, rows) => {
                   if (err) reject(err);
@@ -2559,7 +2686,7 @@ router.delete('/items/:id', (req, res) => {
           
           await new Promise((resolve, reject) => {
             db.run(
-              'INSERT INTO modifier_groups (group_id, name, selection_type, min_selection, max_selection, menu_id) VALUES (?, ?, ?, ?, ?, ?)',
+              'INSERT INTO modifier_groups (modifier_group_id, name, selection_type, min_selection, max_selection, menu_id) VALUES (?, ?, ?, ?, ?, ?)',
               [
                 group['No'] || 0,
                 group['Modifier Group Name'],

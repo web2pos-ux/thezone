@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { ImagePlus } from 'lucide-react';
+import { API_BASE } from '../config/constants';
 
 interface ImageUploaderProps {
   imageUrl: string | undefined;
@@ -30,7 +31,7 @@ const ImageUploader: React.FC<ImageUploaderProps> = ({ imageUrl, onUpload }) => 
         className="w-10 h-10 bg-slate-100 flex items-center justify-center hover:bg-slate-200 transition-colors"
       >
         {imageUrl ? (
-          <img src={`http://localhost:3177${imageUrl}`} alt="Menu item" className="w-full h-full object-cover" />
+          <img src={`${API_BASE}${imageUrl}`} alt="Menu item" className="w-full h-full object-cover" />
         ) : (
           <ImagePlus className="text-slate-400" />
         )}

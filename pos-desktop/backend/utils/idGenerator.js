@@ -12,15 +12,15 @@ const ID_RANGES = {
   
   // Modifier System
   MODIFIER: { min: 300000, max: 339999, table: 'modifiers', column: 'modifier_id' },
-  MODIFIER_GROUP: { min: 340000, max: 379999, table: 'modifier_groups', column: 'group_id' },
+  MODIFIER_GROUP: { min: 340000, max: 379999, table: 'modifier_groups', column: 'modifier_group_id' },
   
   // Tax System
   TAX: { min: 380000, max: 384999, table: 'taxes', column: 'tax_id' },
-  TAX_GROUP: { min: 385000, max: 389999, table: 'tax_groups', column: 'group_id' },
+  TAX_GROUP: { min: 385000, max: 389999, table: 'tax_groups', column: 'tax_group_id' },
   
   // Printer System
   PRINTER: { min: 390000, max: 394999, table: 'printers', column: 'printer_id' },
-  PRINTER_GROUP: { min: 395000, max: 399999, table: 'printer_groups', column: 'group_id' },
+  PRINTER_GROUP: { min: 395000, max: 399999, table: 'printer_groups', column: 'printer_group_id' },
   
   // Link Tables (for many-to-many relationships)
       MODIFIER_MENU_LINK: { min: 400000, max: 409999, table: 'menu_modifier_links', column: 'link_id' },
@@ -28,9 +28,9 @@ const ID_RANGES = {
   PRINTER_MENU_LINK: { min: 420000, max: 429999, table: 'menu_printer_links', column: 'link_id' },
   
   // Category Level Link Tables
-  CATEGORY_MODIFIER_LINK: { min: 440000, max: 449999, table: 'category_modifier_links', column: 'link_id' },
-  CATEGORY_TAX_LINK: { min: 450000, max: 459999, table: 'category_tax_links', column: 'link_id' },
-  CATEGORY_PRINTER_LINK: { min: 460000, max: 469999, table: 'category_printer_links', column: 'link_id' },
+  CATEGORY_MODIFIER_LINK: { min: 440000, max: 449999, table: 'category_modifier_links', column: 'id' },
+  CATEGORY_TAX_LINK: { min: 450000, max: 459999, table: 'category_tax_links', column: 'id' },
+  CATEGORY_PRINTER_LINK: { min: 460000, max: 469999, table: 'category_printer_links', column: 'id' },
   
   // Additional System Tables
   MODIFIER_LABEL: { min: 430000, max: 434999, table: 'modifier_labels', column: 'label_id' },

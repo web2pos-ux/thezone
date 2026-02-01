@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useSerialPorts, SerialPort } from '../hooks/useSerialPorts';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
@@ -11,6 +12,15 @@ interface CreditCardReaderSettings {
   apiEndpoint: string;
   connectionPort: string;
   timeout: number;
+}
+
+interface SerialPrinterSettings {
+  port: string;
+  baudRate: number;
+  dataBits: number;
+  stopBits: number;
+  parity: string;
+  enabled: boolean;
 }
 
 const HardwareManagerPage = () => {
@@ -26,6 +36,22 @@ const HardwareManagerPage = () => {
     return saved !== null ? JSON.parse(saved) : true;
   });
   const [printerSaveStatus, setPrinterSaveStatus] = useState<'idle' | 'saved'>('idle');
+  
+  // Serial Printer Settings
+  const { ports, defaults, loading: serialLoading, error: serialError, fetchPorts, testPrint } = useSerialPorts();
+  const [serialPrinterSettings, setSerialPrinterSettings] = useState<SerialPrinterSettings>(() => {
+    const saved = localStorage.getItem('serialPrinter_settings');
+    return saved ? JSON.parse(saved) : {
+      port: '',
+      baudRate: 9600,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+      enabled: false
+    };
+  });
+  const [serialTestStatus, setSerialTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [serialTestError, setSerialTestError] = useState<string | null>(null);
 
   const handleKitchenPrinterToggle = (setting: 'guest' | 'divider', value: boolean) => {
     if (setting === 'guest') {
@@ -38,6 +64,47 @@ const HardwareManagerPage = () => {
     setPrinterSaveStatus('saved');
     setTimeout(() => setPrinterSaveStatus('idle'), 1500);
   };
+
+  // Serial Printer handlers
+  const handleSerialSettingsChange = useCallback((updates: Partial<SerialPrinterSettings>) => {
+    setSerialPrinterSettings(prev => {
+      const newSettings = { ...prev, ...updates };
+      localStorage.setItem('serialPrinter_settings', JSON.stringify(newSettings));
+      return newSettings;
+    });
+    setPrinterSaveStatus('saved');
+    setTimeout(() => setPrinterSaveStatus('idle'), 1500);
+  }, []);
+
+  const handleSerialTestPrint = useCallback(async () => {
+    if (!serialPrinterSettings.port) {
+      setSerialTestStatus('error');
+      setSerialTestError('Please select a port first');
+      return;
+    }
+
+    setSerialTestStatus('testing');
+    setSerialTestError(null);
+
+    const result = await testPrint(serialPrinterSettings.port, {
+      baudRate: serialPrinterSettings.baudRate,
+      dataBits: serialPrinterSettings.dataBits,
+      stopBits: serialPrinterSettings.stopBits,
+      parity: serialPrinterSettings.parity
+    });
+
+    if (result.success) {
+      setSerialTestStatus('success');
+      setTimeout(() => setSerialTestStatus('idle'), 3000);
+    } else {
+      setSerialTestStatus('error');
+      setSerialTestError(result.error || 'Test print failed');
+    }
+  }, [serialPrinterSettings, testPrint]);
+
+  const handleRefreshPorts = useCallback(() => {
+    fetchPorts();
+  }, [fetchPorts]);
 
   // Credit Card Reader Settings
   const [creditCardSettings, setCreditCardSettings] = useState<CreditCardReaderSettings>({
@@ -467,10 +534,171 @@ const HardwareManagerPage = () => {
                   </div>
                 </div>
 
-                {/* Receipt Printer Placeholder */}
-                <div className="mt-6 bg-gray-50 rounded-lg p-8 text-center text-gray-500">
-                  <span className="text-4xl">🧾</span>
-                  <p className="mt-2">Receipt printer configuration coming soon...</p>
+                {/* Serial (COM) Printer Settings */}
+                <div className="mt-6 border border-gray-200 rounded-lg p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                      🔌 Serial (COM) Printer
+                    </h3>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleRefreshPorts}
+                        disabled={serialLoading}
+                        className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-all flex items-center gap-1"
+                      >
+                        <svg className={`w-4 h-4 ${serialLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Refresh
+                      </button>
+                      <button
+                        onClick={() => handleSerialSettingsChange({ enabled: !serialPrinterSettings.enabled })}
+                        className={`relative w-14 h-7 rounded-full transition-colors ${
+                          serialPrinterSettings.enabled ? 'bg-blue-600' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${
+                            serialPrinterSettings.enabled ? 'translate-x-7' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {serialError && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                      ⚠️ {serialError}
+                    </div>
+                  )}
+
+                  <div className={`space-y-4 ${!serialPrinterSettings.enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                    {/* Port Selection */}
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">COM Port</label>
+                      <select
+                        value={serialPrinterSettings.port}
+                        onChange={(e) => handleSerialSettingsChange({ port: e.target.value })}
+                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="">Select Port</option>
+                        {ports.map((port) => (
+                          <option key={port.path} value={port.path}>
+                            {port.displayName}
+                          </option>
+                        ))}
+                      </select>
+                      {ports.length === 0 && !serialLoading && (
+                        <p className="mt-1 text-sm text-gray-500">No serial ports found. Connect your printer and click Refresh.</p>
+                      )}
+                    </div>
+
+                    {/* Communication Settings */}
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Baud Rate */}
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Baud Rate</label>
+                        <select
+                          value={serialPrinterSettings.baudRate}
+                          onChange={(e) => handleSerialSettingsChange({ baudRate: parseInt(e.target.value) })}
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value={9600}>9600 (Default)</option>
+                          <option value={19200}>19200</option>
+                          <option value={38400}>38400</option>
+                          <option value={57600}>57600</option>
+                          <option value={115200}>115200</option>
+                        </select>
+                      </div>
+
+                      {/* Data Bits */}
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Data Bits</label>
+                        <select
+                          value={serialPrinterSettings.dataBits}
+                          onChange={(e) => handleSerialSettingsChange({ dataBits: parseInt(e.target.value) })}
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value={7}>7</option>
+                          <option value={8}>8 (Default)</option>
+                        </select>
+                      </div>
+
+                      {/* Stop Bits */}
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Stop Bits</label>
+                        <select
+                          value={serialPrinterSettings.stopBits}
+                          onChange={(e) => handleSerialSettingsChange({ stopBits: parseInt(e.target.value) })}
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value={1}>1 (Default)</option>
+                          <option value={2}>2</option>
+                        </select>
+                      </div>
+
+                      {/* Parity */}
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Parity</label>
+                        <select
+                          value={serialPrinterSettings.parity}
+                          onChange={(e) => handleSerialSettingsChange({ parity: e.target.value })}
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value="none">None (Default)</option>
+                          <option value="even">Even</option>
+                          <option value="odd">Odd</option>
+                          <option value="mark">Mark</option>
+                          <option value="space">Space</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Test Print Button */}
+                    <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+                      <div className="text-sm">
+                        {serialTestStatus === 'success' && (
+                          <span className="text-green-600 font-medium flex items-center gap-1">
+                            ✓ Test print successful!
+                          </span>
+                        )}
+                        {serialTestStatus === 'error' && (
+                          <span className="text-red-600 font-medium">
+                            ✗ {serialTestError}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={handleSerialTestPrint}
+                        disabled={serialTestStatus === 'testing' || !serialPrinterSettings.port}
+                        className="px-6 py-2 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                      >
+                        {serialTestStatus === 'testing' ? (
+                          <>
+                            <svg className="w-5 h-5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Testing...
+                          </>
+                        ) : (
+                          <>
+                            🖨️ Test Print
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Info Box */}
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <h4 className="font-semibold text-blue-800 mb-2">💡 Serial Printer Information</h4>
+                    <ul className="text-sm text-blue-700 space-y-1">
+                      <li>• Connect your thermal printer via USB-to-Serial adapter or native COM port</li>
+                      <li>• Most ESC/POS printers use: 9600 baud, 8 data bits, 1 stop bit, no parity</li>
+                      <li>• Check your printer manual for specific communication settings</li>
+                      <li>• Make sure no other application is using the same COM port</li>
+                    </ul>
+                  </div>
                 </div>
               </div>
             )}

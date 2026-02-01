@@ -1,5 +1,6 @@
 // Work Schedule API Service
-const API_BASE_URL = 'http://localhost:3177/api/work-schedule';
+import { API_URL } from '../config/constants';
+const API_BASE_URL = `${API_URL}/work-schedule`;
 
 // Types
 export interface Employee {

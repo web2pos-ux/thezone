@@ -162,12 +162,20 @@ const BasicInfoPage: React.FC = () => {
   const handleSaveProfile = async () => {
     setSaving(true);
     try {
-      await fetch(`${API_URL}/admin-settings/business-profile`, {
+      const response = await fetch(`${API_URL}/admin-settings/business-profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
         body: JSON.stringify(profile)
       });
-      alert('Basic information has been saved.');
+      
+      if (response.ok) {
+        alert('Basic information has been saved.');
+      } else {
+        const data = await response.json();
+        alert(`Failed to save: ${data.error || 'Unknown error'}`);
+      }
+    } catch (error: any) {
+      alert(`Error: ${error.message}`);
     } finally {
       setSaving(false);
     }
@@ -205,12 +213,23 @@ const BasicInfoPage: React.FC = () => {
       busy_hour_start: h.busy_hour_start || null,
       busy_hour_end: h.busy_hour_end || null
     }));
-    await fetch(`${API_URL}/admin-settings/business-hours/bulk`, { 
-      method:'POST', 
-      headers:{ 'Content-Type':'application/json', 'X-Role': 'MANAGER' }, 
-      body: JSON.stringify({ businessHours: payload }) 
-    });
-    alert('Business hours have been saved.');
+    
+    try {
+      const response = await fetch(`${API_URL}/admin-settings/business-hours/bulk`, { 
+        method:'POST', 
+        headers:{ 'Content-Type':'application/json', 'X-Role': 'MANAGER' }, 
+        body: JSON.stringify({ businessHours: payload }) 
+      });
+      
+      if (response.ok) {
+        alert('Business hours have been saved.');
+      } else {
+        const data = await response.json();
+        alert(`Failed to save: ${data.error || 'Unknown error'}`);
+      }
+    } catch (error: any) {
+      alert(`Error: ${error.message}`);
+    }
   };
 
   // Sync from Firebase

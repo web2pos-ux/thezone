@@ -32,11 +32,14 @@ module.exports = (db) => {
       let groups;
       
       if (menu_id) {
-        // Filter by menu_id if provided
-        groups = await dbAll('SELECT group_id as id, name FROM tax_groups WHERE is_deleted = 0 AND menu_id = ?', [menu_id]);
+        groups = await dbAll(`
+          SELECT tax_group_id as id, name 
+          FROM tax_groups 
+          WHERE is_deleted = 0 
+          AND (menu_id = ? OR menu_id IS NULL)
+        `, [menu_id]);
       } else {
-        // Get all groups if no menu_id specified
-        groups = await dbAll('SELECT group_id as id, name FROM tax_groups WHERE is_deleted = 0');
+        groups = await dbAll('SELECT tax_group_id as id, name FROM tax_groups WHERE is_deleted = 0');
       }
       
       const groupIds = groups.map(g => g.id);
@@ -47,14 +50,14 @@ module.exports = (db) => {
 
       const taxes = await dbAll(`
         SELECT
-          TGI.tax_group_id,
-          T.tax_id as tax_id,
+          TGL.tax_group_id,
+          T.tax_id,
           T.name,
           T.rate
         FROM taxes T
-        JOIN tax_group_links TGI ON T.tax_id = TGI.tax_id
-        WHERE TGI.tax_group_id IN (${groupIds.map(() => '?').join(',')}) AND T.is_deleted = 0
-        ORDER BY TGI.tax_group_id, T.name
+        JOIN tax_group_links TGL ON T.tax_id = TGL.tax_id
+        WHERE TGL.tax_group_id IN (${groupIds.map(() => '?').join(',')}) AND T.is_deleted = 0
+        ORDER BY TGL.tax_group_id, T.name
       `, groupIds);
 
       const taxesByGroupId = taxes.reduce((acc, tax) => {
@@ -74,226 +77,156 @@ module.exports = (db) => {
       res.json(result);
 
     } catch (error) {
-      console.error('Failed to retrieve tax groups:', error);
-      res.status(500).json({ error: 'Failed to retrieve tax groups', details: error.message });
-    }
-  });
-
-  // GET /api/tax-groups/by-ids?ids=1,2,3&menu_id=200001
-  // Returns taxes for given tax_group_ids. Resolves from standard tax tables first; if not found, falls back to menu-independent tables.
-  router.get('/by-ids', async (req, res) => {
-    try {
-      const idsParam = (req.query.ids || '').toString().trim();
-      const menuId = req.query.menu_id ? Number(req.query.menu_id) : null;
-      if (!idsParam) {
-        return res.json([]);
-      }
-      const rawIds = idsParam.split(',').map(s => s.trim()).filter(Boolean);
-      const groupIds = rawIds.map(id => Number(id)).filter(n => !Number.isNaN(n));
-      if (groupIds.length === 0) {
-        return res.json([]);
-      }
-
-      // Standard tax groups lookup
-      const standardTaxes = await dbAll(`
-        SELECT TGI.tax_group_id, T.tax_id, T.name, T.rate
-        FROM taxes T
-        JOIN tax_group_links TGI ON T.tax_id = TGI.tax_id
-        WHERE TGI.tax_group_id IN (${groupIds.map(() => '?').join(',')}) AND T.is_deleted = 0
-        ORDER BY TGI.tax_group_id, T.name
-      `, groupIds);
-
-      const standardByGroup = standardTaxes.reduce((acc, row) => {
-        if (!acc[row.tax_group_id]) acc[row.tax_group_id] = [];
-        acc[row.tax_group_id].push({ tax_id: row.tax_id, name: row.name, rate: row.rate });
-        return acc;
-      }, {});
-
-      // Determine which ids still need resolution
-      const unresolvedIds = groupIds.filter(id => !standardByGroup[id]);
-
-      let independentByGroup = {};
-      if (unresolvedIds.length > 0) {
-        // Menu-independent tax groups lookup (menu_tax_groups/menu_taxes)
-        const params = [...unresolvedIds];
-        const whereMenu = menuId ? 'AND mtg.menu_id = ?' : '';
-        if (menuId) params.push(menuId);
-        const independentTaxes = await dbAll(`
-          SELECT mtg.tax_group_id, mt.tax_id, mt.name, mt.rate
-          FROM menu_tax_groups mtg
-          JOIN menu_taxes mt ON mtg.tax_group_id = mt.tax_group_id
-          WHERE mtg.tax_group_id IN (${unresolvedIds.map(() => '?').join(',')}) ${whereMenu}
-          ORDER BY mtg.tax_group_id, mt.name
-        `, params);
-
-        independentByGroup = independentTaxes.reduce((acc, row) => {
-          if (!acc[row.tax_group_id]) acc[row.tax_group_id] = [];
-          acc[row.tax_group_id].push({ tax_id: row.tax_id, name: row.name, rate: row.rate });
-          return acc;
-        }, {});
-      }
-
-      // Build response aligned with requested ids
-      const response = groupIds.map(id => ({
-        id,
-        taxes: standardByGroup[id] || independentByGroup[id] || []
-      }));
-
-      res.json(response);
-    } catch (error) {
-      console.error('Failed to retrieve taxes by ids:', error);
-      res.status(500).json({ error: 'Failed to retrieve taxes by ids', details: error.message });
+      console.error('❌ Failed to retrieve tax groups:', error);
+      res.status(500).json({ error: 'Failed to retrieve tax groups.', details: error.message });
     }
   });
 
   // POST /api/tax-groups - Create a new tax group
   router.post('/', async (req, res) => {
     const { name, taxes, menu_id } = req.body;
+    const targetMenuId = menu_id ? Number(menu_id) : null;
+
+    console.log('🔍 POST /tax-groups - Received data:', { name, taxesCount: taxes?.length, menu_id });
 
     if (!name || !Array.isArray(taxes) || taxes.length === 0) {
       return res.status(400).json({ error: 'Group name and a non-empty taxes array are required.' });
     }
 
-    // Validate each tax item
-    for (const tax of taxes) {
-      if (typeof tax.name !== 'string' || typeof tax.rate !== 'number' || tax.rate < 0) {
-        return res.status(400).json({ error: 'Each tax in the array must have a valid name and a non-negative rate.' });
-      }
-      // 세금 비율 범위 검증 (0-100%)
-      if (tax.rate > 100) {
-        return res.status(400).json({ error: 'Tax rate cannot exceed 100%.' });
-      }
-    }
-
-    await dbRun('BEGIN TRANSACTION');
-
     try {
-      // Find or create individual tax IDs sequentially to avoid race conditions
+      console.log('🔄 Starting transaction for tax group creation...');
+      await dbRun('BEGIN TRANSACTION');
+
+      // 1. Find or create individual tax IDs
       const taxIds = [];
       for (const tax of taxes) {
-        const existingTax = await dbGet('SELECT tax_id FROM taxes WHERE name = ? AND rate = ? AND menu_id = ? AND is_deleted = 0', [tax.name, tax.rate, menu_id]);
+        if (!tax.name || !tax.name.trim()) continue;
+
+        const existingTax = await dbGet(
+          'SELECT tax_id FROM taxes WHERE name = ? AND rate = ? AND (menu_id = ? OR menu_id IS NULL) AND is_deleted = 0 LIMIT 1', 
+          [tax.name.trim(), tax.rate, targetMenuId]
+        );
+
         if (existingTax) {
           taxIds.push(existingTax.tax_id);
         } else {
           const newTaxId = await generateNextId(db, ID_RANGES.TAX);
-          await dbRun('INSERT INTO taxes (tax_id, name, rate, menu_id) VALUES (?, ?, ?, ?)', [newTaxId, tax.name, tax.rate, menu_id]);
+          await dbRun(
+            'INSERT INTO taxes (tax_id, name, rate, menu_id, is_deleted) VALUES (?, ?, ?, ?, 0)', 
+            [newTaxId, tax.name.trim(), tax.rate, targetMenuId]
+          );
           taxIds.push(newTaxId);
         }
       }
 
-      // Create the new tax group
-      const newGroupId = await generateNextId(db, ID_RANGES.TAX_GROUP);
-      await dbRun('INSERT INTO tax_groups (group_id, name, menu_id) VALUES (?, ?, ?)', [newGroupId, name, menu_id || null]);
+      if (taxIds.length === 0) {
+        await dbRun('ROLLBACK');
+        return res.status(400).json({ error: 'At least one valid tax is required.' });
+      }
 
-      // Link taxes to the new group
-      for (const taxId of taxIds) {
-        await dbRun('INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [newGroupId, taxId]);
+      // 2. Create the new tax group
+      const newGroupId = await generateNextId(db, ID_RANGES.TAX_GROUP);
+      await dbRun(
+        'INSERT INTO tax_groups (tax_group_id, name, menu_id, is_deleted) VALUES (?, ?, ?, 0)', 
+        [newGroupId, name.trim(), targetMenuId]
+      );
+
+      // 3. Link taxes to the new group
+      const uniqueTaxIds = [...new Set(taxIds)];
+      for (const taxId of uniqueTaxIds) {
+        await dbRun('INSERT OR REPLACE INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [newGroupId, taxId]);
       }
 
       await dbRun('COMMIT');
+      console.log('✅ Tax group creation completed successfully:', newGroupId);
 
-      // Return the newly created group, structured like the GET response
-      const newGroup = {
+      res.status(201).json({
         id: newGroupId,
-        name: name,
-        taxes: taxes.map((tax, i) => ({ ...tax, tax_id: taxIds[i] })) // Approximate, real IDs are now set
-      };
-
-      res.status(201).json(newGroup);
+        name: name.trim(),
+        taxes: taxes.map((tax, i) => ({ ...tax, tax_id: taxIds[i] }))
+      });
 
     } catch (error) {
-      await dbRun('ROLLBACK');
-      console.error('Failed to create tax group:', error);
-      res.status(500).json({ error: 'Failed to create tax group', details: error.message });
+      if (db.inTransaction) await dbRun('ROLLBACK').catch(() => {});
+      console.error('❌ Failed to create tax group:', error);
+      res.status(500).json({ error: 'Failed to create tax group.', details: error.message });
     }
   });
 
-  // PUT /api/tax-groups/:groupId - Update a tax group
+  // Update a tax group
   router.put('/:groupId', async (req, res) => {
     const { groupId } = req.params;
     const { name, taxes, menu_id } = req.body;
+    const targetMenuId = menu_id ? Number(menu_id) : null;
 
     if (!name || !Array.isArray(taxes)) {
       return res.status(400).json({ error: 'Group name and a taxes array are required.' });
     }
     
-    // Validate each tax item
-    for (const tax of taxes) {
-      if (typeof tax.name !== 'string' || typeof tax.rate !== 'number' || tax.rate < 0) {
-        return res.status(400).json({ error: 'Each tax must have a valid name and a non-negative rate.' });
-      }
-      // 세금 비율 범위 검증 (0-100%)
-      if (tax.rate > 100) {
-        return res.status(400).json({ error: 'Tax rate cannot exceed 100%.' });
-      }
-    }
-    
-    await dbRun('BEGIN TRANSACTION');
-
     try {
-      // Update group name
-      await dbRun('UPDATE tax_groups SET name = ? WHERE group_id = ?', [name, groupId]);
+      await dbRun('BEGIN TRANSACTION');
 
-      // Find or create individual tax IDs sequentially
+      await dbRun('UPDATE tax_groups SET name = ?, menu_id = ?, is_deleted = 0 WHERE tax_group_id = ?', 
+        [name.trim(), targetMenuId, groupId]);
+
       const taxIds = [];
       for (const tax of taxes) {
-        const existingTax = await dbGet('SELECT tax_id FROM taxes WHERE name = ? AND rate = ? AND menu_id = ? AND is_deleted = 0', [tax.name, tax.rate, menu_id]);
+        if (!tax.name || !tax.name.trim()) continue;
+
+        const existingTax = await dbGet(
+          'SELECT tax_id FROM taxes WHERE name = ? AND rate = ? AND (menu_id = ? OR menu_id IS NULL) AND is_deleted = 0 LIMIT 1', 
+          [tax.name.trim(), tax.rate, targetMenuId]
+        );
+
         if (existingTax) {
           taxIds.push(existingTax.tax_id);
         } else {
           const newTaxId = await generateNextId(db, ID_RANGES.TAX);
-          await dbRun('INSERT INTO taxes (tax_id, name, rate, menu_id) VALUES (?, ?, ?, ?)', [newTaxId, tax.name, tax.rate, menu_id]);
+          await dbRun(
+            'INSERT INTO taxes (tax_id, name, rate, menu_id, is_deleted) VALUES (?, ?, ?, ?, 0)', 
+            [newTaxId, tax.name.trim(), tax.rate, targetMenuId]
+          );
           taxIds.push(newTaxId);
         }
       }
 
-      // Replace the old list of taxes with the new one
       await dbRun('DELETE FROM tax_group_links WHERE tax_group_id = ?', [groupId]);
       for (const taxId of taxIds) {
-        await dbRun('INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [groupId, taxId]);
+        await dbRun('INSERT OR REPLACE INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)', [groupId, taxId]);
       }
 
       await dbRun('COMMIT');
-
-      const updatedGroup = {
+      res.json({
         id: parseInt(groupId),
-        name: name,
+        name: name.trim(),
         taxes: taxes.map((tax, i) => ({ ...tax, tax_id: taxIds[i] }))
-      };
-      res.json(updatedGroup);
+      });
 
     } catch (error) {
-      await dbRun('ROLLBACK');
-      console.error(`Failed to update tax group ${groupId}:`, error);
-      res.status(500).json({ error: 'Failed to update tax group', details: error.message });
+      await dbRun('ROLLBACK').catch(() => {});
+      console.error(`❌ Failed to update tax group ${groupId}:`, error);
+      res.status(500).json({ error: 'Failed to update tax group.', details: error.message });
     }
   });
 
   // DELETE /api/tax-groups/:groupId - Delete a tax group
   router.delete('/:groupId', async (req, res) => {
     const { groupId } = req.params;
-
-    await dbRun('BEGIN TRANSACTION');
     try {
-      // The ON DELETE CASCADE constraint on TaxGroup_Items will handle orphaned rows.
-      // We just need to delete the group itself.
-      // Set is_deleted flag for soft delete
-      await dbRun('UPDATE tax_groups SET is_deleted = 1 WHERE group_id = ?', [groupId]);
-      
-      // Remove any links from menu items
+      await dbRun('BEGIN TRANSACTION');
+      await dbRun('UPDATE tax_groups SET is_deleted = 1 WHERE tax_group_id = ?', [groupId]);
+      await dbRun('DELETE FROM tax_group_links WHERE tax_group_id = ?', [groupId]);
       await dbRun('DELETE FROM menu_tax_links WHERE tax_group_id = ?', [groupId]);
-      
-      // Remove any links from categories
       await dbRun('DELETE FROM category_tax_links WHERE tax_group_id = ?', [groupId]);
 
       await dbRun('COMMIT');
       res.status(204).send();
     } catch (error) {
-      await dbRun('ROLLBACK');
-      console.error(`Failed to delete tax group ${groupId}:`, error);
-      res.status(500).json({ error: 'Failed to delete tax group', details: error.message });
+      await dbRun('ROLLBACK').catch(() => {});
+      console.error(`❌ Failed to delete tax group ${groupId}:`, error);
+      res.status(500).json({ error: 'Failed to delete tax group.', details: error.message });
     }
   });
 
   return router;
-}; 
+};

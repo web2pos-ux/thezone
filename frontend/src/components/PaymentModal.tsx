@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { OrderItem } from '../pages/order/orderTypes';
+import { API_URL } from '../config/constants';
 
 interface PaymentModalProps {
 	isOpen: boolean;
@@ -64,6 +65,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [isSplitCountMode, setIsSplitCountMode] = useState<boolean>(false);
   const [splitCountInput, setSplitCountInput] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);  // 더블 클릭 방지용
+  const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);  // Cancel 확인 팝업
   
   // Share Selected states
   const [isShareSelectedMode, setIsShareSelectedMode] = useState<boolean>(false);
@@ -82,6 +84,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   // 초기 금액 고정 (Items, Tax, Total은 결제 후에도 절대 변경되지 않아야 함)
   const initialSubtotalRef = useRef<number | null>(null);
   const initialTaxTotalRef = useRef<number | null>(null);
+  const initialTaxLinesRef = useRef<Array<{ name: string; amount: number }> | null>(null);
   const initialGrandRef = useRef<number | null>(null);
   const wasOpenRef = useRef<boolean>(false);
   
@@ -93,14 +96,16 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
       const grand = parseFloat((subtotal + taxTotal).toFixed(2));
       initialSubtotalRef.current = subtotal;
       initialTaxTotalRef.current = taxTotal;
+      initialTaxLinesRef.current = taxLines.map(t => ({ name: t.name, amount: t.amount }));
       initialGrandRef.current = grand;
       wasOpenRef.current = true;
-      console.log('[PAYMENT] 초기값 고정:', { subtotal, taxTotal, grand });
+      console.log('[PAYMENT] 초기값 고정:', { subtotal, taxTotal, taxLines, grand });
     } else if (!isOpen && wasOpenRef.current) {
       // 모달이 닫히면 플래그만 리셋 (초기값은 유지하지 않음 - 다음 열 때 새로 저장)
       wasOpenRef.current = false;
       initialSubtotalRef.current = null;
       initialTaxTotalRef.current = null;
+      initialTaxLinesRef.current = null;
       initialGrandRef.current = null;
     }
   }, [isOpen]); // subtotal, taxLines를 의존성에서 제거하여 결제 후 변경되어도 초기값이 바뀌지 않도록 함
@@ -219,7 +224,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
     setGiftCardLoading(true);
     setGiftCardError('');
     try {
-      const response = await fetch(`http://localhost:3177/api/gift-cards/${giftCardNumber}/balance`);
+      const response = await fetch(`${API_URL}/gift-cards/${giftCardNumber}/balance`);
       if (response.ok) {
         const data = await response.json();
         setGiftCardBalance(data.balance);
@@ -262,7 +267,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
     setGiftCardLoading(true);
     setGiftCardError('');
     try {
-      const response = await fetch(`http://localhost:3177/api/gift-cards/${giftCardNumber}/redeem`, {
+      const response = await fetch(`${API_URL}/gift-cards/${giftCardNumber}/redeem`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: payAmount })
@@ -385,8 +390,13 @@ useEffect(() => {
         setProceedArmed(true);
       }
     } catch (e) {
+      // 에러 시 optimisticPayments 정리 및 상태 초기화
       setOptimisticPayments(prev => prev.slice(0, -1));
-      setIsProcessing(false);  // 에러 시에도 초기화
+      setAmount('0.00');
+      setRawAmountDigits('');
+      setMethod('');
+      setIsProcessing(false);
+      showAlert('Payment failed. Please try again.');
       try { console.error('Finalize failed', e); } catch {}
     }
   };
@@ -433,11 +443,11 @@ useEffect(() => {
 	// Change calculation based on confirmed payments across methods
 	const paymentsInScope = useMemo(() => {
 		if (!Array.isArray(payments)) return [] as Array<{ method: string; amount: number; guestNumber?: number }>;
-		if (typeof guestMode === 'number') {
-			return payments.filter(p => p.guestNumber === guestMode);
+		if (typeof effectiveGuestMode === 'number') {
+			return payments.filter(p => p.guestNumber === effectiveGuestMode);
 		}
 		return payments;
-	}, [payments, guestMode]);
+	}, [payments, effectiveGuestMode]);
 
 	const { cashPaidConfirmed, nonCashPaidConfirmed } = useMemo(() => {
 		let cash = 0, nonCash = 0;
@@ -489,8 +499,13 @@ useEffect(() => {
         setMethod('');
         setIsProcessing(false);  // 결제 처리 완료
       } catch (e) {
+        // 에러 시 optimisticPayments 정리 및 상태 초기화
         setOptimisticPayments(prev => prev.slice(0, -1));
-        setIsProcessing(false);  // 에러 시에도 초기화
+        setAmount('0.00');
+        setRawAmountDigits('');
+        setMethod('');
+        setIsProcessing(false);
+        showAlert('Payment failed. Please try again.');
         try { console.error('Auto-commit failed', e); } catch {}
       }
     }
@@ -672,8 +687,20 @@ const addQuick = async (q: number) => {
 // (moved up) — removed duplicate block
 
 
-	// Cancel: void all session payments, reset local state, close
-	const handleCancel = async () => {
+	// Cancel: 확인 후 void all session payments, reset local state, close
+	const handleCancelClick = () => {
+		// 결제 내역이 있으면 확인 팝업 표시
+		const hasPayments = (payments && payments.length > 0) || optimisticPayments.length > 0;
+		if (hasPayments) {
+			setShowCancelConfirm(true);
+		} else {
+			// 결제 내역이 없으면 바로 닫기
+			handleCancelConfirmed();
+		}
+	};
+
+	const handleCancelConfirmed = async () => {
+		setShowCancelConfirm(false);
 		try {
 			if (onClearAllPayments) {
 				await onClearAllPayments();
@@ -689,6 +716,10 @@ const addQuick = async (q: number) => {
 			setLastChange(null);
 			onClose();
 		}
+	};
+
+	const handleCancelDismiss = () => {
+		setShowCancelConfirm(false);
 	};
 
 
@@ -740,7 +771,7 @@ const addQuick = async (q: number) => {
 				let scopeDueNow: number;
 				// 게스트별 분할 결제 모드에서는 outstandingDue 사용 (게스트별 금액 계산 필요)
 				// 일반 결제 모드에서는 payments에서 직접 계산 (outstandingDue가 stale할 수 있으므로)
-				if (typeof guestMode === 'number' && typeof outstandingDue === 'number' && outstandingDue >= 0) {
+				if (typeof effectiveGuestMode === 'number' && typeof outstandingDue === 'number' && outstandingDue >= 0) {
 					scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
 				} else {
 					scopeDueNow = Math.max(0, Number((fixedGrandVal - confirmedTotalNow).toFixed(2)));
@@ -780,7 +811,13 @@ const addQuick = async (q: number) => {
 				setMethod(clickedMethod);
 			}
 		} catch (e) {
-			setIsProcessing(false);  // 에러 시에도 초기화
+			// 에러 시 optimisticPayments 정리 및 상태 초기화
+			setOptimisticPayments(prev => prev.slice(0, -1));
+			setAmount('0.00');
+			setRawAmountDigits('');
+			setMethod('');
+			setIsProcessing(false);
+			showAlert('Payment failed. Please try again.');
 			try { console.error('Failed to commit draft payment', e); } catch {}
 		}
 	};
@@ -790,7 +827,7 @@ const addQuick = async (q: number) => {
 			<div className="bg-white rounded-2xl shadow-2xl p-0 overflow-hidden relative" onClick={(e) => e.stopPropagation()} style={{ width: '960px', height: '610px', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
 				{/* X Close Button */}
 				<button
-					onClick={handleCancel}
+					onClick={handleCancelClick}
 					className="absolute top-[3px] right-[3px] z-10 p-2 rounded-full bg-white/30 hover:bg-white/50 shadow-xl hover:shadow-2xl transition-all border-[3px] border-red-500 ring-3 ring-red-300/50"
 					aria-label="Close modal"
 				>
@@ -818,7 +855,14 @@ const addQuick = async (q: number) => {
 											<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 							<div className="space-y-1.5 text-sm">
 								<div className="flex justify-between"><span>Items</span><span>${formatMoney(fixedSubtotal)}</span></div>
-								<div className="flex justify-between"><span>Tax</span><span>${formatMoney(fixedTaxTotal)}</span></div>
+								{/* 개별 세금 라인 표시 (GST, PST 등) */}
+								{initialTaxLinesRef.current && initialTaxLinesRef.current.length > 0 ? (
+									initialTaxLinesRef.current.map((taxLine, idx) => (
+										<div key={idx} className="flex justify-between"><span>{taxLine.name}</span><span>${formatMoney(taxLine.amount)}</span></div>
+									))
+								) : (
+									<div className="flex justify-between"><span>Tax</span><span>${formatMoney(fixedTaxTotal)}</span></div>
+								)}
 								<div className="flex justify-between text-xl font-bold border-t pt-2"><span>Total</span><span>${formatMoney(fixedGrand)}</span></div>
 							</div>
 						<div className="mt-3 text-base flex-1 flex flex-col min-h-0">
@@ -863,7 +907,8 @@ const addQuick = async (q: number) => {
 												<span className="font-semibold">{formatMoney(op.amount)}</span>
 											</div>
 										))}
-										{(parsedAmount > 0) && (
+										{/* 현재 입력 중인 금액 표시 (optimistic 처리 중이 아닐 때만) */}
+										{(parsedAmount > 0 && !isProcessing && optimisticPayments.length === 0) && (
 											<div className="flex items-center justify-between">
 												<span className="truncate">{method ? getMethodLabel(method) : 'Processing'}</span>
 												<span className="font-semibold">{formatInput(amount)}</span>
@@ -921,14 +966,14 @@ const addQuick = async (q: number) => {
                 <button className="col-span-2 h-[3.3rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100" onClick={() => addQuick(50)}>$50</button>
 
 								{/* Row 6: Clear (3col) ← (3col) $100 (2col) */}
-                <button className="col-span-3 h-[3.3rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100" onClick={()=>{ setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod(''); try { onClearAllPayments && onClearAllPayments(); } catch {} }}>Clear</button>
+                <button className="col-span-3 h-[3.3rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100" onClick={()=>{ setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod(''); }}>Clear</button>
                 <button className="col-span-3 h-[3.3rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100" onClick={()=>appendDigit('BS')}>←</button>
                 <button className="col-span-2 h-[3.3rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100" onClick={() => addQuick(100)}>$100</button>
 							</div>
 							<div className="h-3" />
             <div className="mt-0 mb-0 grid grid-cols-2 gap-2">
                 <button 
-                  onClick={isSplitCountMode ? handleSplitCountCancel : handleCancel} 
+                  onClick={isSplitCountMode ? handleSplitCountCancel : handleCancelClick} 
                   className="h-12 w-full rounded-md bg-gray-700 text-white hover:bg-gray-800 active:bg-red-600 active:text-white font-bold"
                 >
                   {isSplitCountMode ? 'Cancel Split' : 'Cancel'}
@@ -1000,6 +1045,42 @@ const addQuick = async (q: number) => {
 						>
 							OK
 						</button>
+					</div>
+				</div>
+			)}
+
+			{/* Cancel Confirmation Modal */}
+			{showCancelConfirm && (
+				<div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+					<div className="bg-white rounded-xl shadow-2xl w-[380px] overflow-hidden">
+						<div className="bg-gradient-to-r from-red-500 to-red-600 px-4 py-3">
+							<h3 className="text-lg font-bold text-white text-center">Cancel Payment?</h3>
+						</div>
+						<div className="p-5 space-y-4">
+							<p className="text-center text-gray-700">
+								This will <span className="font-bold text-red-600">void all payments</span> and close the modal.
+							</p>
+							<p className="text-center text-sm text-gray-500">
+								{payments && payments.length > 0 
+									? `${payments.length} payment(s) will be voided.`
+									: 'Are you sure you want to cancel?'
+								}
+							</p>
+							<div className="flex gap-3">
+								<button
+									onClick={handleCancelDismiss}
+									className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all"
+								>
+									Go Back
+								</button>
+								<button
+									onClick={handleCancelConfirmed}
+									className="flex-1 py-3 rounded-lg bg-red-500 hover:bg-red-600 text-white font-semibold transition-all"
+								>
+									Yes, Cancel All
+								</button>
+							</div>
+						</div>
 					</div>
 				</div>
 			)}

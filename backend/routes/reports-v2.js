@@ -63,14 +63,15 @@ const REPORT_DEFINITIONS = {
     description: 'Hourly sales, distribution patterns, and peak hours analysis'
   },
 
-  // 2. Category & Menu Analysis (카테고리 & 메뉴 분석)
+  // 2. Category & Menu Analysis (카테고리 & 메뉴 분석) - 비활성화됨
   'category-menu-analysis': {
     id: 'category-menu-analysis',
     name: 'Category & Menu Analysis',
     category: 'sales',
     type: 'combined',
     sections: ['category-breakdown', 'menu-performance', 'modifier-sales', 'order-source'],
-    description: 'Category breakdown, menu item performance, modifiers, and order sources'
+    description: 'Category breakdown, menu item performance, modifiers, and order sources',
+    disabled: true
   },
 
   // 3. Table Performance (테이블 성과)
@@ -93,14 +94,15 @@ const REPORT_DEFINITIONS = {
     description: 'Best selling items and slow moving items that need attention'
   },
 
-  // 5. Payment Analysis (결제 분석)
+  // 5. Payment Analysis (결제 분석) - 비활성화됨
   'payment-analysis': {
     id: 'payment-analysis',
     name: 'Payment Analysis',
     category: 'sales',
     type: 'combined',
     sections: ['payment-breakdown', 'cash-card-ratio'],
-    description: 'Payment method breakdown and cash vs card ratio'
+    description: 'Payment method breakdown and cash vs card ratio',
+    disabled: true
   },
 
   // 6. Tips & Service (팁 & 서비스)
@@ -261,14 +263,15 @@ const REPORT_DEFINITIONS = {
     description: 'Sales efficiency per labor hour'
   },
 
-  // ===== 직원 레포트 (5개) =====
+  // ===== 직원 레포트 (5개) - 비활성화됨 =====
   'employee-sales-performance': {
     id: 'employee-sales-performance',
     name: 'Employee Sales Performance',
     category: 'employee',
     type: 'graph',
     chartType: 'bar',
-    description: 'Sales performance by employee'
+    description: 'Sales performance by employee',
+    disabled: true
   },
   'server-performance-comparison': {
     id: 'server-performance-comparison',
@@ -276,7 +279,8 @@ const REPORT_DEFINITIONS = {
     category: 'employee',
     type: 'graph',
     chartType: 'radar',
-    description: 'Compare server metrics'
+    description: 'Compare server metrics',
+    disabled: true
   },
   'tips-by-employee': {
     id: 'tips-by-employee',
@@ -284,7 +288,8 @@ const REPORT_DEFINITIONS = {
     category: 'employee',
     type: 'graph',
     chartType: 'bar',
-    description: 'Tip earnings by employee'
+    description: 'Tip earnings by employee',
+    disabled: true
   },
   'labor-cost-analysis': {
     id: 'labor-cost-analysis',
@@ -292,7 +297,8 @@ const REPORT_DEFINITIONS = {
     category: 'employee',
     type: 'graph',
     chartType: 'stacked-area',
-    description: 'Labor costs as percentage of revenue'
+    description: 'Labor costs as percentage of revenue',
+    disabled: true
   },
   'clock-in-out-summary': {
     id: 'clock-in-out-summary',
@@ -300,7 +306,8 @@ const REPORT_DEFINITIONS = {
     category: 'employee',
     type: 'graph',
     chartType: 'timeline',
-    description: 'Employee attendance and hours'
+    description: 'Employee attendance and hours',
+    disabled: true
   }
 };
 
@@ -309,7 +316,8 @@ const REPORT_DEFINITIONS = {
 // GET /api/reports-v2 - 레포트 목록
 router.get('/', (req, res) => {
   try {
-    const reports = Object.values(REPORT_DEFINITIONS);
+    // 비활성화된 레포트 제외
+    const reports = Object.values(REPORT_DEFINITIONS).filter(r => !r.disabled);
     
     const grouped = {
       printable: reports.filter(r => r.printable),
@@ -357,7 +365,7 @@ router.get('/:reportId', async (req, res) => {
       data = await generateSingleReport(db, reportId, start, end);
     }
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     // Firebase에 저장
     await saveReportToFirebase(store, reportId, start, end, data);
@@ -397,7 +405,7 @@ router.get('/:reportId/excel', async (req, res) => {
       data = await generateSingleReport(db, reportId, start, end);
     }
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     // CSV 생성 (엑셀 호환)
     const csv = generateCSV(reportDef, data);
@@ -427,7 +435,7 @@ router.get('/:reportId/print', async (req, res) => {
     
     const printText = await generatePrintText(db, reportId, start, shiftId, parseInt(width));
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     res.type('text/plain').send(printText);
   } catch (error) {
@@ -463,7 +471,7 @@ router.post('/sync-all', async (req, res) => {
       }
     }
     
-    db.close();
+    // db.close(); // Shared DB 연결은 닫으면 안 됨
     
     res.json({
       success: true,
@@ -1220,7 +1228,6 @@ function getProfitMarginAnalysis(db, startDate, endDate) {
 // ==================== 단일 레포트 생성 ====================
 
 async function generateSingleReport(db, reportId, startDate, endDate) {
-  // 기존 개별 레포트 로직 (간략화)
   switch (reportId) {
     case 'daily-sales-overview':
       return await getHourlySales(db, startDate, endDate);
@@ -1228,9 +1235,305 @@ async function generateSingleReport(db, reportId, startDate, endDate) {
       return await getWeeklySalesTrend(db, startDate);
     case 'day-of-week-performance':
       return await getDayOfWeekPerformance(db, startDate, endDate);
+    case 'monthly-sales-comparison':
+      return await getMonthlySalesComparison(db, startDate, endDate);
+    case 'yearly-sales-analysis':
+      return await getYearlySalesAnalysis(db, startDate, endDate);
+    case 'void-refund-report':
+      return await getVoidRefundReport(db, startDate, endDate);
+    case 'discount-promotion-analysis':
+      return await getDiscountPromotionAnalysis(db, startDate, endDate);
+    case 'online-order-performance':
+      return await getOnlineOrderPerformance(db, startDate, endDate);
+    case 'channel-performance':
+      return await getChannelPerformance(db, startDate, endDate);
+    case 'channel-revenue-comparison':
+      return await getChannelRevenueComparison(db, startDate, endDate);
+    case 'channel-growth-analysis':
+      return await getChannelGrowthAnalysis(db, startDate, endDate);
+    case 'delivery-platform-revenue':
+      return await getDeliveryPlatformRevenue(db, startDate, endDate);
+    case 'gift-card-sales-detail':
+      return await getGiftCardSalesDetail(db, startDate, endDate);
+    case 'gift-card-redemption':
+      return await getGiftCardRedemption(db, startDate, endDate);
+    case 'tax-summary-report':
+      return await getTaxSummaryReport(db, startDate, endDate);
+    case 'comp-discount-tracking':
+      return await getCompDiscountTracking(db, startDate, endDate);
+    case 'revenue-per-labor-hour':
+      return await getRevenuePerLaborHour(db, startDate, endDate);
     default:
-      return { message: 'Report data available', chartData: [] };
+      return { title: 'No Data', chartType: 'bar', data: [], summary: { message: 'Report not implemented' } };
   }
+}
+
+// Monthly Sales Comparison
+function getMonthlySalesComparison(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        strftime('%Y-%m', created_at) as month,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue,
+        COALESCE(AVG(total), 0) as avgCheck
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY month ORDER BY month
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Monthly Sales Comparison', chartType: 'bar', data: rows });
+    });
+  });
+}
+
+// Yearly Sales Analysis
+function getYearlySalesAnalysis(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        strftime('%Y', created_at) as year,
+        strftime('%m', created_at) as month,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY year, month ORDER BY year, month
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Yearly Sales Analysis', chartType: 'area', data: rows });
+    });
+  });
+}
+
+// Void & Refund Report
+function getVoidRefundReport(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        void_reason as reason,
+        COUNT(*) as count,
+        COALESCE(SUM(void_amount), 0) as amount
+      FROM voids
+      WHERE DATE(created_at) BETWEEN ? AND ?
+      GROUP BY date, void_reason ORDER BY date DESC
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return resolve({ title: 'Void & Refund Report', chartType: 'bar', data: [] });
+      resolve({ title: 'Void & Refund Report', chartType: 'bar', data: rows || [] });
+    });
+  });
+}
+
+// Discount & Promotion Analysis
+function getDiscountPromotionAnalysis(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as orderCount,
+        COALESCE(SUM(discount_amount), 0) as totalDiscount,
+        COALESCE(AVG(discount_amount), 0) as avgDiscount
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED' AND discount_amount > 0
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Discount & Promotion Analysis', chartType: 'bar', data: rows || [] });
+    });
+  });
+}
+
+// Online Order Performance
+function getOnlineOrderPerformance(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? 
+        AND status = 'COMPLETED'
+        AND order_type IN ('ONLINE', 'TABLE_QR', 'KIOSK')
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Online Order Performance', chartType: 'line', data: rows || [] });
+    });
+  });
+}
+
+// Channel Performance
+function getChannelPerformance(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        COALESCE(order_type, 'DINE_IN') as channel,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue,
+        COALESCE(AVG(total), 0) as avgCheck
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY order_type ORDER BY revenue DESC
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Channel Performance', chartType: 'bar', data: rows || [] });
+    });
+  });
+}
+
+// Channel Revenue Comparison
+function getChannelRevenueComparison(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COALESCE(order_type, 'DINE_IN') as channel,
+        COALESCE(SUM(total), 0) as revenue
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY date, order_type ORDER BY date, revenue DESC
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Channel Revenue Comparison', chartType: 'grouped-bar', data: rows || [] });
+    });
+  });
+}
+
+// Channel Growth Analysis
+function getChannelGrowthAnalysis(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        strftime('%Y-%m', created_at) as month,
+        COALESCE(order_type, 'DINE_IN') as channel,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY month, order_type ORDER BY month
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Channel Growth Analysis', chartType: 'line', data: rows || [] });
+    });
+  });
+}
+
+// Delivery Platform Revenue
+function getDeliveryPlatformRevenue(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COALESCE(delivery_platform, order_type) as platform,
+        COUNT(*) as orders,
+        COALESCE(SUM(total), 0) as revenue
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? 
+        AND status = 'COMPLETED'
+        AND order_type IN ('DELIVERY', 'UBEREATS', 'DOORDASH', 'SKIP')
+      GROUP BY date, platform ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Delivery Platform Revenue', chartType: 'stacked-bar', data: rows || [] });
+    });
+  });
+}
+
+// Gift Card Sales Detail
+function getGiftCardSalesDetail(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as count,
+        COALESCE(SUM(initial_balance), 0) as totalSold
+      FROM gift_cards
+      WHERE DATE(created_at) BETWEEN ? AND ?
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return resolve({ title: 'Gift Card Sales', chartType: 'stacked-bar', data: [] });
+      resolve({ title: 'Gift Card Sales', chartType: 'stacked-bar', data: rows || [] });
+    });
+  });
+}
+
+// Gift Card Redemption
+function getGiftCardRedemption(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as transactions,
+        COALESCE(SUM(amount), 0) as totalRedeemed
+      FROM gift_card_transactions
+      WHERE DATE(created_at) BETWEEN ? AND ? AND type = 'redeem'
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return resolve({ title: 'Gift Card Redemption', chartType: 'line', data: [] });
+      resolve({ title: 'Gift Card Redemption', chartType: 'line', data: rows || [] });
+    });
+  });
+}
+
+// Tax Summary Report
+function getTaxSummaryReport(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as orders,
+        COALESCE(SUM(tax), 0) as totalTax,
+        COALESCE(SUM(subtotal), 0) as subtotal,
+        COALESCE(SUM(total), 0) as total
+      FROM orders
+      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Tax Summary Report', chartType: 'stacked-bar', data: rows || [] });
+    });
+  });
+}
+
+// Comp & Discount Tracking
+function getCompDiscountTracking(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(o.created_at) as date,
+        COALESCE(oa.kind, 'OTHER') as type,
+        COUNT(*) as count,
+        COALESCE(SUM(oa.amount_applied), 0) as amount
+      FROM order_adjustments oa
+      JOIN orders o ON oa.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ?
+      GROUP BY date, oa.kind ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return resolve({ title: 'Comp & Discount Tracking', chartType: 'bar', data: [] });
+      resolve({ title: 'Comp & Discount Tracking', chartType: 'bar', data: rows || [] });
+    });
+  });
+}
+
+// Revenue Per Labor Hour
+function getRevenuePerLaborHour(db, startDate, endDate) {
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        DATE(o.created_at) as date,
+        COALESCE(SUM(o.total), 0) as revenue,
+        COUNT(DISTINCT e.id) as employeeCount
+      FROM orders o
+      LEFT JOIN employees e ON 1=1
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      GROUP BY date ORDER BY date
+    `, [startDate, endDate], (err, rows) => {
+      if (err) return reject(err);
+      resolve({ title: 'Revenue Per Labor Hour', chartType: 'bar', data: rows || [] });
+    });
+  });
 }
 
 function getWeeklySalesTrend(db, endDate) {
@@ -1294,19 +1597,222 @@ function getDayOfWeekPerformance(db, startDate, endDate) {
 // ==================== 프린트 텍스트 생성 ====================
 
 async function generatePrintText(db, reportId, date, shiftId, width) {
-  // 기존 프린트 로직 유지
   const line = '='.repeat(width);
-  const center = (text) => ' '.repeat(Math.max(0, Math.floor((width - text.length) / 2))) + text;
-  const leftRight = (l, r) => l + ' '.repeat(Math.max(1, width - l.length - r.length)) + r;
+  const dashLine = '-'.repeat(width);
+  const center = (text) => {
+    const pad = Math.max(0, Math.floor((width - text.length) / 2));
+    return ' '.repeat(pad) + text;
+  };
+  const leftRight = (l, r) => {
+    const space = Math.max(1, width - l.length - r.length);
+    return l + ' '.repeat(space) + r;
+  };
   const formatMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
   
-  // 간단한 Daily Cash Report 예시
-  let text = line + '\n';
-  text += center(reportId.toUpperCase().replace(/-/g, ' ')) + '\n';
-  text += center(new Date(date).toLocaleDateString()) + '\n';
-  text += line + '\n';
-  text += center('Report generated successfully') + '\n';
-  text += line + '\n';
+  let text = '';
+  
+  // Get business info
+  const businessInfo = await new Promise((resolve) => {
+    db.get('SELECT business_name FROM business_profile WHERE id = 1', [], (err, row) => {
+      resolve(row || { business_name: 'Restaurant' });
+    });
+  });
+  
+  switch (reportId) {
+    case 'daily-cash-report': {
+      // Get daily cash data
+      const payments = await new Promise((resolve) => {
+        db.all(`
+          SELECT payment_method, 
+            COALESCE(SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END), 0) as payments,
+            COALESCE(SUM(CASE WHEN type = 'tip' THEN amount ELSE 0 END), 0) as tips
+          FROM payments
+          WHERE DATE(created_at) = ?
+          GROUP BY payment_method
+        `, [date], (err, rows) => resolve(rows || []));
+      });
+      
+      const totals = await new Promise((resolve) => {
+        db.get(`
+          SELECT 
+            COUNT(*) as orderCount,
+            COALESCE(SUM(total), 0) as totalSales,
+            COALESCE(SUM(tax), 0) as totalTax
+          FROM orders
+          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+        `, [date], (err, row) => resolve(row || { orderCount: 0, totalSales: 0, totalTax: 0 }));
+      });
+      
+      text += line + '\n';
+      text += center(businessInfo.business_name || 'Restaurant') + '\n';
+      text += center('DAILY CASH REPORT') + '\n';
+      text += center(new Date(date).toLocaleDateString()) + '\n';
+      text += line + '\n\n';
+      
+      text += 'PAYMENT BREAKDOWN\n';
+      text += dashLine + '\n';
+      
+      let totalPayments = 0;
+      let totalTips = 0;
+      for (const p of payments) {
+        text += leftRight(p.payment_method || 'OTHER', formatMoney(p.payments)) + '\n';
+        totalPayments += p.payments;
+        totalTips += p.tips;
+      }
+      
+      text += dashLine + '\n';
+      text += leftRight('Total Payments:', formatMoney(totalPayments)) + '\n';
+      text += leftRight('Total Tips:', formatMoney(totalTips)) + '\n';
+      text += '\n';
+      
+      text += 'SALES SUMMARY\n';
+      text += dashLine + '\n';
+      text += leftRight('Total Orders:', String(totals.orderCount)) + '\n';
+      text += leftRight('Total Sales:', formatMoney(totals.totalSales)) + '\n';
+      text += leftRight('Total Tax:', formatMoney(totals.totalTax)) + '\n';
+      text += line + '\n';
+      text += center(`Generated: ${new Date().toLocaleString()}`) + '\n';
+      break;
+    }
+    
+    case 'daily-summary-report': {
+      // Get comprehensive daily data
+      const summary = await new Promise((resolve) => {
+        db.get(`
+          SELECT 
+            COUNT(*) as orderCount,
+            COALESCE(SUM(subtotal), 0) as subtotal,
+            COALESCE(SUM(tax), 0) as tax,
+            COALESCE(SUM(discount_amount), 0) as discounts,
+            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM(guests), 0) as guests,
+            COALESCE(AVG(total), 0) as avgCheck
+          FROM orders
+          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+        `, [date], (err, row) => resolve(row || {}));
+      });
+      
+      const byChannel = await new Promise((resolve) => {
+        db.all(`
+          SELECT 
+            COALESCE(order_type, 'DINE_IN') as channel,
+            COUNT(*) as orders,
+            COALESCE(SUM(total), 0) as revenue
+          FROM orders
+          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+          GROUP BY order_type ORDER BY revenue DESC
+        `, [date], (err, rows) => resolve(rows || []));
+      });
+      
+      const byHour = await new Promise((resolve) => {
+        db.all(`
+          SELECT 
+            CAST(strftime('%H', created_at) AS INTEGER) as hour,
+            COUNT(*) as orders,
+            COALESCE(SUM(total), 0) as revenue
+          FROM orders
+          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+          GROUP BY hour ORDER BY hour
+        `, [date], (err, rows) => resolve(rows || []));
+      });
+      
+      text += line + '\n';
+      text += center(businessInfo.business_name || 'Restaurant') + '\n';
+      text += center('DAILY SUMMARY REPORT') + '\n';
+      text += center(new Date(date).toLocaleDateString()) + '\n';
+      text += line + '\n\n';
+      
+      text += 'SALES OVERVIEW\n';
+      text += dashLine + '\n';
+      text += leftRight('Total Orders:', String(summary.orderCount || 0)) + '\n';
+      text += leftRight('Total Guests:', String(summary.guests || 0)) + '\n';
+      text += leftRight('Subtotal:', formatMoney(summary.subtotal)) + '\n';
+      text += leftRight('Tax:', formatMoney(summary.tax)) + '\n';
+      text += leftRight('Discounts:', formatMoney(summary.discounts)) + '\n';
+      text += leftRight('TOTAL:', formatMoney(summary.total)) + '\n';
+      text += leftRight('Avg Check:', formatMoney(summary.avgCheck)) + '\n\n';
+      
+      text += 'BY CHANNEL\n';
+      text += dashLine + '\n';
+      for (const ch of byChannel) {
+        text += leftRight(`${ch.channel} (${ch.orders})`, formatMoney(ch.revenue)) + '\n';
+      }
+      text += '\n';
+      
+      text += 'BY HOUR\n';
+      text += dashLine + '\n';
+      for (const h of byHour) {
+        const hourStr = `${String(h.hour).padStart(2, '0')}:00`;
+        text += leftRight(`${hourStr} (${h.orders})`, formatMoney(h.revenue)) + '\n';
+      }
+      
+      text += line + '\n';
+      text += center(`Generated: ${new Date().toLocaleString()}`) + '\n';
+      break;
+    }
+    
+    case 'shift-close-report': {
+      // Get shift data
+      const shiftData = await new Promise((resolve) => {
+        db.get(`
+          SELECT 
+            COUNT(*) as orderCount,
+            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM(tax), 0) as tax
+          FROM orders
+          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+        `, [date], (err, row) => resolve(row || {}));
+      });
+      
+      const cashPayments = await new Promise((resolve) => {
+        db.get(`
+          SELECT COALESCE(SUM(amount), 0) as cash
+          FROM payments
+          WHERE DATE(created_at) = ? AND payment_method = 'CASH' AND type = 'payment'
+        `, [date], (err, row) => resolve(row?.cash || 0));
+      });
+      
+      const cardPayments = await new Promise((resolve) => {
+        db.get(`
+          SELECT COALESCE(SUM(amount), 0) as card
+          FROM payments
+          WHERE DATE(created_at) = ? AND payment_method != 'CASH' AND type = 'payment'
+        `, [date], (err, row) => resolve(row?.card || 0));
+      });
+      
+      text += line + '\n';
+      text += center(businessInfo.business_name || 'Restaurant') + '\n';
+      text += center('SHIFT CLOSE REPORT') + '\n';
+      text += center(new Date(date).toLocaleDateString()) + '\n';
+      text += line + '\n\n';
+      
+      text += 'SHIFT SUMMARY\n';
+      text += dashLine + '\n';
+      text += leftRight('Total Orders:', String(shiftData.orderCount || 0)) + '\n';
+      text += leftRight('Total Sales:', formatMoney(shiftData.total)) + '\n';
+      text += leftRight('Tax Collected:', formatMoney(shiftData.tax)) + '\n\n';
+      
+      text += 'CASH DRAWER\n';
+      text += dashLine + '\n';
+      text += leftRight('Cash Received:', formatMoney(cashPayments)) + '\n';
+      text += leftRight('Card Payments:', formatMoney(cardPayments)) + '\n';
+      text += dashLine + '\n';
+      text += leftRight('Expected Cash:', formatMoney(cashPayments)) + '\n';
+      
+      text += '\n';
+      text += line + '\n';
+      text += center(`Generated: ${new Date().toLocaleString()}`) + '\n';
+      break;
+    }
+    
+    default:
+      text += line + '\n';
+      text += center(reportId.toUpperCase().replace(/-/g, ' ')) + '\n';
+      text += center(new Date(date).toLocaleDateString()) + '\n';
+      text += line + '\n';
+      text += center('No data available for this report') + '\n';
+      text += line + '\n';
+  }
   
   return text;
 }

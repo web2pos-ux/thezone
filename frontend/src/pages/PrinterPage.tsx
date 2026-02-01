@@ -160,7 +160,7 @@ interface KitchenPrinterLayout {
   leftMargin: number;
   fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
-  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY
+  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (For Here/Togo)
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
   posOrderNumber: KitchenElementStyle;      // POS 내부 순차번호 (001, 002...)
   externalOrderNumber: KitchenElementStyle; // 외부 주문번호 (딜리버리 채널 원본)
@@ -222,7 +222,7 @@ interface KitchenLayoutSettings {
   leftMargin: number;
   fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
-  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY
+  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (For Here/Togo)
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
   posOrderNumber: KitchenElementStyle;      // POS 내부 순차번호 (001, 002...)
   externalOrderNumber: KitchenElementStyle; // 외부 주문번호 (딜리버리 채널 원본)
@@ -1756,7 +1756,7 @@ export default function PrinterPage() {
       if (key === 'guestNumber') return null;
 
       let label = kitchenElementLabels[key] || key;
-      if (key === 'orderType') label = 'Order Type (DINE-IN/TOGO/ONLINE)';
+      if (key === 'orderType') label = 'Order Type (DINE-IN/TOGO/ONLINE/QSR)';
       if (key === 'posOrderNumber') label = 'POS Order # (001-999)';
       
       return (
@@ -4282,7 +4282,8 @@ export default function PrinterPage() {
                 onChange={(e) => setNewGroupName(e.target.value)}
                 placeholder="Group Name"
                 className="flex-1 p-2 border rounded text-sm"
-                onKeyPress={(e) => e.key === 'Enter' && addNewGroup()}
+                autoComplete="off"
+                onKeyDown={(e) => e.key === 'Enter' && addNewGroup()}
               />
               <button
                 onClick={addNewGroup}

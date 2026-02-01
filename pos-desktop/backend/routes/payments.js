@@ -27,7 +27,7 @@ module.exports = (db) => {
 	dbRun(`CREATE TABLE IF NOT EXISTS payments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		order_id INTEGER,
-		method TEXT,
+		payment_method TEXT,
 		amount REAL,
 		tip REAL,
 		ref TEXT,
@@ -54,7 +54,7 @@ module.exports = (db) => {
 				return res.status(400).json({ success:false, error:'orderId, method, amount are required' });
 			}
 			const createdAt = new Date().toISOString();
-			const result = await dbRun(`INSERT INTO payments(order_id, method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
+			const result = await dbRun(`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
 			
 			// Firebase에도 결제 데이터 저장
 			try {

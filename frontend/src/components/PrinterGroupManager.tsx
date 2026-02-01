@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Edit, Trash2, Loader2, X, ChevronDown, ChevronUp } from 'lucide-react';
 import DynamicPrinterForm, { PrinterRowData } from './DynamicPrinterForm';
-
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface Printer {
   printer_id: number;
@@ -212,7 +211,7 @@ const PrinterGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
               </div>
               <div className="flex items-center space-x-0">
                 <span className="text-base font-semibold text-slate-800">
-                  {group.printers.length} printer{group.printers.length !== 1 ? 's' : ''}
+                  {(group.printers || []).length} printer{(group.printers || []).length !== 1 ? 's' : ''}
                 </span>
                 <button onClick={() => setEditingGroup(group)} className="p-1 hover:bg-gray-200 rounded-full invisible group-hover:visible"><Edit size={18} /></button>
                 <button onClick={() => handleDelete(group.id)} className="p-1 text-red-500 hover:bg-red-100 rounded-full invisible group-hover:visible"><Trash2 size={18} /></button>
@@ -220,7 +219,7 @@ const PrinterGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
             </div>
             {expandedGroups.has(group.id) && (
               <div className="mt-0 space-y-0 pl-4 pr-24 py-0">
-                {group.printers.map(printer => (
+                {(group.printers || []).map(printer => (
                   <div key={printer.printer_id} className="flex justify-between items-center text-xs py-0">
                     <div className="flex flex-col">
                       <span className="text-gray-600">{printer.name}</span>
@@ -246,4 +245,4 @@ const PrinterGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
 };
 
 export { PrinterGroupEditor };
-export default PrinterGroupManager; 
+export default PrinterGroupManager;

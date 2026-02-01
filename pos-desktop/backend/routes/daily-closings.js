@@ -197,12 +197,12 @@ module.exports = (db) => {
       `, [targetDate]);
 
       // Get payment breakdown
-      // method variants: CASH, VISA, MC, DEBIT, OTHER_CARD, GIFT, COUPON, OTHER
+      // payment_method variants: CASH, VISA, MC, DEBIT, OTHER_CARD, GIFT, COUPON, OTHER
       const paymentData = await dbGet(`
         SELECT 
-          COALESCE(SUM(CASE WHEN UPPER(method) = 'CASH' THEN amount ELSE 0 END), 0) as cash_sales,
-          COALESCE(SUM(CASE WHEN UPPER(method) IN ('VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as card_sales,
-          COALESCE(SUM(CASE WHEN UPPER(method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN amount ELSE 0 END), 0) as cash_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as card_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
           COALESCE(SUM(tip), 0) as tip_total
         FROM payments 
         WHERE DATE(created_at) = ?
@@ -354,9 +354,9 @@ module.exports = (db) => {
 
       const paymentData = await dbGet(`
         SELECT 
-          COALESCE(SUM(CASE WHEN UPPER(method) = 'CASH' THEN amount ELSE 0 END), 0) as cash_sales,
-          COALESCE(SUM(CASE WHEN UPPER(method) IN ('VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as card_sales,
-          COALESCE(SUM(CASE WHEN UPPER(method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN amount ELSE 0 END), 0) as cash_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as card_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
           COALESCE(SUM(tip), 0) as tip_total
         FROM payments 
         WHERE DATE(created_at) = ?

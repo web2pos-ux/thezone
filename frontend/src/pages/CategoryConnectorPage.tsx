@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import CategoryModifierConnector from '../components/CategoryModifierConnector';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+import { API_URL } from '../config/constants';
 
 const CategoryConnectorPage: React.FC = () => {
   const { menuId } = useParams<{ menuId: string }>();
@@ -17,7 +18,7 @@ const CategoryConnectorPage: React.FC = () => {
 
   const loadMenuInfo = async () => {
     try {
-      const response = await fetch(`http://localhost:3177/api/menus/${menuId}`);
+      const response = await fetch(`${API_URL}/menus/${menuId}`);
       if (response.ok) {
         const menu = await response.json();
         setMenuName(menu.name);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Check, X, Clock, Calendar } from 'lucide-react';
+import { API_URL } from '../config/constants';
 
 interface ShiftSwapRequest {
   id: string;
@@ -45,7 +46,7 @@ const ShiftSwapsPage = () => {
 
   const loadShiftSwapRequests = async () => {
     try {
-      const response = await fetch('http://localhost:3177/api/work-schedule/shift-swaps');
+      const response = await fetch('${API_URL}/work-schedule/shift-swaps');
       if (!response.ok) throw new Error('Failed to load shift swap requests');
       const data = await response.json();
       
@@ -95,7 +96,7 @@ const ShiftSwapsPage = () => {
 
     try {
       // Update the request status in backend
-      const response = await fetch(`http://localhost:3177/api/work-schedule/shift-swaps/${requestId}`, {
+      const response = await fetch(`${API_URL}/work-schedule/shift-swaps/${requestId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -119,7 +120,7 @@ const ShiftSwapsPage = () => {
   // Reject request
   const rejectRequest = async (requestId: string) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/work-schedule/shift-swaps/${requestId}`, {
+      const response = await fetch(`${API_URL}/work-schedule/shift-swaps/${requestId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

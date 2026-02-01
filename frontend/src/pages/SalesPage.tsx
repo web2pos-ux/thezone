@@ -20,6 +20,7 @@ import { PartialSelectionPayload } from '../types/MoveMergeTypes';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import TablePaymentModal from '../components/PaymentModal';
 import DayClosingModal from '../components/DayClosingModal';
+import DayOpeningModal from '../components/DayOpeningModal';
 
 interface TableElement {
   id: string;
@@ -305,6 +306,28 @@ const SalesPage: React.FC = () => {
   const [showClockInOutMenu, setShowClockInOutMenu] = useState<boolean>(false);
   const [showClockInModal, setShowClockInModal] = useState<boolean>(false);
   const [showClockOutModal, setShowClockOutModal] = useState<boolean>(false);
+  const [isDayClosed, setIsDayClosed] = useState<boolean>(false);
+
+  // Day status check
+  const checkDayStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/daily-closings/today`);
+      const result = await response.json();
+      if (result.success) {
+        if (!result.isOpen && !result.isClosed) {
+          setShowOpeningModal(true);
+        } else if (result.isClosed) {
+          setIsDayClosed(true);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check day status:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkDayStatus();
+  }, [checkDayStatus]);
 
   // Opening/Closing modal state
   const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
@@ -455,12 +478,7 @@ const SalesPage: React.FC = () => {
   const [refundTaxRate, setRefundTaxRate] = useState<number>(0);
 
   // Day Opening/Closing state
-  const [isDayClosed, setIsDayClosed] = useState<boolean>(() => {
-    // Check localStorage for today's closing status on initial load
-    const today = new Date().toISOString().split('T')[0];
-    const closedDate = localStorage.getItem('pos_last_closed_date');
-    return closedDate === today;
-  });
+  // isDayClosed is already declared above with checkDayStatus
 
   // Move/Merge mode state (Restored from Backup)
   const [isMoveMergeMode, setIsMoveMergeMode] = useState<boolean>(false);
@@ -3348,7 +3366,7 @@ const SalesPage: React.FC = () => {
       const apiFloor = selectedFloor;
       
       // 테이블 요소들 가져오기
-      const elementsResponse = await fetch(`http://localhost:3177/api/table-map/elements?floor=${apiFloor}`);
+      const elementsResponse = await fetch(`${API_URL}/table-map/elements?floor=${apiFloor}`);
       if (elementsResponse.ok) {
         const elements = await elementsResponse.json();
         // 저장된 text를 그대로 유지 (표시명은 렌더 시 계산)
@@ -3416,7 +3434,7 @@ const SalesPage: React.FC = () => {
       }
 
       // 화면 크기 설정 가져오기 (백오피스와 동일하게 사용)
-      const screenResponse = await fetch(`http://localhost:3177/api/table-map/screen-size?floor=${encodeURIComponent(apiFloor)}&_ts=${Date.now()}` , { cache: 'no-store' as RequestCache });
+      const screenResponse = await fetch(`${API_URL}/table-map/screen-size?floor=${encodeURIComponent(apiFloor)}&_ts=${Date.now()}` , { cache: 'no-store' as RequestCache });
       if (screenResponse.ok) {
         const screen = await screenResponse.json();
         // 백오피스에서 설정한 화면비/픽셀을 그대로 적용
@@ -6594,7 +6612,7 @@ const SalesPage: React.FC = () => {
         const apiFloor = floor;
         
         // 테이블 요소들 가져오기
-        const elementsResponse = await fetch(`http://localhost:3177/api/table-map/elements?floor=${apiFloor}`);
+        const elementsResponse = await fetch(`${API_URL}/table-map/elements?floor=${apiFloor}`);
         if (elementsResponse.ok) {
           const elements = await elementsResponse.json();
           // 데이터 변환: text 필드를 getElementDisplayName으로 설정
@@ -6622,7 +6640,7 @@ const SalesPage: React.FC = () => {
         }
 
         // 화면 크기 설정 가져오기 (백오피스와 동일하게 사용)
-        const screenResponse = await fetch(`http://localhost:3177/api/table-map/screen-size?floor=${encodeURIComponent(apiFloor)}&_ts=${Date.now()}` , { cache: 'no-store' as RequestCache });
+        const screenResponse = await fetch(`${API_URL}/table-map/screen-size?floor=${encodeURIComponent(apiFloor)}&_ts=${Date.now()}` , { cache: 'no-store' as RequestCache });
         if (screenResponse.ok) {
           const screen = await screenResponse.json();
           // 백오피스에서 설정한 화면비/픽셀을 그대로 적용
@@ -9213,8 +9231,8 @@ const SalesPage: React.FC = () => {
             const orderType = onlineTogoPaymentOrder?.orderType;
             
             if (!orderId) {
-              if (orderType === 'togo' && onlineTogoPaymentOrder?.id) {
-                // Togo: 이미 로컬 DB에 있음
+              if ((orderType === 'togo' || orderType === 'forhere' || orderType === 'pickup') && onlineTogoPaymentOrder?.id) {
+                // Togo/ForHere/Pickup: 이미 로컬 DB에 있음
                 orderId = onlineTogoPaymentOrder.id;
                 onlineTogoSavedOrderIdRef.current = orderId;
               } else if (orderType === 'online' && onlineTogoPaymentOrder?.id) {
@@ -10721,99 +10739,45 @@ const SalesPage: React.FC = () => {
         />
       )}
       
-      {/* Opening Modal */}
-      {showOpeningModal && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-[700px]">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 text-center flex items-center justify-center gap-2">
-              🌅 Day Opening
-            </h2>
-            <p className="text-sm text-gray-500 text-center mb-4">Count your starting cash</p>
-            
-            <div className="flex gap-4">
-              {/* Left: Cash Denomination Grid */}
-              <div className="flex-1 bg-gray-50 rounded-lg p-3">
-                <div className="space-y-1">
-                  {cashDenominations.map((denom) => {
-                    const count = openingCashCounts[denom.key as keyof typeof openingCashCounts];
-                    const subtotal = count * denom.value;
-                    const isFocused = focusedOpeningDenom === denom.key;
-                    return (
-                      <div 
-                        key={denom.key} 
-                        className={`flex items-center gap-2 p-1 rounded cursor-pointer ${isFocused ? 'bg-blue-100 ring-2 ring-blue-500' : 'hover:bg-gray-100'}`}
-                        onClick={() => setFocusedOpeningDenom(denom.key)}
-                      >
-                        <div className={`w-16 px-2 py-1 border rounded text-center text-lg font-bold ${isFocused ? 'border-blue-500 bg-white' : 'border-gray-300 bg-gray-50'}`}>
-                          {count || 0}
-                        </div>
-                        <span className="text-gray-500 text-sm">×</span>
-                        <span className="w-14 text-right font-medium text-gray-700 text-sm">{denom.label}</span>
-                        <span className="text-gray-500 text-sm">=</span>
-                        <span className="flex-1 text-right font-bold text-green-600 text-sm">
-                          ${subtotal.toFixed(2)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                
-                {/* Total */}
-                <div className="border-t-2 border-gray-300 mt-2 pt-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-lg font-bold text-gray-700">Total:</span>
-                    <span className="text-xl font-bold text-green-600">
-                      ${openingCashTotal.toFixed(2)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Right: Number Pad */}
-              <div className="w-48">
-                <div className="grid grid-cols-3 gap-2">
-                  {['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '⌫'].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => handleOpeningNumPad(num)}
-                      className={`h-14 text-2xl font-bold rounded-lg transition-colors ${
-                        num === 'C' 
-                          ? 'bg-red-100 hover:bg-red-200 text-red-600' 
-                          : num === '⌫' 
-                            ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'
-                            : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
-                      }`}
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
-                
-                {/* Selected denomination indicator */}
-                <div className="mt-3 p-2 bg-blue-50 rounded-lg text-center">
-                  <span className="text-xs text-gray-500">Selected:</span>
-                  <div className="font-bold text-blue-600">
-                    {cashDenominations.find(d => d.key === focusedOpeningDenom)?.label || '-'}
-                  </div>
-                </div>
-              </div>
-            </div>
+      {/* Day Opening Modal */}
+      <DayOpeningModal 
+        isOpen={showOpeningModal} 
+        onClose={() => {
+          // If they close without opening, maybe show exit confirmation or just keep it open
+          setShowOpeningModal(false);
+        }} 
+        onOpeningComplete={(data) => {
+          setShowOpeningModal(false);
+          setIsDayClosed(false);
+          // Optional: Refresh any day-related state
+        }} 
+      />
 
-            <div className="flex gap-3 mt-4">
-              <button
+      {/* Day Closed Overlay */}
+      {isDayClosed && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-70 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
+            <div className="text-6xl mb-4">🌙</div>
+            <h2 className="text-3xl font-bold text-gray-800 mb-2">Day is Closed</h2>
+            <p className="text-gray-600 mb-8">
+              Today's business has been closed. <br/>
+              To start taking orders, please re-open the day.
+            </p>
+            <div className="flex flex-col gap-3">
+              <button 
                 onClick={() => {
-                  setShowOpeningModal(false);
-                  resetOpeningCashCounts();
+                  setIsDayClosed(false);
+                  setShowOpeningModal(true);
                 }}
-                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xl rounded-xl shadow-lg transition-all"
               >
-                Cancel
+                🔓 Re-Open Day
               </button>
-              <button
-                onClick={handleOpening}
-                className="flex-1 px-4 py-3 bg-green-500 hover:bg-green-600 rounded-lg font-semibold text-white transition-colors"
+              <button 
+                onClick={() => navigate('/')}
+                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl transition-all"
               >
-                Open Day
+                Go to Home
               </button>
             </div>
           </div>

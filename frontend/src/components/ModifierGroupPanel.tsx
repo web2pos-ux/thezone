@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Copy } from 'lucide-react';
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface ModifierGroup {
   modifier_group_id: number;

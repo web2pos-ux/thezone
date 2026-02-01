@@ -59,7 +59,7 @@ const DynamicInputForm: React.FC<DynamicInputFormProps> = ({
     setRows(processedData);
   }, [initialData, rateKey, minRows]);
 
-  // 새로 추가된 행에 포커스
+  // Focus on newly added row
   useEffect(() => {
     if (focusRowId && inputRefs.current[focusRowId]) {
       inputRefs.current[focusRowId]?.focus();

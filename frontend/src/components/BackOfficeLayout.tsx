@@ -40,6 +40,7 @@ const hardwareSubMenus = [
   { path: '/backoffice/table-devices', label: 'Table Devices', icon: '📱' },
   { path: '/backoffice/qr-code', label: 'QR Code', icon: '📱' },
   { path: '/backoffice/kds', label: 'KDS', icon: '📺' },
+  { path: '/backoffice/app-settings', label: 'System Settings', icon: '⚙️' },
 ];
 
 const reportSubMenus = [

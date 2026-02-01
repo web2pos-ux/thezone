@@ -1,8 +1,16 @@
 // backend/index.js
 
-// Load .env from backend folder first, then fallback to root
-require('dotenv').config({ path: './.env' });
-require('dotenv').config({ path: '../.env' });
+// Load .env from backend folder first, then fallback to root (optional in packaged app)
+let dotenv = null;
+try {
+  dotenv = require('dotenv');
+} catch (err) {
+  console.warn('[Backend] dotenv not available, skipping .env load');
+}
+if (dotenv) {
+  dotenv.config({ path: './.env' });
+  dotenv.config({ path: '../.env' });
+}
 const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
@@ -11,6 +19,7 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const { generateMenuId } = require('./utils/idGenerator');
+const { initDatabase } = require('./utils/dbInit');
 
 // --- App & DB Initialization ---
 const app = express();
@@ -57,111 +66,70 @@ const itemStorage = multer.diskStorage({
 });
 const itemUpload = multer({ storage: itemStorage });
 
-const db = new sqlite3.Database(dbPath, async (err) => {
-  if (err) {
-    console.error('Error opening database', err.message);
-  } else {
+const { db, dbRun, dbAll, dbGet } = require('./db');
+
+const dbExec = (sql) => new Promise((resolve, reject) => {
+  db.exec(sql, (err) => {
+    if (err) reject(err);
+    else resolve();
+  });
+});
+
+// --- Server Startup ---
+const startServer = async () => {
+  try {
     console.log('=== 데이터베이스 연결 정보 (v3) ===');
     console.log('Database connected successfully to', dbPath);
     console.log('현재 작업 디렉토리:', __dirname);
     
-    // 테이블 생성 (동기식 실행 보장) - CREATE IF NOT EXISTS만 사용
-    db.serialize(() => {
-        // Printers
-        db.run(`CREATE TABLE IF NOT EXISTS printers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL DEFAULT '',
-            type TEXT DEFAULT '',
-            selected_printer TEXT DEFAULT '',
-            sort_order INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-        
-        // Printer Groups
-        db.run(`CREATE TABLE IF NOT EXISTS printer_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-        
-        // Printer Group Links
-        db.run(`CREATE TABLE IF NOT EXISTS printer_group_links (
-            group_id INTEGER NOT NULL,
-            printer_id INTEGER NOT NULL,
-            PRIMARY KEY (group_id, printer_id),
-            FOREIGN KEY (group_id) REFERENCES printer_groups(id) ON DELETE CASCADE,
-            FOREIGN KEY (printer_id) REFERENCES printers(id) ON DELETE CASCADE
-        )`);
-        
-        // Taxes
-        db.run(`CREATE TABLE IF NOT EXISTS taxes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            rate REAL NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-        
-        // Tax Groups
-        db.run(`CREATE TABLE IF NOT EXISTS tax_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-        
-        // Tax Group Links
-        db.run(`CREATE TABLE IF NOT EXISTS tax_group_links (
-            group_id INTEGER NOT NULL,
-            tax_id INTEGER NOT NULL,
-            PRIMARY KEY (group_id, tax_id),
-            FOREIGN KEY (group_id) REFERENCES tax_groups(id) ON DELETE CASCADE,
-            FOREIGN KEY (tax_id) REFERENCES taxes(id) ON DELETE CASCADE
-        )`);
-
-        // Modifier Labels (for modifier groups)
-        db.run(`CREATE TABLE IF NOT EXISTS modifier_labels (
-            label_id INTEGER PRIMARY KEY,
-            group_id INTEGER NOT NULL,
-            label_name TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (group_id) REFERENCES modifier_groups(group_id) ON DELETE CASCADE
-        )`);
-
-        console.log('[Backend] 테이블 초기화 완료');
-        
-        // 테이블 확인
-        db.all("SELECT name FROM sqlite_master WHERE type='table'", [], (err, rows) => {
-            if (!err) console.log('[Backend] Tables:', rows.map(r => r.name).join(', '));
-        });
-    });
-    console.log('================================');
+    // 테이블 생성 및 표준화 (Single Source of Truth)
+    await initDatabase(db);
     
-    const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-      db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve(this);
-      });
-    });
+    await new Promise((resolve, reject) => {
+        db.serialize(() => {
+            // Printer Layout Settings (Standardized)
+            db.run(`CREATE TABLE IF NOT EXISTS printer_layout_settings (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                settings TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
+            
+            db.get('SELECT id FROM printer_layout_settings WHERE id = 1', (err, row) => {
+                if (!row) {
+                    const defaultSettings = {
+                        dineInKitchen: {
+                            kitchenPrinter: { title: "KITCHEN", showOrderType: true, showTableNumber: true, showOrderNumber: true, showTime: true, showItems: true },
+                            waitressPrinter: { title: "SERVER", showOrderType: true, showTableNumber: true, showOrderNumber: true, showTime: true, showItems: true }
+                        },
+                        externalKitchen: {
+                            kitchenPrinter: { title: "TAKEOUT", showOrderType: true, showOrderNumber: true, showCustomerInfo: true, showTime: true, showItems: true }
+                        }
+                    };
+                    db.run('INSERT INTO printer_layout_settings (id, settings) VALUES (1, ?)', [JSON.stringify(defaultSettings)]);
+                    console.log('[Backend] Initialized default printer layout settings');
+                }
+            });
 
-    const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-      db.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+            // Main Layout Settings
+            db.run(`CREATE TABLE IF NOT EXISTS layout_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                settings_data TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
+            
+            // Modifier Labels (Standardized)
+            db.run(`CREATE TABLE IF NOT EXISTS modifier_labels (
+                label_id INTEGER PRIMARY KEY,
+                modifier_group_id INTEGER NOT NULL,
+                label_name TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (modifier_group_id) REFERENCES modifier_groups(modifier_group_id) ON DELETE CASCADE
+            )`);
 
-    const dbExec = (sql) => new Promise((resolve, reject) => {
-      db.exec(sql, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
+            console.log('[Backend] 추가 테이블 초기화 완료');
+            resolve();
+        });
     });
 
     // One-time data migration for legacy data
@@ -372,8 +340,10 @@ const db = new sqlite3.Database(dbPath, async (err) => {
     } catch (error) {
       console.error("Database initialization failed:", error.message);
     }
+  } catch (err) {
+    console.error("[Backend] Global startServer error:", err);
   }
-});
+};
 
 // --- Middleware ---
 // CORS: Allow POS frontend, Firebase/Thezoneorder admin, and local development
@@ -527,6 +497,7 @@ const salesDashboardRoutes = require('./routes/sales-dashboard');
 const deliveryChannelsRoutes = require('./routes/delivery-channels')(db);
 const menuVisibilityRoutes = require('./routes/menu-visibility')(db);
 const dailyClosingsRoutes = require('./routes/daily-closings')(db);
+const appSettingsRoutes = require('./routes/app-settings');
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -566,6 +537,7 @@ app.use('/api/sales-dashboard', salesDashboardRoutes);
 app.use('/api/delivery-channels', deliveryChannelsRoutes);
 app.use('/api/menu-visibility', menuVisibilityRoutes);
 app.use('/api/daily-closings', dailyClosingsRoutes);
+app.use('/api/app-settings', appSettingsRoutes);
 
 // App Update Routes (앱 자동 업데이트)
 const appUpdateRoutes = require('./routes/app-update');
@@ -902,3 +874,4 @@ server.listen(PORT, async () => {
     }, 5000);
   } catch {}
 });
+startServer();

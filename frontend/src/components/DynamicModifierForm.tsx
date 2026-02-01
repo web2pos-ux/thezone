@@ -62,11 +62,11 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
     ]);
   }, [initialData, rateKey]);
 
-  // 새로운 행이 추가되었을 때 해당 입력 필드에 포커스
+  // Focus on the newly added row when it's created
   useEffect(() => {
     if (focusRowId && inputRefs.current[focusRowId]) {
       inputRefs.current[focusRowId]?.focus();
-      setFocusRowId(null); // 포커스 완료 후 상태 초기화
+      setFocusRowId(null); // Reset focus state after focusing
     }
   }, [focusRowId, rows]);
 
@@ -97,7 +97,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
   const addRow = () => {
     const newId = nanoid();
     setRows(prev => [...prev, { id: newId, name: '', rate: 0, rate2: 0 }]);
-    setFocusRowId(newId); // 새로 추가된 행에 포커스를 설정
+    setFocusRowId(newId); // Set focus to the newly added row
   };
 
   const removeRow = (id: string) => {
@@ -112,7 +112,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
         if (row.id === id) {
           const currentRate = typeof row.rate === 'string' ? parseFloat(row.rate) || 0 : row.rate;
           const newRate = direction === 'increase' ? currentRate + 0.25 : currentRate - 0.25;
-          return { ...row, rate: Math.max(0, newRate) }; // 최소값 0으로 제한
+          return { ...row, rate: Math.max(0, newRate) }; // Limit minimum to 0
         }
         return row;
       })
@@ -145,7 +145,7 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
       };
     });
 
-    console.log('🔍 DynamicModifierForm - 저장할 데이터:', finalData);
+    console.log('🔍 DynamicModifierForm - data to save:', finalData);
     onSave(finalData);
   };
 

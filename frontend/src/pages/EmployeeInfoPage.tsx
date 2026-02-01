@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Notification from '../components/Notification';
+import { API_URL } from '../config/constants';
 
 // Types
 interface Employee {
@@ -282,7 +283,7 @@ const EmployeeInfoPage = () => {
 
   const loadEmployees = async () => {
     try {
-      const response = await fetch('http://localhost:3177/api/work-schedule/employees');
+      const response = await fetch('${API_URL}/work-schedule/employees');
       if (!response.ok) throw new Error('Failed to load employees');
       const data = await response.json();
       
@@ -351,7 +352,7 @@ const EmployeeInfoPage = () => {
         return;
       }
 
-      const response = await fetch('http://localhost:3177/api/work-schedule/employees', {
+      const response = await fetch('${API_URL}/work-schedule/employees', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(employeeData)
@@ -409,7 +410,7 @@ const EmployeeInfoPage = () => {
         return;
       }
 
-      const response = await fetch(`http://localhost:3177/api/work-schedule/employees/${selectedEmployee.id}`, {
+      const response = await fetch(`${API_URL}/work-schedule/employees/${selectedEmployee.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updateData)
@@ -456,7 +457,7 @@ const EmployeeInfoPage = () => {
     if (employeeToRestore) {
       try {
         // Restore by setting status back to active
-        const response = await fetch(`http://localhost:3177/api/work-schedule/employees/${id}`, {
+        const response = await fetch(`${API_URL}/work-schedule/employees/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'active' })
@@ -498,7 +499,7 @@ const EmployeeInfoPage = () => {
     try {
       if (confirmAction.type === 'delete') {
         // Soft delete - mark as inactive in backend
-        const response = await fetch(`http://localhost:3177/api/work-schedule/employees/${confirmAction.employeeId}`, {
+        const response = await fetch(`${API_URL}/work-schedule/employees/${confirmAction.employeeId}`, {
           method: 'DELETE'
         });
 
@@ -573,11 +574,11 @@ const EmployeeInfoPage = () => {
     try {
       const endpoints = [
         {
-          url: `http://localhost:3177/api/work-schedule/employees/${selectedEmployee.id}/pin`,
+          url: `${API_URL}/work-schedule/employees/${selectedEmployee.id}/pin`,
           body: { pin: sanitizedPin }
         },
         {
-          url: `http://localhost:3177/api/work-schedule/employees/${selectedEmployee.id}`,
+          url: `${API_URL}/work-schedule/employees/${selectedEmployee.id}`,
           body: { pin: sanitizedPin }
         }
       ];

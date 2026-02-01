@@ -1,6 +1,8 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MenuCacheProvider, prefetchMenuCache } from './contexts/MenuCacheContext';
+import { loadSettings } from './config/settings';
+import * as constants from './config/constants';
 
 import IntroPage from './pages/IntroPage';
 import InitialSetupPage from './pages/InitialSetupPage';
@@ -42,6 +44,7 @@ import EmployeeReportPage from './pages/EmployeeReportPage';
 import PayrollSettingPage from './pages/PayrollSettingPage';
 import HardwareManagerPage from './pages/HardwareManagerPage';
 import PrinterPage from './pages/PrinterPage';
+import AppSettingsPage from './pages/AppSettingsPage';
 import CreditCardReaderPage from './pages/CreditCardReaderPage';
 import TableDevicesPage from './pages/TableDevicesPage';
 import QrCodePage from './pages/QrCodePage';
@@ -68,7 +71,43 @@ if (typeof window !== 'undefined') {
   });
 }
 
+const getStoredOperationMode = (): 'QSR' | 'FSR' | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem('pos_setup_config');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { operationMode?: 'QSR' | 'FSR' };
+    return parsed?.operationMode ?? null;
+  } catch (error) {
+    console.warn('Failed to read operation mode from localStorage:', error);
+    return null;
+  }
+};
+
+const SalesModeGate: React.FC = () => {
+  const mode = getStoredOperationMode();
+  if (mode === 'QSR') {
+    return <Navigate to="/qsr" replace />;
+  }
+  return <SalesPage />;
+};
+
 function App() {
+  // 앱 시작 시 설정 로드
+  useEffect(() => {
+    loadSettings().then((settings) => {
+      // constants.ts의 전역 변수 업데이트
+      (constants as any).API_URL = settings.api_url || constants.API_URL;
+      (constants as any).API_BASE = settings.api_base || constants.API_BASE;
+      console.log('[App] Settings loaded:', { 
+        API_URL: constants.API_URL, 
+        API_BASE: constants.API_BASE 
+      });
+    }).catch((err) => {
+      console.warn('[App] Failed to load settings:', err);
+    });
+  }, []);
+
   return (
     <MenuCacheProvider>
       <BrowserRouter>
@@ -98,7 +137,7 @@ function App() {
           <Route path="/qsr-old" element={<QsrPage />} />
           <Route path="/cafe" element={<QsrOrderPage />} />
           
-          <Route path="/sales" element={<SalesPage />} />
+          <Route path="/sales" element={<SalesModeGate />} />
           <Route path="/sales/order" element={
             <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
               <OrderPage />
@@ -147,6 +186,7 @@ function App() {
             <Route path="table-devices" element={<TableDevicesPage />} />
             <Route path="qr-code" element={<QrCodePage />} />
             <Route path="kds" element={<KdsPage />} />
+            <Route path="app-settings" element={<AppSettingsPage />} />
             <Route path="reports" element={<ReportManagerPage />} />
             <Route path="reports-dashboard" element={<ReportsDashboardPage />} />
             <Route path="sales-report" element={<SalesReportPage />} />

@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Edit, Trash2, Loader2, X, ChevronDown, ChevronUp } from 'lucide-react';
 import DynamicInputForm, { RowData } from './DynamicInputForm';
-
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface Tax {
   tax_id: number;
@@ -25,7 +24,7 @@ const TaxGroupEditor: React.FC<{
   const [name, setName] = useState(group?.name || '');
   const nameInputRef = useRef<HTMLInputElement>(null);
   
-  // 첫 영문자와 공백 뒤 첫 영문자를 대문자로 변환하는 함수
+  // Function to capitalize first letter of each word
   const capitalizeInput = (value: string): string => {
     return value.replace(/\b[a-z]/g, char => char.toUpperCase());
   };
@@ -137,6 +136,7 @@ const TaxGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
   };
   
   const handleDelete = async (groupId: number) => {
+    if (!window.confirm('Are you sure you want to delete this tax group?')) return;
     
     try {
       const response = await fetch(`${API_URL}/tax-groups/${groupId}`, { method: 'DELETE' });
@@ -203,7 +203,7 @@ const TaxGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
           </div>
         ))}
         {taxGroups.length === 0 && (
-          <p className="text-gray-500 text-center py-8">No tax groups found. Click 'Add New Group' to create one.</p>
+          <p className="text-gray-500 text-center py-8">No tax groups found. Click 'New Tax Group' to create one.</p>
         )}
       </div>
     </div>
@@ -211,4 +211,4 @@ const TaxGroupManager: React.FC<{ menuId?: number }> = ({ menuId }) => {
 };
 
 export { TaxGroupEditor };
-export default TaxGroupManager; 
+export default TaxGroupManager;

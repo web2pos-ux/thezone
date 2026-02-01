@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Settings, Plus, Trash2, Save } from 'lucide-react';
 import Header from '../components/Header';
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface ManagerPinConfig {
   pins: string[];

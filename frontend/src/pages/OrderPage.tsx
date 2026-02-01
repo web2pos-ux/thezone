@@ -2584,7 +2584,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const saved = localStorage.getItem('mod_extra1_tabs_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Sanitize: ensure all buttons have a color property
+          return parsed.map((tab: ModExtraTab) => ({
+            ...tab,
+            defaultColor: tab.defaultColor || 'bg-indigo-600',
+            groups: (tab.groups || []).map((group: ModExtraGroup) => ({
+              ...group,
+              color: group.color || 'bg-indigo-600',
+              buttons: (group.buttons || []).map((btn: ModExtraButton) => ({
+                ...btn,
+                color: btn.color || group.color || 'bg-indigo-600',
+                enabled: btn.enabled !== false
+              }))
+            }))
+          }));
+        }
       }
     } catch {}
     return [{ id: 'tab1', name: 'Tab 1', defaultColor: 'bg-indigo-600', groups: [defaultModExtraGroup('Add'), defaultModExtraGroup('No'), defaultModExtraGroup('Extra')], gridCols: 6 }];
@@ -2612,7 +2627,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const saved = localStorage.getItem('mod_extra2_tabs_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Sanitize: ensure all buttons have a color property
+          return parsed.map((tab: ModExtraTab) => ({
+            ...tab,
+            defaultColor: tab.defaultColor || 'bg-emerald-600',
+            groups: (tab.groups || []).map((group: ModExtraGroup) => ({
+              ...group,
+              color: group.color || 'bg-emerald-600',
+              buttons: (group.buttons || []).map((btn: ModExtraButton) => ({
+                ...btn,
+                color: btn.color || group.color || 'bg-emerald-600',
+                enabled: btn.enabled !== false
+              }))
+            }))
+          }));
+        }
       }
     } catch {}
     return [{ id: 'tab1', name: 'Tab 1', defaultColor: 'bg-emerald-600', groups: [defaultModExtraGroup('Add'), defaultModExtraGroup('No'), defaultModExtraGroup('Extra')], gridCols: 6 }];
@@ -8336,13 +8366,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       // 할인 후 금액
                       const subAfterDiscount = Math.max(0, Number((grossTotal - totalDiscountDisplay).toFixed(2)));
                       
-                      // GST를 할인 후 금액 비율로 재계산
+                      // 세금을 할인 후 금액 비율로 재계산
                       // tax 변수는 이미 Item Discount가 적용된 금액에 대한 세금임.
                       // 따라서 Order Discount 비율만큼만 추가로 차감해야 함.
                       const subAfterItemDiscount = Math.max(0, grossTotal - itemDiscountsTotal);
                       const discountRatio = subAfterItemDiscount > 0 ? subAfterDiscount / subAfterItemDiscount : 0;
                       const taxAfterDiscount = Number((tax * discountRatio).toFixed(2));
                       const totalAfterDiscount = Number((subAfterDiscount + taxAfterDiscount).toFixed(2));
+                      
+                      // 개별 세금 라인 가져오기 (GST, PST 등 각각 표시)
+                      const allTotals = computeGuestTotals('ALL');
+                      const individualTaxLines: Array<{ name: string; amount: number }> = (allTotals.taxLines || []).map((t: any) => ({
+                        name: t.name || 'Tax',
+                        amount: Number(((t.amount || 0) * discountRatio).toFixed(2))
+                      }));
                       
                       return (
                         <>
@@ -8362,10 +8399,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               </div>
                             </>
                           )}
-                          <div className="flex justify-between">
-                            <span>GST:</span>
-                            <span>${fmt(taxAfterDiscount)}</span>
-                          </div>
+                          {individualTaxLines.length > 0 ? (
+                            individualTaxLines.map((taxLine, idx) => (
+                              <div key={idx} className="flex justify-between">
+                                <span>{taxLine.name}:</span>
+                                <span>${fmt(taxLine.amount)}</span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="flex justify-between">
+                              <span>Tax:</span>
+                              <span>${fmt(taxAfterDiscount)}</span>
+                            </div>
+                          )}
                           <div className="flex justify-between text-base font-bold">
                             <span>Total:</span>
                             <span>${fmt(totalAfterDiscount)}</span>
@@ -10400,7 +10446,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${activeTab.gridCols}, minmax(0, 1fr))` }}>
                               {group.buttons.map((btn, idx) => (
                                 <button key={idx} onClick={() => { setModExtra1SelectedGroup(group.id); setModExtra1SelectedBtn(idx); }}
-                                  className={`rounded-lg text-white font-medium transition-all shadow-sm flex flex-col items-center justify-center ${btn.enabled ? btn.color : 'bg-gray-400'} ${modExtra1SelectedGroup === group.id && modExtra1SelectedBtn === idx ? 'ring-2 ring-yellow-400 ring-offset-1 scale-105' : 'hover:opacity-90 hover:shadow-md'}`}
+                                  className={`rounded-lg text-white font-medium transition-all shadow-sm flex flex-col items-center justify-center ${btn.enabled !== false ? (btn.color || group.color || 'bg-indigo-600') : 'bg-gray-400'} ${modExtra1SelectedGroup === group.id && modExtra1SelectedBtn === idx ? 'ring-2 ring-yellow-400 ring-offset-1 scale-105' : 'hover:opacity-90 hover:shadow-md'}`}
                                   style={{ height: '56px', fontSize: `${layoutSettings.modifierFontSize}px` }}>
                                   <span className="truncate w-full text-center px-1">{btn.name || `Btn ${idx + 1}`}</span>
                                   <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-90">${btn.amount.toFixed(2)}</span>
@@ -10452,7 +10498,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <label className="block text-xs font-medium text-gray-500 mb-1">Color</label>
                             <button
                               onClick={() => { setModifierColorModalSource('modExtra1'); setShowModifierColorModal(true); }}
-                              className={`w-full h-10 rounded-lg border-2 border-gray-300 hover:border-blue-400 transition-all ${btn.color}`}
+                              className={`w-full h-10 rounded-lg border-2 border-gray-300 hover:border-blue-400 transition-all ${btn.color || 'bg-indigo-600'}`}
                               title="Click to select color"
                             />
                           </div>
@@ -10600,7 +10646,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${activeTab.gridCols}, minmax(0, 1fr))` }}>
                               {group.buttons.map((btn, idx) => (
                                 <button key={idx} onClick={() => { setModExtra2SelectedGroup(group.id); setModExtra2SelectedBtn(idx); }}
-                                  className={`rounded-lg text-white font-medium transition-all shadow-sm flex flex-col items-center justify-center ${btn.enabled ? btn.color : 'bg-gray-400'} ${modExtra2SelectedGroup === group.id && modExtra2SelectedBtn === idx ? 'ring-2 ring-yellow-400 ring-offset-1 scale-105' : 'hover:opacity-90 hover:shadow-md'}`}
+                                  className={`rounded-lg text-white font-medium transition-all shadow-sm flex flex-col items-center justify-center ${btn.enabled !== false ? (btn.color || group.color || 'bg-emerald-600') : 'bg-gray-400'} ${modExtra2SelectedGroup === group.id && modExtra2SelectedBtn === idx ? 'ring-2 ring-yellow-400 ring-offset-1 scale-105' : 'hover:opacity-90 hover:shadow-md'}`}
                                   style={{ height: '56px', fontSize: `${layoutSettings.modifierFontSize}px` }}>
                                   <span className="truncate w-full text-center px-1">{btn.name || `Btn ${idx + 1}`}</span>
                                   <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-90">${btn.amount.toFixed(2)}</span>
@@ -10652,7 +10698,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <label className="block text-xs font-medium text-gray-500 mb-1">Color</label>
                             <button
                               onClick={() => { setModifierColorModalSource('modExtra2'); setShowModifierColorModal(true); }}
-                              className={`w-full h-10 rounded-lg border-2 border-gray-300 hover:border-emerald-400 transition-all ${btn.color}`}
+                              className={`w-full h-10 rounded-lg border-2 border-gray-300 hover:border-emerald-400 transition-all ${btn.color || 'bg-emerald-600'}`}
                               title="Click to select color"
                             />
                           </div>
@@ -10735,7 +10781,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div key={group.id} className="mb-3">
                     <div className="text-xs font-semibold text-gray-500 mb-1 px-1">{group.name}</div>
                     <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${activeTab.gridCols || 6}, minmax(0, 1fr))` }}>
-                      {group.buttons.filter(btn => btn.enabled && btn.name).map((btn, idx) => (
+                      {group.buttons.filter(btn => btn.enabled !== false).map((btn, idx) => (
                         <button key={idx} onClick={() => {
                           // Add modifier to selected item
                           const currentItem = selectedMenuItemId ? menuItems.find(m => m.id === selectedMenuItemId) : null;
@@ -10748,14 +10794,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             const mods = Array.isArray(target.modifiers) ? [...target.modifiers] : [];
                             const GROUP_ID = '__MOD_EXTRA1__';
                             const existing = mods.find((m: any) => m.groupId === GROUP_ID);
-                            const newEntry = { id: `mod1-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, name: btn.name, price_delta: Number(btn.amount || 0) };
+                            const newEntry = { id: `mod1-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, name: btn.name || `Button ${idx + 1}`, price_delta: Number(btn.amount || 0) };
                             if (existing) {
                               const entries = Array.isArray(existing.selectedEntries) ? [...existing.selectedEntries, newEntry] : [newEntry];
                               const totalModifierPrice = entries.reduce((s: number, e: any) => s + (e.price_delta || 0), 0);
                               const merged = { ...existing, selectedEntries: entries, modifierNames: entries.map((e: any) => e.name), totalModifierPrice };
                               target.modifiers = mods.map((m: any) => (m.groupId === GROUP_ID ? merged : m));
                             } else {
-                              const grp = { groupId: GROUP_ID, groupName: modExtra1Name, modifierIds: [], modifierNames: [btn.name], selectedEntries: [newEntry], totalModifierPrice: Number(btn.amount || 0) } as any;
+                              const grp = { groupId: GROUP_ID, groupName: modExtra1Name, modifierIds: [], modifierNames: [btn.name || `Button ${idx + 1}`], selectedEntries: [newEntry], totalModifierPrice: Number(btn.amount || 0) } as any;
                               target.modifiers = [...mods, grp];
                             }
                             target.totalPrice = Number(((target.price || 0) + (target.modifiers || []).reduce((sum: number, m: any) => sum + (m.totalModifierPrice || 0), 0)).toFixed(2));
@@ -10764,10 +10810,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           });
                           setShowModExtra1Popup(false);
                         }}
-                          className={`${btn.color} text-white rounded-lg font-medium shadow-sm hover:opacity-90 transition-all flex flex-col items-center justify-center`}
-                          style={{ height: '56px', fontSize: `${layoutSettings.modifierFontSize}px` }}>
-                          <span className="truncate w-full text-center px-1">{btn.name}</span>
-                          <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-90">${btn.amount.toFixed(2)}</span>
+                          className={`${btn.color || 'bg-indigo-600'} text-white rounded-lg font-medium shadow-md hover:opacity-90 hover:shadow-lg transition-all flex flex-col items-center justify-center border border-white/20`}
+                          style={{ 
+                            height: '56px', 
+                            fontSize: `${layoutSettings.modifierFontSize}px`,
+                            backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(0,0,0,0.1))'
+                          }}>
+                          <span className="truncate w-full text-center px-1 font-semibold">{btn.name || `Button ${idx + 1}`}</span>
+                          <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">${btn.amount.toFixed(2)}</span>
                         </button>
                       ))}
                     </div>
@@ -10795,7 +10845,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div key={group.id} className="mb-3">
                     <div className="text-xs font-semibold text-gray-500 mb-1 px-1">{group.name}</div>
                     <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${activeTab.gridCols || 6}, minmax(0, 1fr))` }}>
-                      {group.buttons.filter(btn => btn.enabled && btn.name).map((btn, idx) => (
+                      {group.buttons.filter(btn => btn.enabled !== false).map((btn, idx) => (
                         <button key={idx} onClick={() => {
                           // Add modifier to selected item
                           const currentItem = selectedMenuItemId ? menuItems.find(m => m.id === selectedMenuItemId) : null;
@@ -10808,14 +10858,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             const mods = Array.isArray(target.modifiers) ? [...target.modifiers] : [];
                             const GROUP_ID = '__MOD_EXTRA2__';
                             const existing = mods.find((m: any) => m.groupId === GROUP_ID);
-                            const newEntry = { id: `mod2-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, name: btn.name, price_delta: Number(btn.amount || 0) };
+                            const newEntry = { id: `mod2-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, name: btn.name || `Button ${idx + 1}`, price_delta: Number(btn.amount || 0) };
                             if (existing) {
                               const entries = Array.isArray(existing.selectedEntries) ? [...existing.selectedEntries, newEntry] : [newEntry];
                               const totalModifierPrice = entries.reduce((s: number, e: any) => s + (e.price_delta || 0), 0);
                               const merged = { ...existing, selectedEntries: entries, modifierNames: entries.map((e: any) => e.name), totalModifierPrice };
                               target.modifiers = mods.map((m: any) => (m.groupId === GROUP_ID ? merged : m));
                             } else {
-                              const grp = { groupId: GROUP_ID, groupName: modExtra2Name, modifierIds: [], modifierNames: [btn.name], selectedEntries: [newEntry], totalModifierPrice: Number(btn.amount || 0) } as any;
+                              const grp = { groupId: GROUP_ID, groupName: modExtra2Name, modifierIds: [], modifierNames: [btn.name || `Button ${idx + 1}`], selectedEntries: [newEntry], totalModifierPrice: Number(btn.amount || 0) } as any;
                               target.modifiers = [...mods, grp];
                             }
                             target.totalPrice = Number(((target.price || 0) + (target.modifiers || []).reduce((sum: number, m: any) => sum + (m.totalModifierPrice || 0), 0)).toFixed(2));
@@ -10824,10 +10874,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           });
                           setShowModExtra2Popup(false);
                         }}
-                          className={`${btn.color} text-white rounded-lg font-medium shadow-sm hover:opacity-90 transition-all flex flex-col items-center justify-center`}
-                          style={{ height: '56px', fontSize: `${layoutSettings.modifierFontSize}px` }}>
-                          <span className="truncate w-full text-center px-1">{btn.name}</span>
-                          <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-90">${btn.amount.toFixed(2)}</span>
+                          className={`${btn.color || 'bg-emerald-600'} text-white rounded-lg font-medium shadow-md hover:opacity-90 hover:shadow-lg transition-all flex flex-col items-center justify-center border border-white/20`}
+                          style={{ 
+                            height: '56px', 
+                            fontSize: `${layoutSettings.modifierFontSize}px`,
+                            backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(0,0,0,0.1))'
+                          }}>
+                          <span className="truncate w-full text-center px-1 font-semibold">{btn.name || `Button ${idx + 1}`}</span>
+                          <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">${btn.amount.toFixed(2)}</span>
                         </button>
                       ))}
                     </div>

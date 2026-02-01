@@ -32,6 +32,7 @@ import { loadServerAssignment, saveServerAssignment, clearServerAssignment } fro
 import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import DayClosingModal from '../components/DayClosingModal';
+import DayOpeningModal from '../components/DayOpeningModal';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
@@ -636,7 +637,19 @@ const QsrOrderPage = () => {
     
     const loadQsrMenu = async () => {
       try {
-        // First try localStorage config
+        // First try Order Screen Setup configuration (pos channel = Dine-in Order QSR Mode)
+        const setupRes = await fetch(`${API_URL}/order-page-setups/type/pos`);
+        if (setupRes.ok) {
+          const setupResult = await setupRes.json();
+          const setupData = setupResult.data || setupResult;
+          if (Array.isArray(setupData) && setupData.length > 0 && setupData[0].menuId) {
+            console.log('[QSR] Using Order Screen Setup config:', setupData[0]);
+            setQsrMenuId(setupData[0].menuId);
+            return;
+          }
+        }
+        
+        // Second try localStorage config (legacy)
         const saved = localStorage.getItem('qsr-pos-setup');
         if (saved) {
           const config = JSON.parse(saved);
@@ -1268,17 +1281,44 @@ const QsrOrderPage = () => {
   const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
   const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
   
-  // Opening/Closing Modal States
-  const [isDayClosed, setIsDayClosed] = useState<boolean>(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const closedDate = localStorage.getItem('pos_last_closed_date');
-    const openedDate = localStorage.getItem('pos_last_opened_date');
-    if (closedDate === today && openedDate !== today) return true;
-    if (openedDate === today) return false;
-    return true;
-  });
   const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
   const [showClosingModal, setShowClosingModal] = useState<boolean>(false);
+  const [isDayClosed, setIsDayClosed] = useState<boolean>(false);
+  const [requiresOpening, setRequiresOpening] = useState<boolean>(false);
+
+  // Day status check
+  const checkDayStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/daily-closings/today`);
+      const result = await response.json();
+      
+      if (result.success) {
+        if (result.isOpen) {
+          // 이미 영업 중 → Opening 모달 안 열림
+          setIsDayClosed(false);
+          setRequiresOpening(false);
+          setShowOpeningModal(false);
+        } else if (result.isClosed) {
+          // Closing 완료 → 다시 Opening 필요
+          setIsDayClosed(true);
+          setRequiresOpening(true);
+          setShowOpeningModal(true);
+        } else {
+          // 오늘 레코드 없음 (첫 Opening 필요)
+          setRequiresOpening(true);
+          setShowOpeningModal(true);
+        }
+      }
+      // API 실패 시: 아무것도 안 함 (기존 상태 유지)
+    } catch (error) {
+      console.error('Failed to check day status:', error);
+      // 에러 시: 아무것도 안 함 (기존 상태 유지)
+    }
+  }, []);
+
+  useEffect(() => {
+    checkDayStatus();
+  }, [checkDayStatus]);
   const cashDenominations = [
     { label: '1¢', key: 'cent1', value: 0.01 }, { label: '5¢', key: 'cent5', value: 0.05 },
     { label: '10¢', key: 'cent10', value: 0.10 }, { label: '25¢', key: 'cent25', value: 0.25 },
@@ -3771,6 +3811,56 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   }, [softKbTarget, layoutSettings, kbLang]);
   const [showManagerPinModal, setShowManagerPinModal] = useState(false);
   const [pendingVoid, setPendingVoid] = useState<{ amount: number } | null>(null);
+  
+  // BackOffice PIN Modal
+  const [showBackOfficePinModal, setShowBackOfficePinModal] = useState(false);
+  const [backOfficePinError, setBackOfficePinError] = useState('');
+  const [backOfficePin, setBackOfficePin] = useState('');
+  
+  const handleBackOfficeAccess = () => {
+    setBackOfficePin('');
+    setBackOfficePinError('');
+    setShowBackOfficePinModal(true);
+  };
+  
+  const verifyBackOfficePin = async (pin: string) => {
+    try {
+      // 임시 매니저 PIN: 0888
+      if (pin === '0888') {
+        setShowBackOfficePinModal(false);
+        navigate('/backoffice');
+        return;
+      }
+      
+      const response = await fetch(`${API_URL}/employees/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+      });
+      const data = await response.json();
+      
+      if (data.success && data.employee) {
+        // Manager 이상만 허용 (MANAGER, ADMIN, OWNER)
+        const allowedRoles = ['MANAGER', 'ADMIN', 'OWNER'];
+        if (allowedRoles.includes(data.employee.role?.toUpperCase())) {
+          setShowBackOfficePinModal(false);
+          navigate('/backoffice');
+        } else {
+          setBackOfficePinError('Manager access required');
+        }
+      } else {
+        setBackOfficePinError('Invalid PIN');
+      }
+    } catch (err) {
+      // 임시 매니저 PIN: 0888
+      if (pin === '0888') {
+        setShowBackOfficePinModal(false);
+        navigate('/backoffice');
+      } else {
+        setBackOfficePinError('Verification failed');
+      }
+    }
+  };
 
   // Open Price 선택 옵션 상태 (compact tiles UI용)
   const [taxGroupOptions, setTaxGroupOptions] = useState<Array<{ id: number; name: string; totalRate: number }>>([]);
@@ -6522,7 +6612,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               deliveryChannel: deliveryCompany,  // 백엔드에서 사용하는 키
               deliveryOrderNumber: deliveryOrderNumber,
               externalOrderNumber: deliveryOrderNumber,  // 백엔드 호환용
-              deliveryAddress: qsrCustomerAddress || ''
+              deliveryAddress: qsrCustomerAddress || '',
+              // QSR 모드 정보 (레이아웃 선택용)
+              isQsrMode: isQsrMode,
+              qsrOrderType: qsrOrderType  // forhere, togo, pickup, online, delivery
             },
             isAdditionalOrder: wasUpdateMode,
             isPaid: isPaidOrder,
@@ -10429,7 +10522,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <button onClick={() => { setShowQsrMoreMenu(false); resetGiftCardForm(); setGiftCardMode('sell'); setShowGiftCardModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Gift Card</button>
                             <button onClick={() => { setShowQsrMoreMenu(false); setOnlineModalTab('preptime'); setShowPrepTimeModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Online</button>
                             <button onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">{isDayClosed ? 'Opening' : 'Closing'}</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); navigate('/backoffice'); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Back Office</button>
+                            <button onClick={() => { setShowQsrMoreMenu(false); handleBackOfficeAccess(); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Back Office</button>
                             <button onClick={() => { setShowQsrMoreMenu(false); window.close(); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Goto Windows</button>
                           </div>
                         )}
@@ -10693,6 +10786,57 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   {/* Manager PIN / Open Price Settings Modal */}
   {showManagerPinModal && (
     <ManagerPinModal isOpen={showManagerPinModal} onClose={() => setShowManagerPinModal(false)} />
+  )}
+  
+  {/* BackOffice Access PIN Modal */}
+  {showBackOfficePinModal && (
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50">
+      <div className="bg-white rounded-2xl shadow-2xl p-6 w-80">
+        <h2 className="text-xl font-bold text-gray-800 mb-4 text-center">Manager PIN Required</h2>
+        <p className="text-gray-600 text-sm mb-4 text-center">Enter Manager PIN to access Back Office</p>
+        
+        {/* PIN Display */}
+        <div className="flex justify-center gap-2 mb-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className={`w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xl ${
+              backOfficePin.length > i ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
+            }`}>
+              {backOfficePin.length > i ? '•' : ''}
+            </div>
+          ))}
+        </div>
+        
+        {backOfficePinError && (
+          <p className="text-red-500 text-sm text-center mb-3">{backOfficePinError}</p>
+        )}
+        
+        {/* PIN Pad */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          {['1','2','3','4','5','6','7','8','9'].map((num) => (
+            <button key={num} onClick={() => {
+              if (backOfficePin.length < 4) {
+                const newPin = backOfficePin + num;
+                setBackOfficePin(newPin);
+                setBackOfficePinError('');
+                if (newPin.length === 4) verifyBackOfficePin(newPin);
+              }
+            }} className="h-12 bg-gray-100 hover:bg-gray-200 rounded-lg text-xl font-semibold">{num}</button>
+          ))}
+          <button onClick={() => { setBackOfficePin(''); setBackOfficePinError(''); }} className="h-12 bg-red-100 hover:bg-red-200 rounded-lg text-sm font-semibold text-red-700">Clear</button>
+          <button onClick={() => {
+            if (backOfficePin.length < 4) {
+              const newPin = backOfficePin + '0';
+              setBackOfficePin(newPin);
+              setBackOfficePinError('');
+              if (newPin.length === 4) verifyBackOfficePin(newPin);
+            }
+          }} className="h-12 bg-gray-100 hover:bg-gray-200 rounded-lg text-xl font-semibold">0</button>
+          <button onClick={() => setBackOfficePin(backOfficePin.slice(0, -1))} className="h-12 bg-yellow-100 hover:bg-yellow-200 rounded-lg text-xl font-semibold">⌫</button>
+        </div>
+        
+        <button onClick={() => { setShowBackOfficePinModal(false); setBackOfficePin(''); setBackOfficePinError(''); }} className="w-full py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold">Cancel</button>
+      </div>
+    </div>
   )}
 
   {voidToast && (
@@ -14709,99 +14853,47 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         </div>
       )}
 
-      {/* Opening Modal - FSR과 동일 */}
-      {showOpeningModal && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-[700px]">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4 text-center flex items-center justify-center gap-2">
-              🌅 Day Opening
-            </h2>
-            <p className="text-sm text-gray-500 text-center mb-4">Count your starting cash</p>
-            
-            <div className="flex gap-4">
-              {/* Left: Cash Denomination Grid */}
-              <div className="flex-1 bg-gray-50 rounded-lg p-3">
-                <div className="space-y-1">
-                  {cashDenominations.map((denom) => {
-                    const count = openingCashCounts[denom.key as keyof typeof openingCashCounts];
-                    const subtotal = count * denom.value;
-                    const isFocused = focusedOpeningDenom === denom.key;
-                    return (
-                      <div 
-                        key={denom.key} 
-                        className={`flex items-center gap-2 p-1 rounded cursor-pointer ${isFocused ? 'bg-blue-100 ring-2 ring-blue-500' : 'hover:bg-gray-100'}`}
-                        onClick={() => setFocusedOpeningDenom(denom.key)}
-                      >
-                        <div className={`w-16 px-2 py-1 border rounded text-center text-lg font-bold ${isFocused ? 'border-blue-500 bg-white' : 'border-gray-300 bg-gray-50'}`}>
-                          {count || 0}
-                        </div>
-                        <span className="text-gray-500 text-sm">×</span>
-                        <span className="w-14 text-right font-medium text-gray-700 text-sm">{denom.label}</span>
-                        <span className="text-gray-500 text-sm">=</span>
-                        <span className="flex-1 text-right font-bold text-green-600 text-sm">
-                          ${subtotal.toFixed(2)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                
-                {/* Total */}
-                <div className="border-t-2 border-gray-300 mt-2 pt-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-lg font-bold text-gray-700">Total:</span>
-                    <span className="text-xl font-bold text-green-600">
-                      ${openingCashTotal.toFixed(2)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Right: Number Pad */}
-              <div className="w-48">
-                <div className="grid grid-cols-3 gap-2">
-                  {['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '⌫'].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() => handleOpeningNumPad(num)}
-                      className={`h-14 text-2xl font-bold rounded-lg transition-colors ${
-                        num === 'C' 
-                          ? 'bg-red-100 hover:bg-red-200 text-red-600' 
-                          : num === '⌫' 
-                            ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-700'
-                            : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
-                      }`}
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
-                
-                {/* Selected denomination indicator */}
-                <div className="mt-3 p-2 bg-blue-50 rounded-lg text-center">
-                  <span className="text-xs text-gray-500">Selected:</span>
-                  <div className="font-bold text-blue-600">
-                    {cashDenominations.find(d => d.key === focusedOpeningDenom)?.label || '-'}
-                  </div>
-                </div>
-              </div>
-            </div>
+      {/* Opening Modal - 영업 시작 전 필수 */}
+      <DayOpeningModal 
+        isOpen={showOpeningModal} 
+        onClose={() => {
+          // requiresOpening이 true면 닫지 못함 (영업 시작 전 Opening 필수)
+          if (!requiresOpening) {
+            setShowOpeningModal(false);
+          }
+        }} 
+        onOpeningComplete={(data) => {
+          setShowOpeningModal(false);
+          setIsDayClosed(false);
+          setRequiresOpening(false);
+        }} 
+      />
 
-            <div className="flex gap-3 mt-4">
-              <button
+      {/* Day Closed Overlay */}
+      {isDayClosed && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-70 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
+            <div className="text-6xl mb-4">🌙</div>
+            <h2 className="text-3xl font-bold text-gray-800 mb-2">Day is Closed</h2>
+            <p className="text-gray-600 mb-8">
+              Today's business has been closed. <br/>
+              To start taking orders, please re-open the day.
+            </p>
+            <div className="flex flex-col gap-3">
+              <button 
                 onClick={() => {
-                  setShowOpeningModal(false);
-                  resetOpeningCashCounts();
+                  setIsDayClosed(false);
+                  setShowOpeningModal(true);
                 }}
-                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xl rounded-xl shadow-lg transition-all"
               >
-                Cancel
+                🔓 Re-Open Day
               </button>
-              <button
-                onClick={handleOpening}
-                className="flex-1 px-4 py-3 bg-green-500 hover:bg-green-600 rounded-lg font-semibold text-white transition-colors"
+              <button 
+                onClick={() => navigate('/')}
+                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl transition-all"
               >
-                Open Day
+                Go to Home
               </button>
             </div>
           </div>

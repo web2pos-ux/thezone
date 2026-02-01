@@ -40,7 +40,6 @@ module.exports = (db) => {
       sql += ' ORDER BY type, sort_order, name';
 
       const modifiers = await dbAll(sql, params);
-      // Ensure price_delta2 has a default value
       const result = modifiers.map(m => ({
         ...m,
         price_delta2: m.price_delta2 || 0
@@ -73,16 +72,14 @@ module.exports = (db) => {
       await dbRun('INSERT INTO modifiers (modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)', 
         [newModifierId, name.trim(), price_delta, priceDelta2, modifierType, sortOrder]);
 
-      const newModifier = {
+      res.status(201).json({
         id: newModifierId,
         name: name.trim(),
         price_delta: price_delta,
         price_delta2: priceDelta2,
         type: modifierType,
         sort_order: sortOrder
-      };
-
-      res.status(201).json(newModifier);
+      });
     } catch (error) {
       console.error('Error creating modifier:', error);
       res.status(500).json({ error: 'Failed to create modifier' });
@@ -110,16 +107,14 @@ module.exports = (db) => {
       await dbRun('UPDATE modifiers SET name = ?, price_delta = ?, price_delta2 = ?, type = ?, sort_order = ? WHERE modifier_id = ? AND is_deleted = 0', 
         [name.trim(), price_delta, priceDelta2, modifierType, sortOrder, modifierId]);
 
-      const updatedModifier = {
+      res.json({
         id: parseInt(modifierId),
         name: name.trim(),
         price_delta: price_delta,
         price_delta2: priceDelta2,
         type: modifierType,
         sort_order: sortOrder
-      };
-
-      res.json(updatedModifier);
+      });
     } catch (error) {
       console.error('Error updating modifier:', error);
       res.status(500).json({ error: 'Failed to update modifier' });
@@ -131,12 +126,8 @@ module.exports = (db) => {
     const { id: modifierId } = req.params;
 
     try {
-      // Soft delete the modifier
       await dbRun('UPDATE modifiers SET is_deleted = 1 WHERE modifier_id = ?', [modifierId]);
-
-      // Remove from all groups
       await dbRun('DELETE FROM modifier_group_links WHERE modifier_id = ?', [modifierId]);
-
       res.status(204).send();
     } catch (error) {
       console.error(`Failed to delete modifier ${modifierId}:`, error);
@@ -145,4 +136,4 @@ module.exports = (db) => {
   });
 
   return router;
-}; 
+};

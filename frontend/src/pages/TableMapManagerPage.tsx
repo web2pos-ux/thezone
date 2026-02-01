@@ -276,7 +276,7 @@ const TableMapManagerPage = () => {
   // 백엔드 API에서 테이블 요소들 불러오기
   const getSavedTableElements = async (floor: string) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/table-map/elements?floor=${floor}`);
+      const response = await fetch(`${API_URL}/table-map/elements?floor=${floor}`);
       if (response.ok) {
         const elements = await response.json();
         // 기존 요소들에 rotation 속성 추가 (없는 경우 0으로 설정)
@@ -1802,7 +1802,7 @@ const TableMapManagerPage = () => {
       console.log('🔍 requestBody.elements:', requestBody.elements);
       console.log('🔍 requestBody.elements isArray:', Array.isArray(requestBody.elements));
       
-      const response = await fetch('http://localhost:3177/api/table-map/elements', {
+      const response = await fetch(`${API_URL}/table-map/elements`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1875,7 +1875,7 @@ const TableMapManagerPage = () => {
     
     // 6. 백엔드 API에서 현재 Floor의 모든 요소 삭제
     try {
-      const response = await fetch(`http://localhost:3177/api/table-map/elements/floor/${selectedFloor}`, {
+      const response = await fetch(`${API_URL}/table-map/elements/floor/${selectedFloor}`, {
         method: 'DELETE'
       });
       
@@ -1940,7 +1940,7 @@ const TableMapManagerPage = () => {
     
     // 백엔드 API에 화면 크기 설정 저장
     try {
-      const response = await fetch('http://localhost:3177/api/table-map/screen-size', {
+      const response = await fetch(`${API_URL}/table-map/screen-size`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

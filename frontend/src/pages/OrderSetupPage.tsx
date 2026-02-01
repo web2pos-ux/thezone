@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { API_URL } from '../config/constants';
 
 interface Menu {
   menu_id: number;
@@ -16,10 +17,8 @@ interface OrderPageSetup {
   createdAt: string;
 }
 
-const API_URL = 'http://localhost:3177/api';
-
 const orderTypes = [
-  { id: 'pos', label: 'Dine-in Order' },
+  { id: 'pos', label: 'Dine-in Order (QSR Mode)' },
   { id: 'togo', label: 'Togo Order' },
   { id: 'online', label: 'Online Order' },
   { id: 'delivery', label: 'Delivery Order' },

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { nanoid } from 'nanoid';
 import { Plus, Trash2, Loader2 } from 'lucide-react';
+import { API_URL } from '../config/constants';
 
 export interface PrinterRowData {
   id: string;
@@ -60,7 +61,7 @@ const DynamicPrinterForm: React.FC<DynamicPrinterFormProps> = ({
     const fetchSystemPrinters = async () => {
       setLoadingSystemPrinters(true);
       try {
-        const response = await fetch('http://localhost:3177/api/printers/system');
+        const response = await fetch(`${API_URL}/printers/system`);
         if (response.ok) {
           const data = await response.json();
           setSystemPrinters(data);

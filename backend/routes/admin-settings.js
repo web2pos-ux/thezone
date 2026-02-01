@@ -58,12 +58,15 @@ async function initBusinessProfile() {
       business_name TEXT,
       tax_number TEXT,
       phone TEXT,
+      email TEXT,
       address_line1 TEXT,
       address_line2 TEXT,
       city TEXT,
       state TEXT,
       zip TEXT,
+      country TEXT,
       logo_url TEXT,
+      banner_url TEXT,
       firebase_restaurant_id TEXT,
       service_type TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -73,7 +76,7 @@ async function initBusinessProfile() {
     if (!row) {
       await dbRun('INSERT INTO business_profile (id, business_name) VALUES (1, "")');
     }
-    // Add firebase_restaurant_id column if not exists
+    // Add missing columns if not exists
     const cols = await dbAll("PRAGMA table_info(business_profile)");
     const colNames = cols.map(c => String(c.name));
     if (!colNames.includes('firebase_restaurant_id')) {
@@ -83,12 +86,152 @@ async function initBusinessProfile() {
     if (!colNames.includes('service_type')) {
       await dbRun("ALTER TABLE business_profile ADD COLUMN service_type TEXT");
     }
+    // Add email column if not exists
+    if (!colNames.includes('email')) {
+      await dbRun("ALTER TABLE business_profile ADD COLUMN email TEXT");
+    }
+    // Add banner_url column if not exists
+    if (!colNames.includes('banner_url')) {
+      await dbRun("ALTER TABLE business_profile ADD COLUMN banner_url TEXT");
+    }
+    // Add country column if not exists
+    if (!colNames.includes('country')) {
+      await dbRun("ALTER TABLE business_profile ADD COLUMN country TEXT");
+    }
   } catch (e) {
     try { console.warn('initBusinessProfile warning:', e && e.message ? e.message : e); } catch {}
   }
 }
 
 initBusinessProfile();
+
+// Initialize business_hours table
+async function initBusinessHours() {
+  try {
+    await dbRun(`CREATE TABLE IF NOT EXISTS business_hours (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      day_of_week INTEGER NOT NULL,
+      open_time TEXT NOT NULL,
+      close_time TEXT NOT NULL,
+      is_open INTEGER DEFAULT 1,
+      break_start TEXT,
+      break_end TEXT,
+      happy_hour_start TEXT,
+      happy_hour_end TEXT,
+      busy_hour_start TEXT,
+      busy_hour_end TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+  } catch (e) {
+    try { console.warn('initBusinessHours warning:', e && e.message ? e.message : e); } catch {}
+  }
+}
+
+initBusinessHours();
+
+// Initialize system_pins table for BackOffice access
+async function initSystemPins() {
+  try {
+    await dbRun(`CREATE TABLE IF NOT EXISTS system_pins (
+      id INTEGER PRIMARY KEY CHECK(id=1),
+      backoffice_pin TEXT DEFAULT '0888',
+      sales_pin TEXT DEFAULT '0000',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    // Ensure singleton row exists with default backoffice_pin = 0888
+    const row = await dbGet('SELECT id FROM system_pins WHERE id = 1');
+    if (!row) {
+      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0888', '0000')");
+    }
+  } catch (e) {
+    try { console.warn('initSystemPins warning:', e && e.message ? e.message : e); } catch {}
+  }
+}
+
+initSystemPins();
+
+// ===== BACKOFFICE PIN MANAGEMENT =====
+
+// Verify BackOffice PIN
+router.post('/verify-backoffice-pin', async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin) {
+      return res.status(400).json({ success: false, error: 'PIN is required' });
+    }
+    
+    const row = await dbGet('SELECT backoffice_pin FROM system_pins WHERE id = 1');
+    const correctPin = row?.backoffice_pin || '0888';
+    
+    if (String(pin) === String(correctPin)) {
+      res.json({ success: true, message: 'BackOffice PIN verified' });
+    } else {
+      res.status(401).json({ success: false, error: 'Invalid PIN' });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Verify Sales PIN (0000 allowed for sales, but NOT for backoffice)
+router.post('/verify-sales-pin', async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin) {
+      return res.status(400).json({ success: false, error: 'PIN is required' });
+    }
+    
+    const row = await dbGet('SELECT sales_pin FROM system_pins WHERE id = 1');
+    const correctPin = row?.sales_pin || '0000';
+    
+    if (String(pin) === String(correctPin)) {
+      res.json({ success: true, message: 'Sales PIN verified' });
+    } else {
+      res.status(401).json({ success: false, error: 'Invalid PIN' });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Get system PINs (Manager only)
+router.get('/system-pins', requireManager, async (req, res) => {
+  try {
+    const row = await dbGet('SELECT backoffice_pin, sales_pin, updated_at FROM system_pins WHERE id = 1');
+    res.json(row || { backoffice_pin: '0888', sales_pin: '0000' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update system PINs (Manager only)
+router.put('/system-pins', requireManager, async (req, res) => {
+  try {
+    const { backoffice_pin, sales_pin } = req.body;
+    
+    // Validate PIN format (4 digits)
+    if (backoffice_pin && !/^\d{4}$/.test(backoffice_pin)) {
+      return res.status(400).json({ error: 'BackOffice PIN must be 4 digits' });
+    }
+    if (sales_pin && !/^\d{4}$/.test(sales_pin)) {
+      return res.status(400).json({ error: 'Sales PIN must be 4 digits' });
+    }
+    
+    await dbRun(`INSERT INTO system_pins (id, backoffice_pin, sales_pin, updated_at)
+      VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        backoffice_pin = COALESCE(excluded.backoffice_pin, backoffice_pin),
+        sales_pin = COALESCE(excluded.sales_pin, sales_pin),
+        updated_at = CURRENT_TIMESTAMP
+    `, [backoffice_pin || null, sales_pin || null]);
+    
+    const saved = await dbGet('SELECT * FROM system_pins WHERE id = 1');
+    res.json({ success: true, pins: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ===== DATABASE RESET (Complete Factory Reset) =====
 // WARNING: This will delete ALL data and reset to factory state
@@ -252,8 +395,8 @@ router.put('/business-profile', requireManager, async (req, res) => {
   try {
     const p = req.body || {};
     await dbRun(`INSERT INTO business_profile (
-      id, business_name, tax_number, phone, email, address_line1, address_line2, city, state, zip, logo_url, banner_url, firebase_restaurant_id, updated_at
-    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      id, business_name, tax_number, phone, email, address_line1, address_line2, city, state, zip, country, logo_url, banner_url, firebase_restaurant_id, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
       business_name = COALESCE(excluded.business_name, business_name),
       tax_number = COALESCE(excluded.tax_number, tax_number),
@@ -264,6 +407,7 @@ router.put('/business-profile', requireManager, async (req, res) => {
       city = COALESCE(excluded.city, city),
       state = COALESCE(excluded.state, state),
       zip = COALESCE(excluded.zip, zip),
+      country = COALESCE(excluded.country, country),
       logo_url = COALESCE(excluded.logo_url, logo_url),
       banner_url = COALESCE(excluded.banner_url, banner_url),
       firebase_restaurant_id = COALESCE(excluded.firebase_restaurant_id, firebase_restaurant_id),
@@ -278,6 +422,7 @@ router.put('/business-profile', requireManager, async (req, res) => {
       p.city !== undefined ? String(p.city) : null,
       p.state !== undefined ? String(p.state) : null,
       p.zip !== undefined ? String(p.zip) : null,
+      p.country !== undefined ? String(p.country) : null,
       p.logo_url !== undefined ? String(p.logo_url) : null,
       p.banner_url !== undefined ? String(p.banner_url) : null,
       p.firebase_restaurant_id ? String(p.firebase_restaurant_id) : null,
@@ -285,6 +430,7 @@ router.put('/business-profile', requireManager, async (req, res) => {
     const saved = await dbGet('SELECT * FROM business_profile WHERE id = 1');
     res.json({ success: true, profile: saved });
   } catch (e) {
+    console.error('Error updating business profile:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -993,6 +1139,10 @@ router.post('/business-hours/bulk', async (req, res) => {
   try {
     const { businessHours } = req.body;
     
+    if (!Array.isArray(businessHours)) {
+      return res.status(400).json({ error: 'businessHours must be an array' });
+    }
+
     // Ensure all columns exist
     try {
       const cols = await dbAll("PRAGMA table_info(business_hours)");
@@ -1005,31 +1155,38 @@ router.post('/business-hours/bulk', async (req, res) => {
       if (!colNames.includes('busy_hour_end')) await dbRun("ALTER TABLE business_hours ADD COLUMN busy_hour_end TEXT");
     } catch (colErr) { /* ignore duplicate column errors */ }
     
-    // Delete existing hours first to prevent duplicates
-    await dbRun('DELETE FROM business_hours');
-    
-    for (const hour of businessHours) {
-      await dbRun(`
-        INSERT INTO business_hours 
-        (day_of_week, open_time, close_time, is_open, break_start, break_end, 
-         happy_hour_start, happy_hour_end, busy_hour_start, busy_hour_end, updated_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      `, [
-        hour.day_of_week, 
-        hour.open_time, 
-        hour.close_time, 
-        hour.is_open,
-        hour.break_start || null,
-        hour.break_end || null,
-        hour.happy_hour_start || null,
-        hour.happy_hour_end || null,
-        hour.busy_hour_start || null,
-        hour.busy_hour_end || null
-      ]);
+    await dbRun('BEGIN TRANSACTION');
+    try {
+      // Delete existing hours first to prevent duplicates
+      await dbRun('DELETE FROM business_hours');
+      
+      for (const hour of businessHours) {
+        await dbRun(`
+          INSERT INTO business_hours 
+          (day_of_week, open_time, close_time, is_open, break_start, break_end, 
+           happy_hour_start, happy_hour_end, busy_hour_start, busy_hour_end, updated_at) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `, [
+          hour.day_of_week, 
+          hour.open_time, 
+          hour.close_time, 
+          hour.is_open,
+          hour.break_start || null,
+          hour.break_end || null,
+          hour.happy_hour_start || null,
+          hour.happy_hour_end || null,
+          hour.busy_hour_start || null,
+          hour.busy_hour_end || null
+        ]);
+      }
+      await dbRun('COMMIT');
+      res.json({ message: 'Business hours updated successfully' });
+    } catch (innerErr) {
+      await dbRun('ROLLBACK');
+      throw innerErr;
     }
-    
-    res.json({ message: 'Business hours updated successfully' });
   } catch (error) {
+    console.error('Error updating business hours:', error);
     res.status(500).json({ error: error.message });
   }
 });

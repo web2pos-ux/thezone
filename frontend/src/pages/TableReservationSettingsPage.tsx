@@ -67,7 +67,7 @@ const TableReservationSettingsPage = () => {
 
       // Fetch reservation settings (if exists)
       try {
-        const settingsResponse = await fetch('http://localhost:3177/api/admin-settings/reservation-settings');
+        const settingsResponse = await fetch('${API_URL}/admin-settings/reservation-settings');
         if (settingsResponse.ok) {
           const settingsData = await settingsResponse.json();
           if (settingsData.reservation_settings) {
@@ -102,7 +102,7 @@ const TableReservationSettingsPage = () => {
       setSuccess(null);
 
       // Save reservation settings
-      const settingsResponse = await fetch('http://localhost:3177/api/admin-settings/reservation-settings', {
+      const settingsResponse = await fetch('${API_URL}/admin-settings/reservation-settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -501,7 +501,7 @@ const ReservationDashboard = () => {
   const fetchReservations = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`http://localhost:3177/api/reservations?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`);
+      const response = await fetch(`${API_URL}/reservations?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`);
       if (response.ok) {
         const data = await response.json();
         setReservations(data);
@@ -515,7 +515,7 @@ const ReservationDashboard = () => {
 
   const handleRebook = async (reservationId: number) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/reservations/${reservationId}/rebook`, {
+      const response = await fetch(`${API_URL}/reservations/${reservationId}/rebook`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -537,7 +537,7 @@ const ReservationDashboard = () => {
 
   const handleCancel = async (reservationId: number) => {
     try {
-      const response = await fetch(`http://localhost:3177/api/reservations/${reservationId}/status`, {
+      const response = await fetch(`${API_URL}/reservations/${reservationId}/status`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1345,7 +1345,7 @@ const NoShowHistory = () => {
     try {
       setLoading(true);
       // This would be a separate API endpoint for no-show history
-      const response = await fetch('http://localhost:3177/api/reservations?status=cancelled');
+      const response = await fetch('${API_URL}/reservations?status=cancelled');
       if (response.ok) {
         const data = await response.json();
         // Filter for no-shows (this is a simplified example)

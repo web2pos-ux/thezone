@@ -71,6 +71,7 @@ initFirebase();
 /**
  * GET /api/firebase-setup/status
  * 설정 상태 확인 (첫 실행인지 확인)
+ * ✅ serviceMode도 함께 반환
  */
 router.get('/status', (req, res) => {
   try {
@@ -80,11 +81,13 @@ router.get('/status', (req, res) => {
       setupCompleted: false,
       storeName: '',
       restaurantId: null,
+      serviceMode: null,
       setupDate: null
     };
     
     if (fs.existsSync(SETUP_STATUS_PATH)) {
-      setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+      const savedStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+      setupStatus = { ...setupStatus, ...savedStatus };
     }
     
     // Firebase 설정 파일 확인
@@ -124,18 +127,18 @@ router.post('/verify-restaurant', async (req, res) => {
     const { restaurantId } = req.body;
     
     if (!restaurantId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Restaurant ID를 입력하세요.' 
+      return res.status(400).json({
+        success: false,
+        error: 'Please enter the Restaurant ID.'
       });
     }
     
     // Firebase 초기화 확인
     const db = initFirebase();
     if (!db) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Firebase가 초기화되지 않았습니다. 관리자에게 문의하세요.' 
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase is not initialized. Please contact your administrator.'
       });
     }
     
@@ -143,9 +146,9 @@ router.post('/verify-restaurant', async (req, res) => {
     const restaurantDoc = await db.collection('restaurants').doc(restaurantId).get();
     
     if (!restaurantDoc.exists) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Restaurant ID를 찾을 수 없습니다. ID를 확인해주세요.' 
+      return res.status(404).json({
+        success: false,
+        error: 'Restaurant ID not found. Please check the ID.'
       });
     }
     
@@ -153,9 +156,9 @@ router.post('/verify-restaurant', async (req, res) => {
     
     // 비활성화된 레스토랑 체크
     if (restaurantData.isActive === false) {
-      return res.status(400).json({ 
-        success: false, 
-        error: '비활성화된 레스토랑입니다. 관리자에게 문의하세요.' 
+      return res.status(400).json({
+        success: false,
+        error: 'This restaurant is inactive. Please contact your administrator.'
       });
     }
     
@@ -175,9 +178,9 @@ router.post('/verify-restaurant', async (req, res) => {
     
   } catch (error) {
     console.error('Verify restaurant error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: '서버 오류가 발생했습니다: ' + error.message 
+    res.status(500).json({
+      success: false,
+      error: 'A server error occurred: ' + error.message
     });
   }
 });
@@ -185,6 +188,7 @@ router.post('/verify-restaurant', async (req, res) => {
 /**
  * POST /api/firebase-setup/save-restaurant
  * Restaurant ID 저장
+ * ✅ setup-status.json + business_profile DB 양쪽에 저장
  */
 router.post('/save-restaurant', async (req, res) => {
   try {
@@ -197,32 +201,37 @@ router.post('/save-restaurant', async (req, res) => {
       });
     }
     
-    // 설정 상태 저장
+    const finalServiceMode = serviceMode || 'FSR';
+    
+    // 1. 설정 상태 파일 저장 (setup-status.json)
     const setupStatus = {
       isFirstRun: false,
       setupCompleted: true,
       storeName: storeName || '',
       restaurantId: restaurantId,
-      serviceMode: serviceMode || 'FSR',
+      serviceMode: finalServiceMode,
       setupDate: new Date().toISOString()
     };
     
     fs.writeFileSync(SETUP_STATUS_PATH, JSON.stringify(setupStatus, null, 2));
+    console.log('[Setup] setup-status.json saved with serviceMode:', finalServiceMode);
     
-    // Update business_profile table in SQLite
+    // 2. Update business_profile table in SQLite (영구 저장)
     const { dbRun } = require('../db');
     try {
       await dbRun(`UPDATE business_profile SET 
         firebase_restaurant_id = ?,
-        business_name = ?
-        WHERE id = 1`, [restaurantId, storeName || 'New Restaurant']);
-      console.log('[Setup] business_profile updated with restaurantId:', restaurantId);
+        business_name = ?,
+        service_type = ?
+        WHERE id = 1`, [restaurantId, storeName || 'New Restaurant', finalServiceMode]);
+      console.log('[Setup] business_profile updated - restaurantId:', restaurantId, 'serviceMode:', finalServiceMode);
     } catch (err) {
       console.log('[Setup] business_profile update error:', err.message);
       // Try insert if update fails
       try {
-        await dbRun(`INSERT OR REPLACE INTO business_profile (id, firebase_restaurant_id, business_name) VALUES (1, ?, ?)`,
-          [restaurantId, storeName || 'New Restaurant']);
+        await dbRun(`INSERT OR REPLACE INTO business_profile (id, firebase_restaurant_id, business_name, service_type) VALUES (1, ?, ?, ?)`,
+          [restaurantId, storeName || 'New Restaurant', finalServiceMode]);
+        console.log('[Setup] business_profile inserted successfully');
       } catch (err2) {
         console.log('[Setup] business_profile insert error:', err2.message);
       }
@@ -234,7 +243,7 @@ router.post('/save-restaurant', async (req, res) => {
       data: {
         restaurantId,
         storeName,
-        serviceMode
+        serviceMode: finalServiceMode
       }
     });
   } catch (error) {

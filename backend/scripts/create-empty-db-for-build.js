@@ -57,10 +57,10 @@ db.serialize(() => {
     FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE
   )`);
   
-  // ====== Modifier Tables ======
+  // ====== Modifier Tables (Standardized) ======
   
   db.run(`CREATE TABLE IF NOT EXISTS modifier_groups (
-    group_id INTEGER PRIMARY KEY,
+    modifier_group_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     selection_type TEXT NOT NULL DEFAULT 'SINGLE',
     min_selection INTEGER DEFAULT 0,
@@ -73,6 +73,7 @@ db.serialize(() => {
     modifier_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     price_delta REAL DEFAULT 0,
+    price_delta2 REAL DEFAULT 0,
     type TEXT NOT NULL DEFAULT 'OPTION',
     is_deleted INTEGER DEFAULT 0,
     sort_order INTEGER DEFAULT 0
@@ -85,30 +86,29 @@ db.serialize(() => {
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS menu_modifier_links (
-    link_id INTEGER PRIMARY KEY,
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id INTEGER NOT NULL,
     modifier_group_id INTEGER NOT NULL,
-    is_ambiguous INTEGER DEFAULT 0,
     UNIQUE (item_id, modifier_group_id)
   )`);
   
-  // ====== Tax Tables ======
+  // ====== Tax Tables (Standardized) ======
   
   db.run(`CREATE TABLE IF NOT EXISTS tax_groups (
-    group_id INTEGER PRIMARY KEY,
+    tax_group_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     menu_id INTEGER,
     is_deleted INTEGER DEFAULT 0
   )`);
-  
+
   db.run(`CREATE TABLE IF NOT EXISTS taxes (
     tax_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     rate REAL NOT NULL DEFAULT 0,
-    type TEXT NOT NULL DEFAULT 'PERCENTAGE',
+    menu_id INTEGER,
     is_deleted INTEGER DEFAULT 0
   )`);
-  
+
   db.run(`CREATE TABLE IF NOT EXISTS tax_group_links (
     tax_group_id INTEGER NOT NULL,
     tax_id INTEGER NOT NULL,
@@ -116,17 +116,16 @@ db.serialize(() => {
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS menu_tax_links (
-    link_id INTEGER PRIMARY KEY,
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id INTEGER NOT NULL,
     tax_group_id INTEGER NOT NULL,
-    is_ambiguous INTEGER DEFAULT 0,
     UNIQUE (item_id, tax_group_id)
   )`);
   
-  // ====== Printer Tables ======
+  // ====== Printer Tables (Standardized) ======
   
   db.run(`CREATE TABLE IF NOT EXISTS printers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    printer_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL DEFAULT '',
     type TEXT DEFAULT '',
     selected_printer TEXT DEFAULT '',
@@ -137,25 +136,54 @@ db.serialize(() => {
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS printer_groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    printer_group_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
+    menu_id INTEGER,
     is_active INTEGER DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS printer_group_links (
-    group_id INTEGER NOT NULL,
+    printer_group_id INTEGER NOT NULL,
     printer_id INTEGER NOT NULL,
-    PRIMARY KEY (group_id, printer_id)
+    PRIMARY KEY (printer_group_id, printer_id)
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS menu_printer_links (
-    link_id INTEGER PRIMARY KEY,
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id INTEGER NOT NULL,
     printer_group_id INTEGER NOT NULL,
-    is_ambiguous INTEGER DEFAULT 0,
     UNIQUE (item_id, printer_group_id)
+  )`);
+  
+  // ====== Category Level Link Tables (Standardized) ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS category_modifier_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL,
+    modifier_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(category_id, modifier_group_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS category_tax_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL,
+    tax_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(category_id, tax_group_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS category_printer_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL,
+    printer_group_id INTEGER NOT NULL,
+    is_ambiguous INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(category_id, printer_group_id)
   )`);
   
   // ====== Business Profile ======
@@ -293,6 +321,27 @@ db.serialize(() => {
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
   
+  // ====== Order Page Setups ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS order_page_setups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_type TEXT NOT NULL UNIQUE,
+    menu_id INTEGER NOT NULL,
+    menu_name TEXT NOT NULL,
+    price_type TEXT DEFAULT 'price',
+    created_at TEXT NOT NULL,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
+  // ====== System PINs ======
+  
+  db.run(`CREATE TABLE IF NOT EXISTS system_pins (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    backoffice_pin TEXT DEFAULT '0888',
+    sales_pin TEXT DEFAULT '0000',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  
   // ====== Insert Default Data ======
   
   console.log('Creating tables...');
@@ -315,6 +364,9 @@ db.serialize(() => {
   for (let i = 0; i < 7; i++) {
     db.run(`INSERT INTO business_hours (day_of_week, open_time, close_time, is_open) VALUES (${i}, '09:00', '21:00', 1)`);
   }
+  
+  // Default system PINs (BackOffice: 0888, Sales: 0000)
+  db.run("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0888', '0000')");
   
   console.log('✅ Empty database created successfully!');
   console.log('✅ Default data inserted (Admin PIN: 0000)');

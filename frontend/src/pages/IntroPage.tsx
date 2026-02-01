@@ -42,23 +42,54 @@ const IntroPage: React.FC = () => {
     }
   };
 
-  const handlePinSubmit = (submittedPin: string) => {
+  const handlePinSubmit = async (submittedPin: string) => {
+    // Sales PIN (0000) is allowed for sales access
     if (submittedPin === '0000') {
-      // PIN verified - enable selection buttons
       setPinVerified(true);
       setMessage('');
-    } else {
-      setMessage('Invalid PIN. Please try again.');
-      setPinVerified(false);
-      setTimeout(() => {
-        setPin('');
-        setMessage('');
-      }, 2000);
+      // Store that this is a sales-only PIN
+      sessionStorage.setItem('pin_type', 'sales');
+      return;
     }
+    
+    // Check if it's the BackOffice PIN (0888)
+    try {
+      const response = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: submittedPin })
+      });
+      
+      if (response.ok) {
+        setPinVerified(true);
+        setMessage('');
+        // Store that this is a backoffice PIN
+        sessionStorage.setItem('pin_type', 'backoffice');
+        return;
+      }
+    } catch (error) {
+      console.error('PIN verification failed:', error);
+    }
+    
+    // Invalid PIN
+    setMessage('Invalid PIN. Please try again.');
+    setPinVerified(false);
+    setTimeout(() => {
+      setPin('');
+      setMessage('');
+    }, 2000);
   };
 
   const handleNavigate = async (destination: 'sales' | 'backoffice') => {
     if (!pinVerified) return;
+    
+    // Check if trying to access backoffice with sales PIN (0000)
+    const pinType = sessionStorage.getItem('pin_type');
+    if (destination === 'backoffice' && pinType === 'sales') {
+      setMessage('BackOffice requires different PIN (0888)');
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
     
     if (destination === 'sales') {
       // If serviceType is not loaded, fetch it again

@@ -32,7 +32,7 @@ function startBackend() {
       ? path.join(__dirname, '..', 'backend')
       : path.join(process.resourcesPath, 'backend');
     
-    const dbPath = isDev 
+    let dbPath = isDev 
       ? path.join(__dirname, '..', 'db', 'web2pos.db')
       : path.join(process.resourcesPath, 'db', 'web2pos.db');
     
@@ -48,21 +48,52 @@ function startBackend() {
       ? path.join(__dirname, '..', 'backups')
       : path.join(userDataPath, 'backups');
     
-    // 빌드된 앱: config 폴더 초기화 (extraResources에서 복사)
+    // 빌드된 앱: DB 및 config 폴더 초기화
     if (!isDev) {
+      const sourceDbPath = path.join(process.resourcesPath, 'db', 'web2pos.db');
+      const destDbPath = path.join(userDataPath, 'web2pos.db');
+      
+      // DB가 userData에 없으면 복사
+      if (!fs.existsSync(destDbPath)) {
+        if (fs.existsSync(sourceDbPath)) {
+          // db 폴더 생성
+          const destDbDir = path.dirname(destDbPath);
+          if (!fs.existsSync(destDbDir)) fs.mkdirSync(destDbDir, { recursive: true });
+          
+          fs.copyFileSync(sourceDbPath, destDbPath);
+          console.log('[App] Database initialized in userData folder');
+        }
+      }
+      
+      // 실제 사용할 DB 경로 업데이트
+      dbPath = destDbPath;
+
       const sourceConfigPath = path.join(process.resourcesPath, 'backend', 'config');
+      const installedMarker = path.join(userDataPath, '.installed');
       
       // config 폴더가 없으면 생성
       if (!fs.existsSync(configPath)) {
         fs.mkdirSync(configPath, { recursive: true });
       }
       
-      // setup-status.json이 없으면 extraResources에서 복사 (첫 실행)
+      // 첫 설치인지 확인 (.installed 파일이 없으면 첫 설치)
+      const isFirstInstall = !fs.existsSync(installedMarker);
+      
       const sourceSetupStatus = path.join(sourceConfigPath, 'setup-status.json');
       const destSetupStatus = path.join(configPath, 'setup-status.json');
-      if (!fs.existsSync(destSetupStatus) && fs.existsSync(sourceSetupStatus)) {
+      
+      if (isFirstInstall) {
+        // 첫 설치: setup-status.json 초기화
+        if (fs.existsSync(sourceSetupStatus)) {
+          fs.copyFileSync(sourceSetupStatus, destSetupStatus);
+          console.log('[Backend] Setup status initialized for first installation');
+        }
+        // 설치 완료 마커 생성
+        fs.writeFileSync(installedMarker, new Date().toISOString());
+      } else if (!fs.existsSync(destSetupStatus) && fs.existsSync(sourceSetupStatus)) {
+        // 이후 실행: setup-status.json이 없으면 복사
         fs.copyFileSync(sourceSetupStatus, destSetupStatus);
-        console.log('[Backend] Setup status initialized for first run');
+        console.log('[Backend] Setup status restored');
       }
     }
     
@@ -82,6 +113,13 @@ function startBackend() {
     // 작업 디렉토리 변경 (backend 폴더 기준으로 경로 해결)
     const originalCwd = process.cwd();
     process.chdir(backendPath);
+    
+    // 패키징된 앱에서 모듈 경로 설정 (app.asar 내부의 node_modules 사용)
+    if (!isDev) {
+      const appNodeModules = path.join(app.getAppPath(), 'node_modules');
+      require('module').globalPaths.push(appNodeModules);
+      console.log('[Backend] Added module path:', appNodeModules);
+    }
     
     try {
       // Backend 직접 require (자동으로 서버 시작됨)

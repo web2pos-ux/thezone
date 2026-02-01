@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Edit, Trash2, Loader2, X, ChevronDown, ChevronUp, Search, Copy, Square, CheckCircle } from 'lucide-react';
 import DynamicModifierForm, { ModifierRowData } from './DynamicModifierForm';
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface ModifierOption {
   option_id: number;
@@ -49,17 +49,17 @@ const ModifierGroupEditor: React.FC<{
       setMinSelections(group.min_selections || 0);
       setMaxSelections(group.max_selections || 0);
       setLabel(group.labels?.[0]?.name || '');
-      console.log('🔍 기존 그룹 편집 - Min/Max 설정:', { 
+      console.log('🔍 Editing group - Min/Max settings:', { 
         min: group.min_selections || 0, 
         max: group.max_selections || 0 
       });
     } else {
-      // Reset for new group - Min과 Max를 0으로 초기화
+      // Reset for new group
       setName('');
-      setMinSelections(0);  // 1 → 0으로 복원
-      setMaxSelections(0);  // 1 → 0으로 복원
+      setMinSelections(0);
+      setMaxSelections(0);
       setLabel('');
-      console.log('🔍 새 그룹 생성 - Min/Max 초기값:', { min: 0, max: 0 });
+      console.log('🔍 Creating new group - Initial Min/Max:', { min: 0, max: 0 });
     }
   }, [group]);
 
@@ -88,22 +88,20 @@ const ModifierGroupEditor: React.FC<{
     setLabel(capitalizedValue);
   };
 
-
-
   const handleSave = (options: Omit<ModifierRowData, 'id'>[]) => {
     if (!name.trim()) {
       alert('Group name is required.');
       return;
     }
     
-    // Min/Max 값 검증
+    // Min/Max value validation
     if (minSelections < 0 || maxSelections < 0) {
-      alert('Min과 Max 값은 0 이상이어야 합니다.');
+      alert('Min and Max values must be 0 or greater.');
       return;
     }
     
     if (minSelections > maxSelections) {
-      alert('Min 값은 Max 값보다 클 수 없습니다.');
+      alert('Min value cannot be greater than Max value.');
       return;
     }
     
@@ -122,39 +120,31 @@ const ModifierGroupEditor: React.FC<{
       label: label.trim() || undefined
     };
     
-    // 디버깅 로그 추가
-    console.log('🔍 ModifierGroupEditor - 저장할 데이터:', saveData);
-    console.log('🔍 Min/Max 값:', { min: minSelections, max: maxSelections });
-    console.log('🔍 Min/Max 타입:', { 
-      min_type: typeof minSelections, 
-      max_type: typeof maxSelections 
-    });
+    console.log('🔍 ModifierGroupEditor - Save data:', saveData);
     
     onSave(saveData);
   };
 
-  // Min/Max 변경 시 자동으로 Required/Optional 상태 계산
+  // Auto-calculate Required/Optional status when Min/Max changes
   const getSelectionStatus = (min: number, max: number): { type: 'OPTIONAL' | 'REQUIRED', description: string } => {
     if (min === 0 && max === 0) {
-      return { type: 'OPTIONAL', description: '선택하지 않아도 됨' };
+      return { type: 'OPTIONAL', description: 'No selection required' };
     } else if (min === 1 && max === 1) {
-      return { type: 'REQUIRED', description: '1개 선택 필수' };
+      return { type: 'REQUIRED', description: 'Must select 1' };
     } else if (min > 0 && max > 0) {
-      return { type: 'REQUIRED', description: `${min}-${max}개 선택 필수` };
+      return { type: 'REQUIRED', description: `Must select ${min}-${max}` };
     } else if (min === 0 && max > 0) {
-      return { type: 'OPTIONAL', description: `최대 ${max}개 선택 가능` };
+      return { type: 'OPTIONAL', description: `Select up to ${max}` };
     } else {
-      return { type: 'REQUIRED', description: `${min}-${max}개 선택 필수` };
+      return { type: 'REQUIRED', description: `Must select ${min}-${max}` };
     }
   };
 
   const handleMinSelectionsChange = (value: number) => {
-    console.log('🔍 Min 값 변경:', { 이전값: minSelections, 새값: value });
     setMinSelections(value);
   };
 
   const handleMaxSelectionsChange = (value: number) => {
-    console.log('🔍 Max 값 변경:', { 이전값: maxSelections, 새값: value });
     setMaxSelections(value);
   };
 
@@ -198,15 +188,7 @@ const ModifierGroupEditor: React.FC<{
             id="min-selections"
             type="number"
             value={minSelections}
-            onChange={(e) => {
-              const newValue = parseInt(e.target.value) || 0;
-              console.log('🔍 Min 입력 필드 변경:', { 
-                입력값: e.target.value, 
-                파싱된값: newValue, 
-                현재상태: minSelections 
-              });
-              handleMinSelectionsChange(newValue);
-            }}
+            onChange={(e) => handleMinSelectionsChange(parseInt(e.target.value) || 0)}
             onKeyDown={handleKeyDown}
             min="0"
             className="p-2 border rounded-md w-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -218,15 +200,7 @@ const ModifierGroupEditor: React.FC<{
             id="max-selections"
             type="number"
             value={maxSelections}
-            onChange={(e) => {
-              const newValue = parseInt(e.target.value) || 0;
-              console.log('🔍 Max 입력 필드 변경:', { 
-                입력값: e.target.value, 
-                파싱된값: newValue, 
-                현재상태: maxSelections 
-              });
-              handleMaxSelectionsChange(newValue);
-            }}
+            onChange={(e) => handleMaxSelectionsChange(parseInt(e.target.value) || 0)}
             onKeyDown={handleKeyDown}
             min="0"
             className="p-2 border rounded-md w-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -234,7 +208,7 @@ const ModifierGroupEditor: React.FC<{
         </div>
       </div>
       
-      {/* Required/Optional 상태 표시 */}
+      {/* Required/Optional status display */}
       <div className="mb-3 p-2 rounded-md border">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-gray-700">Selection Status:</span>
@@ -291,16 +265,6 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
       const response = await fetch(url);
       if (!response.ok) throw new Error('Failed to fetch modifier groups');
       const data = await response.json();
-      
-      // 디버깅 로그 추가
-      console.log('🔍 fetchModifierGroups - 받은 데이터:', data);
-      console.log('🔍 첫 번째 그룹의 Min/Max:', data[0] ? {
-        name: data[0].name,
-        min_selections: data[0].min_selections,
-        max_selections: data[0].max_selections,
-        selection_type: data[0].selection_type
-      } : '데이터 없음');
-      
       setModifierGroups(data);
     } catch (error) {
       console.error('Error fetching modifier groups:', error);
@@ -326,48 +290,43 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
   const getSelectionRuleText = (group: ModifierGroup): React.ReactNode => {
     const { min_selections, max_selections } = group;
     
-    // Min = 0, Max = 0이면 Optional
     if (min_selections === 0 && max_selections === 0) {
       return (
-        <div title="Optional - 선택하지 않아도 됨" className="flex items-center space-x-1">
+        <div title="Optional - No selection required" className="flex items-center space-x-1">
           <Square size={16} className="text-green-500" />
           <span className="text-xs text-green-600 font-medium">Optional</span>
         </div>
       );
     } 
-    // Min = 1, Max = 1이면 Required Single
     else if (min_selections === 1 && max_selections === 1) {
       return (
-        <div title="Required - 1개 선택 필수" className="flex items-center space-x-1">
+        <div title="Required - Must select 1" className="flex items-center space-x-1">
           <CheckCircle size={16} className="text-red-500" />
-          <span className="text-xs text-red-600 font-medium">Required (1개)</span>
+          <span className="text-xs text-red-600 font-medium">Required (1)</span>
         </div>
       );
     } 
-    // Min > 0, Max > 0이면 Required Multiple
     else if (min_selections > 0 && max_selections > 0) {
       return (
-        <div title={`Required - ${min_selections}-${max_selections}개 선택`} className="flex items-center space-x-1">
+        <div title={`Required - Select ${min_selections}-${max_selections}`} className="flex items-center space-x-1">
           <CheckCircle size={16} className="text-red-500" />
-          <span className="text-xs text-red-600 font-medium">Required ({min_selections}-{max_selections}개)</span>
+          <span className="text-xs text-red-600 font-medium">Required ({min_selections}-{max_selections})</span>
         </div>
       );
     } 
-    // Min = 0, Max > 0이면 Optional Multiple
     else if (min_selections === 0 && max_selections > 0) {
       return (
-        <div title={`Optional - 최대 ${max_selections}개 선택 가능`} className="flex items-center space-x-1">
+        <div title={`Optional - Select up to ${max_selections}`} className="flex items-center space-x-1">
           <Square size={16} className="text-green-500" />
-          <span className="text-xs text-green-600 font-medium">Optional (최대 {max_selections}개)</span>
+          <span className="text-xs text-green-600 font-medium">Optional (Max {max_selections})</span>
         </div>
       );
     } 
-    // 기타 경우
     else {
       return (
-        <div title={`Required - ${min_selections}-${max_selections}개 선택`} className="flex items-center space-x-1">
+        <div title={`Required - Select ${min_selections}-${max_selections}`} className="flex items-center space-x-1">
           <CheckCircle size={16} className="text-red-500" />
-          <span className="text-xs text-red-600 font-medium">Required ({min_selections}-{max_selections}개)</span>
+          <span className="text-xs text-red-600 font-medium">Required ({min_selections}-{max_selections})</span>
         </div>
       );
     }
@@ -381,7 +340,6 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
       const method = isNew ? 'POST' : 'PUT';
       
       const requestBody = menuId ? { ...groupData, menu_id: menuId } : groupData;
-      console.log('🔍 ModifierGroupManager - API 요청:', { url, method, body: requestBody });
       
       const response = await fetch(url, {
         method,
@@ -391,27 +349,7 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        console.error('❌ API 응답 오류:', errorData);
         throw new Error(`Failed to ${isNew ? 'create' : 'update'} modifier group: ${errorData.error || response.statusText}`);
-      }
-
-      const savedData = await response.json();
-      console.log('✅ SQLite 저장 완료:', savedData);
-
-      // Firebase 동기화 시도
-      try {
-        const syncResponse = await fetch(`${API_URL}/menu-sync/sync-modifiers`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ groupId: savedData.id }),
-        });
-        if (syncResponse.ok) {
-          console.log('✅ Firebase 동기화 완료');
-        } else {
-          console.warn('⚠️ Firebase 동기화 실패 (SQLite는 저장됨)');
-        }
-      } catch (syncError) {
-        console.warn('⚠️ Firebase 동기화 오류 (SQLite는 저장됨):', syncError);
       }
 
       await fetchModifierGroups();
@@ -436,16 +374,11 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
         throw new Error('Failed to update settings');
       }
 
-      const result = await response.json();
-      console.log('Settings updated:', result);
-      
-      // Refresh the modifier groups list
       await fetchModifierGroups();
-      
-      alert('설정이 성공적으로 업데이트되었습니다!');
+      alert('Settings updated successfully!');
     } catch (error) {
       console.error('Error updating settings:', error);
-      alert('설정 업데이트에 실패했습니다. 다시 시도해주세요.');
+      alert('Failed to update settings. Please try again.');
     }
   };
 
@@ -491,7 +424,6 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
     }
   };
 
-  // Enhanced search to include labels
   const filteredGroups = modifierGroups.filter(group => {
     const searchLower = searchTerm.toLowerCase();
     const nameMatch = group.name.toLowerCase().includes(searchLower);
@@ -536,18 +468,8 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
       </div>
 
       <div className="space-y-0.5">
-        {filteredGroups.map(group => {
-          // 디버깅 로그 추가
-          console.log('🔍 렌더링 중인 그룹:', {
-            id: group.id,
-            name: group.name,
-            min_selections: group.min_selections,
-            max_selections: group.max_selections,
-            selection_type: group.selection_type
-          });
-          
-          return (
-            <div key={group.id} className="group p-2 border border-gray-400 rounded-md bg-gray-50">
+        {filteredGroups.map(group => (
+          <div key={group.id} className="group p-2 border border-gray-400 rounded-md bg-gray-50">
             <div className="flex justify-between items-center">
               <div className="flex items-center space-x-2 flex-1 min-w-0 mr-2">
                 <h2 className="text-base font-semibold text-slate-800 truncate flex-1">{group.name}</h2>
@@ -566,25 +488,25 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
                     } else if (min_selections === 1 && max_selections === 1) {
                       return (
                         <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
-                          Required (1개)
+                          Required (1)
                         </span>
                       );
                     } else if (min_selections > 0 && max_selections > 0) {
                       return (
                         <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
-                          Required ({min_selections}-{max_selections}개)
+                          Required ({min_selections}-{max_selections})
                         </span>
                       );
                     } else if (min_selections === 0 && max_selections > 0) {
                       return (
                         <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                          Optional (최대 {max_selections}개)
+                          Optional (Max {max_selections})
                         </span>
                       );
                     } else {
                       return (
                         <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
-                          Required ({min_selections}-{max_selections}개)
+                          Required ({min_selections}-{max_selections})
                         </span>
                       );
                     }
@@ -619,10 +541,10 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
             </div>
             {expandedGroups.has(group.id) && (
               <div className="mt-0 space-y-0 pl-4 pr-24 py-0">
-                {/* Min/Max 설정 수정 섹션 */}
+                {/* Update Min/Max Settings Section */}
                 <div className="mb-3 p-2 bg-gray-50 rounded border">
                   <div className="flex items-center space-x-2 mb-2">
-                    <span className="text-xs font-medium text-gray-700">Min/Max 설정 수정:</span>
+                    <span className="text-xs font-medium text-gray-700">Update Min/Max Settings:</span>
                     <input
                       type="number"
                       min="0"
@@ -651,17 +573,17 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
                     <button
                       onClick={() => handleUpdateSettings(group.id, group.min_selections, group.max_selections)}
                       className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-                      title="설정 저장"
+                      title="Save Settings"
                     >
-                      저장
+                      Save
                     </button>
                   </div>
                   <p className="text-xs text-gray-600">
-                    Min: 최소 선택 개수, Max: 최대 선택 개수
+                    Min: Minimum selection required, Max: Maximum selection allowed
                   </p>
                 </div>
                 
-                {/* 헤더 - Price_Modi1 & Price_Modi2 */}
+                {/* Header - Price_Modi1 & Price_Modi2 */}
                 {group.modifiers.length > 0 && (
                   <div className="flex justify-between items-center text-xs py-1 border-b border-gray-200 mb-1">
                     <span className="text-gray-500 font-medium">Option</span>
@@ -671,7 +593,7 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
                     </div>
                   </div>
                 )}
-                {/* 모디파이어 옵션들 */}
+                {/* Modifier options */}
                 {group.modifiers.map(option => {
                   const p1 = option.price_adjustment || 0;
                   const p2 = option.price_adjustment_2 || 0;
@@ -692,8 +614,7 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
               </div>
             )}
           </div>
-        );
-      })}
+        ))}
         {filteredGroups.length === 0 && modifierGroups.length > 0 && (
           <p className="text-gray-500 text-center py-8 text-sm">No modifier groups found matching "{searchTerm}"</p>
         )}
@@ -701,11 +622,9 @@ const ModifierGroupManager: React.FC<ModifierGroupManagerProps> = ({ menuId }) =
           <p className="text-gray-500 text-center py-8 text-sm">No modifier groups found. Click 'Make Option Group' to create one.</p>
         )}
       </div>
-
-
     </div>
   );
 };
 
 export { ModifierGroupEditor };
-export default ModifierGroupManager; 
+export default ModifierGroupManager;

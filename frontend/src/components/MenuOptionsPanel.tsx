@@ -38,7 +38,7 @@ interface MenuOptionsPanelProps {
   onSaveModifierOverride?: (itemId: number, modifierGroupId: number, isActive: boolean) => Promise<void>;
 }
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 const MenuOptionsPanel: React.FC<MenuOptionsPanelProps> = ({
   menu,

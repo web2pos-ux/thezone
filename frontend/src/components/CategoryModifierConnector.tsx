@@ -26,7 +26,7 @@ import {
   Loader2 
 } from 'lucide-react';
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL } from '../config/constants';
 
 interface ModifierGroup {
   group_id: number;

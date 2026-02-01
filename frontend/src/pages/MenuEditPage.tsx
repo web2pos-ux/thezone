@@ -33,7 +33,7 @@ import PrinterGroupManager, { PrinterGroupEditor } from '../components/PrinterGr
 import { Menu, Category, MenuItem, TaxGroup, PrinterGroup } from '../types';
 import { getDarkerHexColor } from '../utils/colorUtils';
 
-const API_URL = 'http://localhost:3177/api';
+import { API_URL, API_BASE } from '../config/constants';
 
 type TabName = 'modifier' | 'tax' | 'printer';
 
@@ -47,7 +47,7 @@ const MenuEditPage = () => {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
 
-  // 통합 드래그 앤 드롭을 위한 상태
+  // State for unified drag and drop
   const [modifierGroups, setModifierGroups] = useState<any[]>([]);
   const [taxGroups, setTaxGroups] = useState<any[]>([]);
   const [printerGroups, setPrinterGroups] = useState<any[]>([]);
@@ -61,19 +61,19 @@ const MenuEditPage = () => {
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [activeDragData, setActiveDragData] = useState<any>(null);
 
-  // 모디파이어 그룹 관리 상태
+  // Modifier Group management state
   const [editingModifierGroup, setEditingModifierGroup] = useState<any>(null);
   const [isSavingModifier, setIsSavingModifier] = useState(false);
 
-  // Tax 그룹 관리 상태
+  // Tax Group management state
   const [editingTaxGroup, setEditingTaxGroup] = useState<any>(null);
   const [isSavingTax, setIsSavingTax] = useState(false);
 
-  // Printer 그룹 관리 상태
+  // Printer Group management state
   const [editingPrinterGroup, setEditingPrinterGroup] = useState<any | 'new' | null>(null);
   const [isSavingPrinter, setIsSavingPrinter] = useState(false);
 
-  // Hover 효과를 위한 상태
+  // State for hover effect
   const [hoveredOptionId, setHoveredOptionId] = useState<string | null>(null);
 
   // Base color state for theming
@@ -85,16 +85,16 @@ const MenuEditPage = () => {
   }, [baseColor]);
   const darkerColor = useMemo(() => getDarkerHexColor(baseColor), [baseColor]);
   
-  // 모디파이어 그룹 펼침/접힘 상태
+  // Modifier group expanded/collapsed state
   const [expandedModifierGroups, setExpandedModifierGroups] = useState<Set<number>>(new Set());
   
-  // 세금 그룹 펼침/접힘 상태
+  // Tax group expanded/collapsed state
   const [expandedTaxGroups, setExpandedTaxGroups] = useState<Set<number>>(new Set());
   
-  // 프린터 그룹 펼침/접힘 상태
+  // Printer group expanded/collapsed state
   const [expandedPrinterGroups, setExpandedPrinterGroups] = useState<Set<number>>(new Set());
   
-  // 사이드바 접힘 상태 (BackOfficeLayout에서 공유)
+  // Sidebar collapsed state (shared from BackOfficeLayout)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return localStorage.getItem('backoffice_sidebar_collapsed') === '1'; } catch { return false; }
   });
@@ -112,7 +112,7 @@ const MenuEditPage = () => {
     };
   }, []);
   
-  // 강조 효과를 계속 유지할 그룹 ID
+  // Group ID to keep highlight effect
   const [persistentHighlight, setPersistentHighlight] = useState<{type: string, groupId: number} | null>(null);
 
   const [menuItems, setMenuItems] = useState<any[]>([]);
@@ -134,33 +134,33 @@ const MenuEditPage = () => {
     price2: 0
   });
 
-  // 펼침/접힘 상태 관리
+  // Expanded/collapsed state management
   const [collapsedCategories, setCollapsedCategories] = useState<Set<number>>(new Set());
 
-  // 카테고리 추가 인라인 폼 상태
+  // Category addition inline form state
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   
-  // 카테고리 편집 상태
+  // Category editing state
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [editingCategoryName, setEditingCategoryName] = useState('');
 
-  // Export/Import 상태
+  // Export/Import state
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [importStep, setImportStep] = useState('');
   
-  // 저장 상태
+  // Save state
   const [isSaving, setIsSaving] = useState(false);
 
-  // Backup 상태
+  // Backup state
   const [backups, setBackups] = useState<any[]>([]);
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [itemOptions, setItemOptions] = useState<Map<number, any>>(new Map());
 
-  // 삭제 확인 모달 상태
+  // Delete confirmation modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
     type: 'modifier' | 'tax' | 'printer';
@@ -169,7 +169,7 @@ const MenuEditPage = () => {
     connectedItems: any[];
   } | null>(null);
   
-  // 툴팁 상태
+  // Tooltip state
   const [tooltipState, setTooltipState] = useState<{
     isVisible: boolean;
     type: 'modifier' | 'tax' | 'printer' | null;
@@ -182,7 +182,7 @@ const MenuEditPage = () => {
     position: { x: 0, y: 0 }
   });
   
-  // 강조 표시할 요소들의 상태
+  // State for highlighted elements
   const [highlightedElements, setHighlightedElements] = useState<{
     categories: number[];
     items: number[];
@@ -191,7 +191,7 @@ const MenuEditPage = () => {
     items: []
   });
 
-  // 최근 생성된 요소로 스크롤/포커스하기 위한 참조들
+  // Refs for scroll/focus to recently created elements
   const categoryNodeRefs = useRef<{ [key: number]: HTMLElement | null }>({});
   const itemNodeRefs = useRef<{ [key: number]: HTMLElement | null }>({});
   const lastCreatedRef = useRef<{ type: 'category' | 'item'; id: number } | null>(null);
@@ -232,7 +232,7 @@ const MenuEditPage = () => {
         navigate('/backoffice/menu');
       });
     
-    // 백업 목록 로드
+    // Load backup list
     loadBackups();
   }, [menuId, navigate]);
 
@@ -313,7 +313,7 @@ const MenuEditPage = () => {
     }
   }, [location.search, categories, selectedCategoryId]);
 
-  // 모디파이어 그룹 로드
+  // Load modifier groups
   useEffect(() => {
     const loadModifierGroups = async () => {
       try {
@@ -348,12 +348,12 @@ const MenuEditPage = () => {
     }
   }, [menuId]);
 
-  // Tax Groups 로드 (Tax Settings에서 생성된 Tax Groups 사용)
+  // Load Tax Groups (uses Tax Groups created in Tax Settings)
   useEffect(() => {
     const loadTaxGroups = async () => {
       try {
-        // Tax Settings에서 만든 Tax Groups를 가져옴
-        const response = await fetch(`${API_URL}/taxes/groups`);
+        // Get Tax Groups made in Tax Settings
+        const response = await fetch(`${API_URL}/tax-groups`);
         if (response.ok) {
           const data = await response.json();
           console.log('Loaded tax groups from Tax Settings:', data);
@@ -367,11 +367,11 @@ const MenuEditPage = () => {
     loadTaxGroups();
   }, []);
 
-  // Printer Groups 로드 (Printer Settings에서 생성된 Printer Groups 사용)
+  // Load Printer Groups (uses Printer Groups created in Printer Settings)
   useEffect(() => {
     const loadPrinterGroups = async () => {
       try {
-        // Printer Settings에서 만든 Printer Groups를 가져옴
+        // Get Printer Groups made in Printer Settings
         const response = await fetch(`${API_URL}/printers/groups`);
         if (response.ok) {
           const data = await response.json();
@@ -386,7 +386,7 @@ const MenuEditPage = () => {
     loadPrinterGroups();
   }, []);
 
-  // 카테고리별 Modifiers 연결 로드
+  // Load modifier connections per category
   const loadCategoryConnections = async () => {
     if (!categories.length) return;
 
@@ -416,11 +416,11 @@ const MenuEditPage = () => {
     }
     
     console.log('Final category modifier connections map:', connectionsMap);
-    setCategoryConnections(connectionsMap);
+    setCategoryConnections(new Map(connectionsMap));
     console.log('✅ loadCategoryConnections completed');
   };
 
-  // 카테고리별 Taxes 연결 로드
+  // Load tax connections per category
   const loadCategoryTaxConnections = async () => {
     if (!categories.length) return;
 
@@ -450,11 +450,11 @@ const MenuEditPage = () => {
     }
     
     console.log('Final category tax connections map:', connectionsMap);
-    setCategoryTaxConnections(connectionsMap);
+    setCategoryTaxConnections(new Map(connectionsMap));
     console.log('✅ loadCategoryTaxConnections completed');
   };
 
-  // 카테고리별 Printers 연결 로드
+  // Load printer connections per category
   const loadCategoryPrinterConnections = async () => {
     if (!categories.length) return;
 
@@ -484,26 +484,26 @@ const MenuEditPage = () => {
     }
     
     console.log('Final category printer connections map:', connectionsMap);
-    setCategoryPrinterConnections(connectionsMap);
+    setCategoryPrinterConnections(new Map(connectionsMap));
     console.log('✅ loadCategoryPrinterConnections completed');
   };
 
-  // 카테고리별 Modifiers 연결 로드
+  // Load modifier connections per category
   useEffect(() => {
     loadCategoryConnections();
   }, [categories]);
 
-  // 카테고리별 Taxes 연결 로드
+  // Load tax connections per category
   useEffect(() => {
     loadCategoryTaxConnections();
   }, [categories]);
 
-  // 카테고리별 Printers 연결 로드
+  // Load printer connections per category
   useEffect(() => {
     loadCategoryPrinterConnections();
   }, [categories]);
 
-  // 메뉴 아이템별 연결 로드 함수
+  // Function to load connections per menu item
   const loadItemConnections = async () => {
     console.log('🔄 Starting loadItemConnections...');
     console.log('All menu items:', allMenuItems);
@@ -519,19 +519,20 @@ const MenuEditPage = () => {
     const printerConnectionsMap = new Map<number, any[]>();
     
     for (const item of allMenuItems) {
+      const itemId = Number(item.id);
       try {
-        console.log(`Fetching connections for item ${item.id} (${item.name})`);
-        const response = await fetch(`${API_URL}/menu/items/${item.id}/options`);
+        console.log(`Fetching connections for item ${itemId} (${item.name})`);
+        const response = await fetch(`${API_URL}/menu/items/${itemId}/options`);
         if (response.ok) {
           const data = await response.json();
-          console.log(`Item ${item.id} connections data:`, data);
-          connectionsMap.set(item.id, data.modifier_groups || []);
-          taxConnectionsMap.set(item.id, data.tax_groups || []);
-          printerConnectionsMap.set(item.id, data.printer_groups || []);
+          console.log(`Item ${itemId} connections data:`, data);
+          connectionsMap.set(itemId, data.modifier_groups || []);
+          taxConnectionsMap.set(itemId, data.tax_groups || []);
+          printerConnectionsMap.set(itemId, data.printer_groups || []);
           
-          // Wakame 아이템 확인
+          // Check Wakame item
           if (item.name === 'Wakame') {
-            console.log('=== Wakame 연결 상태 확인 ===');
+            console.log('=== Checking Wakame connection status ===');
             console.log('Wakame item ID:', item.id);
             console.log('Wakame modifier connections:', data.modifier_groups || []);
             console.log('Wakame tax connections:', data.tax_groups || []);
@@ -543,17 +544,17 @@ const MenuEditPage = () => {
             });
             console.log('========================');
           }
-        } else {
-          console.log(`Item ${item.id} has no connections (status: ${response.status})`);
-          connectionsMap.set(item.id, []);
-          taxConnectionsMap.set(item.id, []);
-          printerConnectionsMap.set(item.id, []);
+          } else {
+          console.log(`Item ${itemId} has no connections (status: ${response.status})`);
+          connectionsMap.set(itemId, []);
+          taxConnectionsMap.set(itemId, []);
+          printerConnectionsMap.set(itemId, []);
         }
       } catch (error) {
-        console.error(`Failed to load connections for item ${item.id}:`, error);
-        connectionsMap.set(item.id, []);
-        taxConnectionsMap.set(item.id, []);
-        printerConnectionsMap.set(item.id, []);
+        console.error(`Failed to load connections for item ${itemId}:`, error);
+        connectionsMap.set(itemId, []);
+        taxConnectionsMap.set(itemId, []);
+        printerConnectionsMap.set(itemId, []);
       }
     }
     
@@ -561,38 +562,39 @@ const MenuEditPage = () => {
     console.log('Final tax connections map:', taxConnectionsMap);
     console.log('Final printer connections map:', printerConnectionsMap);
     
-    setItemModifierConnections(connectionsMap);
-    setItemTaxConnections(taxConnectionsMap);
-    setItemPrinterConnections(printerConnectionsMap);
+    setItemModifierConnections(new Map(connectionsMap));
+    setItemTaxConnections(new Map(taxConnectionsMap));
+    setItemPrinterConnections(new Map(printerConnectionsMap));
     
-    // 아이템 옵션 정보도 저장
+    // Also save item option info
     const optionsMap = new Map<number, any>();
     for (const item of allMenuItems) {
-      const modifierGroups = connectionsMap.get(item.id) || [];
-      const taxGroups = taxConnectionsMap.get(item.id) || [];
-      const printerGroups = printerConnectionsMap.get(item.id) || [];
+      const itemId = Number(item.id);
+      const modifierGroups = connectionsMap.get(itemId) || [];
+      const taxGroups = taxConnectionsMap.get(itemId) || [];
+      const printerGroups = printerConnectionsMap.get(itemId) || [];
       
-      optionsMap.set(item.id, {
+      optionsMap.set(itemId, {
         modifier_groups: modifierGroups,
         tax_groups: taxGroups,
         printer_groups: printerGroups
       });
     }
-    setItemOptions(optionsMap);
+    setItemOptions(new Map(optionsMap));
     
     console.log('✅ loadItemConnections completed');
   };
 
-  // 메뉴 아이템별 연결 로드
+  // Load connections per menu item
   useEffect(() => {
     loadItemConnections();
   }, [allMenuItems]);
 
-  // 모든 메뉴 아이템을 한 번에 가져오기
+  // Fetch all menu items at once
   useEffect(() => {
     if (!menuId || categories.length === 0) return;
     
-    // 모든 카테고리의 아이템을 병렬로 가져오기
+    // Fetch all items of all categories in parallel
     const fetchPromises = categories.map(category => 
       fetch(`${API_URL}/menu/items?categoryId=${category.id}`)
         .then(res => {
@@ -614,7 +616,7 @@ const MenuEditPage = () => {
       .catch(err => console.error("Failed to fetch all menu items:", err));
   }, [menuId, categories]);
 
-  // 선택된 카테고리의 아이템들만 필터링
+  // Filter items of selected category only
   useEffect(() => {
     if (selectedCategoryId === null) {
       setMenuItems([]);
@@ -653,7 +655,7 @@ const MenuEditPage = () => {
     console.log('Active data:', active.data.current);
     console.log('Over data:', over?.data.current);
     
-    // 드래그 상태 초기화
+    // Reset drag state
     setActiveDragId(null);
     setActiveDragData(null);
     setCurrentDragType(null);
@@ -671,7 +673,7 @@ const MenuEditPage = () => {
     console.log('Active type:', activeType);
     console.log('Over type:', overType);
 
-    // 모디파이어 그룹을 카테고리에 연결
+    // Connect modifier group to category
     if (activeId.startsWith('modifier-') && overType === 'category') {
       const modifierGroupId = parseInt(activeId.replace('modifier-', ''));
       // Robustly derive categoryId from droppable data or id (supports header strip ids)
@@ -692,15 +694,30 @@ const MenuEditPage = () => {
       console.log('✅ Connecting modifier to category:', { activeId, modifierGroupId, categoryId, overId: over.id });
       await connectModifierToCategory(categoryId, modifierGroupId);
     }
-    // 모디파이어 그룹을 메뉴 아이템에 연결
+    // Connect modifier group to menu item
     else if (activeId.startsWith('modifier-') && overType === 'item') {
       const modifierGroupId = parseInt(activeId.replace('modifier-', ''));
-      const itemId = parseInt(over.id as string);
+      
+      const overData: any = over.data && over.data.current ? over.data.current : {};
+      const overItem: any = overData.item || {};
+      let itemId = Number(overItem.id || overItem.item_id);
+      
+      if (!itemId || !Number.isFinite(itemId)) {
+        const overIdStr = String(over.id || '');
+        const cleaned = overIdStr.replace(/^item-/, '');
+        const parsed = parseInt(cleaned, 10);
+        if (Number.isFinite(parsed)) itemId = parsed;
+      }
+
+      if (!itemId || !Number.isFinite(itemId)) {
+        console.warn('Could not resolve itemId for modifier drop; aborting.', { over });
+        return;
+      }
       
       console.log('✅ Connecting modifier to item:', { activeId, modifierGroupId, itemId, overId: over.id });
       await connectModifierToItem(itemId, modifierGroupId);
     }
-    // Tax Group을 카테고리에 연결
+    // Connect Tax Group to category
     else if (activeId.startsWith('tax-') && overType === 'category') {
       const taxGroupId = parseInt(activeId.replace('tax-', ''));
       // robust category id resolution (supports header strip)
@@ -709,7 +726,7 @@ const MenuEditPage = () => {
       let categoryId = overCategory.category_id || overCategory.id;
       if (!categoryId) {
         const overIdStr = String(over.id || '');
-        const cleaned = overIdStr.replace(/^cat-strip-/, '');
+        const cleaned = overIdStr.replace(/^cat-strip-/, '').replace(/^category-/, '');
         const parsed = parseInt(cleaned, 10);
         if (Number.isFinite(parsed)) categoryId = parsed;
       }
@@ -721,36 +738,79 @@ const MenuEditPage = () => {
       console.log('Drag drop detected (category tax):', { activeId, taxGroupId, categoryId, overId: over.id });
       await connectTaxToCategory(categoryId, taxGroupId);
     }
-    // Tax Group을 메뉴 아이템에 연결
+    // Connect Tax Group to menu item
     else if (activeId.startsWith('tax-') && overType === 'item') {
       const taxGroupId = parseInt(activeId.replace('tax-', ''));
-      const itemId = parseInt(over.id as string);
+      
+      const overData: any = over.data && over.data.current ? over.data.current : {};
+      const overItem: any = overData.item || {};
+      let itemId = Number(overItem.id || overItem.item_id);
+      
+      if (!itemId || !Number.isFinite(itemId)) {
+        const overIdStr = String(over.id || '');
+        const cleaned = overIdStr.replace(/^item-/, '');
+        const parsed = parseInt(cleaned, 10);
+        if (Number.isFinite(parsed)) itemId = parsed;
+      }
+
+      if (!itemId || !Number.isFinite(itemId)) {
+        console.warn('Could not resolve itemId for tax drop; aborting.', { over });
+        return;
+      }
       
       console.log('Drag drop detected (item tax):', { activeId, taxGroupId, itemId, overId: over.id });
       await connectTaxToItem(itemId, taxGroupId);
     }
-    // Printer Group을 카테고리에 연결
+    // Connect Printer Group to category
     else if (activeId.startsWith('printer-') && overType === 'category') {
       const printerGroupId = parseInt(activeId.replace('printer-', ''));
-      const categoryId = parseInt(over.id as string);
+      // robust category id resolution (supports header strip)
+      const overData: any = over.data && over.data.current ? over.data.current : {};
+      const overCategory: any = overData.category || {};
+      let categoryId = overCategory.category_id || overCategory.id;
+      if (!categoryId) {
+        const overIdStr = String(over.id || '');
+        const cleaned = overIdStr.replace(/^cat-strip-/, '').replace(/^category-/, '');
+        const parsed = parseInt(cleaned, 10);
+        if (Number.isFinite(parsed)) categoryId = parsed;
+      }
+      if (!categoryId) {
+        console.warn('Could not resolve categoryId for printer drop; aborting.', { over });
+        return;
+      }
       
       console.log('Drag drop detected (category printer):', { activeId, printerGroupId, categoryId, overId: over.id });
       await connectPrinterToCategory(categoryId, printerGroupId);
     }
-    // Printer Group을 메뉴 아이템에 연결
+    // Connect Printer Group to menu item
     else if (activeId.startsWith('printer-') && overType === 'item') {
       const printerGroupId = parseInt(activeId.replace('printer-', ''));
-      const itemId = parseInt(over.id as string);
+      
+      const overData: any = over.data && over.data.current ? over.data.current : {};
+      const overItem: any = overData.item || {};
+      let itemId = Number(overItem.id || overItem.item_id);
+      
+      if (!itemId || !Number.isFinite(itemId)) {
+        const overIdStr = String(over.id || '');
+        const cleaned = overIdStr.replace(/^item-/, '');
+        const parsed = parseInt(cleaned, 10);
+        if (Number.isFinite(parsed)) itemId = parsed;
+      }
+
+      if (!itemId || !Number.isFinite(itemId)) {
+        console.warn('Could not resolve itemId for printer drop; aborting.', { over });
+        return;
+      }
       
       console.log('Drag drop detected (item printer):', { activeId, printerGroupId, itemId, overId: over.id });
       await connectPrinterToItem(itemId, printerGroupId);
     }
-    // 카테고리 간 아이템 이동
+    // Move items between categories
     else if (activeType === 'item' && overType === 'category') {
       const itemId = parseInt(activeId);
       const targetCategoryId = parseInt(over.id as string);
       
-      // 아이템의 카테고리 업데이트
+      // Update item's category
       setAllMenuItems(prev => prev.map(item => 
         item.id === itemId ? { ...item, category_id: targetCategoryId } : item
       ));
@@ -760,11 +820,11 @@ const MenuEditPage = () => {
       const oldIndex = categories.findIndex((item) => item.id === active.id);
       const newIndex = categories.findIndex((item) => item.id === over.id);
       
-      // 로컬 상태 업데이트
+      // Update local state
       const newCategories = arrayMove(categories, oldIndex, newIndex);
       setCategories(newCategories);
       
-      // 데이터베이스에 순서 저장
+      // Save order to database
       try {
         const categoryOrder = newCategories.map((category, index) => ({
           category_id: category.id,
@@ -784,9 +844,9 @@ const MenuEditPage = () => {
         console.log('✅ Category order saved successfully');
       } catch (error) {
         console.error('Failed to save category order:', error);
-        // 저장 실패 시 원래 순서로 되돌리기
+        // Revert to original order if save fails
         setCategories(categories);
-        alert('카테고리 순서 저장에 실패했습니다. 다시 시도해주세요.');
+        alert('Failed to save category order. Please try again.');
       }
     } 
     // 아이템 순서 변경
@@ -796,18 +856,18 @@ const MenuEditPage = () => {
         const newIndex = items.findIndex((item) => item.id === over.id);
         return arrayMove(items, oldIndex, newIndex);
       });
-      // allMenuItems의 해당 카테고리 아이템 순서도 함께 바꾼다
+      // Also change order of this category's items in allMenuItems
       setAllMenuItems((prev) => {
-        // 현재 카테고리 id
+        // current category id
         const currentCategoryId = selectedCategoryId;
         if (!currentCategoryId) return prev;
-        // 해당 카테고리의 아이템만 추출
+        // extract items of this category only
         const categoryItems = prev.filter(item => item.category_id === currentCategoryId);
         const otherItems = prev.filter(item => item.category_id !== currentCategoryId);
         const oldIndex = categoryItems.findIndex((item) => item.id === active.id);
         const newIndex = categoryItems.findIndex((item) => item.id === over.id);
         const newCategoryItems = arrayMove(categoryItems, oldIndex, newIndex);
-        // 카테고리 아이템만 순서 바꿔서 합침
+        // Merge after changing order of category items only
         return [
           ...otherItems,
           ...newCategoryItems
@@ -816,7 +876,7 @@ const MenuEditPage = () => {
     }
   };
 
-  // 모디파이어를 카테고리에 연결
+  // Connect modifier to category
   const connectModifierToCategory = async (categoryId: number, modifierGroupId: number) => {
     console.log('Connecting modifier:', { categoryId, modifierGroupId });
     
@@ -840,24 +900,24 @@ const MenuEditPage = () => {
         const data = JSON.parse(responseText);
         console.log('✅ Category connection successful with inheritance:', data);
         
-        // 상속 정보는 콘솔에만 표시 (팝업 제거)
+        // Inheritance info is shown only in console (removed popup)
         if (data.inherited_items > 0) {
-          console.log(`카테고리에 연결되었습니다! 상속된 메뉴 아이템: ${data.inherited_items}개, 총 메뉴 아이템: ${data.total_items}개`);
+          console.log(`Linked to category! Inherited menu items: ${data.inherited_items}, Total menu items: ${data.total_items}`);
         } else {
-          console.log('카테고리에 연결되었습니다!');
+          console.log('Linked to category!');
         }
         
-        // 백엔드에서 실제 데이터를 다시 로드
+        // Reload actual data from backend
         try {
         console.log('Loading category connections after successful connection...');
           await Promise.all([
             loadCategoryConnections(),
-            loadItemConnections() // 모든 아이템 연결 상태 새로고침
+            loadItemConnections() // Refresh all item connections
           ]);
         console.log('Connection successful and data reloaded');
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
       } else {
         let errorMessage = 'Unknown error';
@@ -868,15 +928,15 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Connection failed:', errorMessage);
-        alert(`연결 실패: ${errorMessage}`);
+        alert(`Connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to connect modifier:', error);
-      alert('연결 중 오류가 발생했습니다.');
+      alert('An error occurred during connection.');
     }
   };
 
-  // 모디파이어 연결 해제
+  // Unlink modifier
   const disconnectModifierFromCategory = async (categoryId: number, modifierGroupId: number) => {
     try {
       console.log('🔗 Disconnecting modifier from category:', { categoryId, modifierGroupId });
@@ -892,7 +952,7 @@ const MenuEditPage = () => {
       console.log('Response text:', responseText);
 
               if (response.ok) {
-        // 백엔드에서 실제 데이터를 다시 로드
+        // Reload actual data from backend
         await loadCategoryConnections();
               } else {
         let errorMessage = 'Unknown error';
@@ -902,15 +962,15 @@ const MenuEditPage = () => {
         } catch (e) {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
-        alert(`연결 해제 실패: ${errorMessage}`);
+        alert(`Unlink failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to disconnect modifier:', error);
-      alert('연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during unlinking.');
     }
   };
 
-  // 세금 연결 해제
+  // Unlink tax
   const disconnectTaxFromCategory = async (categoryId: number, taxGroupId: number) => {
     try {
       console.log('🔗 Disconnecting tax from category:', { categoryId, taxGroupId });
@@ -935,15 +995,15 @@ const MenuEditPage = () => {
         } catch (e) {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
-        alert(`세금 연결 해제 실패: ${errorMessage}`);
+        alert(`Tax unlink failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to disconnect tax:', error);
-      alert('세금 연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during tax unlinking.');
     }
   };
 
-  // 프린터 연결 해제
+  // Unlink printer
   const disconnectPrinterFromCategory = async (categoryId: number, printerGroupId: number) => {
     try {
       console.log('🔗 Disconnecting printer from category:', { categoryId, printerGroupId });
@@ -968,15 +1028,15 @@ const MenuEditPage = () => {
         } catch (e) {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
-        alert(`프린터 연결 해제 실패: ${errorMessage}`);
+        alert(`Printer unlink failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to disconnect printer:', error);
-      alert('프린터 연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during printer unlinking.');
     }
   };
 
-  // 모디파이어 아이템 연결 해제
+  // Unlink modifier from item
   const disconnectModifierFromItem = async (itemId: number, modifierGroupId: number) => {
     try {
       const response = await fetch(`${API_URL}/menu/items/${itemId}/options/modifier/${modifierGroupId}`, {
@@ -987,15 +1047,15 @@ const MenuEditPage = () => {
         await loadItemConnections();
       } else {
         const error = await response.json();
-        alert(`모디파이어 연결 해제 실패: ${error.error}`);
+        alert(`Modifier unlink failed: ${error.error}`);
       }
     } catch (error) {
       console.error('Failed to disconnect modifier from item:', error);
-      alert('모디파이어 연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during modifier unlinking.');
     }
   };
 
-  // 세금 아이템 연결 해제
+  // Unlink tax from item
   const disconnectTaxFromItem = async (itemId: number, taxGroupId: number) => {
     try {
       const response = await fetch(`${API_URL}/menu/items/${itemId}/options/tax/${taxGroupId}`, {
@@ -1006,15 +1066,15 @@ const MenuEditPage = () => {
         await loadItemConnections();
       } else {
         const error = await response.json();
-        alert(`세금 연결 해제 실패: ${error.error}`);
+        alert(`Tax unlink failed: ${error.error}`);
       }
     } catch (error) {
       console.error('Failed to disconnect tax from item:', error);
-      alert('세금 연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during tax unlinking.');
     }
   };
 
-  // 프린터 아이템 연결 해제
+  // Unlink printer from item
   const disconnectPrinterFromItem = async (itemId: number, printerGroupId: number) => {
     try {
       console.log('🔗 Disconnecting printer from item:', { itemId, printerGroupId });
@@ -1039,24 +1099,25 @@ const MenuEditPage = () => {
         } catch (e) {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
-        alert(`프린터 연결 해제 실패: ${errorMessage}`);
+        alert(`Printer unlink failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to disconnect printer from item:', error);
-      alert('프린터 연결 해제 중 오류가 발생했습니다.');
+      alert('An error occurred during printer unlinking.');
     }
   };
 
-  // 모디파이어를 메뉴 아이템에 연결
+  // Connect modifier to menu item
   const connectModifierToItem = async (itemId: number, modifierGroupId: number) => {
-    console.log('🚀 Starting modifier to item connection:', { itemId, modifierGroupId });
+    const numericItemId = Number(itemId);
+    console.log('🚀 Starting modifier to item connection:', { itemId: numericItemId, modifierGroupId });
     
     try {
       const requestBody = { modifier_group_id: modifierGroupId };
       console.log('Request body:', requestBody);
-      console.log('Request URL:', `${API_URL}/menu/items/${itemId}/options/modifier`);
+      console.log('Request URL:', `${API_URL}/menu/items/${numericItemId}/options/modifier`);
       
-      const response = await fetch(`${API_URL}/menu/items/${itemId}/options/modifier`, {
+      const response = await fetch(`${API_URL}/menu/items/${numericItemId}/options/modifier`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -1070,49 +1131,49 @@ const MenuEditPage = () => {
       if (response.ok) {
         console.log('✅ API call successful, reloading item connections...');
         
-        // 모든 연결 상태 새로고침
+        // Refresh all connections
         try {
           await Promise.all([
-            // 해당 아이템의 연결 상태 업데이트
+            // Update connection status of this item
             (async () => {
         try {
-          console.log('🔄 Reloading item connections for item:', itemId);
-          const itemResponse = await fetch(`${API_URL}/menu/items/${itemId}/options`);
+          console.log('🔄 Reloading item connections for item:', numericItemId);
+          const itemResponse = await fetch(`${API_URL}/menu/items/${numericItemId}/options`);
           if (itemResponse.ok) {
             const itemData = await itemResponse.json();
-            console.log(`✅ Updated item ${itemId} connections:`, itemData);
+            console.log(`✅ Updated item ${numericItemId} connections:`, itemData);
             
                   setItemModifierConnections(prev => {
               const newMap = new Map(prev);
-              newMap.set(itemId, itemData.modifier_groups || []);
+              newMap.set(numericItemId, itemData.modifier_groups || []);
               return newMap;
             });
             
             setItemTaxConnections(prev => {
               const newMap = new Map(prev);
-              newMap.set(itemId, itemData.tax_groups || []);
+              newMap.set(numericItemId, itemData.tax_groups || []);
               return newMap;
             });
             
             setItemPrinterConnections(prev => {
               const newMap = new Map(prev);
-              newMap.set(itemId, itemData.printer_groups || []);
+              newMap.set(numericItemId, itemData.printer_groups || []);
               return newMap;
             });
           } else {
-            console.error(`Failed to reload item ${itemId} connections:`, itemResponse.status);
+            console.error(`Failed to reload item ${numericItemId} connections:`, itemResponse.status);
           }
         } catch (error) {
           console.error('Failed to reload item connections:', error);
               }
             })(),
             
-            // 카테고리 연결 상태도 새로고침 (상속된 아이템들이 있을 수 있음)
+            // Also refresh category connections (there might be inherited items)
             loadCategoryConnections()
           ]);
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
         
         console.log('✅ Item connection successful and data reloaded');
@@ -1126,11 +1187,11 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Item connection failed:', errorMessage);
-        alert(`아이템 연결 실패: ${errorMessage}`);
+        alert(`Item connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('❌ Network or other error during connection:', error);
-      alert('연결 중 오류가 발생했습니다.');
+      alert('An error occurred during connection.');
     }
   };
 
@@ -1152,16 +1213,16 @@ const MenuEditPage = () => {
       if (response.ok) {
         console.log('✅ Tax category connection successful, refreshing all connections...');
         
-        // 모든 연결 상태 새로고침
+        // Refresh all connections
         try {
           await Promise.all([
             loadCategoryTaxConnections(),
-            loadItemConnections() // 메뉴 아이템 연결 상태도 새로고침
+            loadItemConnections() // Refresh menu item connection states
           ]);
           console.log('✅ All connections refreshed after tax category connection');
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
       } else {
         let errorMessage = 'Unknown error';
@@ -1172,20 +1233,21 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Category tax connection failed:', errorMessage);
-        alert(`카테고리 세금 연결 실패: ${errorMessage}`);
+        alert(`Category tax connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to connect tax to category:', error);
-      alert('카테고리 세금 연결 중 오류가 발생했습니다.');
+      alert('An error occurred during category tax connection.');
     }
   };
 
   // Tax Group을 메뉴 아이템에 연결
   const connectTaxToItem = async (itemId: number, taxGroupId: number) => {
-    console.log('Connecting tax to item:', { itemId, taxGroupId });
+    const numericItemId = Number(itemId);
+    console.log('Connecting tax to item:', { itemId: numericItemId, taxGroupId });
     
     try {
-      const response = await fetch(`${API_URL}/menu/items/${itemId}/options/tax`, {
+      const response = await fetch(`${API_URL}/menu/items/${numericItemId}/options/tax`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tax_group_id: taxGroupId }),
@@ -1198,16 +1260,16 @@ const MenuEditPage = () => {
       if (response.ok) {
         console.log('✅ Tax item connection successful, refreshing all connections...');
         
-        // 모든 연결 상태 새로고침
+        // Refresh all connections
         try {
           await Promise.all([
             loadItemConnections(),
-            loadCategoryTaxConnections() // 카테고리 연결 상태도 새로고침
+            loadCategoryTaxConnections() // Refresh category connection states
           ]);
           console.log('✅ All connections refreshed after tax item connection');
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
       } else {
         let errorMessage = 'Unknown error';
@@ -1218,11 +1280,11 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Item tax connection failed:', errorMessage);
-        alert(`아이템 세금 연결 실패: ${errorMessage}`);
+        alert(`Item tax connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to connect tax to item:', error);
-      alert('아이템 세금 연결 중 오류가 발생했습니다.');
+      alert('An error occurred during item tax connection.');
     }
   };
 
@@ -1244,16 +1306,16 @@ const MenuEditPage = () => {
       if (response.ok) {
         console.log('✅ Printer category connection successful, refreshing all connections...');
         
-        // 모든 연결 상태 새로고침
+        // Refresh all connections
         try {
           await Promise.all([
             loadCategoryPrinterConnections(),
-            loadItemConnections() // 메뉴 아이템 연결 상태도 새로고침
+            loadItemConnections() // Refresh menu item connection states
           ]);
           console.log('✅ All connections refreshed after printer category connection');
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
       } else {
         let errorMessage = 'Unknown error';
@@ -1264,20 +1326,21 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Category printer connection failed:', errorMessage);
-        alert(`카테고리 프린터 연결 실패: ${errorMessage}`);
+        alert(`Category printer connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to connect printer to category:', error);
-      alert('카테고리 프린터 연결 중 오류가 발생했습니다.');
+      alert('An error occurred during category printer connection.');
     }
   };
 
   // Printer Group을 메뉴 아이템에 연결
   const connectPrinterToItem = async (itemId: number, printerGroupId: number) => {
-    console.log('Connecting printer to item:', { itemId, printerGroupId });
+    const numericItemId = Number(itemId);
+    console.log('Connecting printer to item:', { itemId: numericItemId, printerGroupId });
     
     try {
-      const response = await fetch(`${API_URL}/menu/items/${itemId}/options/printer`, {
+      const response = await fetch(`${API_URL}/menu/items/${numericItemId}/options/printer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ printer_group_id: printerGroupId }),
@@ -1290,16 +1353,16 @@ const MenuEditPage = () => {
       if (response.ok) {
         console.log('✅ Printer item connection successful, refreshing all connections...');
         
-        // 모든 연결 상태 새로고침
+        // Refresh all connections
         try {
           await Promise.all([
             loadItemConnections(),
-            loadCategoryPrinterConnections() // 카테고리 연결 상태도 새로고침
+            loadCategoryPrinterConnections() // Refresh category connection states
           ]);
           console.log('✅ All connections refreshed after printer item connection');
         } catch (error) {
           console.error('Failed to refresh connections after successful API call:', error);
-          // API 호출은 성공했으므로 에러를 무시하고 계속 진행
+          // API call was successful, so ignore error and continue
         }
       } else {
         let errorMessage = 'Unknown error';
@@ -1310,15 +1373,15 @@ const MenuEditPage = () => {
           errorMessage = responseText || `HTTP ${response.status}`;
         }
         console.error('Item printer connection failed:', errorMessage);
-        alert(`아이템 프린터 연결 실패: ${errorMessage}`);
+        alert(`Item printer connection failed: ${errorMessage}`);
       }
     } catch (error) {
       console.error('Failed to connect printer to item:', error);
-      alert('아이템 프린터 연결 중 오류가 발생했습니다.');
+      alert('An error occurred during item printer connection.');
     }
   };
 
-  // 모디파이어 그룹 관리 함수들
+  // Modifier group management functions
   const handleSaveModifierGroup = async (groupData: { name: string, min_selections: number, max_selections: number, modifiers: { name: string, price_adjustment: number }[], label?: string }) => {
     setIsSavingModifier(true);
     try {
@@ -1335,7 +1398,7 @@ const MenuEditPage = () => {
 
       if (!response.ok) throw new Error(`Failed to ${isNew ? 'create' : 'update'} modifier group`);
 
-      // 모디파이어 그룹 목록 새로고침
+      // Refresh modifier group list
       const loadModifierGroups = async () => {
         try {
           const response = await fetch(`${API_URL}/modifier-groups${menuId ? `?menu_id=${menuId}` : ''}`);
@@ -1381,7 +1444,7 @@ const MenuEditPage = () => {
       
       // 모든 연결 상태 새로고침
       await Promise.all([
-      // 모디파이어 그룹 목록 새로고침
+      // Refresh modifier group list
         (async () => {
         try {
             const response = await fetch(`${API_URL}/modifier-groups${menuId ? `?menu_id=${menuId}` : ''}`);
@@ -1395,10 +1458,10 @@ const MenuEditPage = () => {
         }
         })(),
         
-        // 카테고리 연결 상태 새로고침
+        // Refresh category connections
         loadCategoryConnections(),
         
-        // 메뉴 아이템 연결 상태 새로고침
+        // Refresh menu item connections
         loadItemConnections()
       ]);
       
@@ -1409,7 +1472,7 @@ const MenuEditPage = () => {
     }
   };
 
-  // Tax 그룹 관리 함수들
+  // Tax group management functions
   const handleSaveTaxGroup = async (groupData: { name: string, taxes: any[] }) => {
     setIsSavingTax(true);
     try {
@@ -1426,10 +1489,10 @@ const MenuEditPage = () => {
 
       if (!response.ok) throw new Error(`Failed to ${isNew ? 'create' : 'update'} tax group`);
 
-      // Tax 그룹 목록 새로고침
+      // Refresh Tax Group list
       const loadTaxGroups = async () => {
         try {
-          const response = await fetch(`${API_URL}/taxes/groups`);
+          const response = await fetch(`${API_URL}/tax-groups`);
           if (response.ok) {
             const data = await response.json();
             console.log('Refreshed tax groups from Tax Settings:', data);
@@ -1455,17 +1518,17 @@ const MenuEditPage = () => {
     
     try {
       console.log('🗑️ Deleting tax group:', groupId);
-      const response = await fetch(`${API_URL}/taxes/groups/${groupId}`, { method: 'DELETE' });
+      const response = await fetch(`${API_URL}/tax-groups/${groupId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete tax group');
       
       console.log('✅ Tax group deleted successfully, refreshing all connections...');
       
       // 모든 연결 상태 새로고침
       await Promise.all([
-      // Tax 그룹 목록 새로고침
+      // Refresh Tax Group list
         (async () => {
         try {
-          const response = await fetch(`${API_URL}/taxes/groups`);
+          const response = await fetch(`${API_URL}/tax-groups`);
           if (response.ok) {
             const data = await response.json();
               console.log('✅ Refreshed tax groups from Tax Settings:', data);
@@ -1476,10 +1539,10 @@ const MenuEditPage = () => {
         }
         })(),
         
-        // 카테고리 연결 상태 새로고침
+        // Refresh category connections
         loadCategoryTaxConnections(),
         
-        // 메뉴 아이템 연결 상태 새로고침
+        // Refresh menu item connections
         loadItemConnections()
       ]);
       
@@ -1490,7 +1553,7 @@ const MenuEditPage = () => {
     }
   };
 
-  // Printer 그룹 관리 함수들
+  // Printer group management functions
   const handleSavePrinterGroup = async (groupData: { name: string, type: string, printers: any[] }) => {
     setIsSavingPrinter(true);
     try {
@@ -1509,7 +1572,7 @@ const MenuEditPage = () => {
 
       if (!response.ok) throw new Error(`Failed to ${isNew ? 'create' : 'update'} printer group`);
 
-      // Printer 그룹 목록 새로고침
+      // Refresh Printer Group list
       const loadPrinterGroups = async () => {
         try {
           const response = await fetch(`${API_URL}/printers/groups?menu_id=${menuId}`);
@@ -1545,7 +1608,7 @@ const MenuEditPage = () => {
       
       // 모든 연결 상태 새로고침
       await Promise.all([
-      // Printer 그룹 목록 새로고침
+      // Refresh Printer Group list
         (async () => {
         try {
           const response = await fetch(`${API_URL}/printers/groups?menu_id=${menuId}`);
@@ -1559,10 +1622,10 @@ const MenuEditPage = () => {
         }
         })(),
         
-        // 카테고리 연결 상태 새로고침
+        // Refresh category connections
         loadCategoryPrinterConnections(),
         
-        // 메뉴 아이템 연결 상태 새로고침
+        // Refresh menu item connections
         loadItemConnections()
       ]);
       
@@ -1574,7 +1637,7 @@ const MenuEditPage = () => {
   };
 
   const handleAddCategory = async (name: string) => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
     if (!menuId) return;
     
     try {
@@ -1589,10 +1652,10 @@ const MenuEditPage = () => {
       const newCategory = await response.json();
       setCategories(prev => [...prev, { ...newCategory, id: newCategory.category_id }]);
 
-      // 새 카테고리 위치로 스크롤/하이라이트 준비
+      // Prepare scroll/highlight for new category location
       lastCreatedRef.current = { type: 'category', id: newCategory.category_id };
       setCollapsedCategories(prev => { const ns = new Set(prev); ns.delete(newCategory.category_id); return ns; });
-      // 생성 직후 새 아이템 폼 열고 커서 이동
+      // Open new item form and move cursor immediately after creation
       setSelectedCategoryId(newCategory.category_id);
       setShowInlineForm(newCategory.category_id);
       setTimeout(() => {
@@ -1601,12 +1664,12 @@ const MenuEditPage = () => {
       }, 0);
     } catch (error) {
       console.error(error);
-      alert('카테고리 추가에 실패했습니다.');
+      alert('Failed to add category.');
     }
   };
 
   const handleUpdateCategory = async (id: number, name: string) => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
     try {
       const response = await fetch(`${API_URL}/menu/categories/${id}`, {
         method: 'PATCH',
@@ -1621,13 +1684,13 @@ const MenuEditPage = () => {
       ));
     } catch (error) {
       console.error(error);
-      alert('카테고리 업데이트에 실패했습니다.');
+      alert('Failed to update category.');
     }
   };
 
   const handleDeleteCategory = async (id: number) => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
-    if (!window.confirm('이 카테고리를 삭제하시겠습니까? 카테고리 내의 모든 아이템도 함께 삭제됩니다.')) {
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
+    if (!window.confirm('Are you sure you want to delete this category? All items in the category will also be deleted.')) {
       return;
     }
     
@@ -1647,12 +1710,12 @@ const MenuEditPage = () => {
       }
     } catch (error) {
       console.error(error);
-      alert('카테고리 삭제에 실패했습니다.');
+      alert('Failed to delete category.');
     }
   };
 
   const handleAddItem = async (name: string, short_name: string, description: string, price: number, price2: number = 0, isOpenPrice: boolean = false) => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
     if (!selectedCategoryId || !menuId) return;
     
     try {
@@ -1678,26 +1741,26 @@ const MenuEditPage = () => {
       setAllMenuItems(prev => [...prev, mappedItem]);
       setMenuItems(prev => [...prev, mappedItem]);
       
-      // 모달 닫기 및 폼 초기화
+      // Close modal and reset form
       setShowAddItemModal(false);
       setNewItemData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
     } catch (error) {
       console.error(error);
-      alert('아이템 추가에 실패했습니다.');
+      alert('Failed to add item.');
     }
   };
 
   const handleAddItemClick = (categoryId: number) => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
     setSelectedCategoryId(categoryId);
     setShowInlineForm(categoryId);
     setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
   };
 
   const handleAddItemSubmit = () => {
-    if (menuEditLocked) { alert('편집이 잠겨 있습니다.'); return; }
+    if (menuEditLocked) { alert('Editing is locked.'); return; }
     if (!newItemData.name.trim() || newItemData.price <= 0) {
-      alert('아이템 이름과 가격을 입력해주세요.');
+      alert('Please enter item name and price.');
       return;
     }
     handleAddItem(
@@ -1711,13 +1774,13 @@ const MenuEditPage = () => {
 
   const handleInlineFormSubmit = () => {
     if (!inlineFormData.name.trim() || inlineFormData.price <= 0) {
-      alert('아이템 이름과 가격을 입력해주세요.');
+      alert('Please enter item name and price.');
       return;
     }
     
-    // showInlineForm이 숫자인 경우 메뉴 아이템 편집, null인 경우 새 아이템 추가
+    // If showInlineForm is a number, edit menu item; if null, add new item
     if (typeof showInlineForm === 'number') {
-      // 메뉴 아이템 편집
+      // Edit menu item
       handleUpdateItem(
         showInlineForm,
         inlineFormData.name,
@@ -1729,7 +1792,7 @@ const MenuEditPage = () => {
       setShowInlineForm(null);
       setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
     } else {
-      // 새 메뉴 아이템 추가
+      // Add new menu item
       handleAddItem(
         inlineFormData.name,
         inlineFormData.short_name,
@@ -1738,10 +1801,10 @@ const MenuEditPage = () => {
         inlineFormData.price2
       );
       
-      // 폼 초기화 후 즉시 새 New Item 창 열기
+      // Open new New Item window immediately after resetting form
       setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
       
-      // 다음 tick에서 Item Name 입력창에 포커스
+      // Focus on Item Name input in next tick
       setTimeout(() => {
         const nameInput = document.querySelector('input[name="name"]') as HTMLInputElement;
         if (nameInput) {
@@ -1774,7 +1837,7 @@ const MenuEditPage = () => {
       ));
     } catch (error) {
       console.error(error);
-      alert('아이템 업데이트에 실패했습니다.');
+      alert('Failed to update item.');
     }
   };
 
@@ -1790,7 +1853,7 @@ const MenuEditPage = () => {
       setMenuItems(prev => prev.filter(item => item.id !== id));
     } catch (error) {
       console.error(error);
-      alert('아이템 삭제에 실패했습니다.');
+      alert('Failed to delete item.');
     }
   };
 
@@ -1816,12 +1879,12 @@ const MenuEditPage = () => {
       ));
     } catch (error) {
       console.error(error);
-      alert('이미지 업로드에 실패했습니다.');
+      alert('Failed to upload image.');
     }
   };
 
   const handleSortItems = () => {
-    // 정렬 로직 구현
+    // Sort logic implementation
     console.log('Sorting items...');
   };
 
@@ -1829,12 +1892,12 @@ const MenuEditPage = () => {
     navigate('/backoffice/menu');
   };
 
-  // 전체 메뉴 저장
+  // Save all menu
   const handleSaveAll = async () => {
     setIsSaving(true);
     try {
-      // 1. 메뉴 기본 정보 저장 (이름 등은 이미 개별적으로 저장됨)
-      // 2. 카테고리 순서 저장
+      // 1. Save menu basic info (names etc. are already saved individually)
+      // 2. Save category order
       const categoryOrder = categories.map((cat, idx) => ({
         category_id: cat.category_id,
         sort_order: idx
@@ -1846,7 +1909,7 @@ const MenuEditPage = () => {
         body: JSON.stringify({ categories: categoryOrder }),
       });
 
-      // 3. 아이템 순서 저장 (각 카테고리별)
+      // 3. Save item order (per category)
       for (const category of categories) {
         const categoryItems = allMenuItems.filter(item => item.category_id === category.category_id);
         const itemOrder = categoryItems.map((item, idx) => ({
@@ -1863,10 +1926,10 @@ const MenuEditPage = () => {
         }
       }
 
-      alert('✅ 메뉴가 성공적으로 저장되었습니다!');
+      alert('✅ Menu saved successfully!');
     } catch (error) {
       console.error('Failed to save menu:', error);
-      alert('❌ 저장 중 오류가 발생했습니다.');
+      alert('❌ An error occurred while saving.');
     } finally {
       setIsSaving(false);
     }
@@ -1887,17 +1950,17 @@ const MenuEditPage = () => {
       setCurrentMenu(prev => prev ? { ...prev, name: newName } : null);
     } catch (error) {
       console.error(error);
-      alert('메뉴 이름 업데이트에 실패했습니다.');
+      alert('Failed to update menu name.');
     }
   };
 
-  // Export 기능
+  // Export functionality
 
 
-  // Excel Export 기능
+  // Excel Export functionality
   const handleExcelExport = async () => {
     if (!menuId) {
-      alert('메뉴 ID가 없습니다.');
+      alert('Menu ID is missing.');
       return;
     }
     
@@ -1927,28 +1990,28 @@ const MenuEditPage = () => {
     } catch (error) {
       console.error('Export failed:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      alert('Export 실패: ' + errorMessage);
+      alert('Export failed: ' + errorMessage);
     } finally {
       setIsExporting(false);
     }
   };
 
-  // Excel Import 기능
+  // Excel Import functionality
   const handleExcelImport = async (file?: File) => {
-    // 팝업 메시지로 대체
-    const message = `Export 구현됐고, Import는 구현됐지만 계속 에러가 나서 기능은 그대로 두고 이 팝업으로 대체.
+    // Replace with popup message
+    const message = `Export is implemented, and Import was implemented but had recurring errors, so the feature remains while replaced with this popup.
 
-Import때 참고해야하는것,
+Points for Import:
 
-모디파이어는 같은 이름이여러개이니, 같은이름중 어떤건지 알수가 없으므로, 카테고리나 메뉴아이템 목록에 뱃지에 표시.
-오타 또는 없는 옵션그룹이 있을경우, 뱃지에는 그 이름이 있고, X표시
+Modifiers have multiple identical names, so it's impossible to know which one it is. They are displayed with badges in the category or menu item list.
+If there are typos or missing option groups, the name will be in the badge with an X mark.
 
-이렇게. 기본 로직은 그대로 유지해. 나중에 재구현할거니까`;
+Like this. The basic logic is maintained for future re-implementation.`;
     
     alert(message);
   };
 
-  // 백업 목록 가져오기
+  // Load backups
   const loadBackups = async () => {
     if (!menuId) return;
     
@@ -1963,10 +2026,10 @@ Import때 참고해야하는것,
     }
   };
 
-  // 백업 복원
+  // Restore backup
   const handleRestoreBackup = async (backupFile: File) => {
     if (!menuId) {
-      alert('메뉴 ID가 없습니다.');
+      alert('Menu ID is missing.');
       return;
     }
     
@@ -1988,15 +2051,15 @@ Import때 참고해야하는것,
       
       const result = await response.json();
       console.log('Backup restore successful:', result);
-      alert('백업이 성공적으로 복원되었습니다!');
+      alert('Backup restored successfully!');
       
-      // 페이지 새로고침
+      // Reload page
       window.location.reload();
       
     } catch (error) {
       console.error('Backup restore failed:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      alert('백업 복원 실패: ' + errorMessage);
+      alert('Backup restore failed: ' + errorMessage);
     } finally {
       setIsRestoringBackup(false);
     }
@@ -2031,7 +2094,7 @@ Import때 참고해야하는것,
     </button>
   );
 
-  // 드래그 가능한 모디파이어 그룹 컴포넌트
+  // Draggable Modifier Group component
   const DraggableModifierGroup: React.FC<{
     group: any;
     isConnected: boolean;
@@ -2086,7 +2149,7 @@ Import때 참고해야하는것,
         title="Drag to connect to categories or menu items"
       >
         <div className="flex items-center space-x-3">
-          {/* 드래그 핸들 아이콘 */}
+          {/* Drag handle icon */}
           <div
             {...attributes}
             {...listeners}
@@ -2118,21 +2181,21 @@ Import때 참고해야하는것,
           <button
             onClick={handleEditClick}
                   className="p-1 hover:bg-blue-100 rounded transition-colors pointer-events-auto z-20"
-            title="편집"
+            title="Edit"
           >
             <Edit className="w-4 h-4 text-blue-600" />
           </button>
           <button
             onClick={handleDeleteClick}
                   className="p-1 hover:bg-red-100 rounded transition-colors pointer-events-auto z-20"
-            title="삭제"
+            title="Delete"
           >
             <Trash2 className="w-4 h-4 text-red-600" />
           </button>
                 <button
                   onClick={handleToggleClick}
                   className="p-1.5 hover:bg-gray-100 rounded transition-colors pointer-events-auto z-20"
-                  title={isExpanded ? "접기" : "펼치기"}
+                  title={isExpanded ? "Collapse" : "Expand"}
                 >
                   {isExpanded ? (
                     <ChevronUp className="w-4 h-4 text-gray-600" />
@@ -2144,7 +2207,7 @@ Import때 참고해야하는것,
             </div>
             {isExpanded && group.modifiers && group.modifiers.length > 0 && (
               <div className="mt-2 space-y-1">
-                {/* 헤더 */}
+                {/* Header */}
                 <div className="flex items-center justify-between text-xs text-gray-400 px-2 border-b pb-1">
                   <span>Option</span>
                   <div className="flex gap-4">
@@ -2184,7 +2247,7 @@ Import때 참고해야하는것,
 
 
 
-  // 드래그 가능한 Printer Group 컴포넌트
+  // Draggable Printer Group component
   const DraggablePrinterGroup: React.FC<{
     group: any;
     isConnected: boolean;
@@ -2239,7 +2302,7 @@ Import때 참고해야하는것,
         title="Drag to connect to categories or menu items"
       >
         <div className="flex items-center space-x-3">
-          {/* 드래그 핸들 아이콘 */}
+          {/* Drag handle icon */}
           <div
             {...attributes}
             {...listeners}
@@ -2263,21 +2326,21 @@ Import때 참고해야하는것,
           <button
             onClick={handleEditClick}
                               className="p-1 hover:bg-blue-100 rounded transition-colors pointer-events-auto z-20"
-            title="편집"
+            title="Edit"
           >
             <Edit className="w-4 h-4 text-blue-600" />
           </button>
           <button
             onClick={handleDeleteClick}
             className="p-1 hover:bg-red-100 rounded transition-colors pointer-events-auto z-20"
-            title="삭제"
+            title="Delete"
           >
             <Trash2 className="w-4 h-4 text-red-600" />
           </button>
                 <button
                   onClick={handleToggleClick}
                   className="p-1.5 hover:bg-gray-100 rounded transition-colors pointer-events-auto z-20"
-                  title="펼침/접힘"
+                  title="Expand/Collapse"
                 >
                   {isExpanded ? (
                     <ChevronUp className="w-4 h-4 text-gray-600" />
@@ -2303,7 +2366,7 @@ Import때 참고해야하는것,
     );
   };
 
-  // 드래그 가능한 Tax Group 컴포넌트
+  // Draggable Tax Group component
   const DraggableTaxGroup: React.FC<{
     group: any;
     isConnected: boolean;
@@ -2348,7 +2411,7 @@ Import때 참고해야하는것,
           border-red-200 bg-white hover:border-red-300
           ${isDragging ? 'shadow-lg' : ''}
           ${isHovered ? 'border-red-400 bg-red-100 shadow-lg' : ''}
-        `} title="드래그하여 카테고리 또는 메뉴 아이템에 연결">
+        `} title="Drag to connect to category or menu item">
         <div className="flex items-center space-x-3">
           <div {...attributes} {...listeners} className="p-2 rounded hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-300 cursor-grab hover:cursor-grabbing">
             <GripVertical size={20} className="text-slate-400" />
@@ -2362,13 +2425,13 @@ Import때 참고해야하는것,
                 {isConnected && (
                   <Link className="text-red-500 w-4 h-4 cursor-help" onMouseEnter={(e) => showTooltip('tax', group.id, e)} onMouseLeave={hideTooltip} />
                 )}
-                <button onClick={handleEditClick} className="p-0.5 hover:bg-blue-100 rounded transition-colors pointer-events-auto z-20" title="편집">
+                <button onClick={handleEditClick} className="p-0.5 hover:bg-blue-100 rounded transition-colors pointer-events-auto z-20" title="Edit">
                   <Edit className="w-4 h-4 text-blue-600" />
                 </button>
-                <button onClick={handleDeleteClick} className="p-0.5 hover:bg-red-100 rounded transition-colors pointer-events-auto z-20" title="삭제">
+                <button onClick={handleDeleteClick} className="p-0.5 hover:bg-red-100 rounded transition-colors pointer-events-auto z-20" title="Delete">
                   <Trash2 className="w-4 h-4 text-red-600" />
                 </button>
-                <button onClick={handleToggleClick} className="p-1.5 hover:bg-gray-100 rounded transition-colors pointer-events-auto z-20" title="펼침/접힘">
+                <button onClick={handleToggleClick} className="p-1.5 hover:bg-gray-100 rounded transition-colors pointer-events-auto z-20" title="Expand/Collapse">
                   {isExpanded ? (<ChevronUp className="w-4 h-4 text-gray-600" />) : (<ChevronDown className="w-4 h-4 text-gray-600" />)}
                 </button>
               </div>
@@ -2389,10 +2452,10 @@ Import때 참고해야하는것,
     );
   };
 
-  // 카테고리별 아이템 그룹핑
+  // Group items by category
   const itemsByCategory = categories.map(category => ({ category, items: allMenuItems.filter(item => item.category_id === category.id) }));
 
-  // SortableCategoryBlock 컴포넌트 추가
+  // Add SortableCategoryBlock component
   const SortableCategoryBlock = ({
     category,
     items,
@@ -2446,13 +2509,13 @@ Import때 참고해야하는것,
             isOver ? 'border-2 border-green-500 bg-green-50 shadow-md' : 'border-gray-200'}`}
         {...attributes}
       >
-        {/* 카테고리 헤더 */}
+        {/* Category header */}
         <div className={`relative flex items-center justify-between py-1 px-2 border-b border-gray-100 bg-gray-200 rounded-t-lg transition-all duration-200 ${
           isOver ? 'ring-2 ring-green-500 bg-green-50' : 
           isDragRelevantForCategory ? 'ring-1 ring-blue-300 bg-blue-50' : 
           highlightedElements.categories.includes(category.category_id) ? 'ring-2 ring-blue-400' : ''
         }`}>
-          {/* 헤더 드롭 스트립 (드래그 중에만 활성화) */}
+          {/* Header drop strip (active only during drag) */}
           {isDragRelevantForCategory && (
             <div
               ref={setHeaderDropRef as any}
@@ -2464,18 +2527,18 @@ Import때 참고해야하는것,
             <div {...listeners} className="cursor-grab p-1.5 self-stretch flex items-center hover:bg-gray-200 rounded-full transition-colors">
               <GripVertical size={20} className="text-slate-400" />
             </div>
-            {/* 카테고리 이미지 미리보기 및 업로드/삭제 */}
+            {/* Category image preview and upload/delete */}
             <div className="relative flex items-center">
               {category.image_url ? (
                 <img
-                  src={`http://localhost:3177${category.image_url}`}
-                  alt="카테고리 이미지"
+                  src={`${API_BASE}${category.image_url}`}
+                  alt="Category image"
                   className="w-10 h-10 object-cover rounded-lg border border-gray-300 mr-2"
                 />
               ) : (
                 <div className="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center text-gray-400 mr-2 text-xs">No img</div>
               )}
-              {/* 업로드 버튼 (+) */}
+              {/* Upload button (+) */}
               <button
                 type="button"
                 className="absolute top-0 right-0 bg-white rounded-full w-4 h-4 flex items-center justify-center border border-gray-300 hover:bg-blue-100 text-blue-500 font-bold text-xs"
@@ -2483,11 +2546,11 @@ Import때 참고해야하는것,
                   e.stopPropagation();
                   fileInputRefs.current[category.id]?.click();
                 }}
-                title="카테고리 이미지 업로드"
+                title="Upload category image"
               >
                 +
               </button>
-              {/* 삭제 버튼 (-) - 이미지가 있을 때만 표시 */}
+              {/* Delete button (-) - shown only when image exists */}
               {category.image_url && (
                 <button
                   type="button"
@@ -2496,7 +2559,7 @@ Import때 참고해야하는것,
                     e.stopPropagation();
                     handleDeleteCategoryImage(category.id);
                   }}
-                  title="카테고리 이미지 삭제"
+                  title="Delete category image"
                 >
                   −
                 </button>
@@ -2540,7 +2603,7 @@ Import때 참고해야하는것,
                     setEditingCategoryName('');
                   }}
                   className="p-1 hover:bg-green-100 rounded-full transition-colors"
-                  title="저장"
+                  title="Save"
                 >
                   <CheckCircle size={14} className="text-green-600" />
                 </button>
@@ -2550,7 +2613,7 @@ Import때 참고해야하는것,
                     setEditingCategoryName('');
                   }}
                   className="p-1 hover:bg-gray-100 rounded-full transition-colors"
-                  title="취소"
+                  title="Cancel"
                 >
                   <X size={14} className="text-gray-600" />
                 </button>
@@ -2568,7 +2631,7 @@ Import때 참고해야하는것,
             </span>
           </div>
           <div className="flex items-center space-x-3">
-            {/* 연결된 옵션들 표시 - 오른쪽 끝 기준 수직 정렬 */}
+            {/* Display connected options - vertical alignment based on right edge */}
             {(() => {
               const connections = categoryConnections.get(category.category_id);
               const taxConnections = categoryTaxConnections.get(category.category_id);
@@ -2588,7 +2651,7 @@ Import때 참고해야하는것,
               
               return (
                 <div className="flex flex-wrap items-center gap-1 mr-3 justify-end">
-                  {/* 연결된 모디파이어 표시 */}
+                  {/* Display connected modifiers */}
                   {connections && connections.map((modifier: any, index: number) => {
                     console.log(`Modifier ${index}:`, modifier);
                     return (
@@ -2605,7 +2668,7 @@ Import때 참고해야하는것,
                             disconnectModifierFromCategory(category.category_id, modifier.modifier_group_id);
                           }}
                           className="ml-1 text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="모디파이어 제거"
+                          title="Remove Modifier"
                       >
                         ×
                       </button>
@@ -2613,7 +2676,7 @@ Import때 참고해야하는것,
                     );
                   })}
                   
-            {/* 연결된 Taxes 표시 */}
+            {/* Display connected Taxes */}
                   {taxConnections && taxConnections.map((tax: any, index: number) => {
                                 const taxName = tax.group_name || tax.name;
                     const taxId = tax.tax_group_id;
@@ -2632,7 +2695,7 @@ Import때 참고해야하는것,
                             disconnectTaxFromCategory(category.category_id, taxId);
                           }}
                           className="ml-1 text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="세금 제거"
+                          title="Remove Tax"
                       >
                         ×
                       </button>
@@ -2640,7 +2703,7 @@ Import때 참고해야하는것,
                     ) : null;
                   })}
                   
-            {/* 연결된 Printers 표시 */}
+            {/* Display connected Printers */}
                   {printerConnections && printerConnections.map((printer: any, index: number) => {
                     const printerName = printer.printer_group_name || printer.name;
                     console.log(`Printer ${index}:`, printer, 'Name:', printerName);
@@ -2658,7 +2721,7 @@ Import때 참고해야하는것,
                             disconnectPrinterFromCategory(category.category_id, printer.printer_group_id);
                           }}
                           className="ml-1 text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="프린터 제거"
+                          title="Remove Printer"
                       >
                         ×
                       </button>
@@ -2675,25 +2738,25 @@ Import때 참고해야하는것,
                 setEditingCategoryName(category.name);
               }}
               className="p-1 hover:bg-blue-100 rounded-full transition-colors focus:outline-none"
-              title="카테고리 편집"
+              title="Edit category"
             >
               <Edit size={16} className="text-blue-600" />
             </button>
             <button
               onClick={() => {
-                if (window.confirm(`카테고리 "${category.name}"을(를) 삭제하시겠습니까?`)) {
+                if (window.confirm(`Are you sure you want to delete category "${category.name}"?`)) {
                   handleDeleteCategory(category.id);
                 }
               }}
               className="p-1 hover:bg-red-100 rounded-full transition-colors focus:outline-none"
-              title="카테고리 삭제"
+              title="Delete category"
             >
               <Trash2 size={16} className="text-red-600" />
             </button>
             <button
               onClick={() => onToggleCollapse(category.id)}
               className="p-1 hover:bg-gray-200 rounded-full flex-shrink-0 transition-colors focus:outline-none flex items-center"
-              title={isCollapsed ? '펼치기' : '접기'}
+              title={isCollapsed ? 'Expand' : 'Collapse'}
             >
               {!isCollapsed ? (
                 <ChevronUp size={20} className="text-gray-500 transition-transform duration-200" />
@@ -2704,7 +2767,7 @@ Import때 참고해야하는것,
             </div>
           </div>
         </div>
-        {/* 카테고리 내 아이템들 */}
+        {/* Items in category */}
         {!isCollapsed && (
           <div className="p-2">
             {items.length > 0 ? (
@@ -2771,7 +2834,7 @@ Import때 참고해야하는것,
                           onChange={(e) => {
                             const input = e.target;
                             const value = input.value;
-                            // 첫 글자와 공백 후 첫 글자만 대문자로, 나머지는 소문자로
+                            // Capitalize first letter and after spaces, others lowercase
                             const newValue = value.toLowerCase().replace(/^[a-z]|\s+[a-z]/g, (match) => match.toUpperCase());
                             input.value = newValue;
                           }}
@@ -2790,7 +2853,7 @@ Import때 참고해야하는것,
                           onChange={(e) => {
                             const input = e.target;
                             const value = input.value;
-                            // 첫 글자와 공백 후 첫 글자만 대문자로, 나머지는 소문자로
+                            // Capitalize first letter and after spaces, others lowercase
                             const newValue = value.toLowerCase().replace(/^[a-z]|\s+[a-z]/g, (match) => match.toUpperCase());
                             input.value = newValue;
                           }}
@@ -2839,9 +2902,9 @@ Import때 참고해야하는것,
                           }
                           
                           handleAddItem(name, short_name, description, price, price2, isOpenPrice);
-                          // 폼 초기화
+                          // Reset form
                           e.currentTarget.form!.reset();
-                          // Item Name 필드에 포커스
+                          // Focus on Item Name field
                           const nameInput = e.currentTarget.form!.querySelector('input[name="name"]') as HTMLInputElement;
                           if (nameInput) {
                             nameInput.focus();
@@ -2873,7 +2936,7 @@ Import때 참고해야하는것,
                         onChange={(e) => {
                           const textarea = e.target;
                           const value = textarea.value;
-                          // 첫 글자만 대문자로, 나머지는 소문자로
+                          // Only first letter capitalized, others lowercase
                           const newValue = value.toLowerCase().replace(/^[a-z]/g, (match) => match.toUpperCase());
                           textarea.value = newValue;
                         }}
@@ -2894,9 +2957,9 @@ Import때 참고해야하는것,
                             }
                             
                             handleAddItem(name, short_name, description, price, price2, isOpenPrice);
-                            // 폼 초기화
+                            // Reset form
                             e.currentTarget.form!.reset();
-                            // Item Name 필드에 포커스
+                            // Focus on Item Name field
                             const nameInput = e.currentTarget.form!.querySelector('input[name="name"]') as HTMLInputElement;
                             if (nameInput) {
                               nameInput.focus();
@@ -2926,7 +2989,7 @@ Import때 참고해야하는것,
               </div>
             )}
             
-            {/* New Item 버튼 */}
+            {/* New Item button */}
             <div className="pt-1 pb-0.5 px-2 border-t border-gray-100">
               <button
                 onClick={() => onAddItemClick(category.id)}
@@ -2941,7 +3004,7 @@ Import때 참고해야하는것,
     );
   };
 
-  // SortableMenuItemBlock 컴포넌트 함수형으로 변경
+  // SortableMenuItemBlock component changed to functional
   const SortableMenuItemBlock = ({
     item,
     onNavigate,
@@ -2996,10 +3059,10 @@ Import때 참고해야하는것,
         <GripVertical size={18} className="text-slate-400" />
       </div>
       <div className="flex items-center space-x-3 flex-1">
-        {/* 메뉴아이템 이미지 미리보기 및 업로드/삭제 */}
+        {/* Menu item image preview and upload/delete */}
         <div className="relative flex items-center">
           {item.image_url ? (
-            <img src={`http://localhost:3177${item.image_url}`} alt={item.name} className="w-12 h-12 object-cover rounded-lg border border-gray-300 mr-2" />
+            <img src={`${API_BASE}${item.image_url}`} alt={item.name} className="w-12 h-12 object-cover rounded-lg border border-gray-300 mr-2" />
           ) : (
             <div className="w-12 h-12 bg-gray-200 rounded-lg flex items-center justify-center text-gray-400 mr-2 text-xs">No img</div>
           )}
@@ -3012,7 +3075,7 @@ Import때 참고해야하는것,
               const input = document.querySelector(`input[data-item-id="${item.id}"]`) as HTMLInputElement;
               input?.click();
             }}
-            title="메뉴아이템 이미지 업로드"
+            title="Upload menu item image"
           >
             +
           </button>
@@ -3025,7 +3088,7 @@ Import때 참고해야하는것,
                 e.stopPropagation();
                 handleDeleteMenuItemImage(item.id);
               }}
-              title="메뉴아이템 이미지 삭제"
+              title="Delete menu item image"
             >
               −
             </button>
@@ -3044,7 +3107,7 @@ Import때 참고해야하는것,
         </div>
         <div className="flex-1 min-w-0">
           {showInlineForm === item.id ? (
-            /* 편집 모드 - 인라인 입력 */
+            /* Edit mode - inline input */
             <form onSubmit={(e) => { e.preventDefault(); handleInlineFormSubmit(); }} className="space-y-1">
               <div className="flex flex-wrap items-center gap-2">
                 <input
@@ -3087,28 +3150,68 @@ Import때 참고해야하는것,
                 placeholder="Description"
                 rows={2}
               />
-              {/* 옵션 라벨 + 버튼 (같은 줄) */}
+              {/* Option label + button (same line) */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1">
                   {(() => {
-                    const connections = itemModifierConnections.get(item.id);
-                    const taxConnections = itemTaxConnections.get(item.id);
-                    const printerConnections = itemPrinterConnections.get(item.id);
+                    const itemIdNum = Number(item.id);
+                    const connections = itemModifierConnections.get(itemIdNum);
+                    const taxConnections = itemTaxConnections.get(itemIdNum);
+                    const printerConnections = itemPrinterConnections.get(itemIdNum);
                     return (
                       <>
                         {connections && connections.map((m: any) => (
-                          <span key={m.modifier_group_id} className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
+                          <span key={m.modifier_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
                             {m.name || m.group_name || 'Modifier'}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`Disconnect "${m.name || m.group_name}" from this item?`)) {
+                                  disconnectModifierFromItem(itemIdNum, m.modifier_group_id);
+                                }
+                              }}
+                              className="ml-1 hover:bg-green-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                              title="Disconnect modifier"
+                            >
+                              <X size={12} />
+                            </button>
                           </span>
                         ))}
                         {taxConnections && taxConnections.map((t: any) => (
-                          <span key={t.tax_group_id} className="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">
+                          <span key={t.tax_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">
                             {t.name || t.group_name || 'Tax'}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`Disconnect "${t.name || t.group_name}" from this item?`)) {
+                                  disconnectTaxFromItem(itemIdNum, t.tax_group_id);
+                                }
+                              }}
+                              className="ml-1 hover:bg-red-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                              title="Disconnect tax"
+                            >
+                              <X size={12} />
+                            </button>
                           </span>
                         ))}
                         {printerConnections && printerConnections.map((p: any) => (
-                          <span key={p.printer_group_id} className="text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">
+                          <span key={p.printer_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">
                             {p.name || p.printer_group_name || 'Printer'}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`Disconnect "${p.name || p.printer_group_name}" from this item?`)) {
+                                  disconnectPrinterFromItem(itemIdNum, p.printer_group_id);
+                                }
+                              }}
+                              className="ml-1 hover:bg-purple-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                              title="Disconnect printer"
+                            >
+                              <X size={12} />
+                            </button>
                           </span>
                         ))}
                       </>
@@ -3129,7 +3232,7 @@ Import때 참고해야하는것,
               </div>
             </form>
           ) : (
-            /* 일반 모드 - 목록 표시 */
+            /* Normal mode - list display */
             <>
               <div className="flex items-center space-x-2">
                 <h4 className="font-medium text-gray-800 truncate">{item.name}</h4>
@@ -3140,24 +3243,61 @@ Import때 참고해야하는것,
               <p className="text-sm text-gray-500 truncate">{(item.description && item.description.length > 80) ? `${item.description.slice(0, 80)}...` : (item.description || 'No description')}</p>
               <div className="flex flex-wrap items-center gap-1 mt-1">
                 {(() => {
-                  const connections = itemModifierConnections.get(item.id);
-                  const taxConnections = itemTaxConnections.get(item.id);
-                  const printerConnections = itemPrinterConnections.get(item.id);
+                  const itemIdNum = Number(item.id);
+                  const connections = itemModifierConnections.get(itemIdNum);
+                  const taxConnections = itemTaxConnections.get(itemIdNum);
+                  const printerConnections = itemPrinterConnections.get(itemIdNum);
                   return (
                     <>
                       {connections && connections.map((m: any) => (
-                        <span key={m.modifier_group_id} className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
+                        <span key={m.modifier_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 group">
                           {m.name || m.group_name || 'Modifier'}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Disconnect "${m.name || m.group_name}" from this item?`)) {
+                                disconnectModifierFromItem(itemIdNum, m.modifier_group_id);
+                              }
+                            }}
+                            className="ml-1 hover:bg-green-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                            title="Disconnect modifier"
+                          >
+                            <X size={12} />
+                          </button>
                         </span>
                       ))}
                       {taxConnections && taxConnections.map((t: any) => (
-                        <span key={t.tax_group_id} className="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">
+                        <span key={t.tax_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-red-100 text-red-700 group">
                           {t.name || t.group_name || 'Tax'}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Disconnect "${t.name || t.group_name}" from this item?`)) {
+                                disconnectTaxFromItem(itemIdNum, t.tax_group_id);
+                              }
+                            }}
+                            className="ml-1 hover:bg-red-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                            title="Disconnect tax"
+                          >
+                            <X size={12} />
+                          </button>
                         </span>
                       ))}
                       {printerConnections && printerConnections.map((p: any) => (
-                        <span key={p.printer_group_id} className="text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">
+                        <span key={p.printer_group_id} className="inline-flex items-center text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700 group">
                           {p.name || p.printer_group_name || 'Printer'}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Disconnect "${p.name || p.printer_group_name}" from this item?`)) {
+                                disconnectPrinterFromItem(itemIdNum, p.printer_group_id);
+                              }
+                            }}
+                            className="ml-1 hover:bg-purple-200 rounded-full p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+                            title="Disconnect printer"
+                          >
+                            <X size={12} />
+                          </button>
                         </span>
                       ))}
                     </>
@@ -3169,7 +3309,7 @@ Import때 참고해야하는것,
         </div>
       </div>
       
-      {/* 가격, 편집, 삭제 버튼 - 일반 모드에서만 표시 */}
+      {/* Price, edit, delete buttons - shown only in normal mode */}
       {showInlineForm !== item.id && (
         <div className="flex items-center space-x-2">
           <span className="font-semibold text-gray-800">${item.price.toFixed(2)}</span>
@@ -3221,7 +3361,7 @@ Import때 참고해야하는것,
       ));
     } catch (error) {
       console.error(error);
-      alert('카테고리 이미지 업로드에 실패했습니다.');
+      alert('Failed to upload category image.');
     }
   };
 
@@ -3247,7 +3387,7 @@ Import때 참고해야하는것,
       ));
     } catch (error) {
       console.error(error);
-      alert('메뉴아이템 이미지 업로드에 실패했습니다.');
+      alert('Failed to upload menu item image.');
     }
   };
 
@@ -3305,7 +3445,7 @@ Import때 참고해야하는것,
     itemFileInputRefs.current[itemId] = el;
   };
 
-  // 삭제 확인 모달 컴포넌트
+  // Delete confirmation modal component
   const DeleteConfirmationModal = () => {
     if (!showDeleteModal || !deleteTarget) return null;
 
@@ -3383,14 +3523,14 @@ Import때 참고해야하는것,
     );
   };
 
-  // 연결된 항목들을 확인하는 함수
+  // Function to check connected items
   const checkConnectedItems = (type: 'modifier' | 'tax' | 'printer', groupId: number) => {
 
 
     const connectedCategories: any[] = [];
     const connectedItems: any[] = [];
 
-    // 카테고리 연결 확인
+    // Check category connections
     switch (type) {
       case 'modifier':
         categoryConnections.forEach((connections, categoryId) => {
@@ -3419,7 +3559,7 @@ Import때 참고해야하는것,
         break;
     }
 
-    // 메뉴 아이템 연결 확인
+    // Check menu item connections
     switch (type) {
       case 'modifier':
         itemModifierConnections.forEach((connections, itemId) => {
@@ -3451,7 +3591,7 @@ Import때 참고해야하는것,
     return { connectedCategories, connectedItems };
   };
 
-  // 삭제 확인 다이얼로그를 표시하는 함수
+  // Function to show delete confirmation dialog
   const showDeleteConfirmation = (type: 'modifier' | 'tax' | 'printer', group: any) => {
     const { connectedCategories, connectedItems } = checkConnectedItems(type, group.id);
     
@@ -3464,7 +3604,7 @@ Import때 참고해야하는것,
     setShowDeleteModal(true);
   };
 
-  // 연결된 항목들을 보여주는 툴팁 컴포넌트
+  // Tooltip component to show connected items
   const ConnectionTooltip = ({ 
     type, 
     groupId, 
@@ -3502,12 +3642,12 @@ Import때 참고해야하는것,
       >
         <div className="flex items-center space-x-2 mb-2">
           <div className={`w-2 h-2 rounded-full bg-${typeInfo.color}-500`}></div>
-          <h4 className="font-medium text-gray-900 text-sm">연결된 항목</h4>
+          <h4 className="font-medium text-gray-900 text-sm">Connected Items</h4>
         </div>
         
         {connectedCategories.length > 0 && (
           <div className="mb-2">
-            <h5 className="text-xs font-medium text-gray-700 mb-1">카테고리:</h5>
+            <h5 className="text-xs font-medium text-gray-700 mb-1">Categories:</h5>
             <div className="space-y-1">
               {connectedCategories.map((category, index) => (
                 <div key={index} className="text-xs text-gray-600 flex items-center space-x-1">
@@ -3521,7 +3661,7 @@ Import때 참고해야하는것,
         
         {connectedItems.length > 0 && (
           <div className="mb-2">
-            <h5 className="text-xs font-medium text-gray-700 mb-1">메뉴 아이템:</h5>
+            <h5 className="text-xs font-medium text-gray-700 mb-1">Menu Items:</h5>
             <div className="space-y-1">
               {connectedItems.map((item, index) => (
                 <div key={index} className="text-xs text-gray-600 flex items-center justify-between">
@@ -3537,17 +3677,17 @@ Import때 참고해야하는것,
         )}
         
         {connectedCategories.length === 0 && connectedItems.length === 0 && (
-          <div className="text-xs text-gray-500">연결된 항목이 없습니다.</div>
+          <div className="text-xs text-gray-500">No connected items.</div>
         )}
       </div>
     );
   };
 
-  // 툴팁 표시 함수
+  // Function to show tooltip
   const showTooltip = (type: 'modifier' | 'tax' | 'printer', groupId: number, event: React.MouseEvent) => {
     const { connectedCategories, connectedItems } = checkConnectedItems(type, groupId);
     
-    // 연결된 요소들을 강조 표시 (툴팁 모달은 표시하지 않음)
+    // Highlight connected elements (do not show tooltip modal)
     const newHighlightedElements = {
       categories: connectedCategories.map(cat => cat.category_id),
       items: connectedItems.map(item => item.id)
@@ -3556,13 +3696,13 @@ Import때 참고해야하는것,
     setHighlightedElements(newHighlightedElements);
   };
 
-  // 툴팁 숨기기 함수
+  // Function to hide tooltip
   const hideTooltip = () => {
-    // 강조 효과만 제거 (툴팁 모달은 표시하지 않으므로 상태 변경 불필요)
+    // Remove highlight effect only (tooltip modal is not shown, so state change not needed)
     setHighlightedElements({ categories: [], items: [] });
   };
 
-  // 백업 모달 컴포넌트
+  // Backup modal component
   const BackupModal = () => {
     if (!showBackupModal) return null;
 
@@ -3570,7 +3710,7 @@ Import때 참고해야하는것,
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6 w-96 max-h-96 overflow-y-auto">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-semibold">백업 관리</h3>
+            <h3 className="text-lg font-semibold">Backup Management</h3>
             <button
               onClick={() => setShowBackupModal(false)}
               className="text-gray-500 hover:text-gray-700"
@@ -3580,7 +3720,7 @@ Import때 참고해야하는것,
           </div>
 
           {backups.length === 0 ? (
-            <p className="text-gray-500 text-center py-4">백업 파일이 없습니다.</p>
+            <p className="text-gray-500 text-center py-4">No backup files found.</p>
           ) : (
             <div className="space-y-3">
               {backups.map((backup, index) => (
@@ -3592,12 +3732,12 @@ Import때 참고해야하는것,
                         {new Date(backup.timestamp).toLocaleString()}
                       </p>
                       <p className="text-xs text-gray-400">
-                        크기: {(backup.size / 1024).toFixed(1)} KB
+                        Size: {(backup.size / 1024).toFixed(1)} KB
                       </p>
                     </div>
                     <button
                       onClick={() => {
-                        // 백업 파일 다운로드 로직
+                        // Backup file download logic
                         const link = document.createElement('a');
                         link.href = `${API_URL}/menu/${menuId}/backups/${backup.filename}`;
                         link.download = backup.filename;
@@ -3605,7 +3745,7 @@ Import때 참고해야하는것,
                       }}
                       className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
                     >
-                      다운로드
+                      Download
                     </button>
                   </div>
                 </div>
@@ -3614,7 +3754,7 @@ Import때 참고해야하는것,
           )}
 
           <div className="mt-4 pt-4 border-t">
-            <h4 className="font-medium mb-2">백업 복원</h4>
+            <h4 className="font-medium mb-2">Restore Backup</h4>
             <input
               type="file"
               accept=".json"
@@ -3628,7 +3768,7 @@ Import때 참고해야하는것,
               className="w-full p-2 border rounded"
             />
             {isRestoringBackup && (
-              <p className="text-blue-500 text-sm mt-2">백업 복원 중...</p>
+              <p className="text-blue-500 text-sm mt-2">Restoring backup...</p>
             )}
           </div>
         </div>
@@ -3653,7 +3793,7 @@ Import때 참고해야하는것,
   if (menuEditLocked) {
     return (
       <div className="h-full flex items-center justify-center text-gray-500">
-        Menu Manager 편집이 잠겨있습니다.
+        Menu Manager editing is locked.
       </div>
     );
   }
@@ -3714,7 +3854,7 @@ Import때 참고해야하는것,
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-          {/* Left Panel - 통합된 카테고리와 아이템 목록 */}
+          {/* Left Panel - Integrated category and item list */}
           <div className="w-[70%] flex flex-col overflow-hidden">
             						<div className="flex-1 overflow-y-scroll p-4">
               <div className="space-y-2">
@@ -3800,7 +3940,7 @@ Import때 참고해야하는것,
             </div>
           </div>
           
-          {/* Right Panel - 옵션 관리 */}
+          {/* Right Panel - Option management */}
           <div className={`${sidebarCollapsed ? 'w-[38%]' : 'w-[30%]'} flex flex-col bg-white border-l border-gray-200 relative transition-all duration-300`}>
             <div className="p-4 border-b border-gray-200">
               <div className="flex items-center justify-between mb-2">
@@ -3812,7 +3952,7 @@ Import때 참고해야하는것,
                     value={baseColor}
                     onChange={(e) => setBaseColor(e.target.value)}
                     className="w-6 h-6 p-0 border rounded cursor-pointer"
-                    title="레이어 Base Color"
+                    title="Layer Base Color"
                   />
                 </div>
               </div>
@@ -3835,7 +3975,7 @@ Import때 참고해야하는것,
                     />
                   ) : (
                     <>
-                      {/* 새 그룹 추가 버튼 */}
+                      {/* Add new group button */}
                       <div className="mb-4">
                         <button
                           onClick={() => setEditingModifierGroup('new')}
@@ -3846,7 +3986,7 @@ Import때 참고해야하는것,
                         </button>
                       </div>
                       
-                      {/* 드래그 가능한 모디파이어 그룹 목록 */}
+                      {/* Draggable modifier group list */}
                       <div className="mb-4 border-2 border-green-300 rounded-lg p-1">
                         <h3 className="text-sm font-medium text-gray-700 mb-2">Drag to connect to categories or menu items</h3>
                         <div className="space-y-1">
@@ -3889,16 +4029,28 @@ Import때 참고해야하는것,
                 </div>
               )}
               {activeTab === 'tax' && (
-                <div className="space-y-4 border-2 border-red-200 rounded-lg p-2 bg-white">
+                <div className="space-y-4 border-2 border-red-200 rounded-lg p-2 bg-white h-[calc(100vh-120px)] overflow-y-scroll">
+                  {editingTaxGroup ? (
+                    <TaxGroupEditor
+                      group={editingTaxGroup === 'new' ? null : editingTaxGroup}
+                      onSave={handleSaveTaxGroup}
+                      onCancel={() => setEditingTaxGroup(null)}
+                      isSaving={isSavingTax}
+                    />
+                  ) : (
                     <>
-                      {/* 안내 메시지 */}
-                      <div className="mb-2 p-2 bg-red-50 rounded-lg border border-red-200">
-                        <p className="text-xs text-red-600">
-                          💡 Tax Groups는 <strong>Menu Manager → Tax Settings</strong>에서 생성/관리합니다.
-                        </p>
+                      {/* Add new group button */}
+                      <div className="mb-4">
+                        <button
+                          onClick={() => setEditingTaxGroup('new')}
+                          className="w-full flex items-center justify-center space-x-2 p-3 border-2 border-dashed border-red-300 rounded-lg text-red-600 hover:text-red-700 hover:border-red-400 transition-colors"
+                        >
+                          <Plus size={20} />
+                          <span>Add New Tax Group</span>
+                        </button>
                       </div>
                       
-                      {/* 드래그 가능한 Tax Groups 목록 */}
+                      {/* Draggable Tax Groups list */}
                       <div className="mb-4 border-2 border-red-300 rounded-lg p-1">
                         <h3 className="text-sm font-medium text-gray-700 mb-2">Drag to connect to categories or menu items</h3>
                         <div className="space-y-1">
@@ -3937,19 +4089,20 @@ Import때 참고해야하는것,
                         </div>
                       </div>
                     </>
+                  )}
                 </div>
               )}
               {activeTab === 'printer' && (
                 <div className="space-y-4 border-2 border-purple-200 rounded-lg p-2 bg-white">
                     <>
-                      {/* 안내 메시지 */}
+                      {/* Guide message */}
                       <div className="mb-2 p-2 bg-purple-50 rounded-lg border border-purple-200">
                         <p className="text-xs text-purple-600">
-                          💡 Printer Groups는 <strong>Hardware Manager → Printer</strong>에서 생성/관리합니다.
+                          💡 Printer Groups are created/managed in <strong>Hardware Manager → Printer</strong>.
                         </p>
                       </div>
                       
-                      {/* 드래그 가능한 Printer Groups 목록 */}
+                      {/* Draggable Printer Groups list */}
                       <div className="mb-4 border-2 border-purple-300 rounded-lg p-1">
                         <h3 className="text-sm font-medium text-gray-700 mb-2">Drag to connect to categories or menu items</h3>
                         <div className="space-y-1">
@@ -3976,7 +4129,7 @@ Import때 참고해야하는것,
                                         itemPrinterConnections: Array.from(itemPrinterConnections.entries())
                                       });
                                     } else {
-                                      // 연결되지 않은 경우에도 디버깅을 위해 로그 출력
+                                      // Even if not connected, log for debugging
                                       console.log(`❌ Printer Group "${group.name}" (ID: ${group.id}) is NOT connected. Checking data:`, {
                                         groupId: group.id,
                                         itemPrinterConnections: Array.from(itemPrinterConnections.entries()).map(([itemId, connections]) => ({
@@ -4002,7 +4155,7 @@ Import때 참고해야하는것,
             </div>
                      </div>
           
-          {/* 드래그 오버레이 */}
+          {/* Drag overlay */}
           <DragOverlay>
             {activeDragId && activeDragData?.type === 'modifier' ? (
               <div className="bg-white border-2 border-blue-300 rounded-lg p-3 shadow-lg opacity-90 z-50 transform-none pointer-events-none">
@@ -4032,7 +4185,7 @@ Import때 참고해야하는것,
                   </div>
                   <div>
                     <h4 className="font-medium text-gray-900">{activeDragData.group.name}</h4>
-                    <p className="text-sm text-gray-500">세금 그룹</p>
+                    <p className="text-sm text-gray-500">Tax Group</p>
                     <p className="text-xs text-red-600 font-medium">Drag to category or menu item</p>
                   </div>
                 </div>
@@ -4047,7 +4200,7 @@ Import때 참고해야하는것,
                   </div>
                   <div>
                     <h4 className="font-medium text-gray-900">{activeDragData.group.name}</h4>
-                    <p className="text-sm text-gray-500">프린터 그룹</p>
+                    <p className="text-sm text-gray-500">Printer Group</p>
                     <p className="text-xs text-purple-600 font-medium">Drag to category or menu item</p>
                   </div>
                 </div>
@@ -4056,10 +4209,10 @@ Import때 참고해야하는것,
           </DragOverlay>
         </DndContext>
         
-        {/* 삭제 확인 모달 */}
+        {/* Delete confirmation modal */}
         <DeleteConfirmationModal />
         
-        {/* 연결 툴팁 */}
+        {/* Connection tooltip */}
         <ConnectionTooltip 
           type={tooltipState.type as 'modifier' | 'tax' | 'printer'} 
           groupId={tooltipState.groupId || 0}
@@ -4068,7 +4221,7 @@ Import때 참고해야하는것,
         />
       </main>
 
-      {/* 백업 모달 */}
+      {/* Backup modal */}
       <BackupModal />
 
       {/* Delete Image Confirmation Modal */}
