@@ -186,6 +186,7 @@ const QsrOrderPage = () => {
   
   // QSR Togo Modal State (100% copied from FSR)
   const [showQsrTogoModal, setShowQsrTogoModal] = useState(false);
+  const [qsrPickupModalTab, setQsrPickupModalTab] = useState<'pickup' | 'complete'>('pickup');
   const [qsrPickupTime, setQsrPickupTime] = useState(15);
   const [qsrCustomerNameInput, setQsrCustomerNameInput] = useState('');
   const [qsrCustomerPhone, setQsrCustomerPhone] = useState('');
@@ -3083,13 +3084,16 @@ const handleVoidPinClear = useCallback(() => {
       // Live Order 실시간 업데이트를 위한 이벤트 발생
       window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
 
-      // Open Cash Drawer (Till) after payment completion
-      try {
-        console.log('💰 Opening cash drawer after payment completion...');
-        await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
-        console.log('💰 Cash drawer opened successfully');
-      } catch (drawerErr) {
-        console.warn('Cash drawer open failed (ignored):', drawerErr);
+      // Open Cash Drawer (Till) after payment completion (FSR mode only)
+      // QSR mode handles cash drawer in its own block below
+      if (!isQsrMode) {
+        try {
+          console.log('💰 FSR: Opening cash drawer after payment completion...');
+          await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+          console.log('💰 FSR: Cash drawer opened successfully');
+        } catch (drawerErr) {
+          console.warn('Cash drawer open failed (ignored):', drawerErr);
+        }
       }
 
       // Print Receipt after payment completion (only once per payment session)
@@ -3235,6 +3239,12 @@ const handleVoidPinClear = useCallback(() => {
     if (isQsrMode) {
       const qsrType = (qsrOrderType || 'forhere').toLowerCase();
       
+      // 중복 출력 방지 체크
+      if (receiptPrintedRef.current) {
+        console.log('⚠️ QSR: Print already completed, skipping all prints');
+      } else {
+        receiptPrintedRef.current = true; // 출력 시작 전에 플래그 설정
+      
       if (qsrType === 'pickup') {
         // Pickup: Kitchen Ticket 1장 (UNPAID) + Bill 1장
         try {
@@ -3264,17 +3274,20 @@ const handleVoidPinClear = useCallback(() => {
           console.error('QSR Pickup Bill print failed:', billErr);
         }
       } else {
-        // For Here/Togo: Kitchen Ticket 1장 + Receipt 2장
+        // For Here/Togo: Kitchen Ticket 1장 + Receipt 2장 + Cash Drawer 열기
+        
+        // 1. Kitchen Ticket 1장 출력
         try {
-          console.log('🍳 QSR: Printing Kitchen Ticket...');
+          console.log('🍳 QSR: Printing Kitchen Ticket (1 copy)...');
           await printKitchenOrders(false, true);
-          console.log('✅ QSR: Kitchen Ticket printed');
+          console.log('✅ QSR: Kitchen Ticket printed (1 copy)');
         } catch (err) {
           console.error('Kitchen ticket print failed:', err);
         }
         
+        // 2. Receipt 2장 출력
         try {
-          console.log('🧾 QSR: Printing Receipt...');
+          console.log('🧾 QSR: Printing Receipt (2 copies)...');
           const qsrItems = (orderItems || []).filter(it => it.type === 'item');
           const qsrSubtotal = qsrItems.reduce((sum, it) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
           const qsrTaxLines = computeGuestTotals('ALL').taxLines || [];
@@ -3328,7 +3341,17 @@ const handleVoidPinClear = useCallback(() => {
         } catch (receiptErr) {
           console.error('QSR Receipt print failed:', receiptErr);
         }
+        
+        // 3. Cash Drawer 열기 (Windows Raw Printing API 사용)
+        try {
+          console.log('💰 QSR: Opening cash drawer...');
+          await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+          console.log('✅ QSR: Cash drawer opened');
+        } catch (drawerErr) {
+          console.error('QSR Cash drawer open failed:', drawerErr);
+        }
       }
+      } // End of duplicate print guard
       
       setShowPaymentModal(false);
       setOrderItems([]);
@@ -6829,8 +6852,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
       const floor = (location.state && (location.state as any).floor) || null;
       
-      // QSR For Here/Togo/Pickup: Save order and open Payment Modal (no kitchen print yet)
-      if (isQsrMode && (qsrOrderType === 'forhere' || qsrOrderType === 'togo' || qsrOrderType === 'pickup')) {
+      // QSR For Here/Togo: Save order and open Payment Modal (no kitchen print yet)
+      if (isQsrMode && (qsrOrderType === 'forhere' || qsrOrderType === 'togo')) {
         if (items.length === 0) {
           alert('Please add items to the order.');
           return;
@@ -6839,6 +6862,85 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         await saveOrderToBackend();
         // Open Payment Modal
         setShowPaymentModal(true);
+        return;
+      }
+      
+      // QSR Pickup: Save order, print Kitchen Ticket + Bill, then reset for new order (NO payment modal)
+      if (isQsrMode && qsrOrderType === 'pickup') {
+        if (items.length === 0) {
+          alert('Please add items to the order.');
+          return;
+        }
+        
+        // 1. Save order first
+        await saveOrderToBackend();
+        const orderId = savedOrderIdRef.current;
+        console.log('🛒 QSR Pickup: Order saved, ID:', orderId);
+        
+        // 2. Print Kitchen Ticket (UNPAID)
+        try {
+          console.log('🍳 QSR Pickup: Printing Kitchen Ticket (UNPAID)...');
+          await printKitchenOrders(false, false); // isPaid: false for UNPAID
+          console.log('✅ QSR Pickup: Kitchen Ticket printed');
+        } catch (err) {
+          console.error('Kitchen ticket print failed:', err);
+        }
+        
+        // 3. Print Bill (1 copy)
+        try {
+          console.log('📃 QSR Pickup: Printing Bill...');
+          const pickupItems = items.map((it: any) => ({
+            name: it.name || it.itemName || 'Item',
+            quantity: it.quantity || 1,
+            price: it.price || 0,
+            modifiers: it.modifiers || []
+          }));
+          const pickupSubtotal = pickupItems.reduce((sum: number, it: any) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
+          const pickupTaxLines = computeGuestTotals('ALL').taxLines || [];
+          const pickupTaxTotal = pickupTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+          const pickupTotal = pickupSubtotal + pickupTaxTotal;
+          
+          const billData = {
+            storeName: '',
+            orderNumber: orderId || '',
+            orderType: 'PICKUP',
+            channel: 'PICKUP',
+            tableName: qsrCustomerName || 'PICKUP',
+            customerName: orderCustomerInfo?.name || qsrCustomerName || '',
+            customerPhone: orderCustomerInfo?.phone || qsrCustomerPhone || '',
+            pickupTime: orderPickupInfo?.readyTimeLabel || '',
+            items: pickupItems,
+            subtotal: pickupSubtotal,
+            taxLines: pickupTaxLines,
+            tax: pickupTaxTotal,
+            total: pickupTotal,
+            footer: { message: 'Thank you! Please pay when picking up.' }
+          };
+          
+          await fetch(`${API_URL}/printers/print-bill`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ billData, copies: 1 })
+          });
+          console.log('✅ QSR Pickup: Bill printed (1 copy)');
+        } catch (billErr) {
+          console.error('QSR Pickup Bill print failed:', billErr);
+        }
+        
+        // 4. Reset for new order (NO payment modal)
+        setOrderItems([]);
+        setSessionPayments([]);
+        setPaymentsByGuest({});
+        setQsrCustomerName('');
+        setQsrCustomerPhone('');
+        setQsrCustomerNameInput('');
+        setQsrPickupTime(15);
+        setOrderCustomerInfo({ name: '', phone: '' });
+        setOrderPickupInfo({ readyTimeLabel: '', pickupMinutes: null });
+        setQsrOrderType('forhere');
+        savedOrderIdRef.current = null;
+        receiptPrintedRef.current = false;
+        console.log('✅ QSR Pickup: Order completed, ready for new order');
         return;
       }
       
@@ -9360,6 +9462,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <button
                     onClick={() => {
                       setQsrOrderType('pickup');
+                      setQsrPickupModalTab('pickup');
                       setShowQsrTogoModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
@@ -10018,10 +10121,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               </div>
                             </>
                           )}
-                          <div className="flex justify-between">
-                            <span>GST:</span>
-                            <span>${fmt(taxAfterDiscount)}</span>
-                          </div>
+                          {/* Display each tax line (GST, PST, etc.) */}
+                          {taxLines.map((taxLine, idx) => {
+                            const taxAmount = Number((taxLine.amount * discountRatio).toFixed(2));
+                            return (
+                              <div key={`tax-${idx}`} className="flex justify-between">
+                                <span>{taxLine.name}:</span>
+                                <span>${fmt(taxAmount)}</span>
+                              </div>
+                            );
+                          })}
                           <div className="flex justify-between text-base font-bold">
                             <span>Total:</span>
                             <span>${fmt(totalAfterDiscount)}</span>
@@ -14081,6 +14190,55 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-3 w-full border border-slate-200 flex flex-col overflow-hidden"
             style={{ maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
           >
+            {/* Header with Close Button */}
+            <div className="flex items-center justify-between mb-2 flex-shrink-0">
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setShowQsrTogoModal(false);
+                  setQsrPickupModalTab('pickup');
+                  setQsrCustomerNameInput('');
+                  setQsrCustomerPhone('');
+                  setQsrCustomerAddress('');
+                  setQsrCustomerZip('');
+                  setQsrTogoNote('');
+                }}
+                className="w-12 h-12 flex items-center justify-center rounded-full bg-red-500 hover:bg-red-600 text-white text-2xl font-bold transition-colors shadow-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex gap-2 mb-4 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setQsrPickupModalTab('pickup')}
+                className={`flex-1 py-3 px-6 font-bold text-base rounded-lg transition-all border-2 ${
+                  qsrPickupModalTab === 'pickup'
+                    ? 'bg-blue-600 text-white shadow-lg border-blue-700 ring-2 ring-blue-300'
+                    : 'bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200 hover:text-slate-700 hover:border-slate-400'
+                }`}
+              >
+                📝 New Pickup
+              </button>
+              <button
+                type="button"
+                onClick={() => setQsrPickupModalTab('complete')}
+                className={`flex-1 py-3 px-6 font-bold text-base rounded-lg transition-all border-2 ${
+                  qsrPickupModalTab === 'complete'
+                    ? 'bg-emerald-600 text-white shadow-lg border-emerald-700 ring-2 ring-emerald-300'
+                    : 'bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200 hover:text-slate-700 hover:border-slate-400'
+                }`}
+              >
+                ✅ Pickup Complete
+              </button>
+            </div>
+
+            {/* Pickup Tab Content */}
+            {qsrPickupModalTab === 'pickup' && (
+            <>
             {/* Header with Action Buttons */}
             <div className="flex items-center justify-between mb-3 flex-shrink-0">
               <div>
@@ -14153,21 +14311,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   className="px-5 py-2 rounded-lg bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
                 >
                   OK
-                </button>
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowQsrTogoModal(false);
-                    setQsrCustomerNameInput('');
-                    setQsrCustomerPhone('');
-                    setQsrCustomerAddress('');
-                    setQsrCustomerZip('');
-                    setQsrTogoNote('');
-                  }}
-                  className="w-10 h-10 flex items-center justify-center rounded-full bg-transparent border-2 border-red-500 text-red-500 hover:bg-red-50 text-xl font-bold transition-colors ml-2"
-                >
-                  ✕
                 </button>
               </div>
             </div>
@@ -14471,6 +14614,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 />
               </Suspense>
             </div>
+            </>
+            )}
+
+            {/* Pickup Complete Tab */}
+            {qsrPickupModalTab === 'complete' && (
+              <div className="flex flex-col flex-1 min-h-0">
+                {/* Content - Placeholder for next implementation */}
+                <div className="flex-1 flex items-center justify-center text-slate-400 text-sm border border-dashed border-slate-300 rounded-lg">
+                  Pickup Complete content will be implemented in the next step.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

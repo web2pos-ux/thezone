@@ -388,6 +388,142 @@ module.exports = (db) => {
   });
 
   // ============================================
+  // Print Job APIs
+  // ============================================
+
+  /**
+   * POST /api/printers/open-drawer - Cash Drawer 열기
+   */
+  router.post('/open-drawer', async (req, res) => {
+    try {
+      console.log('💰 [Printer API] Open cash drawer request received');
+      
+      // ESC/POS Cash Drawer 열기 명령: ESC p m t1 t2
+      // 0x1B 0x70 0x00 0x19 0x19 = ESC p 0 25 25
+      const drawerCommand = Buffer.from([0x1B, 0x70, 0x00, 0x19, 0x19]);
+      
+      // 프린터 찾기 (Front 프린터가 Cash Drawer와 연결됨)
+      const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
+      const targetPrinter = frontPrinter?.selected_printer || null;
+      
+      if (targetPrinter) {
+        // Windows Raw Printing API로 ESC/POS 명령 전송
+        const { sendRawToPrinter } = require('../utils/printerUtils');
+        await sendRawToPrinter(targetPrinter, drawerCommand);
+        console.log(`💰 [Printer API] Cash drawer command sent to ${targetPrinter}`);
+      } else {
+        console.log('💰 [Printer API] No printer configured for cash drawer');
+      }
+      
+      res.json({ success: true, message: 'Cash drawer opened', printer: targetPrinter || 'none' });
+    } catch (err) {
+      console.error('Cash drawer open failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/printers/print-order - Kitchen Ticket 출력
+   */
+  router.post('/print-order', async (req, res) => {
+    try {
+      const { orderData, items, orderInfo, copies = 1, printerName } = req.body;
+      console.log(`🍳 [Printer API] Print Kitchen Ticket request received`);
+      console.log(`🍳 [Printer API] Items count: ${items?.length || 0}`);
+      
+      // 프론트엔드에서 items/orderInfo 형태로 보내거나, orderData로 보낼 수 있음
+      const ticketData = orderData || { items, ...orderInfo };
+      
+      // Kitchen Ticket 텍스트 생성
+      const ticketText = buildEscPosKitchenTicket(ticketData);
+      
+      // 프린터 이름 결정
+      const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
+      const targetPrinter = printerName || frontPrinter?.selected_printer || null;
+      
+      console.log(`🍳 [Printer API] Target printer: ${targetPrinter}`);
+      console.log(`🍳 [Printer API] Printing 1 copy of Kitchen Ticket...`);
+      
+      // 실제 출력 (1장만)
+      const { printTextToWindows } = require('../utils/printerUtils');
+      await printTextToWindows(targetPrinter, ticketText, 1);
+      
+      console.log(`🍳 [Printer API] Kitchen Ticket printed successfully`);
+      res.json({ success: true, message: `Kitchen ticket printed (1 copy)`, printer: targetPrinter || 'default' });
+    } catch (err) {
+      console.error('Kitchen ticket print failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/printers/print-receipt - Receipt 출력
+   */
+  router.post('/print-receipt', async (req, res) => {
+    try {
+      const { receiptData, copies = 1, printerName, openDrawer = false } = req.body;
+      console.log(`🧾 [Printer API] Print Receipt request: ${copies} copies, openDrawer: ${openDrawer}`);
+      
+      // Receipt 텍스트 생성
+      const { buildReceiptText, printTextToWindows } = require('../utils/printerUtils');
+      let receiptText = buildReceiptText(receiptData);
+      
+      // Cash Drawer 열기 명령 추가 (ESC p 0 25 25)
+      if (openDrawer) {
+        // ESC/POS Cash Drawer 명령을 텍스트 맨 앞에 추가
+        const drawerCmd = Buffer.from([0x1B, 0x70, 0x00, 0x19, 0x19]).toString('latin1');
+        receiptText = drawerCmd + receiptText;
+        console.log('💰 [Printer API] Cash drawer command added to receipt');
+      }
+      
+      // 프린터 이름 결정
+      let targetPrinter = printerName;
+      if (!targetPrinter) {
+        // DB에서 Front/Receipt 프린터 찾기
+        const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' OR name LIKE '%Receipt%' LIMIT 1");
+        targetPrinter = frontPrinter?.selected_printer || null;
+      }
+      
+      // 실제 출력
+      await printTextToWindows(targetPrinter, receiptText, copies);
+      
+      res.json({ success: true, message: `Receipt printed (${copies} copies)${openDrawer ? ' + drawer opened' : ''}`, printer: targetPrinter || 'default' });
+    } catch (err) {
+      console.error('Receipt print failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/printers/print-bill - Bill 출력
+   */
+  router.post('/print-bill', async (req, res) => {
+    try {
+      const { billData, copies = 1, printerName } = req.body;
+      console.log(`📃 [Printer API] Print Bill request: ${copies} copies`);
+      
+      // Bill은 Receipt와 유사하게 처리
+      const { buildReceiptText, printTextToWindows } = require('../utils/printerUtils');
+      const billText = buildReceiptText(billData);
+      
+      // 프린터 이름 결정
+      let targetPrinter = printerName;
+      if (!targetPrinter) {
+        const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
+        targetPrinter = frontPrinter?.selected_printer || null;
+      }
+      
+      // 실제 출력
+      await printTextToWindows(targetPrinter, billText, copies);
+      
+      res.json({ success: true, message: `Bill printed (${copies} copies)`, printer: targetPrinter || 'default' });
+    } catch (err) {
+      console.error('Bill print failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============================================
   // Serial Port (COM) Printer APIs
   // ============================================
 
