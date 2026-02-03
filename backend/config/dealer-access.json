@@ -1,0 +1,38 @@
+{
+  "masterPin": "9998887117",
+  "dealers": [],
+  "accessLog": [
+    {
+      "timestamp": "2026-02-03T21:18:51.213Z",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
+      "timestamp": "2026-02-03T20:56:57.389Z",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
+      "timestamp": "2026-02-03T20:56:17.759Z",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
+      "timestamp": "2026-02-03T20:56:08.431Z",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    }
+  ]
+}

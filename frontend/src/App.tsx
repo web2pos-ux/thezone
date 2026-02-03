@@ -61,6 +61,7 @@ import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
 import ReportsDashboardPage from './pages/ReportsDashboardPage';
 import PosPromotionsPage from './pages/PosPromotionsPage';
+import DealerSettingsPage from './pages/DealerSettingsPage';
 
 // 🚀 OrderPage를 Lazy Loading으로 변경 (8,693줄 → 즉시 로딩 방지)
 const OrderPage = lazy(() => import('./pages/OrderPage'));
@@ -136,6 +137,10 @@ function App() {
           <Route path="/qsr" element={<QsrOrderPage />} />
           <Route path="/qsr-old" element={<QsrPage />} />
           <Route path="/cafe" element={<QsrOrderPage />} />
+          
+          {/* 딜러/총판 전용 설정 (숨김 경로 - 일반 메뉴에서 접근 불가) */}
+          <Route path="/dealer-settings" element={<DealerSettingsPage />} />
+          <Route path="/d-cfg" element={<DealerSettingsPage />} /> {/* 단축 경로 */}
           
           <Route path="/sales" element={<SalesModeGate />} />
           <Route path="/sales/order" element={

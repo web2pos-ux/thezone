@@ -3,18 +3,110 @@
  * Firebase connection via Restaurant ID
  * QSR/FSR Mode Selection & Data Initialization
  * 
- * 저장 방식: 백엔드 DB (setup-status.json)만 사용
+ * Storage: Backend DB (setup-status.json) only
  */
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 // PIN Screen Component (TheZonePOS Style)
-const PinScreen: React.FC<{ onPinSubmit: (pin: string) => void; targetPath: string }> = ({ onPinSubmit, targetPath }) => {
+// onDealerAccess: Callback when entering dealer mode
+const PinScreen: React.FC<{ 
+  onPinSubmit: (pin: string) => void; 
+  targetPath: string;
+  onDealerAccess?: () => void;
+}> = ({ onPinSubmit, targetPath, onDealerAccess }) => {
   const navigate = useNavigate();
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177';
+  
+  // 🔐 Dealer Mode States
+  const [showDealerModal, setShowDealerModal] = useState(false);
+  const [dealerPin, setDealerPin] = useState('');
+  const [dealerPinError, setDealerPinError] = useState('');
+  const [isVerifyingDealer, setIsVerifyingDealer] = useState(false);
+  const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
+  const [longPressProgress, setLongPressProgress] = useState(0);
+  const [isLongPressing, setIsLongPressing] = useState(false);
+
+  // Long press start (5 seconds)
+  const handleLogoTouchStart = () => {
+    setIsLongPressing(true);
+    setLongPressProgress(0);
+    
+    // Progress animation (0-100 over 5 seconds)
+    const progressInterval = setInterval(() => {
+      setLongPressProgress(prev => {
+        if (prev >= 100) {
+          clearInterval(progressInterval);
+          return 100;
+        }
+        return prev + 2; // 2% every 100ms = 5 seconds
+      });
+    }, 100);
+    
+    const timer = setTimeout(() => {
+      clearInterval(progressInterval);
+      setLongPressProgress(100);
+      setIsLongPressing(false);
+      setShowDealerModal(true);
+    }, 5000);
+    
+    setLongPressTimer(timer);
+    (window as any)._longPressProgressInterval = progressInterval;
+  };
+  
+  const handleLogoTouchEnd = () => {
+    setIsLongPressing(false);
+    setLongPressProgress(0);
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+    if ((window as any)._longPressProgressInterval) {
+      clearInterval((window as any)._longPressProgressInterval);
+    }
+  };
+  
+  // Verify Dealer PIN
+  const verifyDealerPin = async () => {
+    if (dealerPin.length < 4) {
+      setDealerPinError('PIN must be at least 4 digits');
+      return;
+    }
+    
+    setIsVerifyingDealer(true);
+    setDealerPinError('');
+    
+    try {
+      const response = await fetch(`${API_URL}/api/dealer-access/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: dealerPin })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // Dealer auth success - save to session
+        sessionStorage.setItem('dealer_pin', dealerPin);
+        sessionStorage.setItem('dealer_role', data.role);
+        sessionStorage.setItem('dealer_name', data.name);
+        setShowDealerModal(false);
+        // Return to setup screen
+        if (onDealerAccess) {
+          onDealerAccess();
+        }
+      } else {
+        setDealerPinError(data.error || 'Invalid Dealer PIN');
+      }
+    } catch (err) {
+      setDealerPinError('Verification failed');
+    } finally {
+      setIsVerifyingDealer(false);
+    }
+  };
 
   const handleNumber = (num: string) => {
     if (pin.length < 4) {
@@ -32,19 +124,19 @@ const PinScreen: React.FC<{ onPinSubmit: (pin: string) => void; targetPath: stri
     setPinError('');
   };
 
-  // PIN 검증 함수 (Sales용 - 0000 허용)
+  // PIN verification (Sales - 0000 allowed)
   const verifySalesPin = async (): Promise<boolean> => {
     if (pin.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
     
-    // 0000은 Sales 접근용으로 허용
+    // 0000 is allowed for Sales access
     if (pin === '0000') {
       return true;
     }
     
-    // 0888 (BackOffice PIN)도 Sales 접근 허용
+    // 0888 (BackOffice PIN) also allowed for Sales access
     try {
       const response = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
         method: 'POST',
@@ -77,14 +169,14 @@ const PinScreen: React.FC<{ onPinSubmit: (pin: string) => void; targetPath: stri
     return false;
   };
 
-  // PIN 검증 함수 (BackOffice용 - 0888 필요, 0000 불허)
+  // PIN verification (BackOffice - requires 0888, 0000 not allowed)
   const verifyBackOfficePin = async (): Promise<boolean> => {
     if (pin.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
     
-    // 0000은 BackOffice 접근 불가
+    // 0000 not allowed for BackOffice access
     if (pin === '0000') {
       setPinError('BackOffice requires PIN 0888');
       return false;
@@ -131,8 +223,20 @@ const PinScreen: React.FC<{ onPinSubmit: (pin: string) => void; targetPath: stri
       <div className="absolute inset-0 backdrop-blur-md bg-black/40"></div>
       
       <div className="relative z-10 text-center">
-        {/* Logo + Title */}
-        <img src="/images/logo.png" alt="Logo" className="w-16 h-16 mx-auto mb-2 object-contain" />
+        {/* Logo + Title - Long press to enter dealer mode (hidden - no cursor/indicator) */}
+        <div className="relative inline-block">
+          <img 
+            src="/images/logo.png" 
+            alt="Logo" 
+            className="w-16 h-16 mx-auto mb-2 object-contain select-none"
+            onMouseDown={handleLogoTouchStart}
+            onMouseUp={handleLogoTouchEnd}
+            onMouseLeave={handleLogoTouchEnd}
+            onTouchStart={handleLogoTouchStart}
+            onTouchEnd={handleLogoTouchEnd}
+            draggable={false}
+          />
+        </div>
         <h1 className="text-5xl font-bold text-white mb-1" style={{ fontFamily: 'Georgia, serif' }}>
           TheZonePOS
         </h1>
@@ -207,6 +311,72 @@ const PinScreen: React.FC<{ onPinSubmit: (pin: string) => void; targetPath: stri
           </div>
         </div>
       </div>
+      
+      {/* 🔐 Dealer PIN Modal */}
+      {showDealerModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-gradient-to-br from-purple-900 to-slate-900 rounded-2xl p-8 shadow-2xl border border-purple-500/30 w-full max-w-sm mx-4">
+            {/* Header */}
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-4xl">🔐</span>
+              </div>
+              <h2 className="text-xl font-bold text-white mb-1">Dealer Access</h2>
+              <p className="text-purple-300 text-sm">Authorized Personnel Only</p>
+            </div>
+            
+            {/* Dealer PIN Input */}
+            <div className="mb-6">
+              <input
+                type="password"
+                value={dealerPin}
+                onChange={(e) => {
+                  setDealerPin(e.target.value.replace(/\D/g, ''));
+                  setDealerPinError('');
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && verifyDealerPin()}
+                placeholder="Dealer PIN"
+                maxLength={10}
+                className="w-full px-4 py-4 bg-white/10 border border-purple-500/30 rounded-xl text-white text-center text-2xl tracking-widest placeholder-purple-300 focus:outline-none focus:border-purple-400"
+                autoFocus
+              />
+              {dealerPinError && (
+                <p className="text-red-400 text-sm mt-2 text-center">{dealerPinError}</p>
+              )}
+            </div>
+            
+            {/* Buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowDealerModal(false);
+                  setDealerPin('');
+                  setDealerPinError('');
+                }}
+                className="flex-1 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-gray-300 font-medium transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={verifyDealerPin}
+                disabled={isVerifyingDealer || dealerPin.length < 4}
+                className={`flex-1 py-3 rounded-xl font-bold transition-all ${
+                  isVerifyingDealer || dealerPin.length < 4
+                    ? 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white'
+                }`}
+              >
+                {isVerifyingDealer ? '...' : 'Access'}
+              </button>
+            </div>
+            
+            {/* Warning */}
+            <p className="text-yellow-300/70 text-xs text-center mt-4">
+              ⚠️ Authorized dealers only
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -243,8 +413,151 @@ const SetupPage: React.FC = () => {
   
   // Target path state
   const [targetPath, setTargetPath] = useState<string>('/sales');
+  
+  // 🔐 Dealer Mode State
+  const [isDealerMode, setIsDealerMode] = useState(false);
+  const [dealerTimeoutWarning, setDealerTimeoutWarning] = useState(false);
+  const [dealerTimeoutSeconds, setDealerTimeoutSeconds] = useState(15);
+  
+  // Use ref for last activity time (no re-render on update)
+  const lastActivityTimeRef = React.useRef(Date.now());
+  
+  // Reset activity timer on user interaction (no state update = no re-render)
+  const resetActivityTimer = React.useCallback(() => {
+    lastActivityTimeRef.current = Date.now();
+    // Only update state if warning is shown (to dismiss it)
+    if (dealerTimeoutWarning) {
+      setDealerTimeoutWarning(false);
+    }
+  }, [dealerTimeoutWarning]);
+  
+  // Listen for user activity in dealer mode (optimized - no mousemove)
+  useEffect(() => {
+    if (!isDealerMode || step !== 'setup') return;
+    
+    // Only track meaningful interactions (not mousemove - too frequent)
+    const events = ['mousedown', 'keydown', 'touchstart', 'click'];
+    
+    events.forEach(event => {
+      window.addEventListener(event, resetActivityTimer);
+    });
+    
+    return () => {
+      events.forEach(event => {
+        window.removeEventListener(event, resetActivityTimer);
+      });
+    };
+  }, [isDealerMode, step, resetActivityTimer]);
+  
+  // Dealer mode auto-timeout (3 minutes = 180 seconds of inactivity)
+  // Check every second, warning at 2:45, logout at 3:00
+  useEffect(() => {
+    if (!isDealerMode || step !== 'setup') {
+      setDealerTimeoutWarning(false);
+      return;
+    }
+    
+    // Reset activity time when entering dealer mode
+    lastActivityTimeRef.current = Date.now();
+    
+    const checkInterval = setInterval(() => {
+      const inactiveTime = Date.now() - lastActivityTimeRef.current;
+      
+      // Show warning at 2:45 (165 seconds)
+      if (inactiveTime >= 165000 && !dealerTimeoutWarning) {
+        setDealerTimeoutWarning(true);
+        setDealerTimeoutSeconds(15);
+      }
+      
+      // Auto-logout at 3:00 (180 seconds)
+      if (inactiveTime >= 180000) {
+        console.log('[Dealer Mode] Auto-logout due to inactivity');
+        exitDealerMode();
+      }
+    }, 1000);
+    
+    return () => clearInterval(checkInterval);
+  }, [isDealerMode, step, dealerTimeoutWarning]);
+  
+  // Countdown timer for warning
+  useEffect(() => {
+    if (!dealerTimeoutWarning) return;
+    
+    const interval = setInterval(() => {
+      setDealerTimeoutSeconds(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [dealerTimeoutWarning]);
+  
+  // Exit dealer mode (shared function)
+  const exitDealerMode = () => {
+    setIsDealerMode(false);
+    setDealerTimeoutWarning(false);
+    sessionStorage.removeItem('dealer_pin');
+    sessionStorage.removeItem('dealer_role');
+    sessionStorage.removeItem('dealer_name');
+    setStep('complete');
+  };
+  
+  // Enter dealer mode - load existing settings and switch to setup screen
+  const handleDealerAccess = async () => {
+    console.log('[Dealer Mode] Entering dealer mode...');
+    setIsDealerMode(true);
+    
+    // Load existing settings
+    try {
+      const dealerPin = sessionStorage.getItem('dealer_pin');
+      const dealerRole = sessionStorage.getItem('dealer_role');
+      
+      if (dealerPin && dealerRole) {
+        const response = await fetch(`${API_URL}/api/dealer-access/store-settings`, {
+          headers: {
+            'X-Dealer-Role': dealerRole,
+            'X-Dealer-Pin': dealerPin
+          }
+        });
+        
+        const data = await response.json();
+        if (data.success && data.data) {
+          // Load existing settings values
+          if (data.data.restaurantId) {
+            setRestaurantId(data.data.restaurantId);
+            setTestResult({
+              success: true,
+              message: `Connected: ${data.data.storeName || data.data.restaurantId}`,
+              restaurant: {
+                id: data.data.restaurantId,
+                name: data.data.storeName || 'Current Restaurant'
+              }
+            });
+          }
+          if (data.data.serviceMode) {
+            setServiceMode(data.data.serviceMode as ServiceMode);
+          }
+          if (data.data.storeName) {
+            setConnectedRestaurant({
+              id: data.data.restaurantId,
+              name: data.data.storeName
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Dealer Mode] Failed to load settings:', err);
+    }
+    
+    // Switch to setup screen
+    setStep('setup');
+  };
 
-  // 앱 시작 시 setup 상태 확인 (백엔드 DB만 확인)
+  // Check setup status on app start (backend DB only)
   useEffect(() => {
     const checkSetupStatus = async () => {
       try {
@@ -268,13 +581,13 @@ const SetupPage: React.FC = () => {
           name: storeName || 'Connected Restaurant'
         });
         
-        // setup-status.json에서 serviceMode 직접 사용
+        // Use serviceMode directly from setup-status.json
         const currentMode = (savedServiceMode || '').toUpperCase() === 'QSR' ? 'QSR' : 'FSR';
         const path = currentMode === 'QSR' ? '/qsr' : '/sales';
         setTargetPath(path);
         setServiceMode(currentMode);
         
-        // App.tsx SalesModeGate에서 사용하는 localStorage 저장
+        // Save to localStorage for App.tsx SalesModeGate
         localStorage.setItem('pos_setup_config', JSON.stringify({ operationMode: currentMode }));
         
         setStep('complete');
@@ -403,7 +716,7 @@ const SetupPage: React.FC = () => {
       setConnectedRestaurant(testResult.restaurant);
       setTargetPath(serviceMode === 'QSR' ? '/qsr' : '/sales');
       
-      // App.tsx SalesModeGate에서 사용하는 localStorage 저장
+      // Save to localStorage for App.tsx SalesModeGate
       localStorage.setItem('pos_setup_config', JSON.stringify({ operationMode: serviceMode }));
       
       setStep('complete');
@@ -415,13 +728,13 @@ const SetupPage: React.FC = () => {
   };
 
   const handlePinSubmit = async (pin: string) => {
-    // 0000은 Sales 접근용으로만 허용
+    // 0000 is only allowed for Sales access
     if (pin === '0000') {
       navigate(targetPath, { replace: true });
       return;
     }
     
-    // BackOffice PIN 확인 (0888)
+    // Verify BackOffice PIN (0888)
     try {
       const backofficeResponse = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
         method: 'POST',
@@ -468,13 +781,39 @@ const SetupPage: React.FC = () => {
           </div>
         )}
 
-        {/* Setup Step - 한 화면에 모든 옵션 */}
+        {/* Setup Step - All options in one screen */}
         {step === 'setup' && (
-          <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 shadow-2xl border border-white/20">
+          <div className={`backdrop-blur-lg rounded-2xl p-6 shadow-2xl border ${isDealerMode ? 'bg-purple-900/30 border-purple-500/30' : 'bg-white/10 border-white/20'}`}>
+            {/* Dealer Mode Banner */}
+            {isDealerMode && (
+              <div className="bg-purple-500/20 border border-purple-500/30 rounded-lg p-3 mb-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">🔐</span>
+                  <div>
+                    <p className="text-purple-200 font-bold text-sm">Dealer Mode</p>
+                    <p className="text-purple-300 text-xs">
+                      {sessionStorage.getItem('dealer_name')} ({sessionStorage.getItem('dealer_role')})
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={exitDealerMode}
+                  className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-lg text-red-200 text-xs transition-all"
+                >
+                  Exit
+                </button>
+              </div>
+            )}
+            
             {/* Header */}
             <div className="text-center mb-5">
               <img src="/images/logo.png" alt="Logo" className="w-14 h-14 mx-auto mb-2 object-contain"/>
-              <h1 className="text-2xl font-bold text-white">TheZonePOS Setup</h1>
+              <h1 className="text-2xl font-bold text-white">
+                {isDealerMode ? 'Store Settings' : 'TheZonePOS Setup'}
+              </h1>
+              {isDealerMode && (
+                <p className="text-purple-300 text-sm mt-1">Change restaurant or service mode</p>
+              )}
             </div>
 
             {/* Restaurant ID */}
@@ -547,39 +886,41 @@ const SetupPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Data Option */}
-            <div className="mb-5">
-              <label className="block text-blue-100 mb-1.5 font-medium text-sm">
-                📦 Data Initialization
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setDataOption('empty')}
-                  className={`p-3 rounded-xl border-2 transition-all ${
-                    dataOption === 'empty'
-                      ? 'bg-green-500/20 border-green-400 text-white'
-                      : 'bg-white/5 border-white/20 text-blue-200 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="text-2xl mb-1">📝</div>
-                  <div className="font-bold text-sm">Empty Database</div>
-                  <div className="text-xs opacity-70">Start from scratch</div>
-                </button>
-                
-                <button
-                  onClick={() => setDataOption('cloud')}
-                  className={`p-3 rounded-xl border-2 transition-all ${
-                    dataOption === 'cloud'
-                      ? 'bg-purple-500/20 border-purple-400 text-white'
-                      : 'bg-white/5 border-white/20 text-blue-200 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="text-2xl mb-1">☁️</div>
-                  <div className="font-bold text-sm">Import from Cloud</div>
-                  <div className="text-xs opacity-70">Download from Firebase</div>
-                </button>
+            {/* Data Option - Hidden in dealer mode (preserve existing data) */}
+            {!isDealerMode && (
+              <div className="mb-5">
+                <label className="block text-blue-100 mb-1.5 font-medium text-sm">
+                  📦 Data Initialization
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setDataOption('empty')}
+                    className={`p-3 rounded-xl border-2 transition-all ${
+                      dataOption === 'empty'
+                        ? 'bg-green-500/20 border-green-400 text-white'
+                        : 'bg-white/5 border-white/20 text-blue-200 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="text-2xl mb-1">📝</div>
+                    <div className="font-bold text-sm">Empty Database</div>
+                    <div className="text-xs opacity-70">Start from scratch</div>
+                  </button>
+                  
+                  <button
+                    onClick={() => setDataOption('cloud')}
+                    className={`p-3 rounded-xl border-2 transition-all ${
+                      dataOption === 'cloud'
+                        ? 'bg-purple-500/20 border-purple-400 text-white'
+                        : 'bg-white/5 border-white/20 text-blue-200 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="text-2xl mb-1">☁️</div>
+                    <div className="font-bold text-sm">Import from Cloud</div>
+                    <div className="text-xs opacity-70">Download from Firebase</div>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Error */}
             {error && (
@@ -588,18 +929,27 @@ const SetupPage: React.FC = () => {
               </div>
             )}
 
-            {/* Complete Button */}
+            {/* Complete / Save Button */}
             <button
               onClick={completeSetup}
               disabled={!testResult?.success}
               className={`w-full py-3.5 rounded-xl font-bold text-lg transition-all ${
                 testResult?.success
-                  ? 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg'
+                  ? isDealerMode 
+                    ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white shadow-lg'
+                    : 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg'
                   : 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
               }`}
             >
-              ✅ Complete Setup
+              {isDealerMode ? '💾 Save Changes' : '✅ Complete Setup'}
             </button>
+            
+            {/* Dealer mode notice */}
+            {isDealerMode && (
+              <p className="text-yellow-300/70 text-xs text-center mt-3">
+                ⚠️ After saving, restart the backend server for changes to take effect.
+              </p>
+            )}
           </div>
         )}
 
@@ -623,9 +973,37 @@ const SetupPage: React.FC = () => {
           <PinScreen 
             onPinSubmit={handlePinSubmit}
             targetPath={targetPath}
+            onDealerAccess={handleDealerAccess}
           />
         )}
       </div>
+      
+      {/* Dealer Mode Timeout Warning Modal */}
+      {dealerTimeoutWarning && isDealerMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="bg-gradient-to-br from-red-900 to-orange-900 rounded-2xl p-8 shadow-2xl border border-red-500/50 w-full max-w-sm mx-4 animate-pulse">
+            <div className="text-center">
+              <div className="text-6xl mb-4">⏰</div>
+              <h2 className="text-xl font-bold text-white mb-2">Session Timeout</h2>
+              <p className="text-red-200 mb-4">
+                Auto-logout in <span className="text-3xl font-bold text-yellow-400">{dealerTimeoutSeconds}</span> seconds
+              </p>
+              <p className="text-red-300/70 text-sm mb-6">
+                Save your changes or the session will end automatically.
+              </p>
+              <button
+                onClick={() => {
+                  // Reset activity timer
+                  resetActivityTimer();
+                }}
+                className="w-full py-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-bold rounded-xl transition-all"
+              >
+                🔄 Continue Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

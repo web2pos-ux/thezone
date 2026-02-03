@@ -1998,17 +1998,67 @@ const MenuEditPage = () => {
 
   // Excel Import functionality
   const handleExcelImport = async (file?: File) => {
-    // Replace with popup message
-    const message = `Export is implemented, and Import was implemented but had recurring errors, so the feature remains while replaced with this popup.
-
-Points for Import:
-
-Modifiers have multiple identical names, so it's impossible to know which one it is. They are displayed with badges in the category or menu item list.
-If there are typos or missing option groups, the name will be in the badge with an X mark.
-
-Like this. The basic logic is maintained for future re-implementation.`;
+    if (!file) {
+      alert('Please select an Excel file to import.');
+      return;
+    }
     
-    alert(message);
+    if (!menuId) {
+      alert('Menu ID is missing.');
+      return;
+    }
+    
+    // Confirm before import (will overwrite existing data)
+    const confirmed = window.confirm(
+      '⚠️ Warning: Importing will REPLACE all existing menu data!\n\n' +
+      'A backup will be created automatically before import.\n\n' +
+      'Do you want to continue?'
+    );
+    
+    if (!confirmed) return;
+    
+    setIsImporting(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await fetch(`${API_URL}/menu/${menuId}/import-excel`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || errorData.details || 'Import failed');
+      }
+      
+      const result = await response.json();
+      console.log('Import successful:', result);
+      
+      // Show success message with statistics
+      const stats = result.statistics;
+      alert(
+        `✅ Import Successful!\n\n` +
+        `Imported:\n` +
+        `• ${stats.categories} Categories\n` +
+        `• ${stats.items} Items\n` +
+        `• ${stats.modifierGroups} Modifier Groups (${stats.modifiers} modifiers)\n` +
+        `• ${stats.taxGroups} Tax Groups (${stats.taxes} taxes)\n` +
+        `• ${stats.printerGroups} Printer Groups (${stats.printers} printers)\n\n` +
+        `Page will reload to show updated data.`
+      );
+      
+      // Reload page to reflect changes
+      window.location.reload();
+      
+    } catch (error) {
+      console.error('Import failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      alert('❌ Import failed: ' + errorMessage);
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   // Load backups
