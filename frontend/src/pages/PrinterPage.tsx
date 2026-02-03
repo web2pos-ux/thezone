@@ -39,7 +39,7 @@ interface ElementStyle {
 // 구분선 설정
 interface SeparatorStyle {
   visible: boolean;
-  style: 'solid' | 'dashed' | 'dotted';
+  style: 'solid' | 'dashed' | 'dotted' | 'none';
 }
 
 // Bill 레이아웃 설정
@@ -392,6 +392,96 @@ const createDefaultElementStyle = (fontSize: number = 12, visible: boolean = tru
   visible,
   separatorStyle: 'none',
 });
+
+// ============================================
+// ESC/POS 프린터와 동일한 Preview 헬퍼 함수들
+// ============================================
+
+// ESC/POS 폰트 크기 변환 (printerUtils.js와 동일)
+// fontSize → 배율 정보 (1x, 2x, 3x)
+const getEscPosFontScale = (fontSize: number): { scaleX: number; scaleY: number } => {
+  // ESC/POS 프린터: 배율 1x/2x/3x
+  if (fontSize >= 24) {
+    return { scaleX: 3, scaleY: 3 }; // 3배
+  } else if (fontSize >= 20) {
+    return { scaleX: 2, scaleY: 2 }; // 2배
+  } else if (fontSize >= 16) {
+    return { scaleX: 1, scaleY: 2 }; // 세로 2배
+  } else if (fontSize >= 14) {
+    return { scaleX: 2, scaleY: 1 }; // 가로 2배
+  }
+  return { scaleX: 1, scaleY: 1 }; // 1배 (기본)
+};
+
+// Preview용 폰트 크기 계산 (설정값 기반, fontScale 적용)
+// fontSize 10 → 10px, fontSize 20 → 20px (직관적)
+const getPreviewFontSize = (fontSize: number, fontScale: number = 1.0): number => {
+  // 설정값을 그대로 사용하고 fontScale만 적용
+  return fontSize * fontScale;
+};
+
+// Preview용 문자 너비 계산 (가로 배율 적용)
+const getPreviewLetterSpacing = (fontSize: number): string => {
+  const { scaleX, scaleY } = getEscPosFontScale(fontSize);
+  // 가로가 세로보다 크면 letter-spacing 추가
+  if (scaleX > scaleY) {
+    return `${(scaleX - scaleY) * 2}px`;
+  }
+  return 'normal';
+};
+
+// ESC/POS 구분선 문자열 생성 (프린터와 동일)
+const getEscPosSeparator = (style: string, charCount: number = 42): string => {
+  switch (style) {
+    case 'dashed': return '-'.repeat(charCount);
+    case 'dotted': return '·'.repeat(charCount);
+    case 'solid': return '━'.repeat(charCount);
+    default: return '─'.repeat(charCount);
+  }
+};
+
+// 80mm 용지 기준 문자 수 (42자), 58mm는 32자
+const getPaperCharWidth = (paperWidth: number): number => {
+  return paperWidth === 58 ? 32 : 42;
+};
+
+// Preview 스타일 객체 생성 (ESC/POS 기반)
+const getPreviewStyle = (
+  element: { fontSize: number; fontWeight: string; isItalic?: boolean; lineSpacing?: number; inverse?: boolean; textAlign?: string },
+  fontScale: number = 1.0
+): React.CSSProperties => {
+  const previewFontSize = getPreviewFontSize(element.fontSize, fontScale);
+  const letterSpacing = getPreviewLetterSpacing(element.fontSize);
+  
+  return {
+    fontSize: `${previewFontSize}px`,
+    lineHeight: `${previewFontSize * 1.2}px`,
+    letterSpacing,
+    fontWeight: element.fontWeight === 'bold' || element.fontWeight === 'extrabold' ? 'bold' : 'normal',
+    fontStyle: element.isItalic ? 'italic' : 'normal',
+    marginTop: `${element.lineSpacing || 0}px`,
+    textAlign: (element.textAlign as 'left' | 'center' | 'right') || 'left',
+    ...(element.inverse ? {
+      backgroundColor: '#000',
+      color: '#fff',
+      padding: '2px 8px',
+      display: 'inline-block',
+    } : {}),
+  };
+};
+
+// Preview 반전 스타일 (전체 줄)
+const getPreviewInverseLineStyle = (inverse: boolean): React.CSSProperties => {
+  if (!inverse) return {};
+  return {
+    backgroundColor: '#000',
+    color: '#fff',
+    padding: '4px 16px',
+    marginLeft: '-16px',
+    marginRight: '-16px',
+    width: 'calc(100% + 32px)',
+  };
+};
 
 const defaultLayoutSettings: PrintLayoutSettings = {
   printMode: 'graphic',  // 기본값: Roll Graphic
@@ -2482,157 +2572,95 @@ export default function PrinterPage() {
     </div>
   );
 
-  // 새 Bill 미리보기 (billLayout 기반, 전역 폰트 사용)
+  // 새 Bill 미리보기 (billLayout 기반, ESC/POS 동일 렌더링)
   const BillPreviewNew = () => {
     const bl = layoutSettings.billLayout;
-    const globalFont = layoutSettings.fontFamily; // 전역 폰트
-    const getFontWeight = (weight: string) => weight === 'bold' ? 'bold' : 'normal';
-    const getFontStyle = (isItalic?: boolean) => isItalic ? 'italic' : 'normal';
-    const getSeparatorClass = (style: string) => {
-      switch(style) {
-        case 'dashed': return 'border-dashed';
-        case 'dotted': return 'border-dotted';
-        default: return 'border-solid';
-      }
+    const fontScale = bl.fontScale || 1.0;
+    const charWidth = getPaperCharWidth(bl.paperWidth);
+
+    // ESC/POS 구분선 렌더링
+    const renderSeparator = (sep: SeparatorStyle) => {
+      if (!sep.visible || sep.style === 'none') return null;
+      return (
+        <div className="text-gray-600 my-1 text-center overflow-hidden whitespace-nowrap" style={{ fontFamily: 'monospace', fontSize: '10px' }}>
+          {getEscPosSeparator(sep.style, charWidth)}
+        </div>
+      );
     };
 
     return (
       <div 
-        className="bg-white border-2 border-dashed border-gray-300 p-6 text-sm mx-auto shadow-lg"
+        className="bg-white border-2 border-dashed border-gray-300 p-4 mx-auto shadow-lg overflow-hidden"
         style={{ 
           width: `${bl.paperWidth * 4.5}px`, 
           paddingTop: `${bl.topMargin * 2}px`, 
           paddingLeft: `${(bl.leftMargin || 0) * 2}px`,
-          fontFamily: globalFont 
+          fontFamily: 'monospace',  // 고정폭 폰트 (프린터와 동일)
         }}
       >
         {/* ========== HEADER ========== */}
         {bl.storeName.visible && (
-          <div 
-            className="text-center"
-            style={{ 
-              fontSize: `${bl.storeName.fontSize}px`,
-              lineHeight: `${bl.storeName.fontSize + bl.storeName.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.storeName.fontWeight),
-              fontStyle: getFontStyle(bl.storeName.isItalic)
-            }}
-          >
+          <div className="text-center" style={getPreviewStyle({ ...bl.storeName, textAlign: 'center' }, fontScale)}>
             {bl.storeName.text || 'Restaurant Name'}
           </div>
         )}
         {bl.storeAddress.visible && (
-          <div 
-            className="text-center"
-            style={{ 
-              fontSize: `${bl.storeAddress.fontSize}px`,
-              lineHeight: `${bl.storeAddress.fontSize + bl.storeAddress.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.storeAddress.fontWeight),
-              fontStyle: getFontStyle(bl.storeAddress.isItalic)
-            }}
-          >
+          <div className="text-center" style={getPreviewStyle({ ...bl.storeAddress, textAlign: 'center' }, fontScale)}>
             {bl.storeAddress.text || 'Address'}
           </div>
         )}
         {bl.storePhone.visible && (
-          <div 
-            className="text-center"
-            style={{ 
-              fontSize: `${bl.storePhone.fontSize}px`,
-              lineHeight: `${bl.storePhone.fontSize + bl.storePhone.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.storePhone.fontWeight),
-              fontStyle: getFontStyle(bl.storePhone.isItalic)
-            }}
-          >
+          <div className="text-center" style={getPreviewStyle({ ...bl.storePhone, textAlign: 'center' }, fontScale)}>
             {bl.storePhone.text || 'Phone'}
           </div>
         )}
 
         {/* ① Separator 1: 헤더 아래 */}
-        {bl.separator1.visible && <div className={`border-b ${getSeparatorClass(bl.separator1.style)} border-gray-400 my-2`} />}
+        {renderSeparator(bl.separator1)}
 
         {/* ========== BODY - Order Info ========== */}
         {bl.orderNumber.visible && (
-          <div style={{ 
-            fontSize: `${bl.orderNumber.fontSize}px`, 
-            lineHeight: `${bl.orderNumber.fontSize + bl.orderNumber.lineSpacing}px`, 
-            fontWeight: getFontWeight(bl.orderNumber.fontWeight),
-            fontStyle: getFontStyle(bl.orderNumber.isItalic)
-          }}>
+          <div style={getPreviewStyle(bl.orderNumber, fontScale)}>
             Order#: ORD-20251212-001
           </div>
         )}
         {bl.orderChannel.visible && (
-          <div style={{ 
-            fontSize: `${bl.orderChannel.fontSize}px`, 
-            lineHeight: `${bl.orderChannel.fontSize + bl.orderChannel.lineSpacing}px`, 
-            fontWeight: getFontWeight(bl.orderChannel.fontWeight),
-            fontStyle: getFontStyle(bl.orderChannel.isItalic)
-          }}>
+          <div style={getPreviewStyle(bl.orderChannel, fontScale)}>
             Dine-in / Table: 5
           </div>
         )}
         {bl.serverName.visible && (
-          <div style={{ 
-            fontSize: `${bl.serverName.fontSize}px`, 
-            lineHeight: `${bl.serverName.fontSize + bl.serverName.lineSpacing}px`, 
-            fontWeight: getFontWeight(bl.serverName.fontWeight),
-            fontStyle: getFontStyle(bl.serverName.isItalic)
-          }}>
+          <div style={getPreviewStyle(bl.serverName, fontScale)}>
             Server: John
           </div>
         )}
         {bl.dateTime.visible && (
-          <div style={{ 
-            fontSize: `${bl.dateTime.fontSize}px`, 
-            lineHeight: `${bl.dateTime.fontSize + bl.dateTime.lineSpacing}px`, 
-            fontWeight: getFontWeight(bl.dateTime.fontWeight),
-            fontStyle: getFontStyle(bl.dateTime.isItalic)
-          }}>
+          <div style={getPreviewStyle(bl.dateTime, fontScale)}>
             2025-12-13 19:30
           </div>
         )}
 
         {/* ② Separator 2: 주문정보 아래 */}
-        {bl.separator2.visible && <div className={`border-b ${getSeparatorClass(bl.separator2.style)} border-gray-400 my-2`} />}
+        {renderSeparator(bl.separator2)}
 
         {/* ========== Items ========== */}
         {bl.items.visible && (
-          <div style={{ 
-            fontSize: `${bl.items.fontSize}px`, 
-            lineHeight: `${bl.items.fontSize + bl.items.lineSpacing}px`,
-            fontWeight: getFontWeight(bl.items.fontWeight),
-            fontStyle: getFontStyle(bl.items.isItalic)
-          }}>
+          <div style={getPreviewStyle(bl.items, fontScale)}>
             <div className="flex justify-between"><span>Salmon Sashimi x1</span><span>$18.99</span></div>
             {bl.modifiers.visible && (
-              <div className="text-gray-500 ml-3 flex" style={{ 
-                fontSize: `${bl.modifiers.fontSize}px`,
-                lineHeight: `${bl.modifiers.fontSize + bl.modifiers.lineSpacing}px`,
-                fontWeight: getFontWeight(bl.modifiers.fontWeight),
-                fontStyle: getFontStyle(bl.modifiers.isItalic)
-              }}>
+              <div className="text-gray-600 ml-3 flex" style={getPreviewStyle(bl.modifiers, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">{bl.modifiers.prefix || '>>'}</span>
                 <span>Extra Ginger</span>
               </div>
             )}
             {bl.itemNote?.visible && (
-              <div className="text-blue-600 ml-3 flex" style={{ 
-                fontSize: `${bl.itemNote.fontSize}px`,
-                lineHeight: `${bl.itemNote.fontSize + bl.itemNote.lineSpacing}px`,
-                fontWeight: getFontWeight(bl.itemNote.fontWeight),
-                fontStyle: getFontStyle(bl.itemNote.isItalic)
-              }}>
+              <div className="text-gray-800 ml-3 flex" style={getPreviewStyle(bl.itemNote, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">{bl.itemNote.prefix || '->'}</span>
                 <span>No wasabi please</span>
               </div>
             )}
             {bl.itemDiscount.visible && (
-              <div className="text-red-500 ml-3 flex" style={{ 
-                fontSize: `${bl.itemDiscount.fontSize}px`,
-                lineHeight: `${bl.itemDiscount.fontSize + bl.itemDiscount.lineSpacing}px`,
-                fontWeight: getFontWeight(bl.itemDiscount.fontWeight),
-                fontStyle: getFontStyle(bl.itemDiscount.isItalic)
-              }}>
+              <div className="text-red-600 ml-3 flex" style={getPreviewStyle(bl.itemDiscount, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">-</span>
                 <span>Item Discount: -$2.00</span>
               </div>
@@ -2643,62 +2671,34 @@ export default function PrinterPage() {
         )}
 
         {/* ③ Separator 3: 아이템 아래 */}
-        {bl.separator3.visible && <div className={`border-b ${getSeparatorClass(bl.separator3.style)} border-gray-400 my-2`} />}
+        {renderSeparator(bl.separator3)}
 
         {/* ========== Totals (순서: Subtotal → Discount → GST → PST → Total) ========== */}
         <div className="pt-1">
           {bl.subtotal.visible && (
-            <div className="flex justify-between" style={{ 
-              fontSize: `${bl.subtotal.fontSize}px`,
-              lineHeight: `${bl.subtotal.fontSize + bl.subtotal.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.subtotal.fontWeight),
-              fontStyle: getFontStyle(bl.subtotal.isItalic)
-            }}>
+            <div className="flex justify-between" style={getPreviewStyle(bl.subtotal, fontScale)}>
               <span>Subtotal:</span><span>$54.95</span>
             </div>
           )}
           {bl.discount.visible && (
-            <div className="flex justify-between text-red-600" style={{ 
-              fontSize: `${bl.discount.fontSize}px`,
-              lineHeight: `${bl.discount.fontSize + bl.discount.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.discount.fontWeight),
-              fontStyle: getFontStyle(bl.discount.isItalic)
-            }}>
+            <div className="flex justify-between text-red-600" style={getPreviewStyle(bl.discount, fontScale)}>
               <span>Discount:</span><span>-$5.00</span>
             </div>
           )}
           {bl.taxGST.visible && (
-            <div className="flex justify-between" style={{ 
-              fontSize: `${bl.taxGST.fontSize}px`,
-              lineHeight: `${bl.taxGST.fontSize + bl.taxGST.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.taxGST.fontWeight),
-              fontStyle: getFontStyle(bl.taxGST.isItalic)
-            }}>
+            <div className="flex justify-between" style={getPreviewStyle(bl.taxGST, fontScale)}>
               <span>GST (5%):</span><span>$2.75</span>
             </div>
           )}
           {bl.taxPST.visible && (
-            <div className="flex justify-between" style={{ 
-              fontSize: `${bl.taxPST.fontSize}px`,
-              lineHeight: `${bl.taxPST.fontSize + bl.taxPST.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.taxPST.fontWeight),
-              fontStyle: getFontStyle(bl.taxPST.isItalic)
-            }}>
+            <div className="flex justify-between" style={getPreviewStyle(bl.taxPST, fontScale)}>
               <span>PST (7%):</span><span>$3.85</span>
             </div>
           )}
           {/* ④ Separator 4: Total 위 */}
-          {bl.separator4.visible && <div className={`border-b ${getSeparatorClass(bl.separator4.style)} border-gray-400 my-1`} />}
+          {renderSeparator(bl.separator4)}
           {bl.total.visible && (
-            <div 
-              className="flex justify-between pt-1"
-              style={{ 
-                fontSize: `${bl.total.fontSize}px`,
-                lineHeight: `${bl.total.fontSize + bl.total.lineSpacing}px`,
-                fontWeight: getFontWeight(bl.total.fontWeight),
-                fontStyle: getFontStyle(bl.total.isItalic)
-              }}
-            >
+            <div className="flex justify-between pt-1" style={getPreviewStyle(bl.total, fontScale)}>
               <span>TOTAL:</span><span>$56.55</span>
             </div>
           )}
@@ -2706,15 +2706,7 @@ export default function PrinterPage() {
 
         {/* ========== FOOTER ========== */}
         {bl.greeting.visible && (
-          <div 
-            className="text-center mt-4"
-            style={{ 
-              fontSize: `${bl.greeting.fontSize}px`,
-              lineHeight: `${bl.greeting.fontSize + bl.greeting.lineSpacing}px`,
-              fontWeight: getFontWeight(bl.greeting.fontWeight),
-              fontStyle: getFontStyle(bl.greeting.isItalic)
-            }}
-          >
+          <div className="text-center mt-4" style={getPreviewStyle({ ...bl.greeting, textAlign: 'center' }, fontScale)}>
             {bl.greeting.text || 'Thank you!'}
           </div>
         )}
@@ -2787,25 +2779,28 @@ export default function PrinterPage() {
     </div>
   );
 
-  // Receipt 미리보기 (새 구조 - Bill과 동일)
+  // Receipt 미리보기 (ESC/POS 동일 렌더링)
   const ReceiptPreviewNew = () => {
     const rl = layoutSettings.receiptLayout;
-    const getFontWeight = (weight: string) => weight === 'bold' ? 'bold' : 'normal';
-    const getFontStyle = (isItalic?: boolean) => isItalic ? 'italic' : 'normal';
-    const getSeparatorClass = (style: string) => {
-      switch(style) {
-        case 'dashed': return 'border-dashed';
-        case 'dotted': return 'border-dotted';
-        default: return 'border-solid';
-      }
+    const fontScale = rl.fontScale || 1.0;
+    const charWidth = getPaperCharWidth(rl.paperWidth);
+
+    // ESC/POS 구분선 렌더링
+    const renderSeparator = (sep: SeparatorStyle) => {
+      if (!sep.visible || sep.style === 'none') return null;
+      return (
+        <div className="text-gray-600 my-1 text-center overflow-hidden whitespace-nowrap" style={{ fontFamily: 'monospace', fontSize: '10px' }}>
+          {getEscPosSeparator(sep.style, charWidth)}
+        </div>
+      );
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
+
     return (
       <div 
-        className="bg-white border-2 border-dashed border-gray-300 p-6 font-mono text-sm mx-auto"
+        className="bg-white border-2 border-dashed border-gray-300 p-4 mx-auto overflow-hidden"
         style={{ 
           width: `${rl.paperWidth * 4.5}px`,
-          fontFamily: layoutSettings.fontFamily,
+          fontFamily: 'monospace',
           paddingTop: `${rl.topMargin * 2}px`,
           paddingLeft: `${(rl.leftMargin || 0) * 2}px`
         }}
@@ -2813,70 +2808,70 @@ export default function PrinterPage() {
         {/* ========== HEADER ========== */}
         <div className="text-center mb-3">
           {rl.storeName.visible && (
-            <div style={{ fontSize: `${rl.storeName.fontSize}px`, lineHeight: `${rl.storeName.fontSize + rl.storeName.lineSpacing}px`, fontWeight: getFontWeight(rl.storeName.fontWeight), fontStyle: getFontStyle(rl.storeName.isItalic) }}>
+            <div style={getPreviewStyle({ ...rl.storeName, textAlign: 'center' }, fontScale)}>
               {rl.storeName.text}
             </div>
           )}
           {rl.storeAddress.visible && (
-            <div style={{ fontSize: `${rl.storeAddress.fontSize}px`, lineHeight: `${rl.storeAddress.fontSize + rl.storeAddress.lineSpacing}px`, fontWeight: getFontWeight(rl.storeAddress.fontWeight), fontStyle: getFontStyle(rl.storeAddress.isItalic) }}>
+            <div style={getPreviewStyle({ ...rl.storeAddress, textAlign: 'center' }, fontScale)}>
               {rl.storeAddress.text}
             </div>
           )}
           {rl.storePhone.visible && (
-            <div style={{ fontSize: `${rl.storePhone.fontSize}px`, lineHeight: `${rl.storePhone.fontSize + rl.storePhone.lineSpacing}px`, fontWeight: getFontWeight(rl.storePhone.fontWeight), fontStyle: getFontStyle(rl.storePhone.isItalic) }}>
+            <div style={getPreviewStyle({ ...rl.storePhone, textAlign: 'center' }, fontScale)}>
               {rl.storePhone.text}
             </div>
           )}
         </div>
 
         {/* ① Separator 1: 헤더 아래 */}
-        {rl.separator1.visible && <div className={`border-b ${getSeparatorClass(rl.separator1.style)} border-gray-400 my-2`} />}
+        {renderSeparator(rl.separator1)}
 
         {/* ========== ORDER INFO ========== */}
         <div className="mb-2">
           {rl.orderNumber.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.orderNumber.fontSize}px`, lineHeight: `${rl.orderNumber.fontSize + rl.orderNumber.lineSpacing}px`, fontWeight: getFontWeight(rl.orderNumber.fontWeight), fontStyle: getFontStyle(rl.orderNumber.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.orderNumber, fontScale)}>
               <span>Order #:</span><span>ORD-2024-0042</span>
             </div>
           )}
           {rl.orderChannel.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.orderChannel.fontSize}px`, lineHeight: `${rl.orderChannel.fontSize + rl.orderChannel.lineSpacing}px`, fontWeight: getFontWeight(rl.orderChannel.fontWeight), fontStyle: getFontStyle(rl.orderChannel.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.orderChannel, fontScale)}>
               <span>Channel:</span><span>Dine-in (Table 5)</span>
             </div>
           )}
           {rl.serverName.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.serverName.fontSize}px`, lineHeight: `${rl.serverName.fontSize + rl.serverName.lineSpacing}px`, fontWeight: getFontWeight(rl.serverName.fontWeight), fontStyle: getFontStyle(rl.serverName.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.serverName, fontScale)}>
               <span>Server:</span><span>Sarah K.</span>
             </div>
           )}
           {rl.dateTime.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.dateTime.fontSize}px`, lineHeight: `${rl.dateTime.fontSize + rl.dateTime.lineSpacing}px`, fontWeight: getFontWeight(rl.dateTime.fontWeight), fontStyle: getFontStyle(rl.dateTime.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.dateTime, fontScale)}>
               <span>Date:</span><span>Dec 14, 2024 3:45 PM</span>
             </div>
           )}
         </div>
 
         {/* ② Separator 2: 주문정보 아래 */}
-        {rl.separator2.visible && <div className={`border-b ${getSeparatorClass(rl.separator2.style)} border-gray-400 my-2`} />}
+        {renderSeparator(rl.separator2)}
 
         {/* ========== ITEMS ========== */}
         {rl.items.visible && (
-          <div className="mb-2" style={{ fontSize: `${rl.items.fontSize}px`, lineHeight: `${rl.items.fontSize + rl.items.lineSpacing}px`, fontWeight: getFontWeight(rl.items.fontWeight), fontStyle: getFontStyle(rl.items.isItalic) }}>
+          <div className="mb-2" style={getPreviewStyle(rl.items, fontScale)}>
             <div className="flex justify-between"><span>Salmon Sashimi x1</span><span>$18.99</span></div>
             {rl.modifiers.visible && (
-              <div className="text-gray-500 ml-3 flex" style={{ fontSize: `${rl.modifiers.fontSize}px`, lineHeight: `${rl.modifiers.fontSize + rl.modifiers.lineSpacing}px`, fontWeight: getFontWeight(rl.modifiers.fontWeight), fontStyle: getFontStyle(rl.modifiers.isItalic) }}>
+              <div className="text-gray-600 ml-3 flex" style={getPreviewStyle(rl.modifiers, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">{rl.modifiers.prefix || '>>'}</span>
                 <span>Extra Ginger</span>
               </div>
             )}
             {rl.itemNote?.visible && (
-              <div className="text-gray-800 ml-3 flex" style={{ fontSize: `${rl.itemNote.fontSize}px`, lineHeight: `${rl.itemNote.fontSize + rl.itemNote.lineSpacing}px`, fontWeight: getFontWeight(rl.itemNote.fontWeight), fontStyle: getFontStyle(rl.itemNote.isItalic) }}>
+              <div className="text-gray-800 ml-3 flex" style={getPreviewStyle(rl.itemNote, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">{rl.itemNote.prefix || '->'}</span>
                 <span>No wasabi please</span>
               </div>
             )}
             {rl.itemDiscount.visible && (
-              <div className="text-red-500 ml-3 flex" style={{ fontSize: `${rl.itemDiscount.fontSize}px`, lineHeight: `${rl.itemDiscount.fontSize + rl.itemDiscount.lineSpacing}px`, fontWeight: getFontWeight(rl.itemDiscount.fontWeight), fontStyle: getFontStyle(rl.itemDiscount.isItalic) }}>
+              <div className="text-red-600 ml-3 flex" style={getPreviewStyle(rl.itemDiscount, fontScale)}>
                 <span className="inline-block w-6 text-right mr-1">-</span>
                 <span>Item Discount: -$2.00</span>
               </div>
@@ -2887,34 +2882,34 @@ export default function PrinterPage() {
         )}
 
         {/* ③ Separator 3: 아이템 아래 */}
-        {rl.separator3.visible && <div className={`border-b ${getSeparatorClass(rl.separator3.style)} border-gray-400 my-2`} />}
+        {renderSeparator(rl.separator3)}
 
         {/* ========== TOTALS ========== */}
         <div className="pt-1">
           {rl.subtotal.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.subtotal.fontSize}px`, lineHeight: `${rl.subtotal.fontSize + rl.subtotal.lineSpacing}px`, fontWeight: getFontWeight(rl.subtotal.fontWeight), fontStyle: getFontStyle(rl.subtotal.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.subtotal, fontScale)}>
               <span>Subtotal:</span><span>$54.95</span>
             </div>
           )}
           {rl.discount.visible && (
-            <div className="flex justify-between text-red-500" style={{ fontSize: `${rl.discount.fontSize}px`, lineHeight: `${rl.discount.fontSize + rl.discount.lineSpacing}px`, fontWeight: getFontWeight(rl.discount.fontWeight), fontStyle: getFontStyle(rl.discount.isItalic) }}>
+            <div className="flex justify-between text-red-600" style={getPreviewStyle(rl.discount, fontScale)}>
               <span>Discount:</span><span>-$5.00</span>
             </div>
           )}
           {rl.taxGST.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.taxGST.fontSize}px`, lineHeight: `${rl.taxGST.fontSize + rl.taxGST.lineSpacing}px`, fontWeight: getFontWeight(rl.taxGST.fontWeight), fontStyle: getFontStyle(rl.taxGST.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.taxGST, fontScale)}>
               <span>GST (5%):</span><span>$2.75</span>
             </div>
           )}
           {rl.taxPST.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.taxPST.fontSize}px`, lineHeight: `${rl.taxPST.fontSize + rl.taxPST.lineSpacing}px`, fontWeight: getFontWeight(rl.taxPST.fontWeight), fontStyle: getFontStyle(rl.taxPST.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.taxPST, fontScale)}>
               <span>PST (7%):</span><span>$3.85</span>
             </div>
           )}
           {/* ④ Separator 4: Total 위 */}
-          {rl.separator4.visible && <div className={`border-b ${getSeparatorClass(rl.separator4.style)} border-gray-400 my-1`} />}
+          {renderSeparator(rl.separator4)}
           {rl.total.visible && (
-            <div className="flex justify-between pt-1" style={{ fontSize: `${rl.total.fontSize}px`, lineHeight: `${rl.total.fontSize + rl.total.lineSpacing}px`, fontWeight: getFontWeight(rl.total.fontWeight), fontStyle: getFontStyle(rl.total.isItalic) }}>
+            <div className="flex justify-between pt-1" style={getPreviewStyle(rl.total, fontScale)}>
               <span>TOTAL:</span><span>$56.55</span>
             </div>
           )}
@@ -2923,17 +2918,17 @@ export default function PrinterPage() {
         {/* ========== PAYMENT (Receipt only) ========== */}
         <div className="mt-3 pt-2 border-t border-gray-300">
           {rl.paymentMethod.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.paymentMethod.fontSize}px`, lineHeight: `${rl.paymentMethod.fontSize + rl.paymentMethod.lineSpacing}px`, fontWeight: getFontWeight(rl.paymentMethod.fontWeight), fontStyle: getFontStyle(rl.paymentMethod.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.paymentMethod, fontScale)}>
               <span>Payment:</span><span>VISA ****4242</span>
             </div>
           )}
           {rl.paymentDetails.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.paymentDetails.fontSize}px`, lineHeight: `${rl.paymentDetails.fontSize + rl.paymentDetails.lineSpacing}px`, fontWeight: getFontWeight(rl.paymentDetails.fontWeight), fontStyle: getFontStyle(rl.paymentDetails.isItalic) }}>
+            <div className="flex justify-between" style={getPreviewStyle(rl.paymentDetails, fontScale)}>
               <span>Tendered:</span><span>$60.00</span>
             </div>
           )}
           {rl.changeAmount.visible && (
-            <div className="flex justify-between" style={{ fontSize: `${rl.changeAmount.fontSize}px`, lineHeight: `${rl.changeAmount.fontSize + rl.changeAmount.lineSpacing}px`, fontWeight: getFontWeight(rl.changeAmount.fontWeight), fontStyle: getFontStyle(rl.changeAmount.isItalic), ...getInverseStyle(rl.changeAmount.inverse) }}>
+            <div className="flex justify-between" style={getPreviewStyle({ ...rl.changeAmount, inverse: rl.changeAmount.inverse }, fontScale)}>
               <span>Change:</span><span>$3.45</span>
             </div>
           )}
@@ -2942,12 +2937,12 @@ export default function PrinterPage() {
         {/* ========== FOOTER ========== */}
         <div className="text-center mt-4">
           {rl.thankYouMessage.visible && (
-            <div style={{ fontSize: `${rl.thankYouMessage.fontSize}px`, lineHeight: `${rl.thankYouMessage.fontSize + rl.thankYouMessage.lineSpacing}px`, fontWeight: getFontWeight(rl.thankYouMessage.fontWeight), fontStyle: getFontStyle(rl.thankYouMessage.isItalic) }}>
+            <div style={getPreviewStyle({ ...rl.thankYouMessage, textAlign: 'center' }, fontScale)}>
               {rl.thankYouMessage.text}
             </div>
           )}
           {rl.greeting.visible && (
-            <div style={{ fontSize: `${rl.greeting.fontSize}px`, lineHeight: `${rl.greeting.fontSize + rl.greeting.lineSpacing}px`, fontWeight: getFontWeight(rl.greeting.fontWeight), fontStyle: getFontStyle(rl.greeting.isItalic) }}>
+            <div style={getPreviewStyle({ ...rl.greeting, textAlign: 'center' }, fontScale)}>
               {rl.greeting.text}
             </div>
           )}
@@ -2956,16 +2951,13 @@ export default function PrinterPage() {
     );
   };
 
-  // Kitchen 미리보기 (Dine-in) - 새 구조 (동적 정렬 적용)
+  // Kitchen 미리보기 (Dine-in) - 새 구조 (ESC/POS 동일 렌더링)
   const KitchenPreviewDineInNew = () => {
     const kl = getCurrentLayoutSettings();
-    // DEBUG: kl 전체 내용 확인
-    console.log('[DineIn Preview] kl keys:', Object.keys(kl).join(', '));
-    console.log('[DineIn Preview] kl.paidStatus:', JSON.stringify(kl.paidStatus));
-    console.log('[DineIn Preview] kl.specialInstructions:', JSON.stringify(kl.specialInstructions));
     const mergedElements = kl.mergedElements || [];
     const mergedKeys = new Set(mergedElements.flatMap(m => [m.leftElement.key, m.rightElement.key]));
-    const fontScale = kl.fontScale || 1.0; // Epson 프린터용 스케일 (기본 1.0)
+    const fontScale = kl.fontScale || 1.0;
+    const charWidth = getPaperCharWidth(kl.paperWidth || 80);
 
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
@@ -2973,10 +2965,30 @@ export default function PrinterPage() {
       return 400;
     };
     const getFontStyle = (element: any) => element?.isItalic ? 'italic' : 'normal';
-    const getSeparatorClass = (style: string) => {
-      switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
+    
+    // ESC/POS 구분선 렌더링
+    const renderSeparatorLine = (sep: SeparatorStyle | undefined) => {
+      if (!sep || !sep.visible || sep.style === 'none') return null;
+      return (
+        <div className="text-gray-600 my-1 text-center overflow-hidden whitespace-nowrap" style={{ fontFamily: 'monospace', fontSize: '10px' }}>
+          {getEscPosSeparator(sep.style, charWidth)}
+        </div>
+      );
     };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
+    
+    // ESC/POS 스타일 적용
+    const getKitchenPreviewStyle = (el: any): React.CSSProperties => {
+      const previewFontSize = getPreviewFontSize(el.fontSize || 12, fontScale);
+      return {
+        fontSize: `${previewFontSize}px`,
+        lineHeight: `${previewFontSize * 1.2}px`,
+        letterSpacing: getPreviewLetterSpacing(el.fontSize || 12),
+        marginTop: `${el.lineSpacing || 0}px`,
+        fontWeight: getFontWeight(el.fontWeight || 'regular'),
+        fontStyle: getFontStyle(el),
+        ...(el.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {}),
+      };
+    };
     
     // 샘플 데이터
     const sampleData: Record<string, string> = {
@@ -2998,15 +3010,14 @@ export default function PrinterPage() {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
-        const elLineHeight = el.fontSize + (el.lineHeight ?? 0);
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={getKitchenPreviewStyle(el)}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={getKitchenPreviewStyle(el)}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={getKitchenPreviewStyle(el)}>{note}</div>;
         }
         return null;
       };
@@ -3017,16 +3028,19 @@ export default function PrinterPage() {
          </div>
       );
 
+      // ESC/POS Guest 구분선 (문자 기반)
+      const guestSeparator = kl.guestNumber.visible ? getEscPosSeparator('dashed', Math.floor(charWidth / 3)) : '';
+
       return (
         <div className="mt-2 text-left">
            {kl.guestNumber.visible && (
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 1 --------------------</div>
+               <div className="text-center mb-1" style={getKitchenPreviewStyle(kl.guestNumber)}>{guestSeparator} GUEST 1 {guestSeparator}</div>
            )}
            {renderItemRow('1x Salmon Sashimi', 'Extra Ginger', 'No wasabi')}
            {renderItemRow('1x Miso Soup')}
            
            {kl.guestNumber.visible && (
-               <div className="text-center font-bold mb-1" style={{ fontSize: `${kl.guestNumber.fontSize * fontScale}px`, marginTop: `${kl.guestNumber.lineSpacing}px`, fontWeight: getFontWeight(kl.guestNumber.fontWeight), ...getInverseStyle(kl.guestNumber.inverse) }}>-------------------- GUEST 2 --------------------</div>
+               <div className="text-center mb-1" style={getKitchenPreviewStyle(kl.guestNumber)}>{guestSeparator} GUEST 2 {guestSeparator}</div>
            )}
            {renderItemRow('2x Beef Teriyaki', 'Well Done')}
            {renderItemRow('1x Green Tea')}
@@ -3172,28 +3186,15 @@ export default function PrinterPage() {
     console.log('[DineIn Preview] headerItems:', headerItems.map(i => i.key).join(', '));
     console.log('[DineIn Preview] footerItems:', footerItems.map(i => i.key).join(', '));
     
-    // 렌더링 함수
+    // 렌더링 함수 (ESC/POS 스타일 적용)
     const renderItem = (item: typeof renderList[0]) => {
       if (item.type === 'single' && item.key) {
         if (item.key === 'items') return renderItemsList();
         const el = (kl as any)[item.key];
-        // 방어적 코드: 요소가 없거나 필수 속성이 없으면 기본값 사용
-        const fontSize = el?.fontSize ?? 12;
-        const lineSpacing = el?.lineSpacing ?? 0;
-        const fontWeight = el?.fontWeight ?? 'normal';
-        const inverse = el?.inverse ?? false;
-        const textAlign = el?.textAlign || (item.key === 'serverName' ? 'left' : 'center');
+        if (!el) return null;
         
         return (
-          <div className={item.key === 'serverName' ? '' : textAlign ? '' : 'text-center'} 
-               style={{ 
-                 fontSize: `${fontSize}px`, 
-                marginTop: `${lineSpacing}px`, 
-                 fontWeight: getFontWeight(fontWeight), 
-                 fontStyle: getFontStyle(el),
-                 textAlign: textAlign,
-                 ...getInverseStyle(inverse) 
-               }}>
+          <div style={getKitchenPreviewStyle(el)}>
             {sampleData[item.key] || kitchenElementLabels[item.key] || item.key}
           </div>
         );
@@ -3205,14 +3206,14 @@ export default function PrinterPage() {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 mx-auto overflow-hidden" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: 'monospace', paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
         
-        {/* Header End Separator */}
-        {headerItems.length > 0 && kl.separator1.visible && <div className={`border-b ${getSeparatorClass(kl.separator1.style)} border-gray-400 my-2`} />}
+        {/* Header End Separator (ESC/POS 문자 기반) */}
+        {headerItems.length > 0 && renderSeparatorLine(kl.separator1)}
         
         {/* Body Section */}
         {bodyItems.map((item, index) => (
@@ -3221,21 +3222,13 @@ export default function PrinterPage() {
         
         {/* Kitchen Memo (Body 하단 고정) */}
         {kl.kitchenNote?.visible && (
-          <div 
-            className="text-center"
-            style={{ 
-              fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
-              marginTop: `${kl.kitchenNote.lineSpacing || 0}px`,
-              fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
-              ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
-            }}
-          >
+          <div className="text-center" style={getKitchenPreviewStyle(kl.kitchenNote)}>
             *** Kitchen Memo ***
           </div>
         )}
         
-        {/* Body End Separator */}
-        {bodyItems.length > 0 && kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
+        {/* Body End Separator (ESC/POS 문자 기반) */}
+        {bodyItems.length > 0 && renderSeparatorLine(kl.separator2)}
         
         {/* Footer Section */}
         {footerItems.map((item, index) => (
@@ -3451,17 +3444,13 @@ export default function PrinterPage() {
     );
   };
 
-  // Kitchen 미리보기 (Online/Delivery) - 새 구조
-  // External Kitchen 미리보기 - 새 구조 (동적 정렬 적용)
+  // Kitchen 미리보기 (Online/Delivery) - ESC/POS 동일 렌더링
   const KitchenPreviewOnlineNew = () => {
     const kl = getCurrentLayoutSettings();
-    // DEBUG: kl 전체 내용 확인
-    console.log('[Online Preview] kl keys:', Object.keys(kl).join(', '));
-    console.log('[Online Preview] kl.paidStatus:', JSON.stringify(kl.paidStatus));
-    console.log('[Online Preview] kl.specialInstructions:', JSON.stringify(kl.specialInstructions));
     const mergedElements = kl.mergedElements || [];
     const mergedKeys = new Set(mergedElements.flatMap((m: MergedElement) => [m.leftElement.key, m.rightElement.key]));
-    const fontScale = kl.fontScale || 1.0; // Epson 프린터용 스케일 (기본 1.0)
+    const fontScale = kl.fontScale || 1.0;
+    const charWidth = getPaperCharWidth(kl.paperWidth || 80);
 
     const getFontWeight = (weight: string) => {
       if (weight === 'extrabold') return 900;
@@ -3469,14 +3458,32 @@ export default function PrinterPage() {
       return 400;
     };
     const getFontStyle = (element: any) => element?.isItalic ? 'italic' : 'normal';
-    const getSeparatorClass = (style: string) => {
-      switch(style) { case 'dashed': return 'border-dashed'; case 'dotted': return 'border-dotted'; default: return 'border-solid'; }
-    };
-    const getInverseStyle = (inverse: boolean) => inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {};
     
-    // 샘플 데이터
-    // Togo와 Thezone Order는 기본적으로 UNPAID
-    // Firebase에서 온라인 결제가 완료된 경우에만 PAID로 표시
+    // ESC/POS 구분선 렌더링
+    const renderSeparatorLine = (sep: SeparatorStyle | undefined) => {
+      if (!sep || !sep.visible || sep.style === 'none') return null;
+      return (
+        <div className="text-gray-600 my-1 text-center overflow-hidden whitespace-nowrap" style={{ fontFamily: 'monospace', fontSize: '10px' }}>
+          {getEscPosSeparator(sep.style, charWidth)}
+        </div>
+      );
+    };
+    
+    // ESC/POS 스타일 적용
+    const getKitchenPreviewStyle = (el: any): React.CSSProperties => {
+      const previewFontSize = getPreviewFontSize(el.fontSize || 12, fontScale);
+      return {
+        fontSize: `${previewFontSize}px`,
+        lineHeight: `${previewFontSize * 1.2}px`,
+        letterSpacing: getPreviewLetterSpacing(el.fontSize || 12),
+        marginTop: `${el.lineSpacing || 0}px`,
+        fontWeight: getFontWeight(el.fontWeight || 'regular'),
+        fontStyle: getFontStyle(el),
+        ...(el.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {}),
+      };
+    };
+    
+    // 샘플 데이터 (UNPAID 기본)
     const sampleData: Record<string, string> = {
       orderType: 'TOGO',
       tableNumber: 'N/A',
@@ -3484,7 +3491,7 @@ export default function PrinterPage() {
       externalOrderNumber: '#TZ-12345',
       serverName: 'System',
       dateTime: '4:15 PM',
-      paidStatus: 'UNPAID',  // 기본값: UNPAID (온라인결제 시에만 PAID)
+      paidStatus: 'UNPAID',
       pickupTime: 'PICKUP: 4:30 PM',
       deliveryChannel: 'THEZONE',
       customerName: 'John Smith',
@@ -3501,15 +3508,14 @@ export default function PrinterPage() {
       const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
         const el = (kl as any)[partKey];
         if (!el.visible) return null;
-        const elLineHeight = el.fontSize + (el.lineHeight ?? 0);
         if (partKey === 'items') {
-          return <div key="item" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el), ...getInverseStyle(el.inverse) }}>{itemName}</div>;
+          return <div key="item" style={getKitchenPreviewStyle(el)}>{itemName}</div>;
         }
         if (partKey === 'modifiers' && mods) {
-           return <div key="mod" className="ml-4 text-gray-600" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{mods}</div>;
+           return <div key="mod" className="ml-4 text-gray-600" style={getKitchenPreviewStyle(el)}>{mods}</div>;
         }
         if (partKey === 'itemNote' && note) {
-           return <div key="note" className="ml-4 text-gray-800" style={{ fontSize: `${el.fontSize * fontScale}px`, lineHeight: `${elLineHeight * fontScale}px`, marginTop: `${el.lineSpacing}px`, fontWeight: getFontWeight(el.fontWeight), fontStyle: getFontStyle(el) }}>{note}</div>;
+           return <div key="note" className="ml-4 text-gray-800" style={getKitchenPreviewStyle(el)}>{note}</div>;
         }
         return null;
       };
@@ -3672,24 +3678,10 @@ export default function PrinterPage() {
       if (item.type === 'single' && item.key) {
         if (item.key === 'items') return renderItemsList();
         const el = (kl as any)[item.key];
-        // 방어적 코드: 요소가 없거나 필수 속성이 없으면 기본값 사용
-        const fontSize = el?.fontSize ?? 12;
-        const lineSpacing = el?.lineSpacing ?? 0;
-        const fontWeight = el?.fontWeight ?? 'normal';
-        const inverse = el?.inverse ?? false;
-        const isLeftAligned = ['serverName', 'customerName', 'customerPhone', 'deliveryAddress'].includes(item.key);
-        const textAlign = el?.textAlign || (isLeftAligned ? 'left' : 'center');
+        if (!el) return null;
         
         return (
-          <div className={isLeftAligned ? '' : textAlign ? '' : 'text-center'} 
-               style={{ 
-                 fontSize: `${fontSize}px`, 
-                lineHeight: `${lineSpacing}px`, 
-                 fontWeight: getFontWeight(fontWeight), 
-                 fontStyle: getFontStyle(el),
-                 textAlign: textAlign,
-                 ...getInverseStyle(inverse) 
-               }}>
+          <div style={getKitchenPreviewStyle(el)}>
             {sampleData[item.key] || kitchenElementLabels[item.key] || item.key}
           </div>
         );
@@ -3701,14 +3693,14 @@ export default function PrinterPage() {
     };
 
     return (
-      <div className="bg-white border-2 border-dashed border-gray-300 p-4 font-mono text-sm mx-auto" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: layoutSettings.fontFamily, paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, overflow: 'hidden', boxSizing: 'border-box', wordBreak: 'break-word' }}>
+      <div className="bg-white border-2 border-dashed border-gray-300 p-4 mx-auto overflow-hidden" style={{ width: `${kl.paperWidth * 4.5}px`, fontFamily: 'monospace', paddingTop: `${kl.topMargin + 16}px`, paddingLeft: `${16 + (kl.leftMargin || 0) * 2}px`, paddingRight: `${16 + (kl.leftMargin || 0) * 2}px`, boxSizing: 'border-box', wordBreak: 'break-word' }}>
         {/* Header Section */}
         {headerItems.map((item, index) => (
           <React.Fragment key={`header-${index}`}>{renderItem(item)}</React.Fragment>
         ))}
         
-        {/* Header End Separator */}
-        {headerItems.length > 0 && kl.separator1.visible && <div className={`border-b ${getSeparatorClass(kl.separator1.style)} border-gray-400 my-2`} />}
+        {/* Header End Separator (ESC/POS 문자 기반) */}
+        {headerItems.length > 0 && renderSeparatorLine(kl.separator1)}
         
         {/* Body Section */}
         {bodyItems.map((item, index) => (
@@ -3717,21 +3709,13 @@ export default function PrinterPage() {
         
         {/* Kitchen Memo (Body 하단 고정) */}
         {kl.kitchenNote?.visible && (
-          <div 
-            className="text-center"
-            style={{ 
-              fontSize: `${kl.kitchenNote.fontSize || 14}px`, 
-              marginTop: `${kl.kitchenNote.lineSpacing || 0}px`,
-              fontWeight: kl.kitchenNote.fontWeight === 'bold' || kl.kitchenNote.fontWeight === 'extrabold' ? 'bold' : 'normal',
-              ...(kl.kitchenNote.inverse ? { backgroundColor: '#000', color: '#fff', padding: '4px 16px', marginLeft: '-16px', marginRight: '-16px' } : {})
-            }}
-          >
+          <div className="text-center" style={getKitchenPreviewStyle(kl.kitchenNote)}>
             *** Kitchen Memo ***
           </div>
         )}
         
-        {/* Body End Separator */}
-        {bodyItems.length > 0 && kl.separator2.visible && <div className={`border-b ${getSeparatorClass(kl.separator2.style)} border-gray-400 my-2`} />}
+        {/* Body End Separator (ESC/POS 문자 기반) */}
+        {bodyItems.length > 0 && renderSeparatorLine(kl.separator2)}
         
         {/* Footer Section */}
         {footerItems.map((item, index) => (

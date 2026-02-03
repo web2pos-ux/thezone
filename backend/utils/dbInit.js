@@ -282,6 +282,25 @@ async function initDatabase(db) {
       } catch (e) { console.error(e.message); }
     }
 
+    // 7. TABLE MAP ELEMENTS
+    await dbRun(`CREATE TABLE IF NOT EXISTS table_map_elements (
+      element_id TEXT PRIMARY KEY,
+      floor TEXT DEFAULT '1F',
+      type TEXT NOT NULL,
+      x_pos REAL NOT NULL,
+      y_pos REAL NOT NULL,
+      width REAL NOT NULL,
+      height REAL NOT NULL,
+      rotation REAL DEFAULT 0,
+      name TEXT DEFAULT '',
+      fontSize REAL DEFAULT 20,
+      color TEXT DEFAULT '#3B82F6',
+      status TEXT DEFAULT 'Available',
+      current_order_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    console.log('[dbInit] table_map_elements table ensured');
+
     console.log('[dbInit] Database standardization complete.');
   } catch (err) {
     console.error('[dbInit] Database initialization failed:', err.message);

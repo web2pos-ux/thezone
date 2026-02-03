@@ -1,4 +1,8 @@
 {
-  "isFirstRun": true,
-  "setupCompleted": false
+  "isFirstRun": false,
+  "setupCompleted": true,
+  "storeName": "The Coner Cafe Agassiz",
+  "restaurantId": "WT2UCh2A7VpbFH3VcoDT",
+  "serviceMode": "QSR",
+  "setupDate": "2026-02-03T13:43:55.539Z"
 }

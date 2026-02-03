@@ -3,7 +3,24 @@
  * ESC/POS 영수증 프린터용 시리얼 통신 지원
  */
 
-const { SerialPort } = require('serialport');
+// Lazy loading: serialport는 네이티브 모듈이므로 필요할 때만 로드
+let SerialPort = null;
+let serialportError = null;
+
+function getSerialPort() {
+  if (SerialPort) return SerialPort;
+  if (serialportError) throw serialportError;
+  
+  try {
+    SerialPort = require('serialport').SerialPort;
+    console.log('[Serial] serialport module loaded successfully');
+    return SerialPort;
+  } catch (err) {
+    serialportError = err;
+    console.warn('[Serial] serialport module not available:', err.message);
+    throw err;
+  }
+}
 
 // 기본 시리얼 포트 설정
 const DEFAULT_BAUD_RATE = 9600;
@@ -17,7 +34,8 @@ const DEFAULT_PARITY = 'none';
  */
 async function getSerialPorts() {
   try {
-    const ports = await SerialPort.list();
+    const SP = getSerialPort();
+    const ports = await SP.list();
     
     // 프린터로 사용 가능한 포트만 필터링 (COM 포트)
     return ports.map(port => ({
@@ -43,7 +61,8 @@ async function getSerialPorts() {
  */
 async function isPortAvailable(portPath) {
   try {
-    const ports = await SerialPort.list();
+    const SP = getSerialPort();
+    const ports = await SP.list();
     return ports.some(p => p.path === portPath);
   } catch {
     return false;
@@ -58,6 +77,8 @@ async function isPortAvailable(portPath) {
  * @returns {Promise<boolean>} 전송 성공 여부
  */
 async function sendToSerialPort(portPath, data, options = {}) {
+  const SP = getSerialPort();
+  
   return new Promise((resolve, reject) => {
     const portConfig = {
       path: portPath,
@@ -68,7 +89,7 @@ async function sendToSerialPort(portPath, data, options = {}) {
       autoOpen: false
     };
 
-    const port = new SerialPort(portConfig);
+    const port = new SP(portConfig);
 
     // 에러 핸들링
     port.on('error', (err) => {

@@ -465,19 +465,21 @@ const BackOfficeLayout = () => {
                 {serviceType === 'QSR' ? 'Go to QSR' : 'Go to Sales'}
               </button>
               
-              {/* Go to Windows 버튼 (앱 종료) */}
+              {/* Go to Windows 버튼 (앱 종료 또는 Intro로 이동) */}
               <button
                 onClick={() => {
                   setShowExitModal(false);
                   try {
                     if (window.electron && window.electron.quit) {
+                      // Electron 앱에서는 앱 종료
                       window.electron.quit();
                     } else {
-                      window.close();
+                      // 브라우저에서는 Intro 페이지로 이동
+                      window.location.href = '/';
                     }
                   } catch (e) {
                     console.error('Quit failed:', e);
-                    window.close();
+                    window.location.href = '/';
                   }
                 }}
                 className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"

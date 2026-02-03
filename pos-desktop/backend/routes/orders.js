@@ -274,9 +274,18 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
 			// order_mode 필터 추가 (QSR/FSR 분리)
+			// FSR 모드일 때는 NULL (기존 데이터)도 포함하여 조회
 			if (orderMode) {
-				clauses.push('UPPER(order_mode) = ?');
-				params.push(String(orderMode).toUpperCase());
+				const mode = String(orderMode).toUpperCase();
+				if (mode === 'FSR') {
+					// FSR: order_mode가 FSR이거나 NULL(기존 데이터)인 경우 모두 조회
+					clauses.push('(UPPER(order_mode) = ? OR order_mode IS NULL)');
+					params.push(mode);
+				} else {
+					// QSR: 정확히 QSR만 조회
+					clauses.push('UPPER(order_mode) = ?');
+					params.push(mode);
+				}
 				console.log('[GET /orders] Order mode filter applied:', orderMode);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.map(c => c.replace('order_type = ?', 'UPPER(order_type) = ?')).join(' AND ')) : '';

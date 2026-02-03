@@ -18,6 +18,25 @@ export interface UseLayoutSettingsResult {
   resetLayoutSettings: () => void;
 }
 
+// 화면 크기에 맞는 해상도와 비율 자동 감지
+const detectScreenSettings = (): { screenAspect: '4:3' | '16:9', screenResolution: string } => {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  
+  // 비율 계산
+  const ratio = width / height;
+  
+  // 4:3 비율 (1.33) vs 16:9 비율 (1.78)
+  const screenAspect: '4:3' | '16:9' = ratio < 1.5 ? '4:3' : '16:9';
+  
+  // 실제 화면 크기를 해상도로 사용
+  const screenResolution = `${width}x${height}`;
+  
+  console.log(`🖥️ [Auto-detect] Screen: ${width}x${height}, Ratio: ${ratio.toFixed(2)}, Aspect: ${screenAspect}`);
+  
+  return { screenAspect, screenResolution };
+};
+
 const defaultSettings: LayoutSettings = {
   leftPanelWidth: 30,
   rightPanelWidth: 70,
@@ -105,6 +124,23 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     if (result?.success && result?.data) {
       const { itemColors, modifierColors, modifierLayoutByItem, categoryOrder, menuItemOrderByCategory, ...layoutData } = result.data;
       setLayoutSettings(prev => ({ ...prev, ...layoutData }));
+    } else {
+      // 저장된 설정이 없으면 자동 화면 감지 사용
+      const detected = detectScreenSettings();
+      console.log('🖥️ [Auto-detect] No saved settings, using detected screen size:', detected);
+      setLayoutSettings(prev => ({ ...prev, ...detected }));
+      
+      // 감지된 설정을 자동 저장
+      try {
+        await fetch(`${API_URL}/layout-settings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...defaultSettings, ...detected }),
+        });
+        console.log('✅ [Auto-detect] Screen settings saved to database');
+      } catch (err) {
+        console.warn('⚠️ [Auto-detect] Failed to save screen settings:', err);
+      }
     }
   }, []);
 

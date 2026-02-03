@@ -237,7 +237,33 @@ async function initDatabase(db) {
     await addAmbiguousColumn('menu_tax_links');
     await addAmbiguousColumn('menu_printer_links');
 
-    // 5. MODIFIER LABELS
+    // 5. APP SETTINGS (시스템 설정)
+    await dbRun(`CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      description TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // 초기 설정값 설정 (없을 경우만)
+    const defaultSettings = [
+      { key: 'api_url', value: 'http://localhost:3177/api', desc: 'API 서버 URL' },
+      { key: 'api_base', value: 'http://localhost:3177', desc: 'API Base URL (이미지 등에 사용)' },
+      { key: 'backend_port', value: '3177', desc: '백엔드 서버 포트' }
+    ];
+
+    for (const setting of defaultSettings) {
+      const existing = await dbGet('SELECT setting_key FROM app_settings WHERE setting_key = ?', [setting.key]);
+      if (!existing) {
+        await dbRun(
+          'INSERT INTO app_settings (setting_key, setting_value, description) VALUES (?, ?, ?)',
+          [setting.key, setting.value, setting.desc]
+        );
+        console.log(`[dbInit] Initialized app setting: ${setting.key} = ${setting.value}`);
+      }
+    }
+
+    // 6. MODIFIER LABELS
     await dbRun(`CREATE TABLE IF NOT EXISTS modifier_labels (
       label_id INTEGER PRIMARY KEY,
       modifier_group_id INTEGER NOT NULL,
@@ -255,6 +281,25 @@ async function initDatabase(db) {
         console.log('[dbInit] Migrated modifier_labels: group_id -> modifier_group_id');
       } catch (e) { console.error(e.message); }
     }
+
+    // 7. TABLE MAP ELEMENTS
+    await dbRun(`CREATE TABLE IF NOT EXISTS table_map_elements (
+      element_id TEXT PRIMARY KEY,
+      floor TEXT DEFAULT '1F',
+      type TEXT NOT NULL,
+      x_pos REAL NOT NULL,
+      y_pos REAL NOT NULL,
+      width REAL NOT NULL,
+      height REAL NOT NULL,
+      rotation REAL DEFAULT 0,
+      name TEXT DEFAULT '',
+      fontSize REAL DEFAULT 20,
+      color TEXT DEFAULT '#3B82F6',
+      status TEXT DEFAULT 'Available',
+      current_order_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    console.log('[dbInit] table_map_elements table ensured');
 
     console.log('[dbInit] Database standardization complete.');
   } catch (err) {

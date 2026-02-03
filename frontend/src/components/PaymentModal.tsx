@@ -3,6 +3,14 @@ import { X } from 'lucide-react';
 import { OrderItem } from '../pages/order/orderTypes';
 import { API_URL } from '../config/constants';
 
+interface PaymentCompleteData {
+	change: number;
+	total: number;
+	payments: Array<{ method: string; amount: number }>;
+	hasCashPayment: boolean;
+	isPartialPayment?: boolean;  // 부분 결제 (게스트별 결제 중 일부만 결제)
+}
+
 interface PaymentModalProps {
 	isOpen: boolean;
 	onClose: () => void;
@@ -10,7 +18,8 @@ interface PaymentModalProps {
 	taxLines: Array<{ name: string; amount: number }>; 
 	total: number;
 	onConfirm: (payload: { method: string; amount: number; tip: number }) => void;
-	onComplete?: () => void;
+	onComplete?: (receiptCount: number) => void;
+	onPaymentComplete?: (data: PaymentCompleteData) => void;  // 결제 완료 시 별도 모달 표시용
 	channel?: string;
 	customerName?: string;
 	tableName?: string;
@@ -47,7 +56,7 @@ const methods = [
 	{ key: 'OTHER', label: 'Other', emoji: '✳️' },
 ];
 
-const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, taxLines, total, onConfirm, onComplete, channel, customerName, tableName, onSplitBill, guestCount, guestMode, onSelectGuestMode, forceGuestMode, showAllButton, outstandingDue, paidSoFar, payments, onVoidPayment, onClearAllPayments, prefillDueNonce, prefillUseTotalOnceNonce, offsetTopPx, onCreateAdhocGuests, orderItems = [], onShareSelected }) => {
+const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, taxLines, total, onConfirm, onComplete, onPaymentComplete, channel, customerName, tableName, onSplitBill, guestCount, guestMode, onSelectGuestMode, forceGuestMode, showAllButton, outstandingDue, paidSoFar, payments, onVoidPayment, onClearAllPayments, prefillDueNonce, prefillUseTotalOnceNonce, offsetTopPx, onCreateAdhocGuests, orderItems = [], onShareSelected }) => {
 	const [method, setMethod] = useState<string>('');
 	const skipAmountResetRef = useRef<boolean>(false);
 	const [amount, setAmount] = useState<string>('0.00');
@@ -66,6 +75,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [splitCountInput, setSplitCountInput] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);  // 더블 클릭 방지용
   const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);  // Cancel 확인 팝업
+  const [selectedReceiptCount, setSelectedReceiptCount] = useState<number>(2);  // 영수증 출력 매수 (0: No Receipt, 1: 1 Receipt, 2: 2 Receipts)
   
   // Share Selected states
   const [isShareSelectedMode, setIsShareSelectedMode] = useState<boolean>(false);
@@ -385,9 +395,56 @@ useEffect(() => {
         setTip('0');
         setMethod('');
         setIsProcessing(false);  // 결제 처리 완료
+        
+        // 결제 처리 후 잔액이 0이면 바로 Payment Complete 모달 표시
+        // scopeDueNow - finalAmount로 남은 잔액 계산 (Cash는 더 많이 받을 수 있음)
+        const remainingAfterPayment = effectiveMethod === 'CASH' 
+          ? 0  // Cash는 항상 결제 완료로 처리 (거스름돈 발생)
+          : scopeDueNow - finalAmount;
+        
+        if (Math.abs(remainingAfterPayment) < 0.005 && onPaymentComplete) {
+          // 결제 완료됨 - 바로 Payment Complete 모달 표시
+          const updatedPayments = [...(payments || []), { method: effectiveMethod, amount: finalAmount, paymentId: 0, tip: 0 }];
+          const paymentsData = updatedPayments.map(p => ({ method: p.method, amount: p.amount }));
+          const hasCash = paymentsData.some(p => (p.method || '').toUpperCase() === 'CASH');
+          const currentChange = effectiveMethod === 'CASH' ? Math.max(0, rawAmt - scopeDueNow) : 0;
+          
+          // 부분 결제 여부 판단: 게스트별 결제 중 전체 금액이 아직 결제되지 않은 경우
+          const totalPaidAfter = (paidSoFar || 0) + finalAmount;
+          const isPartial = Math.abs(totalPaidAfter - fixedGrand) > 0.01;  // 전체 금액과 비교
+          
+          onPaymentComplete({
+            change: currentChange,
+            total: fixedGrand,
+            payments: paymentsData,
+            hasCashPayment: hasCash,
+            isPartialPayment: isPartial
+          });
+          return;  // 여기서 바로 리턴
+        }
       } else if (canComplete) {
         // 금액이 0이지만 잔액이 0에 근접한 경우 (이미 모든 결제가 완료된 경우)
-        setProceedArmed(true);
+        // 별도 Payment Complete 모달 표시
+        if (onPaymentComplete) {
+          const paymentsData = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
+          const hasCash = paymentsData.some(p => (p.method || '').toUpperCase() === 'CASH');
+          const currentChange = lastChange != null ? lastChange : change;
+          
+          // 부분 결제 여부 판단: 전체 금액이 아직 결제되지 않은 경우
+          const totalPaid = paymentsData.reduce((sum, p) => sum + (p.amount || 0), 0);
+          const isPartial = Math.abs(totalPaid - fixedGrand) > 0.01;
+          
+          onPaymentComplete({
+            change: currentChange > 0 ? currentChange : 0,
+            total: fixedGrand,
+            payments: paymentsData,
+            hasCashPayment: hasCash,
+            isPartialPayment: isPartial
+          });
+        } else {
+          // fallback to old behavior
+          setProceedArmed(true);
+        }
       }
     } catch (e) {
       // 에러 시 optimisticPayments 정리 및 상태 초기화
@@ -402,7 +459,7 @@ useEffect(() => {
   };
 
 	const proceedNext = () => {
-		if (onComplete) onComplete();
+		if (onComplete) onComplete(selectedReceiptCount);
 	};
 
 
@@ -851,8 +908,76 @@ const addQuick = async (q: number) => {
 					</div>
 				</div>
 				<div className="grid grid-cols-1 md:[grid-template-columns:30%_40%_30%]">
-					{/* Middle (first column): Totals / Inputs */}
-											<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+					{/* Middle (first column): Totals / Inputs OR Payment Complete Screen */}
+					{proceedArmed ? (
+						/* ===== Payment Complete Screen ===== */
+						<div className="p-3 md:order-1 bg-gradient-to-b from-green-50 to-green-100 h-full flex flex-col">
+							{/* Payment Complete Header */}
+							<div className="flex flex-col items-center justify-center py-4">
+								<div className="text-4xl mb-2">✓</div>
+								<span className="text-2xl font-bold text-green-700">Payment Complete</span>
+							</div>
+							
+							{/* Change Display (현금 결제시 거스름돈 표시) */}
+							{(lastChange != null && lastChange > 0) && (
+								<div className="w-full rounded-lg bg-red-50 border-2 border-red-300 px-4 py-4 mb-4 flex flex-col items-center">
+									<span className="text-lg font-bold text-red-700">Change</span>
+									<span className="text-5xl font-extrabold text-red-600">${formatMoney(lastChange)}</span>
+								</div>
+							)}
+							
+							{/* Payment Summary */}
+							<div className="w-full rounded-lg bg-white border border-gray-300 px-4 py-3 mb-4">
+								<div className="flex justify-between items-center mb-2 pb-2 border-b">
+									<span className="text-lg font-semibold text-gray-700">Total</span>
+									<span className="text-xl font-bold text-gray-900">${formatMoney(fixedGrand)}</span>
+								</div>
+								<div className="space-y-1.5 max-h-24 overflow-y-auto">
+									{paymentsInScope.map((p, i) => (
+										<div key={`payment-complete-${i}`} className="flex justify-between items-center">
+											<span className="text-sm text-gray-600">{p.method}</span>
+											<span className="text-sm font-semibold text-gray-800">${formatMoney(p.amount || 0)}</span>
+										</div>
+									))}
+								</div>
+							</div>
+							
+							{/* Receipt Options */}
+							<div className="mt-auto">
+								<div className="text-center mb-3">
+									<span className="text-sm font-semibold text-gray-600">Receipt Printing</span>
+								</div>
+								<div className="grid grid-cols-3 gap-2">
+									<button
+										onClick={() => setSelectedReceiptCount(0)}
+										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 0 
+											? 'bg-gray-700 text-white border-2 border-gray-900' 
+											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
+									>
+										No Receipt
+									</button>
+									<button
+										onClick={() => setSelectedReceiptCount(1)}
+										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 1 
+											? 'bg-blue-600 text-white border-2 border-blue-700' 
+											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
+									>
+										1 Receipt
+									</button>
+									<button
+										onClick={() => setSelectedReceiptCount(2)}
+										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 2 
+											? 'bg-green-600 text-white border-2 border-green-700' 
+											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
+									>
+										2 Receipts
+									</button>
+								</div>
+							</div>
+						</div>
+					) : (
+						/* ===== Normal Payment Input Screen ===== */
+						<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
 							<div className="space-y-1.5 text-sm">
 								<div className="flex justify-between"><span>Items</span><span>${formatMoney(fixedSubtotal)}</span></div>
 								{/* 개별 세금 라인 표시 (GST, PST 등) */}
@@ -877,7 +1002,7 @@ const addQuick = async (q: number) => {
                                 >
                                     <div className="flex flex-col items-center -translate-y-[10px] translate-x-[20px]">
                                         <span className={`text-xl font-bold text-red-700`}>Change $</span>
-                                        <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney((proceedArmed && lastChange != null) ? lastChange : change)}</span>
+                                        <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney(change)}</span>
                                     </div>
                                 </div>
 								<div className="h-2" />
@@ -925,6 +1050,7 @@ const addQuick = async (q: number) => {
 						</div>
 
 								</div>
+					)}
 						{/* Right: Keypad & Quick */}
 						<div className="p-3 md:order-2 bg-gray-300 h-full flex flex-col">
 							{/* Customer info moved here */}

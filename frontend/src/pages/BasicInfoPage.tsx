@@ -997,6 +997,34 @@ const BasicInfoPage: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* Reset Setup Section */}
+            <div className="bg-gradient-to-r from-red-800 to-red-900 rounded-lg shadow p-6 text-white mt-6">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">🔄 Reset Setup (새 매장 설정)</h3>
+              <p className="text-sm text-red-200 mb-4">
+                새로운 매장으로 POS를 설정하려면 Reset 버튼을 눌러주세요. 
+                앱을 재시작하면 Setup 화면이 나타납니다.
+              </p>
+              <button 
+                onClick={async () => {
+                  if (!window.confirm('정말로 Setup을 초기화하시겠습니까?\n\n앱을 재시작하면 새로운 매장 설정 화면이 나타납니다.')) return;
+                  try {
+                    const res = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/firebase-setup/reset`, { method: 'DELETE' });
+                    const data = await res.json();
+                    if (data.success) {
+                      alert('✅ Setup 초기화 완료!\n\n앱을 재시작해주세요.');
+                    } else {
+                      alert('❌ 오류: ' + (data.error || 'Unknown error'));
+                    }
+                  } catch (err: any) {
+                    alert('❌ 오류: ' + err.message);
+                  }
+                }}
+                className="px-6 py-3 bg-red-600 hover:bg-red-500 rounded-lg font-semibold transition border-2 border-red-400"
+              >
+                🔄 Reset Setup (새 매장 연결)
+              </button>
+            </div>
           </div>
         )}
       </div>

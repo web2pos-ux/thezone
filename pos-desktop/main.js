@@ -114,9 +114,13 @@ function startBackend() {
     const originalCwd = process.cwd();
     process.chdir(backendPath);
     
-    // 패키징된 앱에서 모듈 경로 설정 (app.asar 내부의 node_modules 사용)
+    // 패키징된 앱에서 모듈 경로 설정 (app 내부의 node_modules 사용)
     if (!isDev) {
       const appNodeModules = path.join(app.getAppPath(), 'node_modules');
+      // NODE_PATH 환경 변수 설정 (가장 확실한 방법)
+      process.env.NODE_PATH = appNodeModules;
+      require('module')._initPaths(); // NODE_PATH 변경 적용
+      // globalPaths에도 추가 (fallback)
       require('module').globalPaths.push(appNodeModules);
       console.log('[Backend] Added module path:', appNodeModules);
     }

@@ -121,6 +121,15 @@ const OrderPage = () => {
 
   const isSalesOrder = (location.pathname || '').startsWith('/sales/order');
   const shouldShowButtonPlaceholders = !isSalesOrder;
+  
+  // 반응형: 화면 너비 감지 (Back Office에서 작은 화면일 때 주문목록 숨김)
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1920);
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  const hideOrderListPanel = !isSalesOrder && windowWidth <= 1280;
   const { orderType, menuId, menuName, priceType: locationPriceType } = locationState;
   const menuIdNumber = typeof menuId === 'number' ? menuId : Number(menuId) || undefined;
   const normalizedOrderType = typeof orderType === 'string' ? orderType : 'pos';
@@ -6641,8 +6650,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         />
       )}
 
-      {/* Left Panel - Layout Management */}
-      <div className="w-80 bg-gray-800 text-white p-2 overflow-y-auto" style={{ display: isSalesOrder ? 'none' : undefined }}>
+      {/* Left Panel - Layout Management (Back Office: 30% 고정) */}
+      <div className="bg-gray-800 text-white p-2 overflow-y-auto" style={{ display: isSalesOrder ? 'none' : undefined, width: '30%' }}>
         { !isTogo && (
           <>
             <div className="bg-gray-800 rounded-lg p-3 mb-3">
@@ -7746,9 +7755,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           </div>
         </div>
       </div>
-      {/* Right Area - Canvas with Order Interface */}
+      {/* Right Area - Canvas with Order Interface (Back Office: 70% 고정) */}
       <div 
-        className="flex-1 flex flex-col items-center justify-start relative z-50"
+        className="flex flex-col items-center justify-start relative z-50"
+        style={{ width: !isSalesOrder ? '70%' : undefined, flex: !isSalesOrder ? undefined : 1 }}
         onClick={(e) => {
           // FloatingActionBar 또는 order-item 외부 클릭 시 선택 해제
           const target = e.target as HTMLElement;
@@ -7790,10 +7800,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             >
                         {/* Top Section - Left Panel + Right Panel */}
             <div className="flex flex-1 min-h-0">
-            {/* Left Panel - Order List and Summary */}
+            {/* Left Panel - Order List (숨김: Back Office + 화면 ≤ 1280px) */}
+            {!hideOrderListPanel && (
             <div className="bg-white flex flex-col h-full" style={{ width: `${layoutSettings.leftPanelWidth}%` }}>
               {/* Order Management Section */}
-                              <div className="bg-gray-100 flex-shrink-0">
+              <div className="bg-gray-100 flex-shrink-0">
                 {/* Header */}
                 <div className="p-2">
                   <div className="flex justify-between items-center">
@@ -8715,8 +8726,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   }}
                 />
               </div>
-              {/* Right Panel - Menu Categories and Items */}
-              <div className="bg-white flex flex-col overflow-hidden" style={{ width: `${layoutSettings.rightPanelWidth}%` }}>
+            )}
+              {/* Right Panel - Menu Categories and Items (Back Office: 주문목록 숨김시 100%) */}
+              <div className="bg-white flex flex-col overflow-hidden" style={{ width: hideOrderListPanel ? '100%' : `${layoutSettings.rightPanelWidth}%` }}>
                 <OrderCatalogPanel
                   layoutSettings={layoutSettings}
                   showInitialMenuLoading={showInitialMenuLoading}

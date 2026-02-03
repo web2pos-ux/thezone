@@ -235,8 +235,8 @@ router.patch('/elements/:id/current-order', (req, res) => {
   });
 });
 
-// 2. 요소 저장 (여러 개)
-router.post('/elements', (req, res) => {
+// 2. 요소 저장 (여러 개) - Promise 기반 간단한 로직
+router.post('/elements', async (req, res) => {
   const { elements } = req.body;
   
   console.log('📥 받은 요청 데이터:', JSON.stringify(req.body, null, 2));
@@ -246,34 +246,20 @@ router.post('/elements', (req, res) => {
     return res.status(400).json({ error: 'elements 배열이 필요합니다' });
   }
 
+  const floor = req.body.floor || (elements[0] && elements[0].floor) || '1F';
+
+  // 빈 배열: 해당 Floor의 모든 요소 삭제
   if (elements.length === 0) {
     console.log('❌ elements 배열이 비어있음 - 해당 Floor의 모든 요소 삭제');
-    
-    // 빈 배열을 받았을 때는 해당 Floor의 모든 요소를 삭제
-    const db = getDatabase();
-    
-    // Floor 정보 추출 (첫 번째 요소에서 가져오거나 요청 헤더에서)
-    const floor = req.body.floor || '1F'; // 기본값
-    
-    const deleteQuery = 'DELETE FROM table_map_elements WHERE floor = ?';
-    
-    db.run(deleteQuery, [floor], function(err) {
-      // db.close(); // Shared DB 연결은 닫으면 안 됨
-      
-      if (err) {
-        console.error('Floor 요소 삭제 오류:', err);
-        return res.status(500).json({ error: 'Floor 요소 삭제 실패' });
-      }
-      
-      console.log(`✅ ${floor} Floor의 모든 요소 삭제 완료 (${this.changes}개)`);
-      return res.status(200).json({ 
-        message: `${floor} Floor의 모든 요소 삭제 완료`, 
-        deletedCount: this.changes,
-        floor 
-      });
-    });
-    
-    return; // 함수 종료
+    try {
+      const { dbRun } = require('../db');
+      await dbRun('DELETE FROM table_map_elements WHERE floor = ?', [floor]);
+      console.log(`✅ ${floor} Floor의 모든 요소 삭제 완료`);
+      return res.json({ message: `${floor} Floor의 모든 요소 삭제 완료`, floor });
+    } catch (err) {
+      console.error('Floor 요소 삭제 오류:', err);
+      return res.status(500).json({ error: 'Floor 요소 삭제 실패' });
+    }
   }
 
   // 각 요소의 필수 필드 검증
@@ -299,80 +285,43 @@ router.post('/elements', (req, res) => {
 
   console.log(`✅ ${elements.length}개 요소 검증 완료, 저장 시작`);
 
-  const db = getDatabase();
-  
-  // 트랜잭션 시작
-  db.serialize(() => {
-    db.run('BEGIN TRANSACTION');
+  try {
+    const { dbRun } = require('../db');
     
-    // 1. 먼저 해당 floor의 모든 요소 삭제
-    const deleteQuery = 'DELETE FROM table_map_elements WHERE floor = ?';
-    const floor = elements[0].floor;
+    // 1. 해당 floor의 모든 요소 삭제
+    await dbRun('DELETE FROM table_map_elements WHERE floor = ?', [floor]);
+    console.log(`✅ ${floor} Floor 기존 요소 삭제 완료`);
     
-    db.run(deleteQuery, [floor], (err) => {
-      if (err) {
-        console.error('기존 요소 삭제 오류:', err);
-        db.run('ROLLBACK');
-        // db.close(); // Shared DB 연결은 닫으면 안 됨
-        return res.status(500).json({ error: '데이터 저장 실패' });
-      }
-      
-      // 2. 새 요소 삽입
-      const insertQuery = `
+    // 2. 새 요소 삽입 (하나씩)
+    for (const element of elements) {
+      await dbRun(`
         INSERT INTO table_map_elements (
           element_id, floor, type, x_pos, y_pos, width, height, rotation, 
           name, fontSize, color, status, current_order_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-      
-      const stmt = db.prepare(insertQuery);
-      
-      let errorOccurred = false;
-      
-      elements.forEach(element => {
-        if (errorOccurred) return;
-        
-        stmt.run([
-          element.id,
-          element.floor,
-          element.type,
-          element.position.x,
-          element.position.y,
-          element.size.width,
-          element.size.height,
-          element.rotation || 0,
-          element.text || '',
-          element.fontSize || 20,
-          element.color || '#3B82F6',
-          element.status || 'Available',
-          element.current_order_id || null
-        ], (err) => {
-          if (err) {
-            console.error('요소 삽입 오류:', err);
-            errorOccurred = true;
-          }
-        });
-      });
-      
-      stmt.finalize(() => {
-        if (errorOccurred) {
-          db.run('ROLLBACK');
-          // db.close(); // Shared DB 연결은 닫으면 안 됨
-          return res.status(500).json({ error: '데이터 저장 실패' });
-        }
-        
-        db.run('COMMIT', (err) => {
-          // db.close(); // Shared DB 연결은 닫으면 안 됨
-          if (err) {
-            console.error('트랜잭션 커밋 오류:', err);
-            return res.status(500).json({ error: '데이터 저장 실패' });
-          }
-          
-          res.json({ message: '저장 성공', count: elements.length });
-        });
-      });
-    });
-  });
+      `, [
+        String(element.id),
+        element.floor,
+        element.type,
+        element.position.x,
+        element.position.y,
+        element.size.width,
+        element.size.height,
+        element.rotation || 0,
+        element.text || '',
+        element.fontSize || 20,
+        element.color || '#3B82F6',
+        element.status || 'Available',
+        element.current_order_id || null
+      ]);
+    }
+    
+    console.log(`✅ ${elements.length}개 요소 저장 완료`);
+    res.json({ message: '저장 성공', count: elements.length });
+  } catch (err) {
+    console.error('요소 저장 오류:', err);
+    return res.status(500).json({ error: '데이터 저장 실패: ' + err.message });
+  }
 });
 
 // ===== Screen Size 설정 API =====

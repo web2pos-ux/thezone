@@ -377,25 +377,41 @@ router.post('/clear-data', async (req, res) => {
 
 /**
  * DELETE /api/firebase-setup/reset
- * 설정 초기화 (재설정용)
+ * 설정 완전 초기화 (setup-status.json + database 모두 초기화)
  */
-router.delete('/reset', (req, res) => {
+router.delete('/reset', async (req, res) => {
   try {
-    // 설정 상태 초기화
+    // 1. setup-status.json 초기화
     const setupStatus = {
       isFirstRun: true,
       setupCompleted: false,
       storeName: '',
       restaurantId: null,
+      serviceMode: '',
       setupDate: null
     };
     fs.writeFileSync(SETUP_STATUS_PATH, JSON.stringify(setupStatus, null, 2));
+    console.log('[Setup Reset] setup-status.json cleared');
+    
+    // 2. Database business_profile 초기화
+    const { dbRun } = require('../db');
+    try {
+      await dbRun(`UPDATE business_profile SET 
+        service_type = NULL, 
+        firebase_restaurant_id = NULL,
+        business_name = NULL
+        WHERE id = 1`);
+      console.log('[Setup Reset] Database business_profile cleared');
+    } catch (dbErr) {
+      console.log('[Setup Reset] Database clear skipped:', dbErr.message);
+    }
     
     res.json({ 
       success: true, 
-      message: 'Setup reset successfully' 
+      message: 'Setup completely reset. Please restart the app.' 
     });
   } catch (error) {
+    console.error('[Setup Reset] Error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

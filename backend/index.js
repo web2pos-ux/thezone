@@ -96,17 +96,10 @@ const startServer = async () => {
             
             db.get('SELECT id FROM printer_layout_settings WHERE id = 1', (err, row) => {
                 if (!row) {
-                    const defaultSettings = {
-                        dineInKitchen: {
-                            kitchenPrinter: { title: "KITCHEN", showOrderType: true, showTableNumber: true, showOrderNumber: true, showTime: true, showItems: true },
-                            waitressPrinter: { title: "SERVER", showOrderType: true, showTableNumber: true, showOrderNumber: true, showTime: true, showItems: true }
-                        },
-                        externalKitchen: {
-                            kitchenPrinter: { title: "TAKEOUT", showOrderType: true, showOrderNumber: true, showCustomerInfo: true, showTime: true, showItems: true }
-                        }
-                    };
-                    db.run('INSERT INTO printer_layout_settings (id, settings) VALUES (1, ?)', [JSON.stringify(defaultSettings)]);
-                    console.log('[Backend] Initialized default printer layout settings');
+                    // 기본 프린터 레이아웃 설정 (백오피스에서 설정한 레이아웃)
+                    const { defaultPrinterLayoutSettings } = require('./config/defaultPrinterLayouts');
+                    db.run('INSERT INTO printer_layout_settings (id, settings) VALUES (1, ?)', [JSON.stringify(defaultPrinterLayoutSettings)]);
+                    console.log('[Backend] Initialized default printer layout settings (full layout)');
                 }
             });
 

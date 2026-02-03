@@ -158,8 +158,8 @@ const IntroPage: React.FC = () => {
 
       {/* 메인 콘텐츠 */}
       <div className="relative z-10 text-center">
-        {/* 로고 */}
-        <div className="mb-8">
+        {/* 로고 - 5% 위로 이동 */}
+        <div className="mb-8" style={{ transform: 'translateY(-5vh)' }}>
           <h1 className="text-5xl font-bold text-white mb-2 drop-shadow-2xl">
             The Zone POS
           </h1>
@@ -168,8 +168,8 @@ const IntroPage: React.FC = () => {
           </p>
         </div>
 
-        {/* PIN 입력 표시 */}
-        <div className="mb-8">
+        {/* PIN 입력 표시 - 10% 위로 이동 + 15px */}
+        <div className="mb-8" style={{ transform: 'translateY(-10vh)', marginTop: '-15px' }}>
           <div className="flex justify-center space-x-4 mb-4">
             {[...Array(4)].map((_, index) => (
               <div
@@ -191,16 +191,16 @@ const IntroPage: React.FC = () => {
           )}
         </div>
 
-        {/* PIN 패드 */}
-        <div className="bg-white/10 backdrop-blur-md rounded-3xl p-8 border border-white/20 shadow-2xl">
+        {/* PIN 패드 - 10% 위로 이동 + 35px */}
+        <div className="bg-white/10 backdrop-blur-md rounded-3xl p-8 border border-white/20 shadow-2xl" style={{ transform: 'translateY(-10vh)', marginTop: '-35px' }}>
           <div className="grid grid-cols-3 gap-4 max-w-xs mx-auto">
-            {/* 숫자 버튼들 */}
+            {/* 숫자 버튼들 - 5% 축소 */}
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
               <button
                 key={num}
                 onClick={() => handlePinInput(num.toString())}
                 disabled={pinVerified}
-                className={`w-16 h-16 text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
+                className={`w-[60px] h-[60px] text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
                   pinVerified 
                     ? 'bg-white/10 border-white/20 opacity-50 cursor-not-allowed' 
                     : 'bg-white/20 hover:bg-white/30 border-white/30 hover:scale-105 active:scale-95'
@@ -210,19 +210,19 @@ const IntroPage: React.FC = () => {
               </button>
             ))}
             
-            {/* Clear 버튼 */}
+            {/* Clear 버튼 - 5% 축소 */}
             <button
               onClick={handleClear}
-              className="w-16 h-16 bg-red-500/80 hover:bg-red-500 text-white text-sm font-bold rounded-full border border-red-400/50 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
+              className="w-[60px] h-[60px] bg-red-500/80 hover:bg-red-500 text-white text-sm font-bold rounded-full border border-red-400/50 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
             >
               Clear
             </button>
             
-            {/* 0 버튼 */}
+            {/* 0 버튼 - 5% 축소 */}
             <button
               onClick={() => handlePinInput('0')}
               disabled={pinVerified}
-              className={`w-16 h-16 text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
+              className={`w-[60px] h-[60px] text-white text-2xl font-bold rounded-full border transition-all duration-200 backdrop-blur-sm ${
                 pinVerified 
                   ? 'bg-white/10 border-white/20 opacity-50 cursor-not-allowed' 
                   : 'bg-white/20 hover:bg-white/30 border-white/30 hover:scale-105 active:scale-95'
@@ -231,10 +231,10 @@ const IntroPage: React.FC = () => {
               0
             </button>
             
-            {/* Backspace 버튼 */}
+            {/* Backspace 버튼 - 5% 축소 */}
             <button
               onClick={handleBackspace}
-              className="w-16 h-16 bg-yellow-500/80 hover:bg-yellow-500 text-white text-xl font-bold rounded-full border border-yellow-400/50 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
+              className="w-[60px] h-[60px] bg-yellow-500/80 hover:bg-yellow-500 text-white text-xl font-bold rounded-full border border-yellow-400/50 transition-all duration-200 hover:scale-105 active:scale-95 backdrop-blur-sm"
             >
               ←
             </button>
@@ -243,12 +243,12 @@ const IntroPage: React.FC = () => {
           {/* 구분선 */}
           <div className="my-5 border-t border-white/20"></div>
 
-          {/* BackOffice / Sales 버튼 (4:6 비율) */}
+          {/* BackOffice / Sales 버튼 (4:6 비율) - 높이 추가 증가 */}
           <div className="flex gap-3 justify-center w-full">
             <button
               onClick={() => handleNavigate('backoffice')}
               disabled={!pinVerified}
-              className={`w-2/5 py-3 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
+              className={`w-2/5 py-6 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
                 pinVerified
                   ? 'bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white border border-purple-400/50 hover:scale-[1.02] active:scale-95 animate-pulse'
                   : 'bg-white/10 text-white/40 border border-white/10 cursor-not-allowed'
@@ -264,7 +264,7 @@ const IntroPage: React.FC = () => {
             <button
               onClick={() => handleNavigate('sales')}
               disabled={!pinVerified}
-              className={`w-3/5 py-3 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
+              className={`w-3/5 py-6 rounded-xl font-semibold text-sm transition-all transform shadow-lg backdrop-blur-sm flex items-center justify-center gap-2 ${
                 pinVerified
                   ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white border border-cyan-400/50 hover:scale-[1.02] active:scale-95 animate-pulse'
                   : 'bg-white/10 text-white/40 border border-white/10 cursor-not-allowed'

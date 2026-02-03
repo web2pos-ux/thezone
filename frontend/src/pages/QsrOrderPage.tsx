@@ -33,6 +33,7 @@ import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
+import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
@@ -786,6 +787,7 @@ const QsrOrderPage = () => {
         pickupMinutes: qsrPickupTime,
         serverId: selectedServer?.id || null,
         serverName: selectedServer?.name || null,
+        orderMode: isQsrMode ? 'QSR' : 'FSR',
       };
       const response = await fetch(`${API_URL}/orders`, {
         method: 'POST',
@@ -1208,6 +1210,15 @@ const QsrOrderPage = () => {
 
   // Payment modal state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  // Payment Complete modal state (별도 모달)
+  const [showPaymentCompleteModal, setShowPaymentCompleteModal] = useState(false);
+  const [paymentCompleteData, setPaymentCompleteData] = useState<{
+    change: number;
+    total: number;
+    payments: Array<{ method: string; amount: number }>;
+    hasCashPayment: boolean;
+    isPartialPayment?: boolean;  // 부분 결제 (게스트별 결제 중 일부만 결제)
+  } | null>(null);
   const [adhocSplitCount, setAdhocSplitCount] = useState<number>(0); // Even Split count
   const [showKitchenMemoModal, setShowKitchenMemoModal] = useState(false);
   const [kitchenMemo, setKitchenMemo] = useState<string>('');
@@ -2183,7 +2194,9 @@ const handleVoidPinClear = useCallback(() => {
     const items = (orderItems || []).filter((it:any) => it.type === 'item');
     const now = new Date();
     const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'QSR' }) });
+    // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
+    const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
@@ -2201,8 +2214,9 @@ const handleVoidPinClear = useCallback(() => {
   const fetchOrderList = async (date: string) => {
     setOrderListLoading(true);
     try {
-      // QSR 모드에서는 QSR 주문만 조회
-      const response = await fetch(`${API_URL}/orders?date=${date}&order_mode=QSR`);
+      // QSR 모드에서는 QSR 주문만, FSR 모드에서는 FSR 주문만 조회
+      const orderModeFilter = isQsrMode ? 'QSR' : 'FSR';
+      const response = await fetch(`${API_URL}/orders?date=${date}&order_mode=${orderModeFilter}`);
       const data = await response.json();
       if (data.success && Array.isArray(data.orders)) {
         setOrderListOrders(data.orders);
@@ -2255,16 +2269,30 @@ const handleVoidPinClear = useCallback(() => {
 
   const orderListGetChannelBadge = (order: any): { label: string; bgColor: string; textColor: string } => {
     const type = (order.order_type || '').toUpperCase();
-    if (type === 'UBEREATS' || type === 'UBER' || type === 'DOORDASH' || type === 'SKIP' || type === 'SKIPTHEDISHES' || type === 'ONLINE' || type === 'WEB' || type === 'QR') {
+    const tableId = (order.table_id || '').toString().toUpperCase();
+    
+    // Online channel (UberEats, DoorDash, Skip, Online, Web, QR) - or table_id starts with 'OL'
+    if (type === 'UBEREATS' || type === 'UBER' || type === 'DOORDASH' || type === 'SKIP' || type === 'SKIPTHEDISHES' || type === 'ONLINE' || type === 'WEB' || type === 'QR' || tableId.startsWith('OL')) {
       return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
     }
+    
+    // Delivery channel
     if (type === 'DELIVERY') {
-      return { label: 'Delivery', bgColor: 'bg-orange-500', textColor: 'text-white' };
+      return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
     }
-    if (type === 'TOGO' || type === 'PICKUP' || type === 'TAKEOUT' || type === 'FOR HERE' || type === 'FORHERE') {
-      return { label: 'Togo', bgColor: 'bg-teal-500', textColor: 'text-white' };
+    
+    // Togo channel - order_type or table_id starts with 'TG'
+    if (type === 'TOGO' || type === 'TAKEOUT' || type === 'TO GO' || type === 'TO-GO' || tableId.startsWith('TG')) {
+      return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
-    return { label: 'Dine-in', bgColor: 'bg-blue-600', textColor: 'text-white' };
+    
+    // Pickup channel
+    if (type === 'PICKUP') {
+      return { label: 'Pickup', bgColor: 'bg-blue-500', textColor: 'text-white' };
+    }
+    
+    // For Here (default - POS, Table Order, Dine-in, Forhere)
+    return { label: 'For Here', bgColor: 'bg-amber-500', textColor: 'text-white' };
   };
 
   const orderListGetTableOrCustomer = (order: any) => {
@@ -2827,8 +2855,10 @@ const handleVoidPinClear = useCallback(() => {
       const items = (orderItems || []).filter(it => it.type === 'item');
       const now = new Date();
       const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
+      // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
+      const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
       if (!savedOrderIdRef.current) {
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: 'QSR' }) });
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
@@ -3014,7 +3044,7 @@ const handleVoidPinClear = useCallback(() => {
       alert('An error occurred during payment processing.');
     }
   };
-  const handleCompletePayment = async () => {
+  const handleCompletePayment = async (receiptCount: number = 2) => {
     try {
       // Guard: only close order when ALL guests are fully paid
       const totals = computeGuestTotals('ALL');
@@ -3217,13 +3247,15 @@ const handleVoidPinClear = useCallback(() => {
 
         // 스플릿빌(guestCount > 1)에서는 개별 게스트 결제 완료 시 이미 Receipt가 출력되었으므로 스킵
         const isSplitBill = guestCount > 1;
-        if (!isSplitBill) {
+        if (!isSplitBill && receiptCount > 0) {
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ receiptData, copies: 2 })  // 전체 결제 완료 시 2장 출력
+            body: JSON.stringify({ receiptData, copies: receiptCount })  // 사용자 선택에 따라 출력
           });
-          console.log('Receipt printed successfully');
+          console.log(`Receipt printed successfully (${receiptCount} copies)`);
+        } else if (receiptCount === 0) {
+          console.log('No receipt requested by user');
         } else {
           console.log('Split bill - skipping final receipt (individual guest receipts already printed)');
         }
@@ -3285,35 +3317,26 @@ const handleVoidPinClear = useCallback(() => {
           console.error('Kitchen ticket print failed:', err);
         }
         
-        // 2. Receipt 2장 출력
-        try {
-          console.log('🧾 QSR: Printing Receipt (2 copies)...');
-          const qsrItems = (orderItems || []).filter(it => it.type === 'item');
-          const qsrSubtotal = qsrItems.reduce((sum, it) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
-          const qsrTaxLines = computeGuestTotals('ALL').taxLines || [];
-          const qsrTaxTotal = qsrTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-          const qsrTotal = qsrSubtotal + qsrTaxTotal;
-          
-          const qsrReceiptData = {
-            storeName: '',
-            orderNumber: savedOrderIdRef.current || '',
-            orderType: qsrOrderType?.toUpperCase() || 'FOR HERE',
-            channel: qsrOrderType?.toUpperCase() || 'FOR HERE',
-            tableName: qsrCustomerName || '',
-            customerName: orderCustomerInfo?.name || qsrCustomerName || '',
-            customerPhone: orderCustomerInfo?.phone || '',
-            pickupTime: orderPickupInfo?.readyTimeLabel || '',
-            serverName: selectedServer?.name || '',
-            items: qsrItems.map(item => ({
-              name: item.name,
-              quantity: item.quantity || 1,
-              price: item.price || 0,
-              totalPrice: (item.price || 0) * (item.quantity || 1),
-              modifiers: item.modifiers || [],
-              memo: item.memo
-            })),
-            guestSections: [{
-              guestNumber: 1,
+        // 2. Receipt 출력 (사용자 선택에 따라)
+        if (receiptCount > 0) {
+          try {
+            console.log(`🧾 QSR: Printing Receipt (${receiptCount} copies)...`);
+            const qsrItems = (orderItems || []).filter(it => it.type === 'item');
+            const qsrSubtotal = qsrItems.reduce((sum, it) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
+            const qsrTaxLines = computeGuestTotals('ALL').taxLines || [];
+            const qsrTaxTotal = qsrTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+            const qsrTotal = qsrSubtotal + qsrTaxTotal;
+            
+            const qsrReceiptData = {
+              storeName: '',
+              orderNumber: savedOrderIdRef.current || '',
+              orderType: qsrOrderType?.toUpperCase() || 'FOR HERE',
+              channel: qsrOrderType?.toUpperCase() || 'FOR HERE',
+              tableName: qsrCustomerName || '',
+              customerName: orderCustomerInfo?.name || qsrCustomerName || '',
+              customerPhone: orderCustomerInfo?.phone || '',
+              pickupTime: orderPickupInfo?.readyTimeLabel || '',
+              serverName: selectedServer?.name || '',
               items: qsrItems.map(item => ({
                 name: item.name,
                 quantity: item.quantity || 1,
@@ -3321,25 +3344,38 @@ const handleVoidPinClear = useCallback(() => {
                 totalPrice: (item.price || 0) * (item.quantity || 1),
                 modifiers: item.modifiers || [],
                 memo: item.memo
-              }))
-            }],
-            subtotal: qsrSubtotal,
-            taxLines: qsrTaxLines,
-            total: qsrTotal,
-            adjustments: [],
-            payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount })),
-            change: 0,
-            footer: { message: 'Thank you!' }
-          };
-          
-          await fetch(`${API_URL}/printers/print-receipt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ receiptData: qsrReceiptData, copies: 2 })
-          });
-          console.log('✅ QSR: Receipt printed (2 copies)');
-        } catch (receiptErr) {
-          console.error('QSR Receipt print failed:', receiptErr);
+              })),
+              guestSections: [{
+                guestNumber: 1,
+                items: qsrItems.map(item => ({
+                  name: item.name,
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  totalPrice: (item.price || 0) * (item.quantity || 1),
+                  modifiers: item.modifiers || [],
+                  memo: item.memo
+                }))
+              }],
+              subtotal: qsrSubtotal,
+              taxLines: qsrTaxLines,
+              total: qsrTotal,
+              adjustments: [],
+              payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount })),
+              change: 0,
+              footer: { message: 'Thank you!' }
+            };
+            
+            await fetch(`${API_URL}/printers/print-receipt`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ receiptData: qsrReceiptData, copies: receiptCount })
+            });
+            console.log(`✅ QSR: Receipt printed (${receiptCount} copies)`);
+          } catch (receiptErr) {
+            console.error('QSR Receipt print failed:', receiptErr);
+          }
+        } else {
+          console.log('🧾 QSR: No receipt requested by user');
         }
         
         // 3. Cash Drawer 열기 (Windows Raw Printing API 사용)
@@ -3370,6 +3406,162 @@ const handleVoidPinClear = useCallback(() => {
     navigate('/sales');
     } catch (e) {
       console.error(e);
+      alert('Error during payment completion');
+    }
+  };
+
+  // Payment Complete Modal에서 Receipt 버튼 클릭 시 처리
+  const handlePaymentCompleteClose = async (receiptCount: number) => {
+    try {
+      console.log(`💳 Payment Complete: Receipt count = ${receiptCount}`);
+      
+      const orderId = savedOrderIdRef.current;
+      const tableIdForMap = (location.state && (location.state as any).tableId) || null;
+      const floor = (location.state && (location.state as any).floor) || null;
+      
+      // 1. Cash Drawer 열기 (항상 - No Receipt 선택해도)
+      try {
+        console.log('💰 Opening cash drawer...');
+        await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
+        console.log('💰 Cash drawer opened');
+      } catch (drawerErr) {
+        console.warn('Cash drawer open failed (ignored):', drawerErr);
+      }
+      
+      // 2. Kitchen Ticket 1장 출력 (항상 - No Receipt 선택해도)
+      try {
+        console.log('🍳 Printing Kitchen Ticket (1 copy)...');
+        await printKitchenOrders(false, true);  // isPaid: true (결제 완료)
+        console.log('✅ Kitchen Ticket printed (1 copy)');
+      } catch (kitchenErr) {
+        console.warn('Kitchen ticket print failed (ignored):', kitchenErr);
+      }
+      
+      // 3. 영수증 출력 (receiptCount에 따라)
+      if (receiptCount > 0 && !receiptPrintedRef.current) {
+        receiptPrintedRef.current = true;
+        try {
+          console.log(`🧾 Printing ${receiptCount} receipt(s)...`);
+          
+          const totals = computeGuestTotals('ALL');
+          const baseSubtotal = Number((totals.subtotal || 0).toFixed(2));
+          const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+          const grandTotal = Number((baseSubtotal + taxTotal).toFixed(2));
+          
+          const receiptData = {
+            storeName: '',
+            orderNumber: orderId || '',
+            orderType: isQsrMode ? (qsrOrderType?.toUpperCase() || 'FOR HERE') : (orderType || 'Dine-in'),
+            channel: isQsrMode ? (qsrOrderType?.toUpperCase() || 'FOR HERE') : (orderType || 'Dine-in'),
+            tableName: isQsrMode ? (qsrCustomerName || '') : (resolvedTableName || ''),
+            customerName: orderCustomerInfo?.name || qsrCustomerName || '',
+            customerPhone: orderCustomerInfo?.phone || '',
+            pickupTime: orderPickupInfo?.readyTimeLabel || '',
+            serverName: selectedServer?.name || '',
+            items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
+              name: item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: item.totalPrice || item.price || 0,
+              modifiers: item.modifiers || [],
+              memo: item.memo
+            })),
+            guestSections: [{
+              guestNumber: 1,
+              items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
+                name: item.name,
+                quantity: item.quantity || 1,
+                price: item.price || 0,
+                totalPrice: item.totalPrice || item.price || 0,
+                modifiers: item.modifiers || [],
+                memo: item.memo
+              }))
+            }],
+            subtotal: baseSubtotal,
+            taxLines: totals.taxLines || [],
+            total: grandTotal,
+            adjustments: [],
+            payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount })),
+            change: paymentCompleteData?.change || 0,
+            footer: { message: 'Thank you!' }
+          };
+          
+          await fetch(`${API_URL}/printers/print-receipt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ receiptData, copies: receiptCount })
+          });
+          console.log(`✅ Receipt printed (${receiptCount} copies)`);
+        } catch (printErr) {
+          console.error('Receipt print failed:', printErr);
+        }
+      } else if (receiptCount === 0) {
+        console.log('🧾 No receipt requested');
+      }
+      
+      // 4. 테이블 상태 업데이트 (FSR만)
+      if (!isQsrMode && tableIdForMap) {
+        try {
+          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { 
+            method: 'PATCH', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ status: 'Preparing' }) 
+          });
+          localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() }));
+        } catch {}
+      }
+      
+      // 5. 주문 닫기
+      if (orderId) {
+        try { 
+          await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' }); 
+        } catch (e) { 
+          console.warn('Order status update failed:', e); 
+        }
+      }
+      
+      // 6. 테이블 주문 연결 해제
+      if (tableIdForMap) {
+        try {
+          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/current-order`, { 
+            method: 'PATCH', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ orderId: null }) 
+          });
+        } catch {}
+      }
+      
+      // 7. Live Order 이벤트
+      window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
+      
+      // 8. 모든 모달 닫기 및 상태 초기화 (전체 결제 완료)
+      console.log('💳 Full payment completed, closing all modals and order');
+      setShowPaymentCompleteModal(false);
+      setShowPaymentModal(false);  // ★ Payment 모달도 확실히 닫기
+      setPaymentCompleteData(null);
+      clearServerAssignmentForContext();
+      setSelectedServer(null);
+      
+      // 9. QSR vs FSR 분기 처리
+      if (isQsrMode) {
+        // QSR: 상태 리셋하여 새 주문 준비 (주문 페이지에 머무름)
+        setOrderItems([]);
+        setSessionPayments([]);
+        setPaymentsByGuest({});
+        setQsrCustomerName('');
+        setQsrOrderType('forhere');
+        setQsrDeliveryChannel('');
+        setQsrDeliveryOrderNumber('');
+        savedOrderIdRef.current = null;
+        receiptPrintedRef.current = false;
+        console.log('✅ QSR: Payment completed, ready for new order');
+      } else {
+        // FSR: 테이블맵으로 이동
+        navigate('/sales');
+      }
+      
+    } catch (e) {
+      console.error('Payment complete error:', e);
       alert('Error during payment completion');
     }
   };
@@ -6400,11 +6592,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     });
 
     if (!savedOrderIdRef.current) {
+        // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
+        const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
         const saveRes = await fetch(`${API_URL}/orders`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             orderNumber,
-            orderType: orderType || 'POS',
+            orderType: effectiveOrderType,
             total: adjustedTotal,
             items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })), 
             adjustments,
@@ -6416,7 +6610,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
-            kitchenNote: savedKitchenMemo || null
+            kitchenNote: savedKitchenMemo || null,
+            orderMode: isQsrMode ? 'QSR' : 'FSR'
           })
         });
         if (!saveRes.ok) throw new Error('Failed to save order');
@@ -10351,6 +10546,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
+                    onPaymentComplete: (data: { change: number; total: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
+                      // 결제 완료 시 Payment Complete 모달 표시
+                      setPaymentCompleteData(data);
+                      setShowPaymentModal(false);  // 결제 모달 닫기
+                      setShowPaymentCompleteModal(true);  // 완료 모달 표시
+                    },
                     channel: isQsrMode ? qsrOrderType : orderType,
                     customerName: isQsrMode ? (qsrCustomerName || undefined) : ((location.state && (location.state as any).customerName) || undefined),
                     tableName: (() => { const st:any = location.state || {}; return (st.tableName || resolvedTableName || '') || undefined; })(),
@@ -13732,11 +13933,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       </div>
 
-                      {/* Channel Header */}
+                      {/* Channel Header - Badge 형태로 표시 */}
                       <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 text-center flex-shrink-0">
-                        <span className="text-lg font-bold text-slate-700">
-                          {(orderListSelectedOrder.order_type || 'POS').toUpperCase()}
-                        </span>
+                        {(() => {
+                          const badge = orderListGetChannelBadge(orderListSelectedOrder);
+                          return (
+                            <span className={`inline-block px-4 py-1.5 rounded-lg text-lg font-bold ${badge.bgColor} ${badge.textColor}`}>
+                              {badge.label}
+                            </span>
+                          );
+                        })()}
                       </div>
 
                       {/* Order Info Header */}
@@ -15060,6 +15266,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         isOpen={showClosingModal}
         onClose={() => setShowClosingModal(false)}
         onClosingComplete={() => setIsDayClosed(true)}
+      />
+
+      {/* Payment Complete Modal - 결제 완료 후 영수증 선택 */}
+      <PaymentCompleteModal
+        isOpen={showPaymentCompleteModal}
+        onClose={handlePaymentCompleteClose}
+        change={paymentCompleteData?.change || 0}
+        total={paymentCompleteData?.total || 0}
+        payments={paymentCompleteData?.payments || []}
+        hasCashPayment={paymentCompleteData?.hasCashPayment || false}
       />
         </>
       )}

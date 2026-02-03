@@ -2055,9 +2055,17 @@ const QsrPage: React.FC = () => {
                     <button 
                       onClick={() => { 
                         setShowMoreMenu(false);
-                        // Try to close the window/tab, or minimize
-                        if (window.close) {
-                          window.close();
+                        try {
+                          if (window.electron && window.electron.quit) {
+                            // Electron 앱에서는 앱 종료
+                            window.electron.quit();
+                          } else {
+                            // 브라우저에서는 Intro 페이지로 이동
+                            window.location.href = '/';
+                          }
+                        } catch (e) {
+                          console.error('Quit failed:', e);
+                          window.location.href = '/';
                         }
                       }}
                       className="w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition flex items-center gap-3"

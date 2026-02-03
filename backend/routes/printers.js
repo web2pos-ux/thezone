@@ -11,6 +11,15 @@ const { generateNextId, ID_RANGES } = require('../utils/idGenerator');
 // ESC/POS command builders (Import from separate utility if possible, but defining here for now)
 const { buildEscPosKitchenTicket, buildImageKitchenTicket, printEscPosToWindows } = require('../utils/printerUtils');
 
+// Graphic mode printer utilities
+let graphicPrinterUtils = null;
+try {
+  graphicPrinterUtils = require('../utils/graphicPrinterUtils');
+  console.log('[Printers] Graphic printer utils loaded successfully');
+} catch (err) {
+  console.warn('[Printers] Graphic printer utils not available:', err.message);
+}
+
 // Serial Port utilities for COM port printers (lazy loaded)
 let serialPrinterUtils = null;
 let serialPrinterError = null;
@@ -404,18 +413,23 @@ module.exports = (db) => {
       
       // 프린터 찾기 (Front 프린터가 Cash Drawer와 연결됨)
       const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
-      const targetPrinter = frontPrinter?.selected_printer || null;
+      const targetPrinter = frontPrinter?.selected_printer;
       
-      if (targetPrinter) {
-        // Windows Raw Printing API로 ESC/POS 명령 전송
-        const { sendRawToPrinter } = require('../utils/printerUtils');
-        await sendRawToPrinter(targetPrinter, drawerCommand);
-        console.log(`💰 [Printer API] Cash drawer command sent to ${targetPrinter}`);
-      } else {
-        console.log('💰 [Printer API] No printer configured for cash drawer');
+      // 프린터 이름이 없으면 에러 반환 (기본 프린터로 보내지 않음!)
+      if (!targetPrinter) {
+        console.error('💰 [Printer API] ERROR: No printer configured for cash drawer!');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured for cash drawer. Please set up a printer in the back office.' 
+        });
       }
       
-      res.json({ success: true, message: 'Cash drawer opened', printer: targetPrinter || 'none' });
+      // Windows Raw Printing API로 ESC/POS 명령 전송
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      await sendRawToPrinter(targetPrinter, drawerCommand);
+      console.log(`💰 [Printer API] Cash drawer command sent to ${targetPrinter}`);
+      
+      res.json({ success: true, message: 'Cash drawer opened', printer: targetPrinter });
     } catch (err) {
       console.error('Cash drawer open failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -423,32 +437,91 @@ module.exports = (db) => {
   });
 
   /**
-   * POST /api/printers/print-order - Kitchen Ticket 출력
+   * POST /api/printers/print-order - Kitchen Ticket 출력 (그래픽 모드)
+   * 고해상도 이미지 렌더링으로 출력
    */
   router.post('/print-order', async (req, res) => {
     try {
-      const { orderData, items, orderInfo, copies = 1, printerName } = req.body;
-      console.log(`🍳 [Printer API] Print Kitchen Ticket request received`);
+      const { orderData, items, orderInfo, copies = 1, printerName, isPaid, isReprint, isAdditionalOrder, printMode = 'graphic' } = req.body;
+      console.log(`🍳 [Printer API] Print Kitchen Ticket request received (mode: ${printMode})`);
       console.log(`🍳 [Printer API] Items count: ${items?.length || 0}`);
       
       // 프론트엔드에서 items/orderInfo 형태로 보내거나, orderData로 보낼 수 있음
-      const ticketData = orderData || { items, ...orderInfo };
-      
-      // Kitchen Ticket 텍스트 생성
-      const ticketText = buildEscPosKitchenTicket(ticketData);
+      const ticketData = orderData || { items, ...orderInfo, isPaid, isReprint, isAdditionalOrder };
       
       // 프린터 이름 결정
       const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
-      const targetPrinter = printerName || frontPrinter?.selected_printer || null;
+      const targetPrinter = printerName || frontPrinter?.selected_printer;
+      
+      // 프린터 이름이 없으면 에러 반환 (기본 프린터로 보내지 않음!)
+      if (!targetPrinter) {
+        console.error('🍳 [Printer API] ERROR: No printer configured! Check printer settings.');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a printer in the back office.' 
+        });
+      }
       
       console.log(`🍳 [Printer API] Target printer: ${targetPrinter}`);
-      console.log(`🍳 [Printer API] Printing 1 copy of Kitchen Ticket...`);
       
-      // 실제 출력 (1장만)
-      const { printTextToWindows } = require('../utils/printerUtils');
-      await printTextToWindows(targetPrinter, ticketText, 1);
+      const { sendRawToPrinter } = require('../utils/printerUtils');
       
-      console.log(`🍳 [Printer API] Kitchen Ticket printed successfully`);
+      // 그래픽 모드로 출력 시도 (실패 시 텍스트 모드로 fallback)
+      let usedTextMode = false;
+      if (printMode === 'graphic') {
+        try {
+          console.log(`🍳 [Printer API] Printing Kitchen Ticket (GRAPHIC mode)...`);
+          const { buildGraphicKitchenTicket } = require('../utils/graphicPrinterUtils');
+          const ticketBuffer = buildGraphicKitchenTicket(ticketData, false, true);
+          
+          await sendRawToPrinter(targetPrinter, ticketBuffer);
+          console.log(`🍳 [Printer API] Kitchen Ticket printed successfully (Graphic mode)`);
+        } catch (graphicErr) {
+          console.warn(`🍳 [Printer API] Graphic mode failed, falling back to text mode:`, graphicErr.message);
+          usedTextMode = true;
+        }
+      } else {
+        usedTextMode = true;
+      }
+      
+      if (usedTextMode) {
+        // ESC/POS 텍스트 모드 (폴백)
+        console.log(`🍳 [Printer API] Printing Kitchen Ticket (ESC/POS text mode)...`);
+        
+        // 레이아웃 설정 읽기
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        let layoutSettings = null;
+        let ticketLayout = null;
+        
+        if (layoutRow && layoutRow.settings) {
+          try {
+            layoutSettings = JSON.parse(layoutRow.settings);
+            const channel = (orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || 'DINE-IN').toUpperCase();
+            if (channel === 'DELIVERY') {
+              ticketLayout = layoutSettings.deliveryKitchen;
+            } else if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP') {
+              ticketLayout = layoutSettings.externalKitchen;
+            } else {
+              ticketLayout = layoutSettings.dineInKitchen;
+            }
+            if (!ticketLayout) {
+              ticketLayout = { kitchenPrinter: layoutSettings.kitchenLayout };
+            }
+          } catch (parseErr) {
+            console.warn('🍳 [Printer API] Failed to parse layout settings:', parseErr);
+          }
+        }
+        
+        const { buildEscPosKitchenTicketWithLayout, buildKitchenTicketText } = require('../utils/printerUtils');
+        const ticketText = ticketLayout 
+          ? buildEscPosKitchenTicketWithLayout(ticketData, ticketLayout)
+          : buildKitchenTicketText(ticketData);
+        
+        const ticketBuffer = Buffer.from(ticketText, 'binary');
+        await sendRawToPrinter(targetPrinter, ticketBuffer);
+        console.log(`🍳 [Printer API] Kitchen Ticket printed successfully (ESC/POS mode)`);
+      }
+      
       res.json({ success: true, message: `Kitchen ticket printed (1 copy)`, printer: targetPrinter || 'default' });
     } catch (err) {
       console.error('Kitchen ticket print failed:', err);
@@ -457,37 +530,115 @@ module.exports = (db) => {
   });
 
   /**
-   * POST /api/printers/print-receipt - Receipt 출력
+   * POST /api/printers/print-receipt - Receipt 출력 (그래픽 모드)
+   * 고해상도 이미지 렌더링으로 출력
    */
   router.post('/print-receipt', async (req, res) => {
     try {
-      const { receiptData, copies = 1, printerName, openDrawer = false } = req.body;
-      console.log(`🧾 [Printer API] Print Receipt request: ${copies} copies, openDrawer: ${openDrawer}`);
+      const { receiptData, copies = 1, printerName, openDrawer = false, printMode = 'graphic' } = req.body;
+      console.log(`🧾 [Printer API] Print Receipt request: ${copies} copies, openDrawer: ${openDrawer}, mode: ${printMode}`);
       
-      // Receipt 텍스트 생성
-      const { buildReceiptText, printTextToWindows } = require('../utils/printerUtils');
-      let receiptText = buildReceiptText(receiptData);
-      
-      // Cash Drawer 열기 명령 추가 (ESC p 0 25 25)
-      if (openDrawer) {
-        // ESC/POS Cash Drawer 명령을 텍스트 맨 앞에 추가
-        const drawerCmd = Buffer.from([0x1B, 0x70, 0x00, 0x19, 0x19]).toString('latin1');
-        receiptText = drawerCmd + receiptText;
-        console.log('💰 [Printer API] Cash drawer command added to receipt');
+      // Business Info에서 Store 정보 가져오기
+      const businessInfo = await dbGet("SELECT business_name, phone, address_line1, address_line2, city, state, zip FROM business_profile LIMIT 1");
+      if (businessInfo) {
+        const fullAddress = [
+          businessInfo.address_line1,
+          businessInfo.address_line2,
+          businessInfo.city,
+          businessInfo.state,
+          businessInfo.zip
+        ].filter(Boolean).join(', ');
+        
+        // receiptData에 Business Info 추가 (기존 값이 없는 경우에만)
+        receiptData.header = receiptData.header || {};
+        receiptData.header.storeName = receiptData.header.storeName || businessInfo.business_name;
+        receiptData.header.storeAddress = receiptData.header.storeAddress || fullAddress;
+        receiptData.header.storePhone = receiptData.header.storePhone || businessInfo.phone;
+        // 루트 레벨에도 추가 (호환성)
+        receiptData.storeName = receiptData.storeName || businessInfo.business_name;
+        receiptData.storeAddress = receiptData.storeAddress || fullAddress;
+        receiptData.storePhone = receiptData.storePhone || businessInfo.phone;
+        
+        console.log(`🧾 [Printer API] Business Info loaded: ${businessInfo.business_name}`);
       }
       
       // 프린터 이름 결정
       let targetPrinter = printerName;
       if (!targetPrinter) {
-        // DB에서 Front/Receipt 프린터 찾기
         const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' OR name LIKE '%Receipt%' LIMIT 1");
-        targetPrinter = frontPrinter?.selected_printer || null;
+        targetPrinter = frontPrinter?.selected_printer;
       }
       
-      // 실제 출력
-      await printTextToWindows(targetPrinter, receiptText, copies);
+      // 프린터 이름이 없으면 에러 반환 (기본 프린터로 보내지 않음!)
+      if (!targetPrinter) {
+        console.error('🧾 [Printer API] ERROR: No printer configured! Check printer settings.');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a printer in the back office.' 
+        });
+      }
       
-      res.json({ success: true, message: `Receipt printed (${copies} copies)${openDrawer ? ' + drawer opened' : ''}`, printer: targetPrinter || 'default' });
+      console.log(`🧾 [Printer API] Target printer: ${targetPrinter}`);
+      
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      
+      // 그래픽 모드로 출력 시도 (실패 시 텍스트 모드로 fallback)
+      let usedTextMode = false;
+      if (printMode === 'graphic') {
+        try {
+          console.log(`🧾 [Printer API] Printing Receipt (GRAPHIC mode)...`);
+          const { buildGraphicReceipt } = require('../utils/graphicPrinterUtils');
+          const receiptBuffer = buildGraphicReceipt(receiptData, openDrawer, true);
+          
+          for (let i = 0; i < copies; i++) {
+            await sendRawToPrinter(targetPrinter, receiptBuffer);
+            console.log(`🧾 [Printer API] Receipt printed (copy ${i + 1}/${copies}, Graphic mode)`);
+          }
+        } catch (graphicErr) {
+          console.warn(`🧾 [Printer API] Graphic mode failed, falling back to text mode:`, graphicErr.message);
+          usedTextMode = true;
+        }
+      } else {
+        usedTextMode = true;
+      }
+      
+      if (usedTextMode) {
+        // ESC/POS 텍스트 모드 (폴백)
+        console.log(`🧾 [Printer API] Printing Receipt (ESC/POS text mode)...`);
+        
+        // 레이아웃 설정 읽기
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        let receiptLayout = null;
+        
+        if (layoutRow && layoutRow.settings) {
+          try {
+            const layoutSettings = JSON.parse(layoutRow.settings);
+            receiptLayout = layoutSettings.receiptLayout;
+          } catch (parseErr) {
+            console.warn('🧾 [Printer API] Failed to parse layout settings:', parseErr);
+          }
+        }
+        
+        const { buildReceiptText, buildReceiptTextWithLayout } = require('../utils/printerUtils');
+        let receiptText = receiptLayout 
+          ? buildReceiptTextWithLayout(receiptData, receiptLayout, 'receipt')
+          : buildReceiptText(receiptData);
+        
+        // Cash Drawer 열기 명령 추가
+        if (openDrawer) {
+          const drawerCmd = Buffer.from([0x1B, 0x70, 0x00, 0x19, 0x19]).toString('binary');
+          receiptText = drawerCmd + receiptText;
+        }
+        
+        const receiptBuffer = Buffer.from(receiptText, 'binary');
+        
+        for (let i = 0; i < copies; i++) {
+          await sendRawToPrinter(targetPrinter, receiptBuffer);
+          console.log(`🧾 [Printer API] Receipt printed (copy ${i + 1}/${copies}, ESC/POS mode)`);
+        }
+      }
+      
+      res.json({ success: true, message: `Receipt printed (${copies} copies)${openDrawer ? ' + drawer opened' : ''}`, printer: targetPrinter });
     } catch (err) {
       console.error('Receipt print failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -495,28 +646,109 @@ module.exports = (db) => {
   });
 
   /**
-   * POST /api/printers/print-bill - Bill 출력
+   * POST /api/printers/print-bill - Bill 출력 (그래픽 모드)
+   * 고해상도 이미지 렌더링으로 출력
    */
   router.post('/print-bill', async (req, res) => {
     try {
-      const { billData, copies = 1, printerName } = req.body;
-      console.log(`📃 [Printer API] Print Bill request: ${copies} copies`);
+      const { billData, copies = 1, printerName, printMode = 'graphic' } = req.body;
+      console.log(`📃 [Printer API] Print Bill request: ${copies} copies, mode: ${printMode}`);
       
-      // Bill은 Receipt와 유사하게 처리
-      const { buildReceiptText, printTextToWindows } = require('../utils/printerUtils');
-      const billText = buildReceiptText(billData);
+      // Business Info에서 Store 정보 가져오기
+      const businessInfo = await dbGet("SELECT business_name, phone, address_line1, address_line2, city, state, zip FROM business_profile LIMIT 1");
+      if (businessInfo) {
+        const fullAddress = [
+          businessInfo.address_line1,
+          businessInfo.address_line2,
+          businessInfo.city,
+          businessInfo.state,
+          businessInfo.zip
+        ].filter(Boolean).join(', ');
+        
+        // billData에 Business Info 추가 (기존 값이 없는 경우에만)
+        billData.header = billData.header || {};
+        billData.header.storeName = billData.header.storeName || businessInfo.business_name;
+        billData.header.storeAddress = billData.header.storeAddress || fullAddress;
+        billData.header.storePhone = billData.header.storePhone || businessInfo.phone;
+        // 루트 레벨에도 추가 (호환성)
+        billData.storeName = billData.storeName || businessInfo.business_name;
+        billData.storeAddress = billData.storeAddress || fullAddress;
+        billData.storePhone = billData.storePhone || businessInfo.phone;
+        
+        console.log(`📃 [Printer API] Business Info loaded: ${businessInfo.business_name}`);
+      }
       
       // 프린터 이름 결정
       let targetPrinter = printerName;
       if (!targetPrinter) {
         const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
-        targetPrinter = frontPrinter?.selected_printer || null;
+        targetPrinter = frontPrinter?.selected_printer;
       }
       
-      // 실제 출력
-      await printTextToWindows(targetPrinter, billText, copies);
+      // 프린터 이름이 없으면 에러 반환 (기본 프린터로 보내지 않음!)
+      if (!targetPrinter) {
+        console.error('📃 [Printer API] ERROR: No printer configured! Check printer settings.');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a printer in the back office.' 
+        });
+      }
       
-      res.json({ success: true, message: `Bill printed (${copies} copies)`, printer: targetPrinter || 'default' });
+      console.log(`📃 [Printer API] Target printer: ${targetPrinter}`);
+      
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      
+      // 그래픽 모드로 출력 시도 (실패 시 텍스트 모드로 fallback)
+      let usedTextMode = false;
+      if (printMode === 'graphic') {
+        try {
+          console.log(`📃 [Printer API] Printing Bill (GRAPHIC mode)...`);
+          const { buildGraphicBill } = require('../utils/graphicPrinterUtils');
+          const billBuffer = buildGraphicBill(billData, true);
+          
+          for (let i = 0; i < copies; i++) {
+            await sendRawToPrinter(targetPrinter, billBuffer);
+            console.log(`📃 [Printer API] Bill printed (copy ${i + 1}/${copies}, Graphic mode)`);
+          }
+        } catch (graphicErr) {
+          console.warn(`📃 [Printer API] Graphic mode failed, falling back to text mode:`, graphicErr.message);
+          usedTextMode = true;
+        }
+      } else {
+        usedTextMode = true;
+      }
+      
+      if (usedTextMode) {
+        // ESC/POS 텍스트 모드 (폴백)
+        console.log(`📃 [Printer API] Printing Bill (ESC/POS text mode)...`);
+        
+        // 레이아웃 설정 읽기
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        let billLayout = null;
+        
+        if (layoutRow && layoutRow.settings) {
+          try {
+            const layoutSettings = JSON.parse(layoutRow.settings);
+            billLayout = layoutSettings.billLayout;
+          } catch (parseErr) {
+            console.warn('📃 [Printer API] Failed to parse layout settings:', parseErr);
+          }
+        }
+        
+        const { buildReceiptText, buildReceiptTextWithLayout } = require('../utils/printerUtils');
+        const billText = billLayout 
+          ? buildReceiptTextWithLayout(billData, billLayout, 'bill')
+          : buildReceiptText(billData);
+        
+        const billBuffer = Buffer.from(billText, 'binary');
+        
+        for (let i = 0; i < copies; i++) {
+          await sendRawToPrinter(targetPrinter, billBuffer);
+          console.log(`📃 [Printer API] Bill printed (copy ${i + 1}/${copies}, ESC/POS mode)`);
+        }
+      }
+      
+      res.json({ success: true, message: `Bill printed (${copies} copies)`, printer: targetPrinter });
     } catch (err) {
       console.error('Bill print failed:', err);
       res.status(500).json({ success: false, error: err.message });
