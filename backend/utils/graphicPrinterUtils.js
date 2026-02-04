@@ -99,7 +99,8 @@ function drawTextBlock(ctx, block, y) {
     align = 'left',
     inverse = false,
     lineHeight = null,
-    paddingY = 4
+    paddingY = 4,
+    extraBold = false  // Extra bold: draw text multiple times
   } = block;
   
   const actualLineHeight = lineHeight || fontSize + paddingY * 2;
@@ -135,7 +136,14 @@ function drawTextBlock(ctx, block, y) {
   
   // 텍스트 그리기
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, textX, y + actualLineHeight / 2);
+  const textY = y + actualLineHeight / 2;
+  
+  if (extraBold) {
+    // Slightly bolder: draw text 3 times with small offset
+    ctx.fillText(text, textX + 0.4, textY);
+    ctx.fillText(text, textX - 0.4, textY);
+  }
+  ctx.fillText(text, textX, textY);
   
   return y + actualLineHeight;
 }
@@ -231,11 +239,16 @@ function renderKitchenTicketGraphic(orderData) {
   // 먼저 필요한 높이 계산
   let estimatedHeight = 200; // 기본 헤더/푸터
   const items = orderData.items || [];
-  estimatedHeight += items.length * 60; // 각 아이템
+  estimatedHeight += items.length * 80; // 각 아이템 (1.3x 크기 고려)
   items.forEach(item => {
-    if (item.modifiers) estimatedHeight += item.modifiers.length * 30;
-    if (item.memo || item.note) estimatedHeight += 30;
+    if (item.modifiers) estimatedHeight += item.modifiers.length * 40;
+    if (item.memo || item.note) estimatedHeight += 40;
   });
+  // 게스트 구분선 높이 추가
+  const guestCountForHeight = [...new Set(items.map(item => item.guestNumber || item.guest_number || 1))];
+  if (guestCountForHeight.length > 1) {
+    estimatedHeight += guestCountForHeight.length * 50; // 각 게스트 구분선
+  }
   estimatedHeight = Math.max(estimatedHeight, 300);
   
   // 캔버스 생성
@@ -327,47 +340,130 @@ function renderKitchenTicketGraphic(orderData) {
   y = drawSeparator(ctx, y, 'double');
   
   // === 아이템 목록 ===
-  items.forEach(item => {
+  // Item font size: 1.3x of large (28 * 1.3 = 36)
+  const ITEM_FONT_SIZE = Math.round(PRINTER_CONFIG.fontSize.large * 1.3);
+  const ITEM_SPACING = 11; // 10% more than previous (10 * 1.1 = 11)
+  
+  // Helper function to render a single item
+  const renderItem = (item, isFirst) => {
     const itemName = item.name || item.itemName || '';
     const quantity = item.quantity || item.qty || 1;
     
-    // 아이템 이름 + 수량 (큰 글씨)
+    // Debug log for first item only
+    if (isFirst) {
+      console.log(`🍳 [Kitchen Graphic] Item structure:`, {
+        name: item.name,
+        modifiers: item.modifiers,
+        memo: item.memo,
+        guestNumber: item.guestNumber
+      });
+    }
+    
+    // 아이템 이름 + 수량 (1.3배 크기, 모디파이어보다 약간 더 굵게)
     y = drawTextBlock(ctx, {
       text: `${quantity}x ${itemName}`,
-      fontSize: PRINTER_CONFIG.fontSize.large,
+      fontSize: ITEM_FONT_SIZE,
       fontWeight: 'bold',
-      align: 'left'
+      align: 'left',
+      extraBold: true  // Slightly bolder than modifiers
     }, y);
     
-    // Modifiers
+    // Modifiers - handle various structures
     const modifiers = item.modifiers || item.modifier || [];
     const modArray = Array.isArray(modifiers) ? modifiers : 
                      (typeof modifiers === 'string' ? modifiers.split(',') : []);
     
     modArray.forEach(mod => {
-      const modText = typeof mod === 'object' ? (mod.name || mod.modifierName || '') : mod;
-      if (modText && modText.trim()) {
-        y = drawTextBlock(ctx, {
-          text: `  >> ${modText.trim()}`,
-          fontSize: PRINTER_CONFIG.fontSize.normal,
-          align: 'left'
-        }, y);
+      // Extract modifier text from various structures
+      let modTexts = [];
+      
+      if (typeof mod === 'string') {
+        modTexts.push(mod);
+      } else if (typeof mod === 'object' && mod !== null) {
+        if (mod.name) {
+          modTexts.push(mod.name);
+        } else if (mod.modifierName) {
+          modTexts.push(mod.modifierName);
+        } else if (mod.groupName && mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+          mod.selectedEntries.forEach(entry => {
+            if (entry.name) modTexts.push(entry.name);
+          });
+        } else if (mod.modifierNames && Array.isArray(mod.modifierNames)) {
+          modTexts = modTexts.concat(mod.modifierNames);
+        } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
+          mod.selectedEntries.forEach(entry => {
+            if (entry.name) modTexts.push(entry.name);
+          });
+        }
       }
+      
+      // Print each modifier text (same size as item, italic, tighter spacing)
+      modTexts.forEach(modText => {
+        if (modText && modText.trim()) {
+          y = drawTextBlock(ctx, {
+            text: `  >> ${modText.trim()}`,
+            fontSize: ITEM_FONT_SIZE,
+            fontWeight: 'bold',
+            fontStyle: 'italic',
+            align: 'left',
+            paddingY: 3  // 15% tighter spacing (default 4 → 3)
+          }, y);
+        }
+      });
     });
     
-    // Note/Memo
-    const note = item.memo || item.note || item.specialInstructions || '';
-    if (note) {
+    // Note/Memo - handle object or string (same size as item, italic, tighter spacing)
+    let note = item.memo || item.note || item.specialInstructions || '';
+    if (typeof note === 'object' && note !== null) {
+      note = note.text || note.note || '';
+    }
+    if (note && note.trim()) {
       y = drawTextBlock(ctx, {
-        text: `  * ${note}`,
-        fontSize: PRINTER_CONFIG.fontSize.normal,
+        text: `  * ${note.trim()}`,
+        fontSize: ITEM_FONT_SIZE,
+        fontWeight: 'bold',
         fontStyle: 'italic',
-        align: 'left'
+        align: 'left',
+        paddingY: 3  // 15% tighter spacing (default 4 → 3)
       }, y);
     }
     
-    y += 8; // 아이템 간 간격
-  });
+    y += ITEM_SPACING; // 아이템 간 간격 (1.2x)
+  };
+  
+  // Group items by guestNumber
+  const guestNumbers = [...new Set(items.map(item => item.guestNumber || item.guest_number || 1))].sort((a, b) => a - b);
+  const hasMultipleGuests = guestNumbers.length > 1;
+  
+  if (hasMultipleGuests) {
+    // Multiple guests - show guest separators
+    guestNumbers.forEach((guestNum, guestIdx) => {
+      const guestItems = items.filter(item => (item.guestNumber || item.guest_number || 1) === guestNum);
+      
+      if (guestItems.length > 0) {
+        // Guest separator line
+        y = drawTextBlock(ctx, {
+          text: `---------- Guest ${guestNum} ----------`,
+          fontSize: PRINTER_CONFIG.fontSize.large,
+          fontWeight: 'bold',
+          align: 'center'
+        }, y);
+        y += 5;
+        
+        // Render items for this guest
+        guestItems.forEach((item, idx) => {
+          renderItem(item, guestIdx === 0 && idx === 0);
+        });
+        
+        y += 5; // Extra spacing between guest sections
+      }
+    });
+  } else {
+    // Single guest - no separators needed
+    items.forEach((item, idx) => {
+      renderItem(item, idx === 0);
+    });
+  }
   
   // 구분선
   y = drawSeparator(ctx, y, 'solid');

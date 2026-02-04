@@ -8337,12 +8337,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         tax = Math.max(0, Number((allTaxVal - paidTax).toFixed(2)));
                         tot = Math.max(0, Number((sub + tax).toFixed(2)));
                       }
-                      // 할인 전 원가 계산 (price 사용, DC 제외, void 제외)
+                      // 할인 전 원가 계산 (totalPrice 사용하여 모디파이어 포함, DC 제외, void 제외)
                       const grossTotal = (orderItems || []).filter(it => {
                         const item = it as any;
                         return item.type !== 'separator' && item.type !== 'discount' && !item.void_id && !item.voidId && !item.is_void;
                       }).reduce((sum, it: any) => {
-                        const base = (it.price || 0) + ((it.memo?.price) || 0);
+                        // Use totalPrice if available (includes modifiers), otherwise base price
+                        const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0) + ((it.memo?.price) || 0);
                         return sum + (base * (it.quantity || 1));
                       }, 0);
                       
@@ -8351,7 +8352,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const item = it as any;
                         return item.type !== 'separator' && item.type !== 'discount' && !item.void_id && !item.voidId && !item.is_void;
                       }).reduce((sum, it: any) => {
-                        const base = (it.price || 0) + ((it.memo?.price) || 0);
+                        // Use totalPrice if available (includes modifiers), otherwise base price
+                        const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0) + ((it.memo?.price) || 0);
                         const gross = base * (it.quantity || 1);
                         const d = it.discount;
                         if (d && typeof d.value === 'number' && d.value > 0) {

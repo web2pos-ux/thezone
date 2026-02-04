@@ -446,6 +446,16 @@ module.exports = (db) => {
       console.log(`🍳 [Printer API] Print Kitchen Ticket request received (mode: ${printMode})`);
       console.log(`🍳 [Printer API] Items count: ${items?.length || 0}`);
       
+      // Debug: Log first item's modifiers and memo structure
+      if (items && items.length > 0) {
+        const firstItem = items[0];
+        console.log(`🍳 [Printer API] First item:`, {
+          name: firstItem.name,
+          modifiers: firstItem.modifiers,
+          memo: firstItem.memo
+        });
+      }
+      
       // 프론트엔드에서 items/orderInfo 형태로 보내거나, orderData로 보낼 수 있음
       const ticketData = orderData || { items, ...orderInfo, isPaid, isReprint, isAdditionalOrder };
       
@@ -471,16 +481,20 @@ module.exports = (db) => {
       if (printMode === 'graphic') {
         try {
           console.log(`🍳 [Printer API] Printing Kitchen Ticket (GRAPHIC mode)...`);
+          console.log(`🍳 [Printer API] Ticket data items:`, ticketData.items?.length || 0);
           const { buildGraphicKitchenTicket } = require('../utils/graphicPrinterUtils');
           const ticketBuffer = buildGraphicKitchenTicket(ticketData, false, true);
+          console.log(`🍳 [Printer API] Graphic buffer size: ${ticketBuffer?.length || 0} bytes`);
           
           await sendRawToPrinter(targetPrinter, ticketBuffer);
-          console.log(`🍳 [Printer API] Kitchen Ticket printed successfully (Graphic mode)`);
+          console.log(`✅ [Printer API] Kitchen Ticket printed successfully (GRAPHIC mode)`);
         } catch (graphicErr) {
-          console.warn(`🍳 [Printer API] Graphic mode failed, falling back to text mode:`, graphicErr.message);
+          console.error(`❌ [Printer API] Graphic mode FAILED:`, graphicErr.message);
+          console.error(graphicErr.stack);
           usedTextMode = true;
         }
       } else {
+        console.log(`🍳 [Printer API] Using TEXT mode as requested`);
         usedTextMode = true;
       }
       

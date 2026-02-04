@@ -4521,7 +4521,13 @@ const SalesPage: React.FC = () => {
   };
 
   const orderListCalculateTotals = () => {
-      const subtotal = orderListSelectedItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+      // Helper: Calculate item total including modifiers and memo
+      const getItemTotal = (item: any) => {
+        const basePrice = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0);
+        const memoPrice = item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+        return (basePrice + memoPrice) * (item.quantity || 1);
+      };
+      const subtotal = orderListSelectedItems.reduce((sum, item) => sum + getItemTotal(item), 0);
       
       // ì•„ì´í…œ ë ˆë²¨ í• ì¸ (Item D/C) ê³„ì‚°
       let itemDiscountTotal = 0;
@@ -4533,7 +4539,7 @@ const SalesPage: React.FC = () => {
             : (item.discount_json || item.discount);
           if (discount && discount.value > 0) {
             hasItemDiscount = true;
-            const itemPrice = (item.price || 0) * (item.quantity || 1);
+            const itemPrice = getItemTotal(item); // Includes modifiers and memo
             if (discount.mode === 'percent') {
               itemDiscountTotal += itemPrice * (discount.value / 100);
             } else {
