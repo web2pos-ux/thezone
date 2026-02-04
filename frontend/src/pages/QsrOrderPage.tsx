@@ -2263,6 +2263,13 @@ const handleVoidPinClear = useCallback(() => {
   };
 
   const orderListFormatDate = (dateStr: string) => {
+    // YYYY-MM-DD 형식인 경우 로컬 시간으로 파싱 (UTC 변환 방지)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const d = new Date(year, month - 1, day);
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    // 다른 형식 (ISO 타임스탬프 등)은 그대로 파싱
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
   };
@@ -3734,6 +3741,58 @@ useEffect(() => {
   })();
 }, []);
   const [modifierColors, setModifierColors] = useState<{ [key: string]: string }>({});
+  const [modifierColorsLoaded, setModifierColorsLoaded] = useState(false);
+  const modifierColorsSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // 서버에서 modifierColors 로드
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/layout-settings`);
+        if (res.ok) {
+          const result = await res.json();
+          if (result?.success && result?.data?.modifierColors) {
+            setModifierColors(result.data.modifierColors);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load modifierColors:', err);
+      } finally {
+        setModifierColorsLoaded(true);
+      }
+    })();
+  }, []);
+  
+  // modifierColors 변경 시 서버에 저장 (debounce 적용)
+  useEffect(() => {
+    if (!modifierColorsLoaded) return;
+    if (modifierColorsSaveTimeoutRef.current) {
+      clearTimeout(modifierColorsSaveTimeoutRef.current);
+    }
+    modifierColorsSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        // 현재 설정을 가져와서 modifierColors만 업데이트
+        const currentRes = await fetch(`${API_URL}/layout-settings`);
+        if (currentRes.ok) {
+          const currentResult = await currentRes.json();
+          const currentSettings = currentResult?.data || {};
+          await fetch(`${API_URL}/layout-settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...currentSettings, modifierColors }),
+          });
+        }
+      } catch (err) {
+        console.error('Failed to save modifierColors:', err);
+      }
+    }, 500); // 500ms debounce
+    return () => {
+      if (modifierColorsSaveTimeoutRef.current) {
+        clearTimeout(modifierColorsSaveTimeoutRef.current);
+      }
+    };
+  }, [modifierColors, modifierColorsLoaded]);
+  
   const [selectedModifierIdForColor, setSelectedModifierIdForColor] = useState<string | null>(null);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
@@ -4533,11 +4592,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         ? catModsData.map((r: any) => Number(r.modifier_group_id)).filter((n: number) => !Number.isNaN(n))
         : [];
 
-      // 5) 전체 그룹 목록에서 필요한 그룹만 선별, 우선순위: direct 우선, 없으면 inherited
+      // 5) 시나리오 2 적용: 아이템에 직접 연결된 모디파이어가 있으면 그것만 표시, 없으면 카테고리 모디파이어만 표시 (병합 X)
       const groupById: { [id: number]: any } = {};
       (allGroupsData || []).forEach((g: any) => { groupById[Number(g.id || g.group_id)] = g; });
 
-      const usedGroupIds: number[] = Array.from(new Set<number>([...directGroupIds, ...inheritedGroupIds]));
+      // 직접 연결이 있으면 직접 연결만, 없으면 상속만 사용
+      const usedGroupIds: number[] = directGroupIds.length > 0 
+        ? directGroupIds 
+        : inheritedGroupIds;
+      
+      console.log('📂 [Item Modifier] Direct:', directGroupIds.length, 'Inherited:', inheritedGroupIds.length, '→ Using:', usedGroupIds.length);
 
       const processedModifiers = usedGroupIds.map((gid) => {
         const g = groupById[gid];
@@ -4591,6 +4655,169 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
   };
 
+  /**
+   * 카테고리 선택 시 모디파이어 자동 로드 함수
+   * - 시나리오 1,2: 카테고리에 모디파이어가 연결된 경우 → 카테고리 모디파이어 표시
+   * - 시나리오 3: 카테고리에 모디파이어가 없고 아이템에만 연결된 경우 → 첫 번째 아이템의 모디파이어 표시
+   * - 시나리오 4: 모디파이어가 없는 경우 → 빈 패널 표시
+   */
+  const fetchCategoryModifiers = async (categoryId: number) => {
+    try {
+      setIsLoadingModifiers(true);
+      console.log('📂 [Category Modifier] Fetching modifiers for category:', categoryId);
+
+      // 1) 카테고리에 연결된 모디파이어 그룹 가져오기
+      const [catModsResp, allGroupsResp] = await Promise.all([
+        fetch(`${API_URL}/menu/categories/${categoryId}/modifiers`),
+        fetch(`${API_URL}/modifier-groups`)
+      ]);
+
+      if (!catModsResp.ok) {
+        console.log('📂 [Category Modifier] No category modifiers found');
+        // 카테고리에 모디파이어가 없음 → 시나리오 3 또는 4
+        await handleNoCategoryModifiers(categoryId);
+        return;
+      }
+
+      const catModsData: any[] = await catModsResp.json();
+      const allGroupsData: any[] = await allGroupsResp.json();
+
+      // 카테고리에 연결된 그룹 ID 추출
+      const categoryGroupIds: number[] = Array.isArray(catModsData)
+        ? catModsData.map((r: any) => Number(r.modifier_group_id)).filter((n: number) => !Number.isNaN(n))
+        : [];
+
+      if (categoryGroupIds.length === 0) {
+        console.log('📂 [Category Modifier] Category has no modifiers → checking items');
+        // 카테고리에 모디파이어가 없음 → 시나리오 3 또는 4
+        await handleNoCategoryModifiers(categoryId);
+        return;
+      }
+
+      // 시나리오 1, 2: 카테고리에 모디파이어가 있음
+      console.log('📂 [Category Modifier] Category has modifiers:', categoryGroupIds);
+
+      const groupById: { [id: number]: any } = {};
+      (allGroupsData || []).forEach((g: any) => { groupById[Number(g.id || g.group_id)] = g; });
+
+      const processedModifiers = categoryGroupIds.map((gid) => {
+        const g = groupById[gid];
+        if (!g) return null;
+        const options = g.options || g.modifiers || [];
+        const mappedOptions = options.map((opt: any) => ({
+          modifier_id: opt.modifier_id ?? opt.option_id ?? opt.id,
+          name: opt.name,
+          price_delta: opt.price_delta ?? opt.price_adjustment ?? 0,
+          sort_order: opt.sort_order ?? 0
+        }));
+        return {
+          link_id: gid,
+          item_id: null, // 카테고리 레벨
+          modifier_group_id: gid,
+          group: { 
+            id: gid, 
+            name: g.name, 
+            selection_type: g.selection_type,
+            min_selection: g.min_selection ?? g.min_selections ?? 0, 
+            max_selection: g.max_selection ?? g.max_selections ?? 0, 
+            is_required: false 
+          },
+          modifiers: mappedOptions,
+          source: 'category',
+          isActive: 1
+        };
+      }).filter(Boolean);
+
+      // 전역 상태 업데이트
+      const normalizedGroups = (processedModifiers as any[]).map(pm => ({ id: pm.modifier_group_id, name: pm.group?.name }));
+      const normalizedModifiers = (processedModifiers as any[]).flatMap(pm =>
+        pm.modifiers.map((m: any) => ({
+          id: m.modifier_id,
+          option_id: m.modifier_id,
+          modifier_id: m.modifier_id,
+          name: m.name,
+          price_delta: m.price_delta,
+          price_adjustment: m.price_delta,
+          sort_order: m.sort_order
+        }))
+      );
+      setModifierGroups(normalizedGroups);
+      setModifiers(normalizedModifiers);
+      setSelectedItemModifiers(processedModifiers as any[]);
+      
+      console.log('📂 [Category Modifier] Loaded category modifiers:', processedModifiers.length, 'groups');
+
+    } catch (error) {
+      console.error('📂 [Category Modifier] Error:', error);
+      setSelectedItemModifiers([]);
+    } finally {
+      setIsLoadingModifiers(false);
+    }
+  };
+
+  /**
+   * 카테고리에 모디파이어가 없는 경우 처리 (시나리오 3, 4)
+   * - 첫 번째 아이템에 모디파이어가 있으면 해당 아이템 모디파이어 표시
+   * - 없으면 빈 패널 표시
+   */
+  const handleNoCategoryModifiers = async (categoryId: number) => {
+    try {
+      // 해당 카테고리의 아이템들 가져오기
+      const itemsResp = await fetch(`${API_URL}/menu/items?categoryId=${categoryId}`);
+      if (!itemsResp.ok) {
+        console.log('📂 [No Category Modifier] Failed to fetch items');
+        setSelectedItemModifiers([]);
+        return;
+      }
+
+      const itemsData: any[] = await itemsResp.json();
+      
+      // 화면 그리드 순서대로 정렬 (sort_order 기준)
+      const sortedItems = [...itemsData].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+      // 모디파이어가 연결된 첫 번째 아이템 찾기
+      const firstItemWithModifier = sortedItems.find(item => 
+        Array.isArray(item.modifier_groups) && item.modifier_groups.length > 0
+      );
+
+      if (firstItemWithModifier) {
+        const itemId = String(firstItemWithModifier.item_id || firstItemWithModifier.id);
+        console.log('📂 [No Category Modifier] Found item with modifiers:', itemId);
+        // 해당 아이템의 모디파이어 로드 (기존 함수 재사용)
+        await fetchItemModifiers(itemId);
+        // 해당 아이템을 선택 상태로 설정
+        setSelectedMenuItemId(itemId);
+      } else {
+        // 시나리오 4: 모디파이어가 없음 → 빈 패널
+        console.log('📂 [No Category Modifier] No items with modifiers → empty panel');
+        setSelectedItemModifiers([]);
+        setModifierGroups([]);
+        setModifiers([]);
+      }
+    } catch (error) {
+      console.error('📂 [No Category Modifier] Error:', error);
+      setSelectedItemModifiers([]);
+    }
+  };
+
+  // 카테고리 변경 시 모디파이어 자동 로드
+  useEffect(() => {
+    if (!selectedCategory || selectedCategory === MERGY_CATEGORY_ID) return;
+    
+    // 카테고리 ID 찾기
+    const category = categories.find(c => c.name === selectedCategory);
+    if (!category) return;
+
+    console.log('📂 [Category Change] Category selected:', selectedCategory, '→ ID:', category.category_id);
+    
+    // 현재 선택된 메뉴 아이템 초기화
+    setSelectedMenuItemId(null);
+    setSelectedModifiers({});
+    
+    // 카테고리 모디파이어 로드
+    fetchCategoryModifiers(category.category_id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory, categories]);
 
   // 페이지 로드 시 저장된 화면 크기 복원 (/sales/order 및 QSR 모드에서는 비활성화)
   useEffect(() => {
@@ -5571,7 +5798,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   // Helpers to build combined entries and layout for the selected item
   const getCombinedModifierEntries = () => {
-    const entries: Array<{ id: string; label: string; groupId: string; selectionType?: string; }> = [];
+    const entries: Array<{ id: string; label: string; groupId: string; selectionType?: string; price?: number; }> = [];
     selectedItemModifiers.forEach((modifierLink: any) => {
       (modifierLink.modifiers || []).forEach((modifier: any) => {
         const id = modifier.option_id?.toString() || modifier.modifier_id?.toString() || modifier.id?.toString();
@@ -5580,7 +5807,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           id,
           label: modifier.name || modifier.option_name || modifier.modifier_name,
           groupId: modifierLink.modifier_group_id,
-          selectionType: modifierLink.group?.selection_type
+          selectionType: modifierLink.group?.selection_type,
+          price: modifier.price_delta ?? modifier.price_adjustment ?? 0
         });
       });
     });
@@ -10045,7 +10273,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     )}
                                   </div>
                                   
-                                  {/* 총 가격 (고정 위치) */}
+                                  {/* 총 가격 (고정 위치) - 아이템 원가만 표시 (모디파이어 제외) */}
                                   <div className="col-span-3 text-right">
                                     {item.type === 'discount' ? (
                                       <div className="font-medium text-red-600 text-sm">
@@ -10054,10 +10282,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     ) : ((item as any).type === 'void') ? (
                                       <div className="font-medium text-gray-500 text-sm line-through">$0.00</div>
                                     ) : (() => {
-                                      const base = computeItemLineBase(item as any);
+                                      // 아이템 원가만 사용 (모디파이어 가격 제외)
+                                      const itemBasePrice = Number(item.price || 0) * Number(item.quantity || 1);
                                       const disc = computeItemDiscountAmount(item as any);
                                       if (disc > 0) {
-                                        const after = Math.max(0, Number((base - disc).toFixed(2)));
+                                        const after = Math.max(0, Number((itemBasePrice - disc).toFixed(2)));
                                         const d = (item as any).discount || {};
                                         const label = d.mode === 'percent'
                                           ? `-${Math.max(0, Math.min(100, Number(d.value || 0)))}%`
@@ -10066,7 +10295,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                            <div>
                                              {d.mode === 'percent' ? (
                                                <>
-                                                 <div className="text-gray-500 line-through text-xs">${base.toFixed(2)}</div>
+                                                 <div className="text-gray-500 line-through text-xs">${itemBasePrice.toFixed(2)}</div>
                                                  <div className="text-red-600 text-xs">
                                                    {`${Math.max(0, Math.min(100, Number(d.value || 0)))}% -$${disc.toFixed(2)}`}
                                                  </div>
@@ -10074,7 +10303,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                </>
                                             ) : (
                                               <>
-                                                <div className="text-gray-500 line-through text-xs">${base.toFixed(2)}</div>
+                                                <div className="text-gray-500 line-through text-xs">${itemBasePrice.toFixed(2)}</div>
                                                 <div className="text-red-600 text-xs">
                                                   -${disc.toFixed(2)}
                                                 </div>
@@ -10085,7 +10314,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                          );
                                       }
                                       return (
-                                        <div className="font-medium text-gray-800 text-sm">${base.toFixed(2)}</div>
+                                        <div className="font-medium text-gray-800 text-sm">${itemBasePrice.toFixed(2)}</div>
                                       );
                                     })()}
                                   </div>

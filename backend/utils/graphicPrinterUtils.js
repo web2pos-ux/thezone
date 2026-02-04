@@ -249,6 +249,8 @@ function renderKitchenTicketGraphic(orderData) {
   if (guestCountForHeight.length > 1) {
     estimatedHeight += guestCountForHeight.length * 50; // 각 게스트 구분선
   }
+  // 하단 여백 추가 (잘림 방지)
+  estimatedHeight += 80;
   estimatedHeight = Math.max(estimatedHeight, 300);
   
   // 캔버스 생성

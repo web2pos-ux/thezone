@@ -9,6 +9,7 @@ interface ModifierEntry {
   label: string;
   groupId: string;
   selectionType?: string;
+  price?: number;
 }
 
 interface ModifierPanelProps {
@@ -32,7 +33,7 @@ interface ModifierPanelProps {
   lockLayout?: boolean;
 }
 
-const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, onSelect, layoutSettings, modifierColors, setSelectedModifierIdForColor, lockLayout }) => {
+const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; price?: number; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, price, onSelect, layoutSettings, modifierColors, setSelectedModifierIdForColor, lockLayout }) => {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id, disabled: lockLayout });
   const [isHover, setIsHover] = React.useState(false);
   const baseTransform = CSS.Transform.toString(transform);
@@ -54,6 +55,10 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
     borderBottom: isSelected ? '2px solid rgba(0,0,0,0.25)' : '2px solid rgba(0,0,0,0.2)'
   };
   const bgClass = modifierColors[id] || layoutSettings.modifierDefaultColor;
+  // Debug: Log modifier color lookup
+  if (modifierColors[id]) {
+    console.log('🎨 [ModifierPanel] Found custom color for ID:', id, '→', modifierColors[id]);
+  }
   const isHex = isHexColor(bgClass || layoutSettings.modifierDefaultColor);
   const selectedBg = '#1E3A8A';
   const selectedIsHex = isHexColor(selectedBg);
@@ -94,8 +99,13 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
       className={className}
       title={`Color: ${bgClass}`}
     >
-      <div className={`${layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
-        {label}
+      <div className={`${layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
+        <span>{label}</span>
+        {layoutSettings.modifierShowPrices && price !== undefined && price !== 0 && (
+          <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">
+            {price > 0 ? '+' : ''}${price.toFixed(2)}
+          </span>
+        )}
       </div>
     </button>
   );
@@ -300,6 +310,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                           isSelected={!!isSelected}
                           groupId={entry.groupId}
                           selectionType={entry.selectionType}
+                          price={entry.price}
                           onSelect={handleModifierSelection}
                           layoutSettings={layoutSettings}
                           modifierColors={modifierColors}

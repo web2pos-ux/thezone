@@ -3,6 +3,14 @@
   "dealers": [],
   "accessLog": [
     {
+      "timestamp": "2026-02-04T10:53:31.356Z",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
       "timestamp": "2026-02-03T21:18:51.213Z",
       "dealerId": "SYSTEM",
       "dealerName": "System Admin",

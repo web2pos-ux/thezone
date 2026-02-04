@@ -4462,8 +4462,33 @@ const SalesPage: React.FC = () => {
     };
 
   const orderListFormatDate = (dateStr: string) => {
-      const d = new Date(dateStr);
+      // null/undefined/빈문자열 체크
+      if (!dateStr) return '--';
+      
+      let d: Date;
+      
+      // YYYY-MM-DD 형식인 경우 로컬 시간으로 파싱 (UTC 변환 방지)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        d = new Date(year, month - 1, day);
+      } else {
+        // 다른 형식 (ISO 타임스탬프 등)은 그대로 파싱
+        d = new Date(dateStr);
+      }
+      
+      // Invalid Date 체크
+      if (isNaN(d.getTime())) return '--';
+      
       return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    };
+    
+    // YYYY-MM-DD 문자열을 로컬 Date 객체로 변환하는 헬퍼 함수
+    const parseLocalDate = (dateStr: string): Date => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        return new Date(year, month - 1, day);
+      }
+      return new Date(dateStr);
     };
 
   const orderListGetChannelDisplay = (order: any) => {
