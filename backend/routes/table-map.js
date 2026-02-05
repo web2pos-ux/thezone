@@ -292,7 +292,15 @@ router.post('/elements', async (req, res) => {
     await dbRun('DELETE FROM table_map_elements WHERE floor = ?', [floor]);
     console.log(`✅ ${floor} Floor 기존 요소 삭제 완료`);
     
-    // 2. 새 요소 삽입 (하나씩)
+    // 2. 저장할 요소들의 ID가 다른 floor에 있으면 삭제 (ID 충돌 방지)
+    const elementIds = elements.map(el => String(el.id));
+    if (elementIds.length > 0) {
+      const placeholders = elementIds.map(() => '?').join(',');
+      await dbRun(`DELETE FROM table_map_elements WHERE element_id IN (${placeholders})`, elementIds);
+      console.log(`✅ 기존 중복 ID 삭제 완료`);
+    }
+    
+    // 3. 새 요소 삽입 (하나씩)
     for (const element of elements) {
       await dbRun(`
         INSERT INTO table_map_elements (

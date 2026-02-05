@@ -24,6 +24,7 @@ const BasicInfoPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('business-info');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [appVersion, setAppVersion] = useState<{ version: string; releaseDate: string; releaseNotes: string } | null>(null);
   const [profile, setProfile] = useState<any>({
     business_name: '',
     tax_number: '',
@@ -83,14 +84,15 @@ const BasicInfoPage: React.FC = () => {
     }));
   };
 
-  // Load profile
+  // Load profile and version
   useEffect(() => {
     (async () => {
       setLoading(true);
       try {
-        const [p, h] = await Promise.all([
+        const [p, h, v] = await Promise.all([
           fetch(`${API_URL}/admin-settings/business-profile`).then(r=>r.json()).catch(()=>null),
-          fetch(`${API_URL}/admin-settings/business-hours`).then(r=>r.json()).catch(()=>[])
+          fetch(`${API_URL}/admin-settings/business-hours`).then(r=>r.json()).catch(()=>[]),
+          fetch(`${API_URL}/app-update/version`).then(r=>r.json()).catch(()=>null)
         ]);
         if (p) setProfile(p);
         if (Array.isArray(h) && h.length > 0) {
@@ -102,6 +104,9 @@ const BasicInfoPage: React.FC = () => {
           setHours(merged);
         } else {
           setHours(getDefaultHours());
+        }
+        if (v?.success && v.data) {
+          setAppVersion(v.data);
         }
       } finally {
         setLoading(false);
@@ -808,6 +813,36 @@ const BasicInfoPage: React.FC = () => {
                 Go to Thezoneorder Sync
               </NavLink>
             </div>
+          </div>
+
+          {/* App Version Info */}
+          <div className="bg-gradient-to-r from-slate-100 to-gray-100 rounded-lg shadow p-4 border border-slate-200 mt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-slate-800 rounded-lg flex items-center justify-center">
+                  <span className="text-white text-xl font-bold">P</span>
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">TheZonePOS</h3>
+                  <p className="text-sm text-slate-600">Restaurant Point of Sale System</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-2xl font-bold text-slate-800">
+                  v{appVersion?.version || '---'}
+                </div>
+                <p className="text-xs text-slate-500">
+                  {appVersion?.releaseDate ? `Released: ${appVersion.releaseDate}` : ''}
+                </p>
+              </div>
+            </div>
+            {appVersion?.releaseNotes && (
+              <div className="mt-3 pt-3 border-t border-slate-200">
+                <p className="text-xs text-slate-500">
+                  <span className="font-medium">Release Notes:</span> {appVersion.releaseNotes}
+                </p>
+              </div>
+            )}
           </div>
         </div>
         )}

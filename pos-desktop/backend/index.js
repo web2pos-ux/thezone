@@ -540,6 +540,10 @@ app.use('/api/app-update', appUpdateRoutes);
 const firebaseSetupRoutes = require('./routes/firebase-setup');
 app.use('/api/firebase-setup', firebaseSetupRoutes);
 
+// Dealer Access Routes (딜러 전용 접근)
+const dealerAccessRoutes = require('./routes/dealer-access');
+app.use('/api/dealer-access', dealerAccessRoutes);
+
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
 app.use('/api/remote-sync', remoteSyncRoutes);

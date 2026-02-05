@@ -20,6 +20,26 @@ npm install
 build.bat
 ```
 
+### ⚠️ 빌드 전 필수 체크리스트
+
+빌드하기 전에 아래 파일들이 `pos-desktop/backend/config/`에 있는지 확인:
+
+| 파일 | 필수 | 설명 |
+|------|------|------|
+| `dealer-access.json` | ✅ | Dealer PIN 설정 (masterPin: 9998887117) |
+| `firebase-service-account.json` | ✅ | Firebase 인증 키 |
+| `app-version.json` | ✅ | 앱 버전 정보 (Business Info에 표시됨) |
+| `setup-status.json` | ⚪ | 초기 설정 상태 (선택) |
+
+**dealer-access.json 기본 내용:**
+```json
+{
+  "masterPin": "9998887117",
+  "dealers": [],
+  "accessLog": []
+}
+```
+
 ### 4. Electron 앱 빌드
 ```bash
 # 설치 프로그램 + 포터블 생성

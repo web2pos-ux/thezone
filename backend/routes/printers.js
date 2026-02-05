@@ -452,8 +452,14 @@ module.exports = (db) => {
         console.log(`🍳 [Printer API] First item:`, {
           name: firstItem.name,
           modifiers: firstItem.modifiers,
+          modifiersType: typeof firstItem.modifiers,
+          modifiersLength: Array.isArray(firstItem.modifiers) ? firstItem.modifiers.length : 'N/A',
           memo: firstItem.memo
         });
+        // Log detailed modifier structure if exists
+        if (Array.isArray(firstItem.modifiers) && firstItem.modifiers.length > 0) {
+          console.log(`🍳 [Printer API] First modifier structure:`, JSON.stringify(firstItem.modifiers[0], null, 2));
+        }
       }
       
       // 프론트엔드에서 items/orderInfo 형태로 보내거나, orderData로 보낼 수 있음

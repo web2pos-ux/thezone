@@ -320,7 +320,16 @@ async function installUpdate(zipPath, progressWindow) {
 /**
  * 메인 업데이트 프로세스
  */
+let isUpdateRunning = false;  // 중복 실행 방지
+
 async function runUpdateProcess() {
+  // 이미 실행 중이면 무시
+  if (isUpdateRunning) {
+    console.log('[Updater] Update process already running, skipping...');
+    return false;
+  }
+  isUpdateRunning = true;
+  
   try {
     // 1. 업데이트 확인
     const updateInfo = await checkForUpdates();
@@ -382,7 +391,10 @@ async function runUpdateProcess() {
     
   } catch (error) {
     console.error('[Updater] Update process error:', error);
+    isUpdateRunning = false;  // 오류 시 플래그 리셋
     return false;
+  } finally {
+    isUpdateRunning = false;  // 완료 시 플래그 리셋
   }
 }
 

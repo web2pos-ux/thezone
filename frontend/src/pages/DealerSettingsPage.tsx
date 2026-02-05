@@ -235,7 +235,7 @@ const DealerSettingsPage: React.FC = () => {
           </div>
           
           {/* PIN Input */}
-          <div className="mb-6">
+          <div className="mb-4">
             <label className="block text-purple-100 mb-2 text-sm font-medium">
               Dealer PIN
             </label>
@@ -247,14 +247,55 @@ const DealerSettingsPage: React.FC = () => {
                 setPinError('');
               }}
               onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
-              placeholder="Enter your dealer PIN"
+              placeholder="••••••"
               maxLength={10}
               className="w-full px-4 py-4 bg-white/10 border border-white/30 rounded-xl text-white text-center text-2xl tracking-widest placeholder-purple-300 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/30"
-              autoFocus
+              readOnly
             />
             {pinError && (
               <p className="text-red-400 text-sm mt-2 text-center">{pinError}</p>
             )}
+          </div>
+          
+          {/* Number Pad */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+              <button
+                key={num}
+                onClick={() => {
+                  if (pin.length < 10) {
+                    setPin(prev => prev + num);
+                    setPinError('');
+                  }
+                }}
+                className="py-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-2xl font-bold transition-all active:scale-95"
+              >
+                {num}
+              </button>
+            ))}
+            <button
+              onClick={() => setPin('')}
+              className="py-4 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-300 text-lg font-bold transition-all active:scale-95"
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => {
+                if (pin.length < 10) {
+                  setPin(prev => prev + '0');
+                  setPinError('');
+                }
+              }}
+              className="py-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-2xl font-bold transition-all active:scale-95"
+            >
+              0
+            </button>
+            <button
+              onClick={() => setPin(prev => prev.slice(0, -1))}
+              className="py-4 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/30 rounded-xl text-yellow-300 text-lg font-bold transition-all active:scale-95"
+            >
+              ←
+            </button>
           </div>
           
           {/* Verify Button */}
@@ -277,12 +318,12 @@ const DealerSettingsPage: React.FC = () => {
             )}
           </button>
           
-          {/* Back button */}
+          {/* Cancel button */}
           <button
             onClick={() => navigate(-1)}
-            className="w-full mt-4 py-3 bg-white/5 hover:bg-white/10 border border-white/20 rounded-xl text-purple-200 transition-all"
+            className="w-full mt-3 py-3 bg-white/5 hover:bg-white/10 border border-white/20 rounded-xl text-purple-200 transition-all"
           >
-            ← Back
+            Cancel
           </button>
           
           {/* Warning */}

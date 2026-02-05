@@ -2063,13 +2063,30 @@ const TableMapManagerPage = () => {
     }
 
     const newId = await generateElementNumber(selectedTableType);
+    
+    // 테이블 표시 번호 계산 (T1, T2... 형식) - Square와 Circle에만 적용
+    let displayText = '';
+    if (selectedTableType === 'rounded-rectangle' || selectedTableType === 'circle') {
+      // 현재 테이블 요소들 중 가장 큰 테이블 번호 찾기
+      const tableElements_ = tableElements.filter(el => 
+        el.type === 'rounded-rectangle' || el.type === 'circle'
+      );
+      const existingNumbers = tableElements_.map(el => {
+        const match = el.text?.match(/^T(\d+)$/);
+        return match ? parseInt(match[1]) : 0;
+      });
+      const maxNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
+      displayText = `T${maxNumber + 1}`;
+    }
+    // 나머지 요소는 displayText를 빈 문자열로 유지 (이름 표시 안함)
+    
     const newElement: TableElement = {
       id: newId,
       type: selectedTableType,
       position: { x: 50, y: 50 },
       size: getElementSize(selectedTableType),
       rotation: 0,
-      text: ['divider', 'wall'].includes(selectedTableType) ? '' : getElementDisplayName({ id: newId, type: selectedTableType } as TableElement),
+      text: displayText,
       fontSize: 20,
       color: elementColor,
       status: elementStatus // 항상 'Available'
@@ -2651,8 +2668,14 @@ const TableMapManagerPage = () => {
             }}
           />
         ) : isEditing ? (
-          // 편집 모드
-          <div className="w-full h-full flex flex-col items-center justify-center p-2 pointer-events-auto">
+          // 편집 모드 - 텍스트는 역회전하여 수평 유지
+          <div 
+            className="w-full h-full flex flex-col items-center justify-center p-2 pointer-events-auto"
+            style={{ 
+              transform: `rotate(${-(element.rotation || 0)}deg)`,
+              transformOrigin: 'center center'
+            }}
+          >
             <div className="flex gap-1 mb-1">
               <button
                 onClick={(e) => {
@@ -2723,10 +2746,14 @@ const TableMapManagerPage = () => {
             />
           </div>
         ) : (
-          // 일반 모드
+          // 일반 모드 - 텍스트는 역회전하여 수평 유지
           <div 
             className="w-full h-full flex items-center justify-center text-white font-bold"
-            style={{ fontSize: `${element.fontSize || 12}px` }}
+            style={{ 
+              fontSize: `${element.fontSize || 12}px`,
+              transform: `rotate(${-(element.rotation || 0)}deg)`,
+              transformOrigin: 'center center'
+            }}
           >
             {element.text || getElementDisplayName(element)}
           </div>
@@ -2846,19 +2873,14 @@ const TableMapManagerPage = () => {
     }
   };
 
-  // 테이블 번호 생성 함수
+  // 테이블 번호 생성 함수 - timestamp 기반으로 절대 충돌하지 않는 고유 ID 생성
   const generateElementNumber = async (type: string) => {
-    // 모든 요소의 ID를 고려하여 고유한 ID 생성
-    const currentFloorElements = await getSavedTableElements(selectedFloor);
-    const allIds = currentFloorElements.map((el: TableElement) => el.id);
+    // timestamp + random으로 절대 충돌하지 않는 ID 생성
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    const newId = timestamp * 1000 + random;
     
-    // 사용되지 않은 최소 ID 찾기
-    let newId = 1;
-    while (allIds.includes(newId)) {
-      newId++;
-    }
-    
-    console.log(`Generated unique ID: ${newId} for ${type} element`);
+    console.log(`Generated unique ID: ${newId} for ${type} element (timestamp-based)`);
     return newId;
   };
 
@@ -2867,8 +2889,8 @@ const TableMapManagerPage = () => {
     switch (element.type) {
       case 'rounded-rectangle':
       case 'circle':
-        // Circle과 Square에만 번호 부여
-        let displayName = `T${element.id}`;
+        // Circle과 Square에만 번호 부여 - text 필드 우선 사용 (T1, T2 형식)
+        let displayName = element.text || `T${element.id}`;
         
         // Occupied 상태인 경우 시간 표시
         if (element.status === 'Occupied' && tableOccupiedTimes[String(element.id)]) {
@@ -2884,26 +2906,18 @@ const TableMapManagerPage = () => {
         }
         
         return displayName;
+      // 나머지 요소들은 이름 표시 안함
       case 'entrance':
-        return 'Entrance'; // 번호 없음
       case 'counter':
-        return 'Counter'; // 번호 없음
       case 'washroom':
-        return 'WashRoom'; // 번호 없음
       case 'restroom':
-        return 'Restroom'; // 번호 없음
       case 'cook-area':
-        return 'Cook'; // 번호 없음
       case 'divider':
-        return ''; // Divider에는 이름을 넣지 않음
       case 'wall':
-        return ''; // Wall에도 이름을 넣지 않음
       case 'other':
-        return 'Other'; // 번호 없음
       case 'floor-label':
-        return element.text || 'Floor'; // 번호 없음
       default:
-        return 'Element'; // 번호 없음
+        return ''; // 이름 표시 안함
     }
   };
 
@@ -3554,7 +3568,7 @@ const TableMapManagerPage = () => {
 
       {/* 하단 90% - 테이블맵 요소들을 배열하는 화면 */}
       <div className="h-[90%] bg-gray-50 p-6">
-        <div className="bg-white rounded-lg shadow-lg h-full relative overflow-hidden flex items-center justify-center" onClick={handleCanvasClick}>
+        <div className="bg-white rounded-lg shadow-lg h-full relative overflow-auto flex items-start justify-start" onClick={handleCanvasClick}>
           {/* POS에 보여지는 메인 테이블맵 영역 (Fixed Resolution Canvas) */}
           <DndContext onDragEnd={(e) => { if (mapLocked) return; handleDragEnd(e); }}>
             <div 

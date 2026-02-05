@@ -13,10 +13,24 @@ interface ZReportData {
   togo_sales: number;
   online_sales: number;
   delivery_sales: number;
+  // Payment by type
   cash_sales: number;
   card_sales: number;
   other_sales: number;
+  // Payment by card brand
+  visa_sales: number;
+  mastercard_sales: number;
+  debit_sales: number;
+  other_card_sales: number;
+  // Tips
   tip_total: number;
+  cash_tips: number;
+  card_tips: number;
+  visa_tips: number;
+  mastercard_tips: number;
+  debit_tips: number;
+  other_card_tips: number;
+  // Adjustments
   refund_total: number;
   refund_count: number;
   void_total: number;
@@ -257,6 +271,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     const spaces = Math.max(1, LINE_WIDTH - left.length - right.length);
     return left + ' '.repeat(spaces) + right;
   };
+  // 3-column layout: Method, Gross(Total), Net(Sales)
+  const receipt3Col = (col1: string, col2: string, col3: string) => {
+    const col1Width = 16;
+    const col2Width = 13;
+    const col3Width = 13;
+    const c1 = col1.padEnd(col1Width).slice(0, col1Width);
+    const c2 = col2.padStart(col2Width);
+    const c3 = col3.padStart(col3Width);
+    return c1 + c2 + c3;
+  };
 
   if (!isOpen) return null;
 
@@ -437,7 +461,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 {receiptLeftRight('Total Orders:', `${zReportData?.order_count || 0}`)}{'\n'}
 {receiptLeftRight('Total Sales:', formatMoney(zReportData?.total_sales || 0))}{'\n'}
 {receiptLeftRight('Tax Collected:', formatMoney(zReportData?.tax_total || 0))}{'\n'}
-{receiptLeftRight('Tips:', formatMoney(zReportData?.tip_total || 0))}{'\n'}
 {'\n'}
 {receiptCenter('-- SALES BY CHANNEL --')}{'\n'}
 {receiptLine('-')}{'\n'}
@@ -448,9 +471,23 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 {'\n'}
 {receiptCenter('-- PAYMENT BREAKDOWN --')}{'\n'}
 {receiptLine('-')}{'\n'}
-{receiptLeftRight('Cash:', formatMoney(zReportData?.cash_sales || 0))}{'\n'}
-{receiptLeftRight('Card:', formatMoney(zReportData?.card_sales || 0))}{'\n'}
-{receiptLeftRight('Other:', formatMoney(zReportData?.other_sales || 0))}{'\n'}
+{receipt3Col('Method', 'Gross', 'Net')}{'\n'}
+{receipt3Col('', '(w/ Tip)', '(Sales)')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receipt3Col('Cash', formatMoney((zReportData?.cash_sales || 0) + (zReportData?.cash_tips || 0)), formatMoney(zReportData?.cash_sales || 0))}{'\n'}
+{(zReportData?.visa_sales || 0) > 0 || (zReportData?.visa_tips || 0) > 0 ? receipt3Col('Visa', formatMoney((zReportData?.visa_sales || 0) + (zReportData?.visa_tips || 0)), formatMoney(zReportData?.visa_sales || 0)) + '\n' : ''}
+{(zReportData?.mastercard_sales || 0) > 0 || (zReportData?.mastercard_tips || 0) > 0 ? receipt3Col('MasterCard', formatMoney((zReportData?.mastercard_sales || 0) + (zReportData?.mastercard_tips || 0)), formatMoney(zReportData?.mastercard_sales || 0)) + '\n' : ''}
+{(zReportData?.debit_sales || 0) > 0 || (zReportData?.debit_tips || 0) > 0 ? receipt3Col('Debit', formatMoney((zReportData?.debit_sales || 0) + (zReportData?.debit_tips || 0)), formatMoney(zReportData?.debit_sales || 0)) + '\n' : ''}
+{(zReportData?.other_card_sales || 0) > 0 || (zReportData?.other_card_tips || 0) > 0 ? receipt3Col('Other Card', formatMoney((zReportData?.other_card_sales || 0) + (zReportData?.other_card_tips || 0)), formatMoney(zReportData?.other_card_sales || 0)) + '\n' : ''}
+{(zReportData?.other_sales || 0) > 0 ? receipt3Col('Other', formatMoney(zReportData?.other_sales || 0), formatMoney(zReportData?.other_sales || 0)) + '\n' : ''}
+{receiptLine('-')}{'\n'}
+{receipt3Col('TOTAL', formatMoney((zReportData?.total_sales || 0) + (zReportData?.tip_total || 0)), formatMoney(zReportData?.total_sales || 0))}{'\n'}
+{'\n'}
+{receiptCenter('-- TIPS SUMMARY --')}{'\n'}
+{receiptLine('-')}{'\n'}
+{receiptLeftRight('Total Tips:', formatMoney(zReportData?.tip_total || 0))}{'\n'}
+{receiptLeftRight('  Cash Tips:', formatMoney(zReportData?.cash_tips || 0))}{'\n'}
+{receiptLeftRight('  Card Tips:', formatMoney(zReportData?.card_tips || 0))}{'\n'}
 {'\n'}
 {receiptCenter('-- ADJUSTMENTS --')}{'\n'}
 {receiptLine('-')}{'\n'}

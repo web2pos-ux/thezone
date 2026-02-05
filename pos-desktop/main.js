@@ -360,7 +360,16 @@ function createSplash() {
 /**
  * 앱 시작
  */
+let isStartingApp = false;  // 중복 실행 방지 플래그
+
 async function startApp() {
+  // 이미 시작 중이면 무시
+  if (isStartingApp) {
+    console.log('[App] startApp() already running, skipping...');
+    return;
+  }
+  isStartingApp = true;
+  
   const splash = createSplash();
 
   try {
@@ -398,6 +407,7 @@ async function startApp() {
   } catch (error) {
     console.error('[App] Startup error:', error);
     splash.close();
+    isStartingApp = false;  // 오류 시 플래그 리셋
     
     dialog.showErrorBox(
       'Startup Error',

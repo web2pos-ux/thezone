@@ -198,14 +198,33 @@ module.exports = (db) => {
 
       // Get payment breakdown
       // payment_method variants: CASH, VISA, MC, DEBIT, OTHER_CARD, GIFT, COUPON, OTHER
+      // 순매출 = amount - tip (팁 제외), 팁은 별도 계산
+      // 카드사별 분리: VISA, MasterCard, Debit, Other Card
       const paymentData = await dbGet(`
         SELECT 
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN amount ELSE 0 END), 0) as cash_sales,
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as card_sales,
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
-          COALESCE(SUM(tip), 0) as tip_total
+          -- Cash
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as cash_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN COALESCE(tip, 0) ELSE 0 END), 0) as cash_tips,
+          -- Visa
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'VISA' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as visa_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'VISA' THEN COALESCE(tip, 0) ELSE 0 END), 0) as visa_tips,
+          -- MasterCard
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('MC', 'MASTERCARD') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as mastercard_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('MC', 'MASTERCARD') THEN COALESCE(tip, 0) ELSE 0 END), 0) as mastercard_tips,
+          -- Debit
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'DEBIT' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as debit_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'DEBIT' THEN COALESCE(tip, 0) ELSE 0 END), 0) as debit_tips,
+          -- Other Card (AMEX, Discover, etc.)
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as other_card_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN COALESCE(tip, 0) ELSE 0 END), 0) as other_card_tips,
+          -- Other (Gift, Coupon, etc.)
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'MASTERCARD', 'DEBIT', 'OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as other_sales,
+          -- Totals
+          COALESCE(SUM(COALESCE(tip, 0)), 0) as tip_total,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as card_sales,
+          COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER') THEN COALESCE(tip, 0) ELSE 0 END), 0) as card_tips
         FROM payments 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at) = ? AND status = 'APPROVED'
       `, [targetDate]);
 
       // Get refund data (refunds table uses 'total' column)
@@ -270,7 +289,19 @@ module.exports = (db) => {
           cash_sales: paymentData?.cash_sales || 0,
           card_sales: paymentData?.card_sales || 0,
           other_sales: paymentData?.other_sales || 0,
+          // By card type
+          visa_sales: paymentData?.visa_sales || 0,
+          mastercard_sales: paymentData?.mastercard_sales || 0,
+          debit_sales: paymentData?.debit_sales || 0,
+          other_card_sales: paymentData?.other_card_sales || 0,
+          // Tips
           tip_total: paymentData?.tip_total || 0,
+          cash_tips: paymentData?.cash_tips || 0,
+          card_tips: paymentData?.card_tips || 0,
+          visa_tips: paymentData?.visa_tips || 0,
+          mastercard_tips: paymentData?.mastercard_tips || 0,
+          debit_tips: paymentData?.debit_tips || 0,
+          other_card_tips: paymentData?.other_card_tips || 0,
           // Refunds & Voids
           refund_total: refundData?.refund_total || 0,
           refund_count: refundData?.refund_count || 0,

@@ -2945,9 +2945,9 @@ const handleVoidPinClear = useCallback(() => {
               // 해당 게스트의 모든 결제 내역 수집
               const guestPayments = sessionPayments
                 .filter(p => p.guestNumber === guestNum)
-                .map(p => ({ method: p.method, amount: p.amount }));
+                .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
               // 현재 결제도 추가
-              guestPayments.push({ method, amount: currentPayment });
+              guestPayments.push({ method, amount: currentPayment, tip: tip || 0 });
               
               const guestReceiptData = {
                 header: {
@@ -3367,7 +3367,7 @@ const handleVoidPinClear = useCallback(() => {
               taxLines: qsrTaxLines,
               total: qsrTotal,
               adjustments: [],
-              payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount })),
+              payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
               change: 0,
               footer: { message: 'Thank you!' }
             };
@@ -3488,7 +3488,7 @@ const handleVoidPinClear = useCallback(() => {
             taxLines: totals.taxLines || [],
             total: grandTotal,
             adjustments: [],
-            payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount })),
+            payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
             change: paymentCompleteData?.change || 0,
             footer: { message: 'Thank you!' }
           };
@@ -8230,6 +8230,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
           loadPersistedPaidGuests();
+          
+          // If openPayment flag is set, open payment modal after loading
+          if (st.openPayment) {
+            setTimeout(() => setShowPaymentModal(true), 100);
+          }
         } catch {}
       } catch (e) {
         console.warn('Failed to load existing order by orderId:', e);
@@ -10383,7 +10388,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 guestNumber={item.guestNumber || 1} 
                                 rowIndex={index} 
                                 orderLineId={(item as any).orderLineId}
-                                isNearBottom={index >= orderItems.length - 3}
+                                isNearBottom={index >= orderItems.length - 3 && index > 0}
                               />
                             )}
                           </div>
@@ -10547,19 +10552,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               </div>
                             </>
                           )}
-                          {/* Display each tax line (GST, PST, etc.) */}
-                          {taxLines.map((taxLine, idx) => {
-                            const taxAmount = Number((taxLine.amount * discountRatio).toFixed(2));
+                          {/* Display each tax line using payTaxLinesAll for consistency with PaymentModal */}
+                          {payTaxLinesAll.map((taxLine: any, idx: number) => {
                             return (
                               <div key={`tax-${idx}`} className="flex justify-between">
                                 <span>{taxLine.name}:</span>
-                                <span>${fmt(taxAmount)}</span>
+                                <span>${fmt(taxLine.amount)}</span>
                               </div>
                             );
                           })}
                           <div className="flex justify-between text-base font-bold">
                             <span>Total:</span>
-                            <span>${fmt(totalAfterDiscount)}</span>
+                            <span>${fmt(payGrandAll)}</span>
                           </div>
                         </>
                       );
@@ -14148,6 +14152,61 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <>
                       {/* Action Buttons */}
                       <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                        {/* Pay Button - Only show for unpaid orders */}
+                        {(() => {
+                          const status = (orderListSelectedOrder.status || '').toLowerCase();
+                          const paymentStatus = (orderListSelectedOrder.paymentStatus || '').toLowerCase();
+                          const isPaid = status === 'paid' || status === 'closed' || status === 'completed' || 
+                                        paymentStatus === 'paid' || paymentStatus === 'completed' ||
+                                        orderListSelectedOrder.paid === true;
+                          if (!isPaid) {
+                            return (
+                              <button
+                                onClick={async () => {
+                                  // Load order items and open payment modal directly
+                                  const orderId = orderListSelectedOrder.id;
+                                  try {
+                                    const res = await fetch(`${API_URL}/orders/${encodeURIComponent(orderId)}`);
+                                    if (!res.ok) throw new Error('Failed to load order');
+                                    const json = await res.json();
+                                    const items = Array.isArray(json.items) ? json.items : [];
+                                    
+                                    // Set order items
+                                    setOrderItems(items.map((it: any) => ({
+                                      id: it.item_id?.toString() || it.id?.toString() || Math.random().toString(),
+                                      name: it.name,
+                                      quantity: it.quantity || 1,
+                                      price: it.price || 0,
+                                      totalPrice: it.price || 0,
+                                      type: (Number(it.price || 0) < 0) ? 'discount' : 'item',
+                                      guestNumber: (typeof it.guest_number === 'number' && it.guest_number > 0) ? it.guest_number : 1,
+                                      modifiers: (() => { try { return JSON.parse(it.modifiers_json || '[]'); } catch { return []; } })(),
+                                      memo: (() => { try { return it.memo_json ? JSON.parse(it.memo_json) : undefined; } catch { return undefined; } })(),
+                                      discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
+                                      splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
+                                      orderLineId: it.order_line_id || undefined
+                                    })));
+                                    
+                                    // Set order ID
+                                    savedOrderIdRef.current = orderId;
+                                    
+                                    // Close order list modal and open payment modal
+                                    setShowOrderListModal(false);
+                                    setShowPaymentModal(true);
+                                  } catch (e) {
+                                    console.error('Failed to load order for payment:', e);
+                                    alert('Failed to load order. Please try again.');
+                                  }
+                                }}
+                                style={{ flex: 3 }}
+                                className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-base font-bold"
+                              >
+                                💳 Pay
+                              </button>
+                            );
+                          }
+                          return null;
+                        })()}
                         <button
                           onClick={handleOrderListPrintBill}
                           style={{ flex: 5 }}

@@ -18,6 +18,9 @@ import {
 const CustomerReportPage = () => {
   const [selectedPeriod, setSelectedPeriod] = useState('month');
 
+  // 이 기능은 현재 개발 중입니다
+  const isFeatureDisabled = true;
+
   // 샘플 데이터
   const customerGrowthData = [
     { month: 'Jan', new: 45, returning: 120, total: 165 },
@@ -60,17 +63,29 @@ const CustomerReportPage = () => {
         <p className="text-gray-600">Customer behavior analysis and insights</p>
       </div>
 
+      {/* 개발 중 안내 배너 */}
+      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+        <div className="flex items-center">
+          <span className="text-2xl mr-3">🚧</span>
+          <div>
+            <h3 className="font-semibold text-yellow-800">Coming Soon - Sample Data Displayed</h3>
+            <p className="text-sm text-yellow-600">This feature is currently under development. The data shown below is sample data for preview purposes only.</p>
+          </div>
+        </div>
+      </div>
+
       {/* Period Selector */}
       <div className="mb-6">
         <div className="flex space-x-2">
           {['week', 'month', 'quarter', 'year'].map((period) => (
             <button
               key={period}
-              onClick={() => setSelectedPeriod(period)}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              disabled={isFeatureDisabled}
+              onClick={() => !isFeatureDisabled && setSelectedPeriod(period)}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors cursor-not-allowed ${
                 selectedPeriod === period
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-100'
+                  ? 'bg-gray-400 text-white'
+                  : 'bg-gray-200 text-gray-500'
               }`}
             >
               {period.charAt(0).toUpperCase() + period.slice(1)}

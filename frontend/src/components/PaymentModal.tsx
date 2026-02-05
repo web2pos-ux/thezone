@@ -379,8 +379,24 @@ useEffect(() => {
           scopeDueNow = Math.max(0, Number((fixedGrand - confirmedTotalNow).toFixed(2)));
         }
         // Cash일 때는 입력값을 그대로 사용 (Change 발생), Cash가 아닐 때만 Due에 맞춰 clamp
-        const finalAmount = (effectiveMethod === 'CASH') ? rawAmt : Math.min(rawAmt, scopeDueNow);
-        const t = parsedTip;
+        // 카드 결제 시: 입력 금액이 Due보다 크면 초과분을 자동으로 팁으로 처리
+        const isCardPayment = ['DEBIT', 'VISA', 'MASTERCARD', 'OTHER CARD', 'CARD'].includes(effectiveMethod.toUpperCase());
+        let finalAmount: number;
+        let t: number;
+        
+        if (effectiveMethod === 'CASH') {
+          // 현금: 입력값 그대로 사용 (Change 발생)
+          finalAmount = rawAmt;
+          t = parsedTip;
+        } else if (isCardPayment && rawAmt > scopeDueNow && parsedTip === 0) {
+          // 카드 결제 + 입력 금액 > Due + 팁 미입력 시: 초과분 자동 팁 처리
+          finalAmount = scopeDueNow;
+          t = Number((rawAmt - scopeDueNow).toFixed(2));
+        } else {
+          // 그 외: 기존 로직 (Due 이하로 제한, 팁은 수동 입력값 사용)
+          finalAmount = Math.min(rawAmt, scopeDueNow);
+          t = parsedTip;
+        }
         // OK 버튼 클릭 시 lastChange를 즉시 null로 설정하여 change 변수를 사용하도록 함
         setLastChange(null);
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
@@ -541,14 +557,30 @@ useEffect(() => {
           scopeDueNow = Math.max(0, Number((fixedGrand - confirmedTotalNow).toFixed(2)));
         }
         // Cash일 때는 입력값을 그대로 사용 (Change 발생), Cash가 아닐 때만 Due에 맞춰 clamp
-        const finalAmount = (effectiveMethod === 'CASH') ? currentAmt : Math.min(currentAmt, scopeDueNow);
-        const t = parsedTip;
+        // 카드 결제 시: 입력 금액이 Due보다 크면 초과분을 자동으로 팁으로 처리
+        const isCardPayment2 = ['DEBIT', 'VISA', 'MASTERCARD', 'OTHER CARD', 'CARD'].includes(effectiveMethod.toUpperCase());
+        let finalAmount: number;
+        let t: number;
+        
+        if (effectiveMethod === 'CASH') {
+          // 현금: 입력값 그대로 사용 (Change 발생)
+          finalAmount = currentAmt;
+          t = parsedTip;
+        } else if (isCardPayment2 && currentAmt > scopeDueNow && parsedTip === 0) {
+          // 카드 결제 + 입력 금액 > Due + 팁 미입력 시: 초과분 자동 팁 처리
+          finalAmount = scopeDueNow;
+          t = Number((currentAmt - scopeDueNow).toFixed(2));
+        } else {
+          // 그 외: 기존 로직 (Due 이하로 제한, 팁은 수동 입력값 사용)
+          finalAmount = Math.min(currentAmt, scopeDueNow);
+          t = parsedTip;
+        }
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
         setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount }]);
         setRawAmountDigits('');
         await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)) });
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
-        if (effectiveMethod !== 'CASH' && currentAmt > finalAmount) {
+        if (effectiveMethod !== 'CASH' && currentAmt > finalAmount && !isCardPayment2) {
           showClampPopup(currentAmt, finalAmount, effectiveMethod);
         }
         setAmount('0.00');
@@ -589,6 +621,7 @@ useEffect(() => {
   const change = useMemo(() => {
     // Change는 "현금으로 지불한 금액이 실제 필요한 금액보다 많을 때의 초과분"만 표시한다.
     // Cash 결제의 경우, Due가 0이어도 현금을 더 많이 받았으면 Change를 계산해야 함
+    // 팁은 거스름돈에서 빠져야 함: Change = Cash - Total - Tip
     
     // 현금으로 지불한 금액 (확정된 현금 + 입력 중인 현금 금액)
     const projectedCash = Number(((cashPaidConfirmed + ((method === 'CASH') ? parsedAmount : 0))).toFixed(2));
@@ -597,18 +630,21 @@ useEffect(() => {
     // fixedGrand에서 비현금 결제만 빼서 계산
     const dueBeforeCash = Math.max(0, Number((fixedGrand - nonCashPaidConfirmed).toFixed(2)));
     
-    // Change = 현금 지불액 - 현금 결제 전 Due (현금이 더 많을 때만)
+    // 팁 금액 (입력 중인 팁)
+    const tipAmount = parsedTip || 0;
+    
+    // Change = 현금 지불액 - 현금 결제 전 Due - 팁 (현금이 더 많을 때만)
     // Cash가 아닌 결제 수단이면 Change는 0
     if (method !== 'CASH' && parsedAmount === 0) {
       // Cash 결제가 없고 입력 중인 금액도 Cash가 아니면 Change는 0
-      const ch = Math.max(0, Number((cashPaidConfirmed - dueBeforeCash).toFixed(2)));
+      const ch = Math.max(0, Number((cashPaidConfirmed - dueBeforeCash - tipAmount).toFixed(2)));
       return ch;
     }
     
     // Cash 결제가 있거나 입력 중인 경우
-    const ch = Math.max(0, Number((projectedCash - dueBeforeCash).toFixed(2)));
+    const ch = Math.max(0, Number((projectedCash - dueBeforeCash - tipAmount).toFixed(2)));
     return ch;
-  }, [fixedGrand, cashPaidConfirmed, nonCashPaidConfirmed, method, parsedAmount]);
+  }, [fixedGrand, cashPaidConfirmed, nonCashPaidConfirmed, method, parsedAmount, parsedTip]);
  
   // canComplete: 잔액이 0에 충분히 근접하면 완료 가능
   const canComplete = useMemo(() => Math.abs(due) < 0.005, [due]);
@@ -1004,6 +1040,19 @@ const addQuick = async (q: number) => {
                                         <span className={`text-xl font-bold text-red-700`}>Change $</span>
                                         <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney(change)}</span>
                                     </div>
+                                    {/* Click to add Change as Tip */}
+                                    {change > 0 && (
+                                        <button
+                                            type="button"
+                                            className="mt-1 px-3 py-1 text-sm font-medium text-green-700 bg-green-100 hover:bg-green-200 rounded-full border border-green-300 transition-colors"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setTip(change.toFixed(2));
+                                            }}
+                                        >
+                                            💰 Click to add as Tip
+                                        </button>
+                                    )}
                                 </div>
 								<div className="h-2" />
 								{/* Amounts group */}

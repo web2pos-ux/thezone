@@ -326,7 +326,7 @@ const PinScreen: React.FC<{
             </div>
             
             {/* Dealer PIN Input */}
-            <div className="mb-6">
+            <div className="mb-4">
               <input
                 type="password"
                 value={dealerPin}
@@ -338,11 +338,52 @@ const PinScreen: React.FC<{
                 placeholder="Dealer PIN"
                 maxLength={10}
                 className="w-full px-4 py-4 bg-white/10 border border-purple-500/30 rounded-xl text-white text-center text-2xl tracking-widest placeholder-purple-300 focus:outline-none focus:border-purple-400"
-                autoFocus
+                readOnly
               />
               {dealerPinError && (
                 <p className="text-red-400 text-sm mt-2 text-center">{dealerPinError}</p>
               )}
+            </div>
+            
+            {/* Number Pad */}
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                <button
+                  key={num}
+                  onClick={() => {
+                    if (dealerPin.length < 10) {
+                      setDealerPin(prev => prev + num);
+                      setDealerPinError('');
+                    }
+                  }}
+                  className="py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-xl font-bold transition-all active:scale-95"
+                >
+                  {num}
+                </button>
+              ))}
+              <button
+                onClick={() => setDealerPin('')}
+                className="py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-300 text-sm font-bold transition-all active:scale-95"
+              >
+                Clear
+              </button>
+              <button
+                onClick={() => {
+                  if (dealerPin.length < 10) {
+                    setDealerPin(prev => prev + '0');
+                    setDealerPinError('');
+                  }
+                }}
+                className="py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-xl font-bold transition-all active:scale-95"
+              >
+                0
+              </button>
+              <button
+                onClick={() => setDealerPin(prev => prev.slice(0, -1))}
+                className="py-3 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/30 rounded-xl text-yellow-300 text-sm font-bold transition-all active:scale-95"
+              >
+                ←
+              </button>
             </div>
             
             {/* Buttons */}

@@ -1635,9 +1635,9 @@ const handleVoidPinClear = useCallback(() => {
               // 해당 게스트의 모든 결제 내역 수집
               const guestPayments = sessionPayments
                 .filter(p => p.guestNumber === guestNum)
-                .map(p => ({ method: p.method, amount: p.amount }));
+                .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
               // 현재 결제도 추가
-              guestPayments.push({ method, amount: currentPayment });
+              guestPayments.push({ method, amount: currentPayment, tip: tip || 0 });
               
               const guestReceiptData = {
                 header: {
@@ -1932,7 +1932,8 @@ const handleVoidPinClear = useCallback(() => {
           total: expectedGrand,
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
-            amount: p.amount || 0
+            amount: p.amount || 0,
+            tip: p.tip || 0
           })),
           change: 0,
           footer: {}
@@ -6401,6 +6402,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
           loadPersistedPaidGuests();
+          
+          // If openPayment flag is set, open payment modal after loading
+          if (st.openPayment) {
+            setTimeout(() => setShowPaymentModal(true), 100);
+          }
         } catch {}
       } catch (e) {
         console.warn('Failed to load existing order by orderId:', e);
@@ -8471,7 +8477,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 guestNumber={item.guestNumber || 1} 
                                 rowIndex={index} 
                                 orderLineId={(item as any).orderLineId}
-                                isNearBottom={index >= orderItems.length - 3}
+                                isNearBottom={index >= orderItems.length - 3 && index > 0}
                               />
                             )}
                           </div>

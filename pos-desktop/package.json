@@ -1,6 +1,6 @@
 {
   "name": "thezonepos",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TheZonePOS - Restaurant POS System",
   "main": "main.js",
   "scripts": {

@@ -96,4 +96,54 @@ Essential features for system security that must be implemented:
   - 즉시 UI 상태 업데이트
   - 4가지 시나리오 모두 지원 (주문 유무 조합)
 
-If edits are required, they must be done in a separate branch and reviewed, or run with `ALLOW_MOVE_MERGE_EDITS=1` for one-off commits (not recommended). 
+- **QSR Mode (완성됨 - 2026-02-04):**
+  - `frontend/src/pages/QsrOrderPage.tsx` - QSR 주문 페이지 전체
+  - `frontend/src/pages/QsrPage.tsx` - QSR 대시보드
+  
+  **⚠️ 수정 전 반드시 사용자 컨펌 필요!**
+  - 주문 흐름 (메뉴 선택, 모디파이어, 수량 조절)
+  - 결제 처리 (Payment Modal, Split Bill)
+  - Order History 기능
+  - 카테고리/모디파이어 표시 로직
+  - 프린터 연동
+
+- **Printer/Graphic Output (완성됨 - 2026-02-04):**
+  - `backend/utils/graphicPrinterUtils.js` - 이미지 출력 렌더링 (Kitchen/Receipt/Bill)
+  - `backend/routes/printers.js` - 프린터 API 라우트
+  - `backend/config/defaultPrinterLayouts.js` - 프린터 레이아웃 기본값
+  
+  **출력 폼 종류 (3가지):**
+  - `renderKitchenTicketGraphic()` - 주방 티켓
+  - `renderReceiptGraphic()` - 영수증
+  - `renderBillGraphic()` - 청구서
+  
+  **프론트엔드 프린트 함수 (중복 존재하지만 안정적으로 동작 중):**
+  - `QsrOrderPage.tsx`: printKitchenOrders(), handlePrintBill(), handleOrderListPrintBill/Kitchen()
+  - `OrderPage.tsx`: printKitchenOrders(), handlePrintBill()
+  - `SalesPage.tsx`: handleOrderListPrintBill(), handleOrderListPrintKitchen()
+
+If edits are required, they must be done in a separate branch and reviewed, or run with `ALLOW_MOVE_MERGE_EDITS=1` for one-off commits (not recommended).
+
+**QSR 모드 수정 시:** 반드시 사용자에게 "QSR 모드의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것.
+
+**프린터 출력 수정 시:** 반드시 사용자에게 "프린터 출력의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것.
+
+- **Table Map Manager (완성됨 - 2026-02-04):**
+  - `frontend/src/pages/TableMapManagerPage.tsx` - 테이블맵 생성/편집 페이지 전체
+  - `frontend/src/pages/SalesPage.tsx` - 테이블맵 렌더링 및 표시 (getElementStyle, getElementDisplayName, getElementClass 함수)
+  - `backend/routes/table-map.js` - 테이블맵 API 라우트
+  - `backend/setup-table-map-db.js` - 테이블맵 DB 스키마
+  
+  **핵심 기능 (수정 금지):**
+  - 테이블 요소 생성 (Square, Circle만 T1, T2 이름 부여)
+  - 드래그 & 드롭 이동
+  - 리사이즈 및 회전 (텍스트는 수평 유지)
+  - 테이블 번호 생성 (timestamp 기반 고유 ID + 순차적 표시 번호)
+  - 좌표 스케일링 (백오피스 ↔ SalesPage 일치)
+  - Floor 관리 (다중 층 지원)
+  - Screen Size 설정
+  - Undo/Redo 히스토리
+  
+  **⚠️ 수정 전 반드시 사용자 컨펌 필요!**
+
+**테이블맵 수정 시:** 반드시 사용자에게 "테이블맵의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것. 

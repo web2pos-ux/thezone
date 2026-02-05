@@ -486,8 +486,8 @@ const SalesPage: React.FC = () => {
   const [isMoveMergeMode, setIsMoveMergeMode] = useState<boolean>(false);
   const [isMergeInProgress, setIsMergeInProgress] = useState<boolean>(false); // ë”ë¸” í´ë¦­ ë°©ì§€
   const [sourceTableId, setSourceTableId] = useState<string | null>(null);
-  const [sourceTogoOrder, setSourceTogoOrder] = useState<any | null>(null); // Togo â†’ Togo ë¨¸ì§€ìš©
-  const [sourceOnlineOrder, setSourceOnlineOrder] = useState<any | null>(null); // Online â†’ Togo ë¨¸ì§€ìš©
+  const [sourceTogoOrder, setSourceTogoOrder] = useState<any | null>(null); // Togo → Togo ë¨¸ì§€ìš©
+  const [sourceOnlineOrder, setSourceOnlineOrder] = useState<any | null>(null); // Online → Togo ë¨¸ì§€ìš©
   const [moveMergeStatus, setMoveMergeStatus] = useState<string>('');
   const [sourceSelectionInfo, setSourceSelectionInfo] = useState<{ tableId: string; label: string; orderId?: number | string | null } | null>(null);
   const [selectionChoice, setSelectionChoice] = useState<'ALL' | PartialSelectionPayload | null>(null);
@@ -600,7 +600,7 @@ const SalesPage: React.FC = () => {
       onlineOrderAudioRef.current.currentTime = 0;
       onlineOrderAudioRef.current.volume = 1.0;
       onlineOrderAudioRef.current.play()
-        .then(() => console.log('ðŸ”” ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ìž¬ìƒ'))
+        .then(() => console.log('🔄 ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ìž¬ìƒ'))
         .catch(err => console.warn('ì•Œë¦¼ìŒ ìž¬ìƒ ì‹¤íŒ¨:', err.message));
     } catch (error) {
       console.error('ì˜¤ë””ì˜¤ ìž¬ìƒ ì˜¤ë¥˜:', error);
@@ -652,7 +652,7 @@ const SalesPage: React.FC = () => {
           if (guestNumbers.size <= 1) {
             // ìŠ¤í”Œë¦¿ë˜ì§€ ì•ŠìŒ - ë°”ë¡œ ALL ì„ íƒ
             setSelectionChoice('ALL');
-            setMoveMergeStatus(`âœ“ [Move All] ${label} â†’ Select destination`);
+            setMoveMergeStatus(`âœ“ [Move All] ${label} → Select destination`);
             return;
           }
         }
@@ -888,7 +888,13 @@ const SalesPage: React.FC = () => {
   const leftWidthPx = Math.round(frameWidthPx * (66 / 100));
   const rightWidthPx = Math.max(0, frameWidthPx - leftWidthPx);
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
-  const elementScale = 1;
+  // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
+  // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
+  const boMapHeight = frameHeightPx * 0.93;
+  const boMapWidth = frameWidthPx * 0.66;
+  const elementScaleX = leftWidthPx / boMapWidth;
+  const elementScaleY = contentHeightPx / boMapHeight;
+  const elementScale = Math.min(elementScaleX, elementScaleY);
   const KEYBOARD_RESERVED_HEIGHT = 260;
   const TOGO_MODAL_MAX_WIDTH = 900;
   const togoModalMaxHeight = Math.max(360, frameHeightPx - KEYBOARD_RESERVED_HEIGHT - 32);
@@ -1661,8 +1667,8 @@ const SalesPage: React.FC = () => {
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
         
-        // ðŸ”” ì•Œë¦¼ìŒì€ OnlineOrderPanelì˜ SSEì—ì„œ ìž¬ìƒë¨ (ì¤‘ë³µ ë°©ì§€)
-        console.log('ðŸ”” ìƒˆ ì˜¨ë¼ì¸ ì£¼ë¬¸ ê°ì§€:', newOrder.id);
+        // 🔄 ì•Œë¦¼ìŒì€ OnlineOrderPanelì˜ SSEì—ì„œ ìž¬ìƒë¨ (ì¤‘ë³µ ë°©ì§€)
+        console.log('🔄 ìƒˆ ì˜¨ë¼ì¸ ì£¼ë¬¸ ê°ì§€:', newOrder.id);
         
         if (prepTimeSettings.thezoneorder.mode === 'auto') {
           // Auto ëª¨ë“œ: ìžë™ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
@@ -2031,22 +2037,28 @@ const SalesPage: React.FC = () => {
   const loadTogoOrders = useCallback(async () => {
     try {
       // PENDINGê³¼ PAID ìƒíƒœ ëª¨ë‘ ë¶ˆëŸ¬ì˜¤ê¸° (PICKED_UPì€ ì œì™¸) - TOGO + DELIVERY
-      const [togoPendingRes, togoPaidRes, deliveryPendingRes, deliveryPaidRes, deliveryOrdersRes] = await Promise.all([
+      const [togoOpenRes, togoPendingRes, togoPaidRes, deliveryOpenRes, deliveryPendingRes, deliveryPaidRes, deliveryOrdersRes] = await Promise.all([
+        fetch(`${API_URL}/orders?type=TOGO&status=OPEN&limit=50`),
         fetch(`${API_URL}/orders?type=TOGO&status=PENDING&limit=50`),
         fetch(`${API_URL}/orders?type=TOGO&status=PAID&limit=50`),
+        fetch(`${API_URL}/orders?type=DELIVERY&status=OPEN&limit=50`),
         fetch(`${API_URL}/orders?type=DELIVERY&status=PENDING&limit=50`),
         fetch(`${API_URL}/orders?type=DELIVERY&status=PAID&limit=50`),
         fetch(`${API_URL}/orders/delivery-orders`), // delivery_orders í…Œì´ë¸”ì—ì„œë„ ë¶ˆëŸ¬ì˜¤ê¸°
       ]);
       
+      const togoOpenJson = togoOpenRes.ok ? await togoOpenRes.json() : { orders: [] };
       const togoPendingJson = togoPendingRes.ok ? await togoPendingRes.json() : { orders: [] };
       const togoPaidJson = togoPaidRes.ok ? await togoPaidRes.json() : { orders: [] };
+      const deliveryOpenJson = deliveryOpenRes.ok ? await deliveryOpenRes.json() : { orders: [] };
       const deliveryPendingJson = deliveryPendingRes.ok ? await deliveryPendingRes.json() : { orders: [] };
       const deliveryPaidJson = deliveryPaidRes.ok ? await deliveryPaidRes.json() : { orders: [] };
       const deliveryOrdersJson = deliveryOrdersRes.ok ? await deliveryOrdersRes.json() : { orders: [] };
       
+      const togoOpenOrders = Array.isArray(togoOpenJson.orders) ? togoOpenJson.orders : [];
       const togoPendingOrders = Array.isArray(togoPendingJson.orders) ? togoPendingJson.orders : [];
       const togoPaidOrders = Array.isArray(togoPaidJson.orders) ? togoPaidJson.orders : [];
+      const deliveryOpenOrders = Array.isArray(deliveryOpenJson.orders) ? deliveryOpenJson.orders : [];
       const deliveryPendingOrders = Array.isArray(deliveryPendingJson.orders) ? deliveryPendingJson.orders : [];
       const deliveryPaidOrders = Array.isArray(deliveryPaidJson.orders) ? deliveryPaidJson.orders : [];
       const deliveryMetaOrders = Array.isArray(deliveryOrdersJson.orders) ? deliveryOrdersJson.orders : [];
@@ -2058,12 +2070,12 @@ const SalesPage: React.FC = () => {
       
       // ë‘ ëª©ë¡ í•©ì¹˜ê¸° (ì¤‘ë³µ ì œê±°)
       const orderMap = new Map();
-      [...togoPendingOrders, ...togoPaidOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach(o => orderMap.set(o.id, o));
+      [...togoOpenOrders, ...togoPendingOrders, ...togoPaidOrders, ...deliveryOpenOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach(o => orderMap.set(o.id, o));
       
       // orders í…Œì´ë¸”ì˜ delivery ì£¼ë¬¸ì—ì„œ table_idë¡œ delivery_orders.id ë§¤í•‘ ìƒì„±
       // table_id = "DL" + delivery_orders.id í˜•ì‹
       const tableIdToOrderId = new Map();
-      [...deliveryPendingOrders, ...deliveryPaidOrders].forEach((o: any) => {
+      [...deliveryOpenOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach((o: any) => {
         if (o.table_id && String(o.table_id).startsWith('DL')) {
           const deliveryMetaId = String(o.table_id).substring(2); // "DL" ì œê±°
           tableIdToOrderId.set(deliveryMetaId, o.id);
@@ -2285,7 +2297,7 @@ const SalesPage: React.FC = () => {
       
       // Move/Merge ëª¨ë“œì¼ ë•Œ
       if (isMoveMergeMode) {
-        // 1. í…Œì´ë¸” â†’ Togo ë¨¸ì§€ (sourceTableIdê°€ ì„¤ì •ë¨)
+        // 1. í…Œì´ë¸” → Togo ë¨¸ì§€ (sourceTableIdê°€ ì„¤ì •ë¨)
         if (sourceTableId && selectionChoice) {
           console.log('[handleVirtualOrderCardClick] Table to Togo merge');
           const targetLabel = channel === 'togo' 
@@ -2293,7 +2305,7 @@ const SalesPage: React.FC = () => {
             : `Online #${order.number ?? order.id}`;
           
           try {
-            setMoveMergeStatus(`ðŸ”„ Merging to ${targetLabel}...`);
+            setMoveMergeStatus(`🔄 Merging to ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-to-togo`, {
               method: 'POST',
@@ -2357,7 +2369,7 @@ const SalesPage: React.FC = () => {
           return;
         }
         
-        // 2. Togo â†’ Togo ë¨¸ì§€ (sourceTogoOrderê°€ ì„¤ì •ë¨)
+        // 2. Togo → Togo ë¨¸ì§€ (sourceTogoOrderê°€ ì„¤ì •ë¨)
         if (sourceTogoOrder) {
           // ê°™ì€ Togo ì„ íƒ ë°©ì§€
           if (sourceTogoOrder.id === order.id) {
@@ -2378,7 +2390,7 @@ const SalesPage: React.FC = () => {
           
           try {
             setIsMergeInProgress(true);
-            setMoveMergeStatus(`ðŸ”„ Merging ${sourceLabel} â†’ ${targetLabel}...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
               method: 'POST',
@@ -2398,7 +2410,7 @@ const SalesPage: React.FC = () => {
               clearMoveMergeSelection();
               loadTogoOrders();
               
-              setMoveMergeStatus(result.message || `âœ… Merged ${sourceLabel} â†’ ${targetLabel}`);
+              setMoveMergeStatus(result.message || `âœ… Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
               setIsMergeInProgress(false);
@@ -2422,7 +2434,7 @@ const SalesPage: React.FC = () => {
           return;
         }
         
-        // 3. Online â†’ Togo ë¨¸ì§€ (sourceOnlineOrderê°€ ì„¤ì •ë¨)
+        // 3. Online → Togo ë¨¸ì§€ (sourceOnlineOrderê°€ ì„¤ì •ë¨)
         if (sourceOnlineOrder && channel === 'togo') {
           // ë”ë¸” í´ë¦­ ë°©ì§€
           if (isMergeInProgress) {
@@ -2447,7 +2459,7 @@ const SalesPage: React.FC = () => {
           
           try {
             setIsMergeInProgress(true);
-            setMoveMergeStatus(`ðŸ”„ Merging ${sourceLabel} â†’ ${targetLabel}...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${targetLabel}...`);
             
             const response = await fetch(`${API_URL}/table-operations/merge-togo-to-togo`, {
               method: 'POST',
@@ -2468,7 +2480,7 @@ const SalesPage: React.FC = () => {
               loadTogoOrders();
               loadOnlineOrders(); // ì˜¨ë¼ì¸ ì£¼ë¬¸ ëª©ë¡ ìƒˆë¡œê³ ì¹¨
               
-              setMoveMergeStatus(result.message || `âœ… Merged ${sourceLabel} â†’ ${targetLabel}`);
+              setMoveMergeStatus(result.message || `âœ… Merged ${sourceLabel} → ${targetLabel}`);
               setTimeout(() => setMoveMergeStatus(''), 800);
             } else {
               setIsMergeInProgress(false);
@@ -2497,11 +2509,11 @@ const SalesPage: React.FC = () => {
           if (channel === 'togo') {
             const sourceLabel = `Togo #${order.id}`;
             setSourceTogoOrder(order);
-            setMoveMergeStatus(`âœ“ Source: ${sourceLabel} â†’ Select destination Togo`);
+            setMoveMergeStatus(`âœ“ Source: ${sourceLabel} → Select destination Togo`);
           } else if (channel === 'online') {
             const sourceLabel = `Online #${order.number ?? order.id}`;
             setSourceOnlineOrder(order);
-            setMoveMergeStatus(`âœ“ Source: ${sourceLabel} â†’ Select destination Togo`);
+            setMoveMergeStatus(`âœ“ Source: ${sourceLabel} → Select destination Togo`);
           }
           return;
         }
@@ -2742,7 +2754,7 @@ const SalesPage: React.FC = () => {
       );
       const label = names.length ? names.join(', ') : 'Promotion';
       promotionInsight = {
-        message: `${label} â€¢ -${formatCurrency(totalBenefit)}`,
+        message: `${label} · -${formatCurrency(totalBenefit)}`,
         tone: 'info',
       };
     }
@@ -3851,7 +3863,7 @@ const SalesPage: React.FC = () => {
           }
         });
       } else if (currentStatus === 'Reserved') {
-        // Reserved â†’ Occupied (ì¦‰ì‹œ ë³€ê²½)
+        // Reserved → Occupied (ì¦‰ì‹œ ë³€ê²½)
         await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Occupied' })
         });
@@ -3873,7 +3885,7 @@ const SalesPage: React.FC = () => {
           }
         });
       } else if (currentStatus === 'Preparing') {
-        // Preparing â†’ Available (ì²­ì†Œ ì™„ë£Œ)
+        // Preparing → Available (ì²­ì†Œ ì™„ë£Œ)
         await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' })
         });
@@ -3891,7 +3903,7 @@ const SalesPage: React.FC = () => {
         try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Available', ts: Date.now() })); } catch {}
         clearServerAssignment('table', element.id);
       } else if (currentStatus === 'Hold') {
-        // Hold (ê·¸ë¼ë°ì´ì…˜) â†’ Occupied + ì£¼ë¬¸íŽ˜ì´ì§€ë¡œ ì´ë™
+        // Hold (ê·¸ë¼ë°ì´ì…˜) → Occupied + ì£¼ë¬¸íŽ˜ì´ì§€ë¡œ ì´ë™
         await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Occupied' })
         });
@@ -3900,7 +3912,7 @@ const SalesPage: React.FC = () => {
         try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Occupied', ts: Date.now() })); } catch {}
         
         // ì¦‰ì‹œ ì£¼ë¬¸íŽ˜ì´ì§€ë¡œ ì´ë™
-        console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ â†’ OrderPage ì´ë™ ì‹œìž‘', performance.now());
+        console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ → OrderPage ì´ë™ ì‹œìž‘', performance.now());
         navigate('/sales/order', {
           state: {
             orderType: 'POS',
@@ -3923,7 +3935,7 @@ const SalesPage: React.FC = () => {
         // Occupied ìƒíƒœë¼ë©´ ì£¼ë¬¸ì´ ìžˆë‹¤ê³  ê°€ì • (ì•ˆì „ìž¥ì¹˜)
         const hasOrder = Boolean(effectiveOrderId) || currentStatus === 'Occupied';
         
-        console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ â†’ OrderPage ì´ë™ ì‹œìž‘', performance.now(), { 
+        console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ → OrderPage ì´ë™ ì‹œìž‘', performance.now(), { 
           status: currentStatus,
           hasOrder, 
           latestOrderId: effectiveOrderId 
@@ -3955,7 +3967,7 @@ const SalesPage: React.FC = () => {
    */
   const printBillForTable = async (element: TableElement) => {
     const tableLabel = element.text || `Table ${element.id}`;
-    setBillPrintStatus(`ðŸ”„ Printing bill for ${tableLabel}...`);
+    setBillPrintStatus(`🔄 Printing bill for ${tableLabel}...`);
 
     try {
       // 1. í…Œì´ë¸”ì˜ ì£¼ë¬¸ ì •ë³´ ê°€ì ¸ì˜¤ê¸°
@@ -4647,7 +4659,7 @@ const SalesPage: React.FC = () => {
   const handleMoveMergeTableClick = async (element: TableElement) => {
     const tableLabel = element.text || `Table ${element.id}`;
     
-    // Togo/Online â†’ í…Œì´ë¸” ì´ë™/ë¨¸ì§€
+    // Togo/Online → í…Œì´ë¸” ì´ë™/ë¨¸ì§€
     if (sourceTogoOrder || sourceOnlineOrder) {
       const sourceOrder = sourceTogoOrder || sourceOnlineOrder;
       const sourceType = sourceTogoOrder ? 'Togo' : 'Online';
@@ -4676,11 +4688,11 @@ const SalesPage: React.FC = () => {
         return;
       }
       
-      // Available í…Œì´ë¸” â†’ Move (ì´ë™)
+      // Available í…Œì´ë¸” → Move (ì´ë™)
       if (element.status === 'Available') {
         try {
             setIsMergeInProgress(true);
-            setMoveMergeStatus(`ðŸ”„ Moving ${sourceLabel} â†’ ${tableLabel}...`);
+            setMoveMergeStatus(`🔄 Moving ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/move-togo-to-table`, {
             method: 'POST',
@@ -4732,7 +4744,7 @@ const SalesPage: React.FC = () => {
             loadTogoOrders();
             loadOnlineOrders(); // ì˜¨ë¼ì¸ ì£¼ë¬¸ ëª©ë¡ ì„œë²„ì—ì„œ ìƒˆë¡œê³ ì¹¨
             
-            setMoveMergeStatus(`âœ… Moved ${sourceLabel} â†’ ${tableLabel}`);
+            setMoveMergeStatus(`âœ… Moved ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
             setIsMergeInProgress(false);
@@ -4754,11 +4766,11 @@ const SalesPage: React.FC = () => {
         return;
       }
       
-      // Occupied ë˜ëŠ” Payment Pending í…Œì´ë¸” â†’ Merge (ë³‘í•©)
+      // Occupied ë˜ëŠ” Payment Pending í…Œì´ë¸” → Merge (ë³‘í•©)
       if (element.status === 'Occupied' || element.status === 'Payment Pending') {
         try {
             setIsMergeInProgress(true);
-            setMoveMergeStatus(`ðŸ”„ Merging ${sourceLabel} â†’ ${tableLabel}...`);
+            setMoveMergeStatus(`🔄 Merging ${sourceLabel} → ${tableLabel}...`);
           
           const response = await fetch(`${API_URL}/table-operations/merge-togo-to-table`, {
             method: 'POST',
@@ -4796,7 +4808,7 @@ const SalesPage: React.FC = () => {
               console.error('Failed to refresh table map:', e);
             }
             
-            setMoveMergeStatus(`âœ… Merged ${sourceLabel} â†’ ${tableLabel}`);
+            setMoveMergeStatus(`âœ… Merged ${sourceLabel} → ${tableLabel}`);
             setTimeout(() => setMoveMergeStatus(''), 800);
           } else {
             setIsMergeInProgress(false);
@@ -4832,7 +4844,7 @@ const SalesPage: React.FC = () => {
         return;
       }
       setSourceTableId(element.id);
-      setMoveMergeStatus(`âœ“ Source: ${tableLabel} â†’ Select destination table`);
+      setMoveMergeStatus(`âœ“ Source: ${tableLabel} → Select destination table`);
       beginSourceSelection(element, tableLabel);
       return;
     }
@@ -4852,10 +4864,10 @@ const SalesPage: React.FC = () => {
       return;
     }
 
-    // MOVE: Occupied â†’ Available
+    // MOVE: Occupied → Available
     if (element.status === 'Available') {
       try {
-        setMoveMergeStatus('ðŸ”„ Moving table...');
+        setMoveMergeStatus('🔄 Moving table...');
         const response = await fetch(`${API_URL}/table-operations/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4882,7 +4894,7 @@ const SalesPage: React.FC = () => {
           const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
           const toStatus = result.toTable?.status || 'Occupied';
           const targetOrderId = result.toTable?.orderId ?? null;
-          setMoveMergeStatus(result.message ? `âœ… ${result.message}` : `âœ… Table moved: ${sourceTableId} â†’ ${element.text}`);
+          setMoveMergeStatus(result.message ? `âœ… ${result.message}` : `âœ… Table moved: ${sourceTableId} → ${element.text}`);
           
           setTableElements(prev => prev.map(el => {
             if (String(el.id) === String(sourceTableId)) {
@@ -5030,10 +5042,10 @@ const SalesPage: React.FC = () => {
         }, 3000);
       }
     }
-    // MERGE: Occupied/Payment Pending â†’ Occupied/Payment Pending
+    // MERGE: Occupied/Payment Pending → Occupied/Payment Pending
     else if (element.status === 'Occupied' || element.status === 'Payment Pending') {
       try {
-        setMoveMergeStatus('ðŸ”„ Merging tables...');
+        setMoveMergeStatus('🔄 Merging tables...');
         const response = await fetch(`${API_URL}/table-operations/merge`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5218,11 +5230,11 @@ const SalesPage: React.FC = () => {
     setSelectionChoice(selection);
     
     if (selection === 'ALL') {
-      setMoveMergeStatus(`âœ“ [Move All] ${sourceSelectionInfo?.label} â†’ Select destination table`);
+      setMoveMergeStatus(`âœ“ [Move All] ${sourceSelectionInfo?.label} → Select destination table`);
     } else {
       const guestCount = selection.guestNumbers?.length || 0;
       const itemCount = (selection.orderItemIds?.length || 0) + (selection.orderLineIds?.length || 0);
-      setMoveMergeStatus(`âœ“ [Partial: G${guestCount}/I${itemCount}] ${sourceSelectionInfo?.label} â†’ Select destination table`);
+      setMoveMergeStatus(`âœ“ [Partial: G${guestCount}/I${itemCount}] ${sourceSelectionInfo?.label} → Select destination table`);
     }
   };
 
@@ -6359,7 +6371,7 @@ const SalesPage: React.FC = () => {
                       </span>
                       {promotionSummary && (
                         <>
-                          <span className="text-slate-400 mx-1">â€¢</span>
+                          <span className="text-slate-400 mx-1">·</span>
                           <span className="text-slate-500 font-normal">{promotionSummary}</span>
                         </>
                       )}
@@ -6394,8 +6406,8 @@ const SalesPage: React.FC = () => {
                                     <div className="font-semibold truncate">{item.name}</div>
                                     {(modifiers.length > 0 || noteText) && (
                                       <div className="text-[11px] text-slate-500 space-y-0.5 mt-[2px]">
-                                        {modifiers.length > 0 && <div>â€¢ {modifiers.join(', ')}</div>}
-                                        {noteText && <div>â€¢ {noteText}</div>}
+                                        {modifiers.length > 0 && <div>· {modifiers.join(', ')}</div>}
+                                        {noteText && <div>· {noteText}</div>}
                                       </div>
                                     )}
                                   </div>
@@ -7450,7 +7462,7 @@ const SalesPage: React.FC = () => {
                           <div className="text-xs text-gray-500">Now</div>
                           <div className="text-xl font-bold text-gray-800">{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
                         </div>
-                        <div className="text-2xl text-gray-400">â†’</div>
+                        <div className="text-2xl text-gray-400">→</div>
                         <div className="text-center">
                           <div className="text-xs text-gray-500">Resume at</div>
                           <div className="text-xl font-bold text-orange-600">
@@ -8083,10 +8095,10 @@ const SalesPage: React.FC = () => {
                               const currentUntil = channel === 'online' ? selectedItem.online_available_until : selectedItem.delivery_available_until;
                               
                               if (currentType === targetType) {
-                                // ì´ë¯¸ í™œì„±í™” â†’ visibleë¡œ í† ê¸€
+                                // ì´ë¯¸ í™œì„±í™” → visibleë¡œ í† ê¸€
                                 updateItemHideType(channel, 'visible');
                               } else {
-                                // ë‹¤ë¥¸ ìƒíƒœ â†’ í•´ë‹¹ íƒ€ìž…ìœ¼ë¡œ ë³€ê²½
+                                // ë‹¤ë¥¸ ìƒíƒœ → í•´ë‹¹ íƒ€ìž…ìœ¼ë¡œ ë³€ê²½
                                 if (targetType === 'time_limited') {
                                   updateItemHideType(channel, 'time_limited', currentUntil || '15:00');
                                 } else {
@@ -8124,7 +8136,7 @@ const SalesPage: React.FC = () => {
                                     <ToggleButton
                                       active={selectedItem.online_hide_type === 'permanent'}
                                       onClick={() => handleToggle('online', 'permanent')}
-                                      icon={selectedItem.online_hide_type === 'permanent' ? "âœ•" : "ðŸš«"}
+                                      icon={selectedItem.online_hide_type === 'permanent' ? "✕" : "🚫"}
                                       label={selectedItem.online_hide_type === 'permanent' ? "Hidden" : "Permanent Hide"}
                                       activeColor="bg-gradient-to-r from-orange-500 to-orange-600"
                                       hoverColor="hover:bg-orange-50"
@@ -8185,7 +8197,7 @@ const SalesPage: React.FC = () => {
                                     <ToggleButton
                                       active={selectedItem.delivery_hide_type === 'permanent'}
                                       onClick={() => handleToggle('delivery', 'permanent')}
-                                      icon={selectedItem.delivery_hide_type === 'permanent' ? "âœ•" : "ðŸš«"}
+                                      icon={selectedItem.delivery_hide_type === 'permanent' ? "✕" : "🚫"}
                                       label={selectedItem.delivery_hide_type === 'permanent' ? "Hidden" : "Permanent Hide"}
                                       activeColor="bg-gradient-to-r from-rose-500 to-rose-600"
                                       hoverColor="hover:bg-rose-50"
@@ -8449,7 +8461,7 @@ const SalesPage: React.FC = () => {
                           : 'bg-slate-600 text-white hover:bg-slate-500'
                       }`}
                     >
-                      ðŸŸ¢ Live Order
+                      🟢 Live Order
                     </button>
                   </div>
                   <div className="flex items-center gap-2 sm:gap-3 relative">
@@ -8460,7 +8472,7 @@ const SalesPage: React.FC = () => {
                           onClick={() => handleOrderListDateChange(-1)}
                           className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
                         >
-                          â—€
+                          ◀
                         </button>
                         <button
                           onClick={() => {
@@ -8469,13 +8481,13 @@ const SalesPage: React.FC = () => {
                           }}
                           className="px-3 sm:px-5 py-2 sm:py-3 bg-white hover:bg-gray-50 border-2 border-gray-300 rounded-lg text-sm sm:text-base font-bold min-w-[150px] sm:min-w-[200px] text-center active:bg-gray-100"
                         >
-                          ðŸ“… {orderListFormatDate(orderListDate)}
+                          📅 {orderListFormatDate(orderListDate)}
                         </button>
                         <button
                           onClick={() => handleOrderListDateChange(1)}
                           className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
                         >
-                          â–¶
+                          ▶
                         </button>
                       </>
                     )}
@@ -8488,7 +8500,7 @@ const SalesPage: React.FC = () => {
                             onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() - 1))}
                             className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
                           >
-                            â—€
+                            ◀
                           </button>
                           <span className="font-bold text-lg">
                             {orderListCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
@@ -8497,7 +8509,7 @@ const SalesPage: React.FC = () => {
                             onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() + 1))}
                             className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
                           >
-                            â–¶
+                            ▶
                           </button>
                         </div>
                         <div className="grid grid-cols-7 gap-1 text-center text-sm mb-2">
@@ -8535,7 +8547,7 @@ const SalesPage: React.FC = () => {
                     }}
                     className="px-4 sm:px-6 py-2 sm:py-3 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-lg text-base sm:text-lg font-bold"
                   >
-                    âœ• Close
+                    ✕ Close
                   </button>
                 </div>
 
@@ -8609,6 +8621,37 @@ const SalesPage: React.FC = () => {
                       <>
                         {/* Action Buttons - ë§¨ ìœ„ë¡œ ì´ë™ */}
                         <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                          {/* Pay Button - Only show for unpaid orders */}
+                          {(() => {
+                            const status = (orderListSelectedOrder.status || '').toLowerCase();
+                            const paymentStatus = (orderListSelectedOrder.paymentStatus || '').toLowerCase();
+                            const isPaid = status === 'paid' || status === 'closed' || status === 'completed' || 
+                                          paymentStatus === 'paid' || paymentStatus === 'completed' ||
+                                          orderListSelectedOrder.paid === true;
+                            if (!isPaid) {
+                              return (
+                                <button
+                                  onClick={() => {
+                                    // Navigate to order page with this order loaded
+                                    const orderId = orderListSelectedOrder.id;
+                                    const tableId = orderListSelectedOrder.table_id;
+                                    if (tableId) {
+                                      // FSR mode - go to order page with table and orderId
+                                      navigate('/order', { state: { tableId: tableId, orderId: orderId, openPayment: true } });
+                                    } else {
+                                      // QSR mode - go to QSR order page
+                                      navigate('/qsr-order', { state: { orderId: orderId, openPayment: true } });
+                                    }
+                                  }}
+                                  style={{ flex: 3 }}
+                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-base font-bold"
+                                >
+                                  💳 Pay
+                                </button>
+                              );
+                            }
+                            return null;
+                          })()}
                           <button
                             onClick={async () => {
                               // Check if order is paid
@@ -8682,7 +8725,7 @@ const SalesPage: React.FC = () => {
                           </div>
                           {(orderListSelectedOrder.customer_name || orderListSelectedOrder.customer_phone) && (
                             <div className="text-xs text-gray-700 font-bold truncate">
-                              Customer: {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' â€¢ ')}
+                              Customer: {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' · ')}
                             </div>
                           )}
                           <div className="text-gray-600 text-xs">
@@ -8744,13 +8787,13 @@ const SalesPage: React.FC = () => {
                                         {modifierNames.length > 0 && (
                                           <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
                                             {modifierNames.map((name: string, mi: number) => (
-                                              <div key={mi}>â€¢ {name}</div>
+                                              <div key={mi}>· {name}</div>
                                             ))}
                                           </div>
                                         )}
                                         {item.discountPercent && item.discountPercent > 0 && (
                                           <div className="text-xs text-green-600 ml-2 font-medium" style={{ lineHeight: 1.1 }}>
-                                            ðŸŽ {item.discountPercent}% off {item.promotionName && `(${item.promotionName})`}
+                                            🎁 {item.discountPercent}% off {item.promotionName && `(${item.promotionName})`}
                                           </div>
                                         )}
                                       </td>
@@ -8781,7 +8824,7 @@ const SalesPage: React.FC = () => {
                               {totals.discountTotal > 0 && (
                                 <>
                                   <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
-                                    <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? 'ðŸ·ï¸' : 'ðŸŽ'} {totals.promotionName || 'Discount'}:</span>
+                                    <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? 'ðŸ·ï¸' : '🎁'} {totals.promotionName || 'Discount'}:</span>
                                     <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
@@ -8840,7 +8883,7 @@ const SalesPage: React.FC = () => {
                     
                     return (
                       <div className="mb-3 p-3 bg-red-50 border-2 border-red-300 rounded-xl flex items-center gap-3 flex-shrink-0">
-                        <span className="text-red-600 font-bold text-sm">ðŸ” "{liveOrderHighlightItem}"</span>
+                        <span className="text-red-600 font-bold text-sm">📍 "{liveOrderHighlightItem}"</span>
                         <span className="text-gray-600 text-sm">found in:</span>
                         <div className="flex flex-wrap gap-2">
                           {tablesWithItem.map((tableLabel: string) => (
@@ -8977,7 +9020,7 @@ const SalesPage: React.FC = () => {
                                 {/* Note (Memo) */}
                                 {item.memo && (
                                   <div className={`ml-3 text-xs italic leading-snug ${isHighlighted ? 'text-red-500' : 'text-orange-600'}`}>
-                                    ðŸ“ {typeof item.memo === 'string' ? item.memo : item.memo.text || JSON.stringify(item.memo)}
+                                    📍 {typeof item.memo === 'string' ? item.memo : item.memo.text || JSON.stringify(item.memo)}
                                   </div>
                                 )}
                               </div>
@@ -9903,7 +9946,7 @@ const SalesPage: React.FC = () => {
                 }}
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xl rounded-xl shadow-lg transition-all"
               >
-                ðŸ”“ Re-Open Day
+                🔄 Re-Open Day
               </button>
               <button 
                 onClick={() => navigate('/')}
@@ -9951,7 +9994,7 @@ const SalesPage: React.FC = () => {
                 }}
                 className="w-full px-6 py-4 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
               >
-                ðŸšª Clock Out
+                🚪 Clock Out
               </button>
             </div>
 
@@ -10376,7 +10419,7 @@ const SalesPage: React.FC = () => {
               {giftCardIsReload && giftCardMode === 'sell' && (
                 <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-2 text-center">
                   <div className="text-blue-600 text-sm font-bold">
-                    ðŸ”„ ì¶©ì „ ëª¨ë“œ - ê¸°ì¡´ ìž”ì•¡: ${giftCardExistingBalance?.toFixed(2)}
+                    🔄 ì¶©ì „ ëª¨ë“œ - ê¸°ì¡´ ìž”ì•¡: ${giftCardExistingBalance?.toFixed(2)}
                   </div>
                 </div>
               )}
@@ -10546,7 +10589,7 @@ const SalesPage: React.FC = () => {
                               onClick={() => setRefundCalendarMonth(new Date(refundCalendarMonth.getFullYear(), refundCalendarMonth.getMonth() - 1, 1))}
                               className="w-12 h-12 bg-gray-200 hover:bg-gray-300 rounded-lg text-2xl font-bold"
                             >
-                              â—€
+                              ◀
                             </button>
                             <div className="text-xl font-bold">
                               {refundCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
@@ -10555,7 +10598,7 @@ const SalesPage: React.FC = () => {
                               onClick={() => setRefundCalendarMonth(new Date(refundCalendarMonth.getFullYear(), refundCalendarMonth.getMonth() + 1, 1))}
                               className="w-12 h-12 bg-gray-200 hover:bg-gray-300 rounded-lg text-2xl font-bold"
                             >
-                              â–¶
+                              ▶
                             </button>
                           </div>
                           
@@ -11271,3 +11314,5 @@ const SalesPage: React.FC = () => {
 };
 
 export default SalesPage;
+
+
