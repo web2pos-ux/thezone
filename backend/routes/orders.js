@@ -640,12 +640,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				}
 			}
 
+			// Daily order number 할당 (Closing 후 001부터 재시작)
+			let dailyNumber = orderId; // fallback: DB id
+			try {
+				const counterRow = await dbGet(`SELECT value FROM admin_settings WHERE key = 'daily_order_counter'`);
+				const nextNum = parseInt(counterRow?.value || '0') + 1;
+				await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', ?)`, [String(nextNum)]);
+				dailyNumber = nextNum;
+				// order_number 컬럼에 daily number 저장
+				const displayNumber = String(nextNum).padStart(3, '0');
+				await dbRun(`UPDATE orders SET order_number = ? WHERE id = ?`, [displayNumber, orderId]);
+			} catch (counterErr) {
+				console.error('Daily counter update failed (using orderId):', counterErr.message);
+			}
+
 			// 파이어베이스로 주문 업로드 (Dashboard 연동)
 			try {
 				const restaurantId = remoteSyncService.restaurantId;
 				if (restaurantId) {
 					await firebaseService.uploadOrder(restaurantId, {
-						orderNumber: orderNumber || orderId,
+						orderNumber: String(dailyNumber).padStart(3, '0'),
 						orderType: orderType || 'POS',
 						status: 'completed', // POS에서 저장된 주문은 이미 확정된 상태로 간주
 						items: items.map(it => ({
@@ -666,7 +680,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				console.error('[Orders] Failed to upload to Firebase:', firebaseErr.message);
 			}
 
-			res.json({ success: true, orderId, createdAt });
+			res.json({ success: true, orderId, dailyNumber, createdAt });
 		} catch (e) {
 			console.error('Failed to save order:', e);
 			res.status(500).json({ success:false, error: 'Failed to save order' });

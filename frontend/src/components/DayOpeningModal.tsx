@@ -26,6 +26,7 @@ const centDenominations = [
 // Dollar denominations
 const dollarDenominations = [
   { key: 'dollar1', label: '$1', value: 1 },
+  { key: 'dollar2', label: '$2', value: 2 },
   { key: 'dollar5', label: '$5', value: 5 },
   { key: 'dollar10', label: '$10', value: 10 },
   { key: 'dollar20', label: '$20', value: 20 },
@@ -41,6 +42,7 @@ type CashCounts = {
   cent10: number;
   cent25: number;
   dollar1: number;
+  dollar2: number;
   dollar5: number;
   dollar10: number;
   dollar20: number;
@@ -52,7 +54,7 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
   const [isOpening, setIsOpening] = useState(false);
   const [cashCounts, setCashCounts] = useState<CashCounts>({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
   });
   const [focusedDenom, setFocusedDenom] = useState<string>('dollar1');
   
@@ -68,7 +70,7 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
     if (isOpen) {
       setCashCounts({
         cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-        dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+        dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
       });
       setFocusedDenom('dollar1');
     }
@@ -142,14 +144,14 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
       <div 
         key={denom.key}
         onClick={() => setFocusedDenom(denom.key)}
-        className={`flex items-center justify-between px-2 py-1.5 rounded border-2 cursor-pointer transition-all ${baseStyle}`}
+        className={`flex items-center justify-between px-3 py-3 rounded-lg border-2 cursor-pointer transition-all ${baseStyle}`}
       >
-        <span className={`font-semibold text-sm ${isCent ? 'text-amber-700' : 'text-green-700'}`}>{denom.label}</span>
-        <div className="flex items-center gap-1">
-          <span className={`font-bold ${isCent ? 'text-amber-600' : 'text-green-600'}`}>
+        <span className={`font-bold text-base ${isCent ? 'text-amber-700' : 'text-green-700'}`}>{denom.label}</span>
+        <div className="flex items-center gap-2">
+          <span className={`font-bold text-lg ${isCent ? 'text-amber-600' : 'text-green-600'}`}>
             {cashCounts[denom.key as keyof CashCounts]}
           </span>
-          <span className="text-[10px] text-gray-400">
+          <span className="text-xs text-gray-400">
             ={formatCurrency(cashCounts[denom.key as keyof CashCounts] * denom.value)}
           </span>
         </div>
@@ -161,22 +163,14 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
 
   return (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-2xl shadow-2xl w-[720px]">
+      <div className="bg-white rounded-2xl shadow-2xl w-[820px]">
         {/* Header */}
         <div className="bg-green-600 text-white px-4 py-3 rounded-t-2xl">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold">☀️ Day Opening - Count Starting Cash</h2>
-            <div className="flex items-center gap-3">
-              <span className="text-green-100 text-sm">
-                {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
-              </span>
-              <button
-                onClick={onClose}
-                className="w-8 h-8 flex items-center justify-center rounded-lg bg-green-700 hover:bg-green-800 transition text-white font-bold text-lg"
-              >
-                ✕
-              </button>
-            </div>
+            <span className="text-green-100 text-sm">
+              {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
           </div>
         </div>
 
@@ -189,39 +183,41 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
               <div className="text-3xl font-black text-green-700">{formatCurrency(openingCashTotal)}</div>
             </div>
 
-            {/* Cash Input + Number Pad 50:50 */}
-            <div className="flex gap-3">
+            {/* Cash Input + Number Pad */}
+            <div className="flex gap-4">
               {/* Left: Denominations */}
-              <div className="flex-1 space-y-2">
+              <div className="flex-1 space-y-3">
                 {/* Coins */}
-                <div className="bg-amber-50/50 rounded-lg border border-amber-200 p-2">
-                  <div className="grid grid-cols-2 gap-1">
+                <div className="bg-amber-50/50 rounded-xl border border-amber-200 p-3">
+                  <div className="text-xs font-bold text-amber-700 mb-2">🪙 Coins</div>
+                  <div className="grid grid-cols-2 gap-2">
                     {centDenominations.map(d => renderDenomItem(d, true))}
                   </div>
                 </div>
                 {/* Bills */}
-                <div className="bg-green-50/50 rounded-lg border border-green-200 p-2">
-                  <div className="grid grid-cols-2 gap-1">
+                <div className="bg-green-50/50 rounded-xl border border-green-200 p-3">
+                  <div className="text-xs font-bold text-green-700 mb-2">💵 Bills</div>
+                  <div className="grid grid-cols-2 gap-2">
                     {dollarDenominations.map(d => renderDenomItem(d, false))}
                   </div>
                 </div>
               </div>
 
               {/* Right: Number Pad */}
-              <div className="flex-1">
-                <div className="grid grid-cols-3 gap-1.5 h-full">
+              <div className="w-[300px]">
+                <div className="grid grid-cols-3 gap-2 h-full">
                   {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(num => (
                     <button
                       key={num}
                       onClick={() => handleNumPad(num)}
-                      className={`rounded-lg font-bold text-xl transition-all flex items-center justify-center ${
+                      className={`rounded-xl font-bold text-2xl transition-all flex items-center justify-center ${
                         num === 'C' 
                           ? 'bg-red-100 text-red-600 hover:bg-red-200 active:bg-red-300' 
                           : num === '⌫' 
                             ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
                             : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
                       }`}
-                      style={{ minHeight: '52px' }}
+                      style={{ minHeight: '68px' }}
                     >
                       {num}
                     </button>
@@ -235,8 +231,8 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
         {/* Footer */}
         <div className="px-4 py-3 border-t bg-gray-50 rounded-b-2xl">
           <div className="flex gap-2">
-            <button onClick={onClose} className="flex-1 px-3 py-2.5 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 text-sm">
-              Exit App
+            <button onClick={() => window.close()} className="flex-1 px-3 py-2.5 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 text-sm">
+              Exit
             </button>
             <button 
               onClick={handleOpenDay} 

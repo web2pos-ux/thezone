@@ -294,6 +294,30 @@ function renderKitchenTicketGraphic(orderData) {
   const isReprint = orderData.isReprint || false;
   const isAdditionalOrder = orderData.isAdditionalOrder || false;
   
+  // === REPRINT / ADDITIONAL 배너 (헤더 위 최상단) ===
+  const statusFontSize = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.8);
+  if (isReprint) {
+    y = drawTextBlock(ctx, {
+      text: '** REPRINT **',
+      fontSize: statusFontSize,
+      fontWeight: 'bold',
+      align: 'center',
+      inverse: false,
+      box: true
+    }, y);
+    y += 5;
+  } else if (isAdditionalOrder) {
+    y = drawTextBlock(ctx, {
+      text: '** ADDITIONAL **',
+      fontSize: statusFontSize,
+      fontWeight: 'bold',
+      align: 'center',
+      inverse: false,
+      box: true
+    }, y);
+    y += 5;
+  }
+  
   // === 헤더 (반전 + 큰 글씨) ===
   let headerText = '';
   if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE') {
@@ -378,22 +402,24 @@ function renderKitchenTicketGraphic(orderData) {
   
   // 상태 표시 (Dine-in, Delivery는 PAID/UNPAID 표시 안함)
   // Online은 PAID/UNPAID 표시함
+  // REPRINT/ADDITIONAL은 이미 헤더 위에 표시되었으므로 여기서는 PAID/UNPAID만 처리
   const hidePaidStatus = channel === 'DINE-IN' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS' || channel === 'DELIVERY';
-  let statusText = '';
-  if (isReprint) statusText = '** REPRINT **';
-  else if (isAdditionalOrder) statusText = '** ADDITIONAL **';
-  else if (!hidePaidStatus && isPaid) statusText = 'PAID';      // Dine-in/Delivery 제외하고 PAID 표시
-  else if (!hidePaidStatus) statusText = 'UNPAID';              // Dine-in/Delivery 제외하고 UNPAID 표시
+  let paidStatusText = '';
+  if (!isReprint && !isAdditionalOrder) {
+    // REPRINT/ADDITIONAL이 아닌 경우에만 PAID/UNPAID 표시
+    if (!hidePaidStatus && isPaid) paidStatusText = 'PAID';
+    else if (!hidePaidStatus) paidStatusText = 'UNPAID';
+  }
   
-  // Pickup Time 폰트 사이즈 (PAID/UNPAID에 동일하게 사용)
-  const statusFontSize = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.8);
+  // PAID/UNPAID 폰트 사이즈 (Header의 80%)
+  const paidStatusFontSize = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.8);
   
-  // 상태 텍스트가 있을 때만 출력 (흰 바탕에 검은 글씨 + 박스)
-  if (statusText) {
+  // PAID/UNPAID 텍스트가 있을 때만 출력 (흰 바탕에 검은 글씨 + 박스)
+  if (paidStatusText) {
     y += 5;  // 헤더와 약간 간격
     y = drawTextBlock(ctx, {
-      text: statusText,
-      fontSize: statusFontSize,  // Pickup Time과 동일한 폰트 (Header의 80%)
+      text: paidStatusText,
+      fontSize: paidStatusFontSize,
       fontWeight: 'bold',
       align: 'center',
       inverse: false,  // 흰 바탕에 검은 글씨
@@ -568,18 +594,49 @@ function renderKitchenTicketGraphic(orderData) {
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
 function renderReceiptGraphic(receiptData) {
-  // 높이 추정
-  let estimatedHeight = 400;
+  // 높이 추정 (모든 섹션을 고려하여 정확하게 계산)
   const items = receiptData.items || [];
   const guestSections = receiptData.guestSections || [];
   
+  let estimatedHeight = 200; // 헤더 (스토어명, 주소, 전화번호, 주문 정보)
+  
+  // 아이템 높이
   if (guestSections.length > 0) {
     guestSections.forEach(section => {
-      estimatedHeight += (section.items?.length || 0) * 40;
+      estimatedHeight += 35; // Guest 구분선
+      const sectionItems = section.items || [];
+      sectionItems.forEach(item => {
+        estimatedHeight += 35; // 아이템 라인
+        const mods = item.modifiers || [];
+        estimatedHeight += mods.length * 28; // 모디파이어
+      });
     });
   } else {
-    estimatedHeight += items.length * 40;
+    items.forEach(item => {
+      estimatedHeight += 35; // 아이템 라인
+      const mods = item.modifiers || [];
+      estimatedHeight += mods.length * 28; // 모디파이어
+    });
   }
+  
+  estimatedHeight += 30; // 구분선
+  
+  // 소계, 세금, 할인
+  if (receiptData.subtotal != null) estimatedHeight += 35;
+  if (receiptData.taxLines) estimatedHeight += receiptData.taxLines.length * 35;
+  if (receiptData.adjustments) estimatedHeight += receiptData.adjustments.length * 35;
+  estimatedHeight += 60; // TOTAL (반전 큰 글씨)
+  estimatedHeight += 20; // 구분선
+  
+  // 결제 정보
+  if (receiptData.payments && receiptData.payments.length > 0) {
+    estimatedHeight += 35; // "Payment" 헤더
+    estimatedHeight += receiptData.payments.length * 35; // 결제 방법별
+    estimatedHeight += 35; // Tip
+    if (receiptData.change && Number(receiptData.change) > 0) estimatedHeight += 45; // Change
+  }
+  
+  estimatedHeight += 100; // Footer + 하단 여백
   estimatedHeight = Math.max(estimatedHeight, 500);
   
   const canvas = createCanvas(PRINTER_CONFIG.width, estimatedHeight);
@@ -629,22 +686,30 @@ function renderReceiptGraphic(receiptData) {
   y += 10;
   
   // === 주문 정보 (반전 헤더) ===
-  let orderTypeText = channel || 'ORDER';
+  // 채널명 매핑: POS, DINE-IN, TABLE 등은 "Dine-In"으로 표시
+  let orderTypeText;
+  if (!channel || channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE') {
+    orderTypeText = 'Dine-In';
+  } else if (channel === 'FORHERE' || channel === 'FOR HERE') {
+    orderTypeText = 'FOR HERE';
+  } else {
+    orderTypeText = channel;
+  }
   if (tableName && !channel) orderTypeText = tableName;
   
   y = drawTextBlock(ctx, {
     text: `${orderTypeText} #${String(orderNumber).replace('#', '')}`,
     fontSize: PRINTER_CONFIG.fontSize.large,
     fontWeight: 'bold',
-    align: 'center',
-    inverse: true
+    align: 'center'
   }, y);
   
-  // 서버, 날짜
+  // 서버, 날짜 (15% 더 굵게)
   if (serverName) {
     y = drawTextBlock(ctx, {
       text: `Server: ${serverName}`,
       fontSize: PRINTER_CONFIG.fontSize.small,
+      fontWeight: 'bold',
       align: 'left'
     }, y);
   }
@@ -652,6 +717,7 @@ function renderReceiptGraphic(receiptData) {
   y = drawTextBlock(ctx, {
     text: `Date: ${new Date().toLocaleString()}`,
     fontSize: PRINTER_CONFIG.fontSize.small,
+    fontWeight: 'bold',
     align: 'left'
   }, y);
   
@@ -684,10 +750,11 @@ function renderReceiptGraphic(receiptData) {
       const total = price * quantity;
       
       y = drawLeftRightText(ctx, `${quantity}x ${itemName}`, `$${total.toFixed(2)}`, y, {
-        fontSize: PRINTER_CONFIG.fontSize.normal
+        fontSize: PRINTER_CONFIG.fontSize.normal,
+        fontWeight: 'bold'
       });
       
-      // Modifiers
+      // Modifiers (15% 더 굵게)
       const modifiers = entry.modifiers || [];
       modifiers.forEach(mod => {
         const modName = typeof mod === 'object' ? mod.name : mod;
@@ -695,7 +762,8 @@ function renderReceiptGraphic(receiptData) {
         if (modName) {
           const priceText = modPrice > 0 ? `$${modPrice.toFixed(2)}` : '';
           y = drawLeftRightText(ctx, `  + ${modName}`, priceText, y, {
-            fontSize: PRINTER_CONFIG.fontSize.small
+            fontSize: PRINTER_CONFIG.fontSize.small,
+            fontWeight: 'bold'
           });
         }
       });
@@ -704,10 +772,11 @@ function renderReceiptGraphic(receiptData) {
   
   y = drawSeparator(ctx, y, 'dashed');
   
-  // === 소계, 세금, 할인 ===
+  // === 소계, 세금, 할인 (15% 더 굵게) ===
   if (receiptData.subtotal != null) {
     y = drawLeftRightText(ctx, 'Subtotal:', `$${Number(receiptData.subtotal).toFixed(2)}`, y, {
-      fontSize: PRINTER_CONFIG.fontSize.normal
+      fontSize: PRINTER_CONFIG.fontSize.normal,
+      fontWeight: 'bold'
     });
   }
   
@@ -715,7 +784,8 @@ function renderReceiptGraphic(receiptData) {
   if (receiptData.taxLines && receiptData.taxLines.length > 0) {
     receiptData.taxLines.forEach(tax => {
       y = drawLeftRightText(ctx, `${tax.name}:`, `$${Number(tax.amount).toFixed(2)}`, y, {
-        fontSize: PRINTER_CONFIG.fontSize.normal
+        fontSize: PRINTER_CONFIG.fontSize.normal,
+        fontWeight: 'bold'
       });
     });
   }
@@ -727,7 +797,8 @@ function renderReceiptGraphic(receiptData) {
       const label = adj.label || adj.name || 'Discount';
       const sign = amount < 0 ? '-' : '';
       y = drawLeftRightText(ctx, `${label}:`, `${sign}$${Math.abs(amount).toFixed(2)}`, y, {
-        fontSize: PRINTER_CONFIG.fontSize.normal
+        fontSize: PRINTER_CONFIG.fontSize.normal,
+        fontWeight: 'bold'
       });
     });
   }
@@ -740,8 +811,7 @@ function renderReceiptGraphic(receiptData) {
       text: `TOTAL: $${Number(receiptData.total).toFixed(2)}`,
       fontSize: PRINTER_CONFIG.fontSize.xlarge,
       fontWeight: 'bold',
-      align: 'center',
-      inverse: true
+      align: 'center'
     }, y);
   }
   
@@ -758,7 +828,8 @@ function renderReceiptGraphic(receiptData) {
     
     receiptData.payments.forEach(p => {
       y = drawLeftRightText(ctx, `  ${p.method}:`, `$${Number(p.amount).toFixed(2)}`, y, {
-        fontSize: PRINTER_CONFIG.fontSize.normal
+        fontSize: PRINTER_CONFIG.fontSize.normal,
+        fontWeight: 'bold'
       });
     });
     
@@ -790,8 +861,7 @@ function renderReceiptGraphic(receiptData) {
     text: footerMessage,
     fontSize: PRINTER_CONFIG.fontSize.normal,
     fontWeight: 'bold',
-    align: 'center',
-    inverse: true
+    align: 'center'
   }, y);
   
   y += 30;

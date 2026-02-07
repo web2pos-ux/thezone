@@ -301,6 +301,22 @@ async function initDatabase(db) {
     )`);
     console.log('[dbInit] table_map_elements table ensured');
 
+    // 8. TABLE MOVE HISTORY (Move/Merge 기능에 필요)
+    await dbRun(`CREATE TABLE IF NOT EXISTS table_move_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_table_id TEXT NOT NULL,
+      to_table_id TEXT NOT NULL,
+      action_type TEXT NOT NULL CHECK(action_type IN ('MOVE', 'MERGE')),
+      order_id INTEGER,
+      from_order_id INTEGER,
+      floor TEXT DEFAULT '1F',
+      performed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      performed_by TEXT
+    )`);
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_table_move_history_tables 
+      ON table_move_history(from_table_id, to_table_id)`);
+    console.log('[dbInit] table_move_history table ensured');
+
     console.log('[dbInit] Database standardization complete.');
   } catch (err) {
     console.error('[dbInit] Database initialization failed:', err.message);

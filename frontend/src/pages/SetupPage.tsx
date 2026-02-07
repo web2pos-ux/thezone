@@ -237,8 +237,8 @@ const PinScreen: React.FC<{
             draggable={false}
           />
         </div>
-        <h1 className="text-5xl font-bold text-white mb-1" style={{ fontFamily: 'Georgia, serif' }}>
-          TheZonePOS
+        <h1 className="text-5xl text-white mb-1" style={{ fontFamily: "'Averia Libre', cursive", fontWeight: 700 }}>
+          ThezonePOS
         </h1>
         <p className="text-xl text-sky-400 mb-8 italic">One Touch, So Much</p>
 
@@ -260,32 +260,32 @@ const PinScreen: React.FC<{
         </div>
 
         {/* PIN Pad */}
-        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 inline-block border border-white/20">
+        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 inline-block border border-white/20" style={{ marginTop: '-30px' }}>
           <div className="grid grid-cols-3 gap-4 mb-4">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
               <button
                 key={num}
                 onClick={() => handleNumber(num)}
-                className="w-20 h-20 rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
+                className="w-[76px] h-[76px] rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
               >
                 {num}
               </button>
             ))}
             <button
               onClick={handleClear}
-              className="w-20 h-20 rounded-full bg-red-500 hover:bg-red-600 text-white text-base font-bold transition-all active:scale-95"
+              className="w-[76px] h-[76px] rounded-full bg-red-500 hover:bg-red-600 text-white text-base font-bold transition-all active:scale-95"
             >
               Clear
             </button>
             <button
               onClick={() => handleNumber('0')}
-              className="w-20 h-20 rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
+              className="w-[76px] h-[76px] rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
             >
               0
             </button>
             <button
               onClick={handleBackspace}
-              className="w-20 h-20 rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-3xl font-bold transition-all active:scale-95"
+              className="w-[76px] h-[76px] rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-3xl font-bold transition-all active:scale-95"
             >
               ←
             </button>
@@ -298,13 +298,15 @@ const PinScreen: React.FC<{
           <div className="flex gap-3">
             <button
               onClick={goToBackOffice}
-              className="w-1/3 py-3 px-2 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-1"
+              className="w-1/3 px-2 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-1"
+              style={{ height: '57px' }}
             >
               <span>⚙️</span> BackOffice
             </button>
             <button
               onClick={goToSales}
-              className="w-2/3 py-3 px-4 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-2"
+              className="w-2/3 px-4 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-2"
+              style={{ height: '57px' }}
             >
               <span>📋</span> Sales
             </button>

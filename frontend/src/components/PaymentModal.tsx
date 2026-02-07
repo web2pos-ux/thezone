@@ -6,6 +6,7 @@ import { API_URL } from '../config/constants';
 interface PaymentCompleteData {
 	change: number;
 	total: number;
+	tip: number;
 	payments: Array<{ method: string; amount: number }>;
 	hasCashPayment: boolean;
 	isPartialPayment?: boolean;  // 부분 결제 (게스트별 결제 중 일부만 결제)
@@ -385,8 +386,9 @@ useEffect(() => {
         let t: number;
         
         if (effectiveMethod === 'CASH') {
-          // 현금: 입력값 그대로 사용 (Change 발생)
-          finalAmount = rawAmt;
+          // 현금: 음식값(Due) 이하로 제한 (초과분은 Change로 반환)
+          // amount = food portion only, tip은 별도
+          finalAmount = Math.min(rawAmt, scopeDueNow);
           t = parsedTip;
         } else if (isCardPayment && rawAmt > scopeDueNow && parsedTip === 0) {
           // 카드 결제 + 입력 금액 > Due + 팁 미입력 시: 초과분 자동 팁 처리
@@ -420,23 +422,29 @@ useEffect(() => {
         
         if (Math.abs(remainingAfterPayment) < 0.005 && onPaymentComplete) {
           // 결제 완료됨 - 바로 Payment Complete 모달 표시
-          const updatedPayments = [...(payments || []), { method: effectiveMethod, amount: finalAmount, paymentId: 0, tip: 0 }];
-          const paymentsData = updatedPayments.map(p => ({ method: p.method, amount: p.amount }));
-          const hasCash = paymentsData.some(p => (p.method || '').toUpperCase() === 'CASH');
-          const currentChange = effectiveMethod === 'CASH' ? Math.max(0, rawAmt - scopeDueNow) : 0;
+          // 표시용 금액: rawAmt (고객이 실제 지불/충전한 금액)
+          const displayAmount = rawAmt;
+          const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
+          const allPayments = [...prevPayments, { method: effectiveMethod, amount: displayAmount }];
+          const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
+          // Change = 현금 거스름돈 (팁 차감 후)
+          const currentChange = effectiveMethod === 'CASH' ? Math.max(0, rawAmt - scopeDueNow - t) : 0;
+          // 전체 팁 합산
+          const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + t;
           
-          // 부분 결제 여부 판단: 게스트별 결제 중 전체 금액이 아직 결제되지 않은 경우
+          // 부분 결제 여부 판단
           const totalPaidAfter = (paidSoFar || 0) + finalAmount;
-          const isPartial = Math.abs(totalPaidAfter - fixedGrand) > 0.01;  // 전체 금액과 비교
+          const isPartial = Math.abs(totalPaidAfter - fixedGrand) > 0.01;
           
           onPaymentComplete({
             change: currentChange,
             total: fixedGrand,
-            payments: paymentsData,
+            tip: totalTip,
+            payments: allPayments,
             hasCashPayment: hasCash,
             isPartialPayment: isPartial
           });
-          return;  // 여기서 바로 리턴
+          return;
         }
       } else if (canComplete) {
         // 금액이 0이지만 잔액이 0에 근접한 경우 (이미 모든 결제가 완료된 경우)
@@ -445,14 +453,16 @@ useEffect(() => {
           const paymentsData = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
           const hasCash = paymentsData.some(p => (p.method || '').toUpperCase() === 'CASH');
           const currentChange = lastChange != null ? lastChange : change;
+          const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0);
           
-          // 부분 결제 여부 판단: 전체 금액이 아직 결제되지 않은 경우
+          // 부분 결제 여부 판단
           const totalPaid = paymentsData.reduce((sum, p) => sum + (p.amount || 0), 0);
           const isPartial = Math.abs(totalPaid - fixedGrand) > 0.01;
           
           onPaymentComplete({
             change: currentChange > 0 ? currentChange : 0,
             total: fixedGrand,
+            tip: totalTip,
             payments: paymentsData,
             hasCashPayment: hasCash,
             isPartialPayment: isPartial
@@ -525,8 +535,10 @@ useEffect(() => {
 	const { cashPaidConfirmed, nonCashPaidConfirmed } = useMemo(() => {
 		let cash = 0, nonCash = 0;
 		paymentsInScope.forEach(p => {
-			if ((p.method || '').toUpperCase() === 'CASH') cash += (p.amount || 0);
-			else nonCash += (p.amount || 0);
+			// amount에서 tip을 빼서 음식값(food portion)만 합산 → Due 계산 정확도 보장
+			const foodPortion = (p.amount || 0) - ((p as any).tip || 0);
+			if ((p.method || '').toUpperCase() === 'CASH') cash += foodPortion;
+			else nonCash += foodPortion;
 		});
 		return { cashPaidConfirmed: parseFloat(cash.toFixed(2)), nonCashPaidConfirmed: parseFloat(nonCash.toFixed(2)) };
 	}, [paymentsInScope]);
@@ -563,8 +575,8 @@ useEffect(() => {
         let t: number;
         
         if (effectiveMethod === 'CASH') {
-          // 현금: 입력값 그대로 사용 (Change 발생)
-          finalAmount = currentAmt;
+          // 현금: 음식값(Due) 이하로 제한 (초과분은 Change로 반환)
+          finalAmount = Math.min(currentAmt, scopeDueNow);
           t = parsedTip;
         } else if (isCardPayment2 && currentAmt > scopeDueNow && parsedTip === 0) {
           // 카드 결제 + 입력 금액 > Due + 팁 미입력 시: 초과분 자동 팁 처리
@@ -1040,19 +1052,7 @@ const addQuick = async (q: number) => {
                                         <span className={`text-xl font-bold text-red-700`}>Change $</span>
                                         <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney(change)}</span>
                                     </div>
-                                    {/* Click to add Change as Tip */}
-                                    {change > 0 && (
-                                        <button
-                                            type="button"
-                                            className="mt-1 px-3 py-1 text-sm font-medium text-green-700 bg-green-100 hover:bg-green-200 rounded-full border border-green-300 transition-colors"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setTip(change.toFixed(2));
-                                            }}
-                                        >
-                                            💰 Click to add as Tip
-                                        </button>
-                                    )}
+                                    {/* "Add as Tip" 버튼은 Payment Complete 모달로 이동됨 */}
                                 </div>
 								<div className="h-2" />
 								{/* Amounts group */}

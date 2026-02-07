@@ -30,6 +30,7 @@ import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { PrintBillModal } from '../components/PrintBillModal';
+import PaymentCompleteModal from '../components/PaymentCompleteModal';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
 const CATALOG_SNAPSHOT_KEY = 'orderLayout:lastCatalogSnapshot';
@@ -1070,6 +1071,17 @@ const handleVoidPinClear = useCallback(() => {
   const allModeStickyRef = useRef<boolean>(false);
   // Track whether receipt has been printed for this payment session (prevent duplicate prints)
   const receiptPrintedRef = useRef<boolean>(false);
+  // Payment Complete Modal state
+  const [showPaymentCompleteModal, setShowPaymentCompleteModal] = useState(false);
+  const [paymentCompleteData, setPaymentCompleteData] = useState<{
+    change: number;
+    total: number;
+    tip: number;
+    payments: Array<{ method: string; amount: number }>;
+    hasCashPayment: boolean;
+    isPartialPayment?: boolean;
+    currentGuestNumber?: number;
+  } | null>(null);
   // Persisted PAID locks from DB (order_guest_status) to ensure UI remains locked across navigation
   const [persistedPaidGuests, setPersistedPaidGuests] = useState<number[]>([]);
 
@@ -1567,7 +1579,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: null }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
@@ -1591,13 +1603,12 @@ const handleVoidPinClear = useCallback(() => {
           }
           return next;
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: undefined } ]));
-        // Pay in Full(ALL) 흐름에서는 결제 직후 완료 판정을 시도하여 즉시 테이블맵으로 전환
-        try { setTimeout(() => { try { handleCompletePayment(); } catch {} }, 0); } catch {}
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ]));
+        // onPaymentComplete 콜백이 PaymentModal에서 결제 완료를 감지하여 PaymentCompleteModal을 표시함
         return;
       } else {
         // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount, tip, guestNumber: Number(guestPaymentMode) }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
@@ -1606,7 +1617,7 @@ const handleVoidPinClear = useCallback(() => {
           const current = prev[key] || 0;
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: Number(guestPaymentMode) } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
         
         // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
@@ -1628,76 +1639,9 @@ const handleVoidPinClear = useCallback(() => {
           
           console.log(`🧾 Guest ${guestNum} payment check: total=${guestTotal}, paid=${totalPaidNow}, outstanding=${outstanding}, fullyPaid=${isGuestFullyPaid}`);
           
-          // 게스트 전액 결제 완료 시에만 Receipt 출력
+          // 게스트 전액 결제 완료 시 Receipt 출력은 PaymentCompleteModal에서 처리
+          // (사용자가 No Receipt / 1 Receipt / 2 Receipts 선택)
           if (isGuestFullyPaid) {
-            const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
-            if (guestItems.length > 0) {
-              // 해당 게스트의 모든 결제 내역 수집
-              const guestPayments = sessionPayments
-                .filter(p => p.guestNumber === guestNum)
-                .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
-              // 현재 결제도 추가
-              guestPayments.push({ method, amount: currentPayment, tip: tip || 0 });
-              
-              const guestReceiptData = {
-                header: {
-                  title: '*** RECEIPT ***',  // 명시적으로 RECEIPT 타이틀 추가
-                  orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
-                  channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
-                  tableName: (location.state as any)?.tableName || resolvedTableName || '',
-                  serverName: selectedServer?.name || '',
-                  guestNumber: guestNum  // 게스트 번호 추가
-                },
-                orderInfo: {
-                  channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
-                  tableName: (location.state as any)?.tableName || resolvedTableName || '',
-                  serverName: selectedServer?.name || '',
-                  guestNumber: guestNum
-                },
-                items: [],
-                guestSections: [{
-                  guestNumber: guestNum,
-                  items: guestItems.map(item => ({
-                    name: item.name,
-                    quantity: item.quantity || 1,
-                    price: item.price || 0,
-                    totalPrice: item.totalPrice || item.price || 0,
-                    modifiers: item.modifiers || [],
-                    memo: item.memo
-                  }))
-                }],
-                subtotal: guestSubtotal,
-                adjustments: [],
-                taxLines: guestTaxLines,
-                taxesTotal: guestTaxTotal,
-                total: guestTotal,
-                payments: guestPayments,  // ✅ payments를 receiptData 안에 포함!
-                change: 0,
-                footer: { message: 'Thank you for dining with us!' }
-              };
-              
-              console.log(`🧾 Printing Receipt for Guest ${guestNum} (FULLY PAID)...`);
-              console.log(`💳 Payment info:`, guestPayments);
-              await fetch(`${API_URL}/printers/print-receipt`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  receiptData: guestReceiptData,
-                  copies: 2  // 2장 출력
-                })
-              });
-              console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
-              
-              // 개별 게스트 결제 완료 시 Cash Drawer 오픈
-              try {
-                console.log(`💰 Opening cash drawer for Guest ${guestNum} payment...`);
-                await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
-                console.log(`💰 Cash drawer opened successfully`);
-              } catch (drawerErr) {
-                console.warn('Cash drawer open failed (ignored):', drawerErr);
-              }
-            }
-            
             // 게스트 결제 완료 시 즉시 DB에 PAID 상태 저장
             try {
               const currentOrderId = savedOrderIdRef.current || orderIdFromState;
@@ -1741,7 +1685,7 @@ const handleVoidPinClear = useCallback(() => {
       alert('An error occurred during payment processing.');
     }
   };
-  const handleCompletePayment = async () => {
+  const handleCompletePayment = async (receiptCount: number = 2) => {
     try {
       // Guard: only close order when ALL guests are fully paid
       const totals = computeGuestTotals('ALL');
@@ -1939,17 +1883,20 @@ const handleVoidPinClear = useCallback(() => {
           footer: {}
         };
 
-        // 스플릿빌(guestCount > 1)에서는 개별 게스트 결제 완료 시 이미 Receipt가 출력되었으므로 스킵
+        // 스플릿빌: 개별 게스트 결제 시 PaymentCompleteModal에서 이미 출력됨 (스킵)
+        // ALL 모드 결제 시: 스플릿빌이어도 통합 영수증 출력
         const isSplitBill = guestCount > 1;
-        if (!isSplitBill) {
+        if (receiptCount > 0 && (!isSplitBill || guestPaymentMode === 'ALL')) {
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ receiptData, copies: 2 })  // 전체 결제 완료 시 2장 출력
+            body: JSON.stringify({ receiptData, copies: receiptCount })
           });
-          console.log('Receipt printed successfully');
+          console.log(`Receipt printed successfully (${receiptCount} copies)`);
+        } else if (receiptCount === 0) {
+          console.log('No receipt requested by user');
         } else {
-          console.log('Split bill - skipping final receipt (individual guest receipts already printed)');
+          console.log('Split bill (individual mode) - skipping final receipt (guest receipts handled by PaymentCompleteModal)');
         }
         } catch (printErr) {
           console.warn('Receipt print failed (ignored):', printErr);
@@ -1963,6 +1910,134 @@ const handleVoidPinClear = useCallback(() => {
       console.error(e);
       alert('Error during payment completion');
     }
+  };
+
+  // ═══════════════════════════════════════════════════
+  // Payment Complete Modal handlers
+  // ═══════════════════════════════════════════════════
+
+  // 결제 완료 모달에서 최종 완료 처리 (전체 결제 완료 시)
+  const handlePaymentCompleteClose = async (receiptCount: number) => {
+    // 스플릿 결제 마지막 게스트: 해당 게스트 영수증 먼저 출력 (paymentCompleteData 초기화 전)
+    if (paymentCompleteData?.currentGuestNumber && guestIds.length > 1 && receiptCount > 0) {
+      await handlePartialPrintReceipt(receiptCount);
+    }
+    setShowPaymentCompleteModal(false);
+    setPaymentCompleteData(null);
+    await handleCompletePayment(receiptCount);
+  };
+
+  // 스플릿 결제 중 개별 게스트 영수증 출력
+  const handlePartialPrintReceipt = async (receiptCount: number) => {
+    if (receiptCount <= 0 || !paymentCompleteData?.currentGuestNumber) return;
+    
+    const guestNum = paymentCompleteData.currentGuestNumber;
+    try {
+      const guestTotals = computeGuestTotals(guestNum);
+      const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
+      const guestTaxLines = guestTotals.taxLines || [];
+      const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+      const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+      
+      const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
+      
+      // 해당 게스트의 모든 결제 내역 수집
+      const guestPaymentsList = sessionPayments
+        .filter(p => p.guestNumber === guestNum)
+        .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+      
+      const guestReceiptData = {
+        header: {
+          title: '*** RECEIPT ***',
+          orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
+          channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+          tableName: (location.state as any)?.tableName || resolvedTableName || '',
+          serverName: selectedServer?.name || '',
+          guestNumber: guestNum
+        },
+        orderInfo: {
+          channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+          tableName: (location.state as any)?.tableName || resolvedTableName || '',
+          serverName: selectedServer?.name || '',
+          guestNumber: guestNum
+        },
+        items: [],
+        guestSections: [{
+          guestNumber: guestNum,
+          items: guestItems.map(item => ({
+            name: item.name,
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            totalPrice: item.totalPrice || item.price || 0,
+            modifiers: item.modifiers || [],
+            memo: item.memo
+          }))
+        }],
+        subtotal: guestSubtotal,
+        adjustments: [],
+        taxLines: guestTaxLines,
+        taxesTotal: guestTaxTotal,
+        total: guestTotal,
+        payments: guestPaymentsList,
+        change: paymentCompleteData?.change || 0,
+        footer: { message: 'Thank you for dining with us!' }
+      };
+      
+      console.log(`🧾 Printing Receipt for Guest ${guestNum} (${receiptCount} copies)...`);
+      await fetch(`${API_URL}/printers/print-receipt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ receiptData: guestReceiptData, copies: receiptCount })
+      });
+      console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
+    } catch (printErr) {
+      console.warn('Guest receipt print failed (ignored):', printErr);
+    }
+  };
+
+  // 시나리오 4: PaymentComplete 모달에서 별도 Cash Tip 추가
+  const handleAddCashTip = async (tipAmount: number) => {
+    const orderId = savedOrderIdRef.current;
+    if (!orderId || tipAmount <= 0) return;
+    try {
+      const payRes = await fetch(`${API_URL}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId,
+          method: 'CASH',
+          amount: tipAmount,  // 전액 팁
+          tip: tipAmount,
+          guestNumber: typeof guestPaymentMode === 'number' ? guestPaymentMode : null
+        })
+      });
+      if (!payRes.ok) throw new Error('Failed to save cash tip');
+      const payData = await payRes.json();
+      setSessionPayments(prev => ([
+        ...prev,
+        { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined }
+      ]));
+      console.log(`💰 Cash tip $${tipAmount} saved successfully`);
+    } catch (e) {
+      console.error('Failed to save cash tip:', e);
+    }
+  };
+
+  // 스플릿 결제 완료 모달에서 다음 게스트 선택
+  const handleGuestSelectFromModal = (guestNumber: number) => {
+    setShowPaymentCompleteModal(false);
+    setPaymentCompleteData(null);
+    allModeStickyRef.current = false;
+    payInFullFromSplitRef.current = false;
+    receiptPrintedRef.current = false;
+    setGuestPaymentMode(guestNumber);
+    if (typeof guestNumber === 'number') {
+      setActiveGuestNumber(guestNumber);
+    }
+    setPrefillDueNonce(n => n + 1);
+    setTimeout(() => {
+      setShowPaymentModal(true);
+    }, 0);
   };
 
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -8871,6 +8946,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
+                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; isPartialPayment?: boolean }) => {
+                      const currentGuest = typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined;
+                      const hasSplitBill = guestIds.length > 1 || (orderItems || []).some(it => it.type === 'separator');
+                      
+                      // 실제 부분 결제 여부: 스플릿 결제에서 아직 미결제 게스트가 남아있는 경우
+                      let isActuallyPartial = false;
+                      if (hasSplitBill && currentGuest) {
+                        const newPaidGuests = Array.from(new Set([...persistedPaidGuests, currentGuest]));
+                        const unpaidGuests = guestIds.filter(g => !newPaidGuests.includes(g));
+                        isActuallyPartial = unpaidGuests.length > 0;
+                      }
+                      
+                      // Cash drawer 오픈 (결제 완료 시 즉시)
+                      try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+                      
+                      setPaymentCompleteData({
+                        ...data,
+                        isPartialPayment: isActuallyPartial,
+                        currentGuestNumber: currentGuest,
+                      });
+                      setShowPaymentModal(false);
+                      setShowPaymentCompleteModal(true);
+                    },
                     channel: orderType,
                     customerName: (location.state && (location.state as any).customerName) || undefined,
                     tableName: (() => { const st:any = location.state || {}; return (st.tableName || resolvedTableName || '') || undefined; })(),
@@ -11574,6 +11672,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             guestIds={Array.from(guestIds)}
         />
       )}
+
+      {/* Payment Complete Modal */}
+      <PaymentCompleteModal
+        isOpen={showPaymentCompleteModal}
+        onClose={handlePaymentCompleteClose}
+        change={paymentCompleteData?.change || 0}
+        total={paymentCompleteData?.total || 0}
+        tip={paymentCompleteData?.tip || 0}
+        payments={paymentCompleteData?.payments || []}
+        hasCashPayment={paymentCompleteData?.hasCashPayment || false}
+        isPartialPayment={paymentCompleteData?.isPartialPayment}
+        currentGuestNumber={paymentCompleteData?.currentGuestNumber}
+        allGuests={Array.from(guestIds)}
+        paidGuests={Array.from(new Set([...persistedPaidGuests, ...(paymentCompleteData?.currentGuestNumber ? [paymentCompleteData.currentGuestNumber] : [])]))}
+        onPrintReceipt={handlePartialPrintReceipt}
+        onSelectGuest={handleGuestSelectFromModal}
+        onBackToOrder={() => { setShowPaymentCompleteModal(false); setPaymentCompleteData(null); }}
+        onAddCashTip={handleAddCashTip}
+      />
 
       {/* Discount Modal - Enhanced */}
       {showDiscountModal && (() => {

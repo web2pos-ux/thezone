@@ -16,7 +16,6 @@ cd /d "%FRONTEND_DIR%"
 call npm run build
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Frontend build failed!
-    pause
     exit /b 1
 )
 echo Frontend build completed.
@@ -74,4 +73,3 @@ echo Build preparation completed!
 echo.
 echo Now run: npm run build:win
 echo ================================================
-pause

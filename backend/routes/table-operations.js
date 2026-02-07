@@ -270,7 +270,7 @@ module.exports = (db) => {
       let order = null;
       if (fromTable.current_order_id) {
         order = await dbGet(
-          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTable.current_order_id]
         );
       }
@@ -278,7 +278,7 @@ module.exports = (db) => {
       // Fallback: try to find order by table_id if current_order_id doesn't work
     if (!order) {
         order = await dbGet(
-          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTableId]
         );
       }
@@ -500,7 +500,7 @@ module.exports = (db) => {
       let fromOrder = null;
       if (fromTable.current_order_id) {
         fromOrder = await dbGet(
-          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTable.current_order_id]
         );
       }
@@ -508,7 +508,7 @@ module.exports = (db) => {
       // Fallback: try to find by table_id
       if (!fromOrder) {
         fromOrder = await dbGet(
-          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTableId]
         );
       }
@@ -516,7 +516,7 @@ module.exports = (db) => {
       let toOrder = null;
       if (toTable.current_order_id) {
         toOrder = await dbGet(
-          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [toTable.current_order_id]
         );
       }
@@ -524,7 +524,7 @@ module.exports = (db) => {
       // Fallback: try to find by table_id
       if (!toOrder) {
         toOrder = await dbGet(
-          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [toTableId]
         );
       }
@@ -994,14 +994,14 @@ module.exports = (db) => {
       let fromOrder = null;
       if (fromTable.current_order_id) {
         fromOrder = await dbGet(
-          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTable.current_order_id]
         );
       }
       
       if (!fromOrder) {
         fromOrder = await dbGet(
-          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [fromTableId]
         );
       }
@@ -1015,7 +1015,7 @@ module.exports = (db) => {
 
       // 3. Get target Togo/Online order (allow multiple statuses for online orders)
       const toOrder = await dbGet(
-        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
         [toOrderId]
       );
 
@@ -1208,7 +1208,7 @@ module.exports = (db) => {
 
       // 1. Get source order (allow PENDING, NEW, RECEIVED, CONFIRMED, PREPARING for online orders)
       const fromOrder = await dbGet(
-        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
         [fromOrderId]
       );
 
@@ -1325,7 +1325,7 @@ module.exports = (db) => {
 
       // 1. Get source order (allow PENDING, NEW, RECEIVED, CONFIRMED, PREPARING for online orders)
       const fromOrder = await dbGet(
-        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+        `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
         [fromOrderId]
       );
 
@@ -1354,13 +1354,13 @@ module.exports = (db) => {
       let toOrder = null;
       if (toTable.current_order_id) {
         toOrder = await dbGet(
-          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [toTable.current_order_id]
         );
       }
       if (!toOrder) {
         toOrder = await dbGet(
-          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING')`,
+          `SELECT * FROM orders WHERE table_id = ? AND status IN ('PENDING', 'NEW', 'RECEIVED', 'CONFIRMED', 'PREPARING', 'OPEN')`,
           [toTableId]
         );
       }

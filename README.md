@@ -146,6 +146,169 @@ ID는 고유한 숫자 범위로 구분되며, `idGenerator.js` 파일에서 생
 - **변경 추적**: 모든 변경사항을 콘솔에 기록
 - **상태 표시**: 현재 선택된 요소와 편집 상태 표시
 
+## 🚀 새 POS 컴퓨터 배포 가이드 (처음부터 세팅하기)
+
+> 배포 대상은 **윈도우만 설치된 빈 컴퓨터**입니다.
+> 아래 순서대로 따라하면 POS 프로그램이 동작합니다.
+
+---
+
+### 📌 방법 1: 설치 파일(.exe)로 배포 (가장 쉬움 — 권장)
+
+이미 빌드된 설치 파일이 있다면 새 컴퓨터에서는 아래 하나만 실행하면 됩니다:
+
+```
+pos-desktop\dist\TheZonePOS Setup 1.0.1.exe    ← 설치 프로그램
+pos-desktop\dist\TheZonePOS-Portable-1.0.1.exe ← 설치 없이 바로 실행
+```
+
+- **Setup 버전**: 바탕화면 바로가기 생성, 시작메뉴 등록
+- **Portable 버전**: 설치 없이 더블클릭으로 바로 실행
+
+> ✅ 이 방법은 **Node.js 설치가 필요 없습니다.** 앱 안에 모든 것이 포함되어 있습니다.
+
+---
+
+### 📌 방법 2: 개발용으로 세팅 (소스 코드를 직접 실행)
+
+새 컴퓨터에서 소스 코드를 직접 실행하려면, 아래 프로그램들을 **순서대로** 설치해야 합니다.
+
+#### 🔧 STEP 1: 필수 프로그램 설치
+
+| 순서 | 프로그램 | 다운로드 링크 | 설명 |
+|------|----------|--------------|------|
+| ① | **Node.js v22.15.0** | https://nodejs.org/ | 서버와 앱 실행에 필요 (LTS 버전 설치) |
+| ② | **Visual Studio Build Tools** | https://visualstudio.microsoft.com/ko/visual-cpp-build-tools/ | 네이티브 모듈(canvas, sqlite3, serialport) 컴파일에 필요 |
+| ③ | **Python 3.x** | https://www.python.org/downloads/ | 네이티브 모듈 빌드 도구(node-gyp)에 필요 |
+| ④ | **Git** (선택) | https://git-scm.com/ | 소스 코드 관리용 (USB 복사 시 불필요) |
+
+> ⚠️ **중요 — Node.js 설치 시:**
+> - 설치 중 **"Add to PATH"** 반드시 체크
+> - 설치 중 **"Automatically install the necessary tools"** 체크하면 ②③이 자동 설치됨
+
+> ⚠️ **중요 — Visual Studio Build Tools 설치 시:**
+> - 설치 화면에서 **"C++를 사용한 데스크톱 개발"** 워크로드를 선택
+
+#### 🔧 STEP 2: 설치 확인
+
+프로그램 설치가 끝나면 **PowerShell**(또는 명령 프롬프트)을 열고 아래 명령어로 확인:
+
+```powershell
+node -v       # v22.15.0 나오면 OK
+npm -v        # 10.x.x 나오면 OK
+python --version  # Python 3.x.x 나오면 OK
+```
+
+#### 🔧 STEP 3: 프로젝트 파일 복사
+
+USB 또는 네트워크 공유로 `web2pos` 폴더 전체를 새 컴퓨터에 복사합니다.
+
+> ⚠️ **복사 시 주의:** `node_modules` 폴더는 **복사하지 마세요.** 새 컴퓨터에서 새로 설치해야 합니다.
+
+#### 🔧 STEP 4: 패키지 설치 (npm install)
+
+PowerShell을 열고 아래 명령어를 **순서대로** 실행합니다:
+
+```powershell
+# 1. 백엔드 패키지 설치 (약 3~5분)
+cd web2pos\backend
+npm install
+
+# 2. 프론트엔드 패키지 설치 (약 3~5분)
+cd ..\frontend
+npm install
+```
+
+> 💡 **npm install이 10분 넘게 안 끝나면?**
+> - 네이티브 모듈 빌드 도구가 없는 것 → STEP 1의 ②③ 설치 확인
+> - 또는 아래 "빠른 복사 방법" 참고
+
+#### 🔧 STEP 5: 환경 변수 설정
+
+`backend` 폴더에 `.env` 파일이 있는지 확인합니다. 없으면 새로 만듭니다:
+
+```env
+PORT=3177
+CORS_ORIGIN=http://localhost:3088
+DB_PATH=db/tzp.db
+```
+
+#### 🔧 STEP 6: 실행
+
+```powershell
+# 터미널 1: 백엔드 실행
+cd web2pos\backend
+npm run dev
+
+# 터미널 2: 프론트엔드 실행 (새 PowerShell 창 열기)
+cd web2pos\frontend
+npm start
+```
+
+브라우저에서 `http://localhost:3088` 접속하면 POS가 실행됩니다.
+
+---
+
+### 📌 방법 3: node_modules 직접 복사 (npm install이 안 될 때)
+
+빌드 도구 설치 없이 가장 빠르게 해결하는 방법입니다.
+
+> ⚠️ **조건:** 두 컴퓨터의 **Node.js 버전이 동일**해야 합니다. (`node -v`로 확인)
+
+#### 순서:
+
+1. **작동 중인 컴퓨터에서** 아래 2개 폴더를 **압축(zip)**:
+   - `web2pos\backend\node_modules`
+   - `web2pos\frontend\node_modules`
+
+2. **USB 등으로 새 컴퓨터에 복사**
+
+3. **새 컴퓨터에서** 같은 위치에 압축 해제:
+   - `web2pos\backend\` 안에 `node_modules` 폴더 넣기
+   - `web2pos\frontend\` 안에 `node_modules` 폴더 넣기
+
+4. **실행** (STEP 6과 동일)
+
+---
+
+### 📌 데스크톱 앱 빌드 방법 (설치 파일 .exe 만들기)
+
+설치 파일(.exe)을 새로 만들어야 할 때 사용합니다.
+
+```powershell
+# 1. pos-desktop 폴더로 이동
+cd web2pos\pos-desktop
+
+# 2. 빌드 준비 (Frontend 빌드 + Backend 복사)
+build.bat
+
+# 3. Electron 앱으로 패키징 (.exe 생성)
+npm run build:win
+```
+
+결과물:
+- `pos-desktop\dist\TheZonePOS Setup x.x.x.exe` — 설치 프로그램
+- `pos-desktop\dist\TheZonePOS-Portable-x.x.x.exe` — 포터블 버전
+
+> 이 .exe 파일만 새 컴퓨터에 복사하면 **아무것도 설치할 필요 없이** 바로 실행됩니다.
+
+---
+
+### 📋 배포 체크리스트
+
+| 확인 항목 | 체크 |
+|-----------|------|
+| Node.js 설치 (v22.15.0) | ☐ |
+| npm install 성공 (backend) | ☐ |
+| npm install 성공 (frontend) | ☐ |
+| `.env` 파일 존재 | ☐ |
+| `db/tzp.db` 파일 존재 | ☐ |
+| 백엔드 실행 확인 (port 3177) | ☐ |
+| 프론트엔드 실행 확인 (port 3088) | ☐ |
+| 프린터 연결 확인 | ☐ |
+
+---
+
 ## 🛠️ 개발 및 실행 방법
 ### 1. 백엔드 실행
 ```bash

@@ -36,6 +36,27 @@ interface ZReportData {
   void_total: number;
   void_count: number;
   discount_total: number;
+  // Refund & Void Details
+  refund_details?: Array<{
+    id: number;
+    order_id: number;
+    order_number: string;
+    type: string;
+    total: number;
+    payment_method: string;
+    reason: string;
+    created_at: string;
+  }>;
+  void_details?: Array<{
+    id: number;
+    order_id: number;
+    order_number: string;
+    total: number;
+    source: string;
+    reason: string;
+    created_by: string;
+    created_at: string;
+  }>;
   status: string;
 }
 
@@ -65,6 +86,7 @@ const centDenominations = [
 // Dollar denominations
 const dollarDenominations = [
   { key: 'dollar1', label: '$1', value: 1 },
+  { key: 'dollar2', label: '$2', value: 2 },
   { key: 'dollar5', label: '$5', value: 5 },
   { key: 'dollar10', label: '$10', value: 10 },
   { key: 'dollar20', label: '$20', value: 20 },
@@ -80,6 +102,7 @@ type CashCounts = {
   cent10: number;
   cent25: number;
   dollar1: number;
+  dollar2: number;
   dollar5: number;
   dollar10: number;
   dollar20: number;
@@ -99,7 +122,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   
   const [cashCounts, setCashCounts] = useState<CashCounts>({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
   });
   const [focusedDenom, setFocusedDenom] = useState<string>('dollar1');
   
@@ -132,7 +155,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     if (isOpen) {
       setCashCounts({
         cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-        dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+        dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
       });
       setFocusedDenom('dollar1');
       setViewMode('cash-count');
@@ -245,14 +268,14 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       <div 
         key={denom.key}
         onClick={() => setFocusedDenom(denom.key)}
-        className={`flex items-center justify-between px-2 py-1.5 rounded border-2 cursor-pointer transition-all ${baseStyle}`}
+        className={`flex items-center justify-between px-3 py-3 rounded-lg border-2 cursor-pointer transition-all ${baseStyle}`}
       >
-        <span className={`font-semibold text-sm ${isCent ? 'text-amber-700' : 'text-green-700'}`}>{denom.label}</span>
-        <div className="flex items-center gap-1">
-          <span className={`font-bold ${isCent ? 'text-amber-600' : 'text-green-600'}`}>
+        <span className={`font-bold text-base ${isCent ? 'text-amber-700' : 'text-green-700'}`}>{denom.label}</span>
+        <div className="flex items-center gap-2">
+          <span className={`font-bold text-lg ${isCent ? 'text-amber-600' : 'text-green-600'}`}>
             {cashCounts[denom.key as keyof CashCounts]}
           </span>
-          <span className="text-[10px] text-gray-400">
+          <span className="text-xs text-gray-400">
             ={formatCurrency(cashCounts[denom.key as keyof CashCounts] * denom.value)}
           </span>
         </div>
@@ -286,7 +309,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
   return (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50">
-      <div className="bg-white rounded-2xl shadow-2xl w-[720px] max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="bg-white rounded-2xl shadow-2xl w-[820px] max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="bg-slate-800 text-white px-5 py-3 flex-shrink-0">
           <div className="flex items-center justify-between">
@@ -354,7 +377,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     </div>
 
                     {/* Right: Number Pad */}
-                    <div className="w-[280px]">
+                    <div className="w-[300px]">
                       <div className="grid grid-cols-3 gap-2 h-full">
                         {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(num => (
                           <button
@@ -367,7 +390,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                                   ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
                                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
                             }`}
-                            style={{ minHeight: '60px' }}
+                            style={{ minHeight: '68px' }}
                           >
                             {num}
                           </button>
@@ -492,7 +515,20 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 {receiptCenter('-- ADJUSTMENTS --')}{'\n'}
 {receiptLine('-')}{'\n'}
 {receiptLeftRight(`Refunds (${zReportData?.refund_count || 0}):`, `-${formatMoney(zReportData?.refund_total || 0)}`)}{'\n'}
+{zReportData?.refund_details && zReportData.refund_details.length > 0 ? zReportData.refund_details.map((r, i) => {
+  const orderNum = r.order_number || `#${r.order_id}`;
+  const reason = r.reason ? ` (${r.reason})` : '';
+  return `  Order ${orderNum}${reason}\n` +
+    receiptLeftRight(`    ${r.type || 'FULL'} / ${r.payment_method || 'N/A'}`, `-${formatMoney(r.total)}`) + '\n';
+}).join('') : ''}
 {receiptLeftRight(`Voids (${zReportData?.void_count || 0}):`, `-${formatMoney(zReportData?.void_total || 0)}`)}{'\n'}
+{zReportData?.void_details && zReportData.void_details.length > 0 ? zReportData.void_details.map((v, i) => {
+  const orderNum = v.order_number || `#${v.order_id}`;
+  const reason = v.reason ? ` (${v.reason})` : '';
+  const source = v.source === 'entire' ? 'Entire' : 'Partial';
+  return `  Order ${orderNum} [${source}]${reason}\n` +
+    receiptLeftRight(`    ${v.created_by || ''}`, `-${formatMoney(v.total)}`) + '\n';
+}).join('') : ''}
 {receiptLeftRight('Discounts:', `-${formatMoney(zReportData?.discount_total || 0)}`)}{'\n'}
 {'\n'}
 {receiptCenter('-- CASH DRAWER --')}{'\n'}
@@ -507,6 +543,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 {cashCounts.cent10 > 0 ? receiptLeftRight(`10 Cents x ${cashCounts.cent10}`, formatMoney(cashCounts.cent10 * 0.10)) + '\n' : ''}
 {cashCounts.cent25 > 0 ? receiptLeftRight(`25 Cents x ${cashCounts.cent25}`, formatMoney(cashCounts.cent25 * 0.25)) + '\n' : ''}
 {cashCounts.dollar1 > 0 ? receiptLeftRight(`$1 Bills x ${cashCounts.dollar1}`, formatMoney(cashCounts.dollar1 * 1)) + '\n' : ''}
+{cashCounts.dollar2 > 0 ? receiptLeftRight(`$2 Bills x ${cashCounts.dollar2}`, formatMoney(cashCounts.dollar2 * 2)) + '\n' : ''}
 {cashCounts.dollar5 > 0 ? receiptLeftRight(`$5 Bills x ${cashCounts.dollar5}`, formatMoney(cashCounts.dollar5 * 5)) + '\n' : ''}
 {cashCounts.dollar10 > 0 ? receiptLeftRight(`$10 Bills x ${cashCounts.dollar10}`, formatMoney(cashCounts.dollar10 * 10)) + '\n' : ''}
 {cashCounts.dollar20 > 0 ? receiptLeftRight(`$20 Bills x ${cashCounts.dollar20}`, formatMoney(cashCounts.dollar20 * 20)) + '\n' : ''}

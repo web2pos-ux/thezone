@@ -83,14 +83,29 @@ module.exports = (db) => {
       )
     `);
     console.log('✅ daily_closings table initialized');
+
+    // admin_settings 테이블 (key-value store for daily_order_counter 등)
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS admin_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
+    console.log('✅ admin_settings table initialized');
   };
 
-  initTable().catch(err => console.error('Failed to init daily_closings table:', err));
+  initTable().catch(err => console.error('Failed to init tables:', err));
+
+  // Helper: Get local date string (YYYY-MM-DD) - 타임존 안전
+  const getLocalDate = () => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  };
 
   // ============ GET TODAY'S STATUS ============
   router.get('/today', async (req, res) => {
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const record = await dbGet('SELECT * FROM daily_closings WHERE date = ?', [today]);
       
       res.json({
@@ -109,7 +124,7 @@ module.exports = (db) => {
   router.post('/opening', async (req, res) => {
     try {
       const { openingCash = 0, openedBy = '' } = req.body;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const now = new Date().toISOString();
 
       // Check if already opened today
@@ -146,6 +161,14 @@ module.exports = (db) => {
 
       const record = await dbGet('SELECT * FROM daily_closings WHERE date = ?', [today]);
       
+      // 주문번호 카운터 리셋 (Opening 시 001부터 시작)
+      try {
+        await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
+        console.log('✅ Daily order counter reset to 0');
+      } catch (counterErr) {
+        console.error('Failed to reset daily order counter:', counterErr.message);
+      }
+
       // ============ Firebase 동기화 ============
       try {
         const restaurantId = await getRestaurantId();
@@ -178,11 +201,12 @@ module.exports = (db) => {
   router.get('/z-report', async (req, res) => {
     try {
       const { date } = req.query;
-      const targetDate = date || new Date().toISOString().split('T')[0];
+      const targetDate = date || getLocalDate();
       
       // Get sales data for the day
       // order_type variants: POS, pos, DINE_IN, TABLE_ORDER = Dine-In; TOGO, togo = Togo; ONLINE, online = Online; DELIVERY = Delivery
       // status variants: PAID, PICKED_UP, completed, closed = completed orders
+      // DATE(created_at, 'localtime') 사용: UTC로 저장된 created_at을 로컬 타임존으로 변환
       const salesData = await dbGet(`
         SELECT 
           COUNT(*) as order_count,
@@ -193,7 +217,7 @@ module.exports = (db) => {
           COALESCE(SUM(CASE WHEN UPPER(order_type) = 'ONLINE' THEN total ELSE 0 END), 0) as online_sales,
           COALESCE(SUM(CASE WHEN UPPER(order_type) = 'DELIVERY' THEN total ELSE 0 END), 0) as delivery_sales
         FROM orders 
-        WHERE DATE(created_at) = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        WHERE DATE(created_at, 'localtime') = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
       `, [targetDate]);
 
       // Get payment breakdown
@@ -224,7 +248,7 @@ module.exports = (db) => {
           COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as card_sales,
           COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER') THEN COALESCE(tip, 0) ELSE 0 END), 0) as card_tips
         FROM payments 
-        WHERE DATE(created_at) = ? AND status = 'APPROVED'
+        WHERE DATE(created_at, 'localtime') = ? AND status = 'APPROVED'
       `, [targetDate]);
 
       // Get refund data (refunds table uses 'total' column)
@@ -233,7 +257,7 @@ module.exports = (db) => {
           COUNT(*) as refund_count,
           COALESCE(SUM(total), 0) as refund_total
         FROM refunds 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at, 'localtime') = ?
       `, [targetDate]);
 
       // Get void data (voids table uses 'grand_total' column)
@@ -242,7 +266,27 @@ module.exports = (db) => {
           COUNT(*) as void_count,
           COALESCE(SUM(grand_total), 0) as void_total
         FROM voids 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at, 'localtime') = ?
+      `, [targetDate]);
+
+      // Get individual refund records for detail display
+      const refundDetails = await dbAll(`
+        SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.created_at,
+               o.order_number
+        FROM refunds r
+        LEFT JOIN orders o ON r.order_id = o.id
+        WHERE DATE(r.created_at, 'localtime') = ?
+        ORDER BY r.created_at ASC
+      `, [targetDate]);
+
+      // Get individual void records for detail display
+      const voidDetails = await dbAll(`
+        SELECT v.id, v.order_id, v.grand_total, v.reason, v.source, v.created_by, v.created_at,
+               o.order_number
+        FROM voids v
+        LEFT JOIN orders o ON v.order_id = o.id
+        WHERE DATE(v.created_at, 'localtime') = ?
+        ORDER BY v.created_at ASC
       `, [targetDate]);
 
       // Get discount data
@@ -258,7 +302,7 @@ module.exports = (db) => {
           END
         ), 0) as discount_total
         FROM orders 
-        WHERE DATE(created_at) = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        WHERE DATE(created_at, 'localtime') = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
       `, [targetDate]);
 
       // Get opening cash
@@ -309,6 +353,27 @@ module.exports = (db) => {
           void_count: voidData?.void_count || 0,
           // Discounts
           discount_total: discountData?.discount_total || 0,
+          // Refund & Void Details
+          refund_details: (refundDetails || []).map(r => ({
+            id: r.id,
+            order_id: r.order_id,
+            order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
+            type: r.refund_type || 'FULL',
+            total: r.total || 0,
+            payment_method: r.payment_method || '',
+            reason: r.reason || '',
+            created_at: r.created_at
+          })),
+          void_details: (voidDetails || []).map(v => ({
+            id: v.id,
+            order_id: v.order_id,
+            order_number: v.order_number || `#${v.order_id}`,
+            total: v.grand_total || 0,
+            source: v.source || 'partial',
+            reason: v.reason || '',
+            created_by: v.created_by || '',
+            created_at: v.created_at
+          })),
           // Status
           status: closingRecord?.status || 'not_opened',
           opened_at: closingRecord?.opened_at || null,
@@ -332,12 +397,12 @@ module.exports = (db) => {
       `);
       
       // Check for pending orders that are not paid
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const unpaidOrders = await dbAll(`
         SELECT id, order_number, table_id, total, status, created_at 
         FROM orders 
-        WHERE DATE(created_at) = ? 
-        AND UPPER(status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED')
+        WHERE DATE(created_at, 'localtime') = ? 
+        AND UPPER(status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED')
       `, [today]);
       
       const hasUnpaidOrders = tablesWithOrders.length > 0 || unpaidOrders.length > 0;
@@ -370,17 +435,17 @@ module.exports = (db) => {
   router.post('/closing', async (req, res) => {
     try {
       const { closingCash = 0, closedBy = '', notes = '' } = req.body;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const now = new Date().toISOString();
 
-      // Fetch closing data directly
+      // Fetch closing data directly (로컬 타임존 기준)
       const salesData = await dbGet(`
         SELECT 
           COUNT(*) as order_count,
           COALESCE(SUM(total), 0) as total_sales,
           COALESCE(SUM(tax), 0) as tax_total
         FROM orders 
-        WHERE DATE(created_at) = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        WHERE DATE(created_at, 'localtime') = ? AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
       `, [today]);
 
       const paymentData = await dbGet(`
@@ -390,7 +455,7 @@ module.exports = (db) => {
           COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'DEBIT', 'OTHER_CARD', 'CREDIT', 'CARD') THEN amount ELSE 0 END), 0) as other_sales,
           COALESCE(SUM(tip), 0) as tip_total
         FROM payments 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at, 'localtime') = ?
       `, [today]);
 
       const refundData = await dbGet(`
@@ -398,7 +463,7 @@ module.exports = (db) => {
           COUNT(*) as refund_count,
           COALESCE(SUM(total), 0) as refund_total
         FROM refunds 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at, 'localtime') = ?
       `, [today]);
 
       const voidData = await dbGet(`
@@ -406,7 +471,7 @@ module.exports = (db) => {
           COUNT(*) as void_count,
           COALESCE(SUM(grand_total), 0) as void_total
         FROM voids 
-        WHERE DATE(created_at) = ?
+        WHERE DATE(created_at, 'localtime') = ?
       `, [today]);
 
       // Check if record exists
@@ -486,6 +551,14 @@ module.exports = (db) => {
 
       const record = await dbGet('SELECT * FROM daily_closings WHERE date = ?', [today]);
 
+      // 주문번호 카운터 리셋 (Closing 시 다음 Opening을 위해)
+      try {
+        await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
+        console.log('✅ Daily order counter reset to 0 (closing)');
+      } catch (counterErr) {
+        console.error('Failed to reset daily order counter:', counterErr.message);
+      }
+
       // ============ Firebase 동기화 ============
       try {
         const restaurantId = await getRestaurantId();
@@ -552,7 +625,7 @@ module.exports = (db) => {
   router.post('/print-opening', async (req, res) => {
     try {
       const { openingCash = 0, cashBreakdown = {} } = req.body;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const now = new Date();
       const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
       
@@ -606,6 +679,7 @@ module.exports = (db) => {
         { key: 'cent10', label: '10 Cents', value: 0.10 },
         { key: 'cent25', label: '25 Cents', value: 0.25 },
         { key: 'dollar1', label: '$1 Bills', value: 1 },
+        { key: 'dollar2', label: '$2 Bills', value: 2 },
         { key: 'dollar5', label: '$5 Bills', value: 5 },
         { key: 'dollar10', label: '$10 Bills', value: 10 },
         { key: 'dollar20', label: '$20 Bills', value: 20 },
@@ -672,7 +746,7 @@ module.exports = (db) => {
   router.post('/print-z-report', async (req, res) => {
     try {
       const { zReportData, closingCash = 0, cashBreakdown = {} } = req.body;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDate();
       const now = new Date();
       const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
       
@@ -747,7 +821,26 @@ module.exports = (db) => {
       printContent += '\n' + BOLD_ON + center('-- ADJUSTMENTS --') + BOLD_OFF + '\n';
       printContent += dottedLine + '\n';
       printContent += leftRightBold(`Refunds (${zReportData?.refund_count || 0}):`, `-${formatMoney(zReportData?.refund_total)}`) + '\n';
+      // Refund Details
+      if (zReportData?.refund_details && zReportData.refund_details.length > 0) {
+        zReportData.refund_details.forEach(r => {
+          const orderNum = r.order_number || `#${r.order_id}`;
+          const reason = r.reason ? ` (${r.reason})` : '';
+          printContent += `  Order ${orderNum}${reason}` + '\n';
+          printContent += leftRight(`    ${r.type || 'FULL'} / ${r.payment_method || 'N/A'}`, `-${formatMoney(r.total)}`) + '\n';
+        });
+      }
       printContent += leftRightBold(`Voids (${zReportData?.void_count || 0}):`, `-${formatMoney(zReportData?.void_total)}`) + '\n';
+      // Void Details
+      if (zReportData?.void_details && zReportData.void_details.length > 0) {
+        zReportData.void_details.forEach(v => {
+          const orderNum = v.order_number || `#${v.order_id}`;
+          const reason = v.reason ? ` (${v.reason})` : '';
+          const source = v.source === 'entire' ? 'Entire' : 'Partial';
+          printContent += `  Order ${orderNum} [${source}]${reason}` + '\n';
+          printContent += leftRight(`    ${v.created_by || ''}`, `-${formatMoney(v.total)}`) + '\n';
+        });
+      }
       printContent += leftRightBold('Discounts:', `-${formatMoney(zReportData?.discount_total)}`) + '\n';
       
       // Cash Drawer
@@ -766,6 +859,7 @@ module.exports = (db) => {
         { key: 'cent10', label: '10 Cents', value: 0.10 },
         { key: 'cent25', label: '25 Cents', value: 0.25 },
         { key: 'dollar1', label: '$1 Bills', value: 1 },
+        { key: 'dollar2', label: '$2 Bills', value: 2 },
         { key: 'dollar5', label: '$5 Bills', value: 5 },
         { key: 'dollar10', label: '$10 Bills', value: 10 },
         { key: 'dollar20', label: '$20 Bills', value: 20 },

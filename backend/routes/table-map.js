@@ -285,51 +285,80 @@ router.post('/elements', async (req, res) => {
 
   console.log(`✅ ${elements.length}개 요소 검증 완료, 저장 시작`);
 
-  try {
-    const { dbRun } = require('../db');
-    
-    // 1. 해당 floor의 모든 요소 삭제
-    await dbRun('DELETE FROM table_map_elements WHERE floor = ?', [floor]);
-    console.log(`✅ ${floor} Floor 기존 요소 삭제 완료`);
-    
-    // 2. 저장할 요소들의 ID가 다른 floor에 있으면 삭제 (ID 충돌 방지)
-    const elementIds = elements.map(el => String(el.id));
-    if (elementIds.length > 0) {
-      const placeholders = elementIds.map(() => '?').join(',');
-      await dbRun(`DELETE FROM table_map_elements WHERE element_id IN (${placeholders})`, elementIds);
-      console.log(`✅ 기존 중복 ID 삭제 완료`);
+  // 재시도 로직 포함 트랜잭션 기반 저장
+  const MAX_RETRIES = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { dbRun } = require('../db');
+      
+      // 트랜잭션 시작 (IMMEDIATE: 쓰기 락을 즉시 획득하여 동시 쓰기 충돌 방지)
+      await dbRun('BEGIN IMMEDIATE');
+      
+      try {
+        // 1. 해당 floor의 모든 요소 삭제
+        await dbRun('DELETE FROM table_map_elements WHERE floor = ?', [floor]);
+        console.log(`✅ ${floor} Floor 기존 요소 삭제 완료`);
+        
+        // 2. 저장할 요소들의 ID가 다른 floor에 있으면 삭제 (ID 충돌 방지)
+        const elementIds = elements.map(el => String(el.id));
+        if (elementIds.length > 0) {
+          const placeholders = elementIds.map(() => '?').join(',');
+          await dbRun(`DELETE FROM table_map_elements WHERE element_id IN (${placeholders})`, elementIds);
+          console.log(`✅ 기존 중복 ID 삭제 완료`);
+        }
+        
+        // 3. 새 요소 삽입 (하나씩)
+        for (const element of elements) {
+          await dbRun(`
+            INSERT INTO table_map_elements (
+              element_id, floor, type, x_pos, y_pos, width, height, rotation, 
+              name, fontSize, color, status, current_order_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            String(element.id),
+            element.floor,
+            element.type,
+            element.position.x,
+            element.position.y,
+            element.size.width,
+            element.size.height,
+            element.rotation || 0,
+            element.text || '',
+            element.fontSize || 20,
+            element.color || '#3B82F6',
+            element.status || 'Available',
+            element.current_order_id || null
+          ]);
+        }
+        
+        // 트랜잭션 커밋
+        await dbRun('COMMIT');
+        console.log(`✅ ${elements.length}개 요소 저장 완료 (attempt ${attempt})`);
+        return res.json({ message: '저장 성공', count: elements.length });
+      } catch (innerErr) {
+        // 트랜잭션 롤백
+        try { await dbRun('ROLLBACK'); } catch (rbErr) { console.error('Rollback error:', rbErr); }
+        throw innerErr;
+      }
+    } catch (err) {
+      lastError = err;
+      console.error(`요소 저장 오류 (attempt ${attempt}/${MAX_RETRIES}):`, err.message);
+      
+      // SQLITE_BUSY 에러면 재시도, 아니면 즉시 실패
+      if (err.message && (err.message.includes('SQLITE_BUSY') || err.message.includes('database is locked')) && attempt < MAX_RETRIES) {
+        const delay = attempt * 500; // 500ms, 1000ms 대기
+        console.log(`⏳ ${delay}ms 후 재시도...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      break;
     }
-    
-    // 3. 새 요소 삽입 (하나씩)
-    for (const element of elements) {
-      await dbRun(`
-        INSERT INTO table_map_elements (
-          element_id, floor, type, x_pos, y_pos, width, height, rotation, 
-          name, fontSize, color, status, current_order_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        String(element.id),
-        element.floor,
-        element.type,
-        element.position.x,
-        element.position.y,
-        element.size.width,
-        element.size.height,
-        element.rotation || 0,
-        element.text || '',
-        element.fontSize || 20,
-        element.color || '#3B82F6',
-        element.status || 'Available',
-        element.current_order_id || null
-      ]);
-    }
-    
-    console.log(`✅ ${elements.length}개 요소 저장 완료`);
-    res.json({ message: '저장 성공', count: elements.length });
-  } catch (err) {
-    console.error('요소 저장 오류:', err);
-    return res.status(500).json({ error: '데이터 저장 실패: ' + err.message });
   }
+
+  console.error('요소 저장 최종 실패:', lastError);
+  return res.status(500).json({ error: '데이터 저장 실패: ' + (lastError ? lastError.message : 'unknown error') });
 });
 
 // ===== Screen Size 설정 API =====

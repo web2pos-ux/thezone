@@ -586,17 +586,19 @@ router.get('/:reportId/print', async (req, res) => {
 // Daily Cash Report 데이터
 function getDailyCashReport(db, date, shiftId) {
   return new Promise((resolve, reject) => {
+    // 팁을 매출에서 분리하여 계산 (amount = 팁 포함 총액, tip = 팁 금액)
+    // 순매출 = amount - tip, 팁 = tip
     const query = `
       SELECT 
-        COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND type = 'payment' THEN amount ELSE 0 END), 0) as cash_sales,
-        COALESCE(SUM(CASE WHEN payment_method = 'CARD' AND type = 'payment' THEN amount ELSE 0 END), 0) as card_sales,
-        COALESCE(SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END), 0) as total_sales,
-        COALESCE(SUM(CASE WHEN type = 'tip' THEN amount ELSE 0 END), 0) as total_tips,
-        COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND type = 'tip' THEN amount ELSE 0 END), 0) as cash_tips,
-        COALESCE(SUM(CASE WHEN payment_method = 'CARD' AND type = 'tip' THEN amount ELSE 0 END), 0) as card_tips,
+        COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as cash_sales,
+        COALESCE(SUM(CASE WHEN payment_method != 'CASH' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as card_sales,
+        COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as total_sales,
+        COALESCE(SUM(COALESCE(tip, 0)), 0) as total_tips,
+        COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN COALESCE(tip, 0) ELSE 0 END), 0) as cash_tips,
+        COALESCE(SUM(CASE WHEN payment_method != 'CASH' THEN COALESCE(tip, 0) ELSE 0 END), 0) as card_tips,
         COUNT(DISTINCT order_id) as transaction_count
       FROM payments
-      WHERE DATE(created_at) = ?
+      WHERE DATE(created_at) = ? AND status = 'APPROVED'
     `;
     
     db.get(query, [date], (err, row) => {
@@ -713,15 +715,16 @@ function getDailySummaryReport(db, date) {
         SELECT 
           payment_method,
           COUNT(*) as count,
-          COALESCE(SUM(amount), 0) as amount
+          COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as amount,
+          COALESCE(SUM(COALESCE(tip, 0)), 0) as tips
         FROM payments
-        WHERE DATE(created_at) = ? AND type = 'payment'
+        WHERE DATE(created_at) = ? AND status = 'APPROVED'
         GROUP BY payment_method
       `,
       tips: `
-        SELECT COALESCE(SUM(amount), 0) as total_tips
+        SELECT COALESCE(SUM(COALESCE(tip, 0)), 0) as total_tips
         FROM payments
-        WHERE DATE(created_at) = ? AND type = 'tip'
+        WHERE DATE(created_at) = ? AND status = 'APPROVED'
       `,
       voids: `
         SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
@@ -884,25 +887,27 @@ function getShiftCloseReport(db, date, shiftId) {
         s.opening_cash,
         s.closing_cash,
         COALESCE((
-          SELECT SUM(CASE WHEN p.payment_method = 'CASH' AND p.type = 'payment' THEN p.amount ELSE 0 END)
+          SELECT SUM(CASE WHEN p.payment_method = 'CASH' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END)
           FROM payments p
           JOIN orders o ON p.order_id = o.order_id
           WHERE o.employee_id = s.employee_id
+            AND p.status = 'APPROVED'
             AND p.created_at BETWEEN s.started_at AND COALESCE(s.ended_at, datetime('now'))
         ), 0) as cash_collected,
         COALESCE((
-          SELECT SUM(CASE WHEN p.payment_method = 'CARD' AND p.type = 'payment' THEN p.amount ELSE 0 END)
+          SELECT SUM(CASE WHEN p.payment_method != 'CASH' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END)
           FROM payments p
           JOIN orders o ON p.order_id = o.order_id
           WHERE o.employee_id = s.employee_id
+            AND p.status = 'APPROVED'
             AND p.created_at BETWEEN s.started_at AND COALESCE(s.ended_at, datetime('now'))
         ), 0) as card_collected,
         COALESCE((
-          SELECT SUM(p.amount)
+          SELECT SUM(COALESCE(p.tip, 0))
           FROM payments p
           JOIN orders o ON p.order_id = o.order_id
           WHERE o.employee_id = s.employee_id
-            AND p.type = 'tip'
+            AND p.status = 'APPROVED'
             AND p.created_at BETWEEN s.started_at AND COALESCE(s.ended_at, datetime('now'))
         ), 0) as tips_collected,
         COALESCE((
@@ -1337,10 +1342,11 @@ function getPaymentMethodBreakdown(db, startDate, endDate) {
       SELECT 
         payment_method,
         COUNT(*) as transaction_count,
-        COALESCE(SUM(amount), 0) as amount
+        COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as amount,
+        COALESCE(SUM(COALESCE(tip, 0)), 0) as tips
       FROM payments
       WHERE DATE(created_at) BETWEEN ? AND ?
-        AND type = 'payment'
+        AND status = 'APPROVED'
       GROUP BY payment_method
       ORDER BY amount DESC
     `, [startDate, endDate], (err, rows) => {
@@ -1405,12 +1411,12 @@ function getTipAnalysis(db, startDate, endDate) {
     db.all(`
       SELECT 
         DATE(created_at) as date,
-        COUNT(*) as tip_count,
-        COALESCE(SUM(amount), 0) as total_tips,
-        COALESCE(AVG(amount), 0) as avg_tip
+        COUNT(CASE WHEN COALESCE(tip, 0) > 0 THEN 1 END) as tip_count,
+        COALESCE(SUM(COALESCE(tip, 0)), 0) as total_tips,
+        COALESCE(AVG(CASE WHEN COALESCE(tip, 0) > 0 THEN tip END), 0) as avg_tip
       FROM payments
       WHERE DATE(created_at) BETWEEN ? AND ?
-        AND type = 'tip'
+        AND status = 'APPROVED'
       GROUP BY DATE(created_at)
       ORDER BY date
     `, [startDate, endDate], (err, rows) => {
@@ -1509,14 +1515,15 @@ function getTipsByEmployee(db, startDate, endDate) {
       SELECT 
         o.employee_id,
         COALESCE(e.name, 'Unknown') as employee_name,
-        COUNT(*) as tip_count,
-        COALESCE(SUM(p.amount), 0) as total_tips,
-        COALESCE(AVG(p.amount), 0) as avg_tip
+        COUNT(CASE WHEN COALESCE(p.tip, 0) > 0 THEN 1 END) as tip_count,
+        COALESCE(SUM(COALESCE(p.tip, 0)), 0) as total_tips,
+        COALESCE(AVG(CASE WHEN COALESCE(p.tip, 0) > 0 THEN p.tip END), 0) as avg_tip
       FROM payments p
       JOIN orders o ON p.order_id = o.order_id
       LEFT JOIN employees e ON o.employee_id = e.employee_id
       WHERE DATE(p.created_at) BETWEEN ? AND ?
-        AND p.type = 'tip'
+        AND p.status = 'APPROVED'
+        AND COALESCE(p.tip, 0) > 0
       GROUP BY o.employee_id
       ORDER BY total_tips DESC
     `, [startDate, endDate], (err, rows) => {

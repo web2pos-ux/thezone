@@ -14,6 +14,17 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
+// WAL 모드 설정: 동시 읽기/쓰기 성능 향상 및 SQLITE_BUSY 에러 방지
+db.run('PRAGMA journal_mode=WAL', (err) => {
+  if (err) console.error('[db.js] Failed to set WAL mode:', err.message);
+  else console.log('[db.js] WAL mode enabled');
+});
+
+// busy_timeout 증가: 동시 접근 시 최대 5초 대기 (기본 1초 → 5초)
+db.run('PRAGMA busy_timeout=5000', (err) => {
+  if (err) console.error('[db.js] Failed to set busy_timeout:', err.message);
+});
+
 const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
   db.run(sql, params, function(err) {
     if (err) reject(err);

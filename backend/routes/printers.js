@@ -401,6 +401,60 @@ module.exports = (db) => {
   // ============================================
 
   /**
+   * POST /api/printers/print-text - ESC/POS 텍스트 명령을 직접 프린터로 전송
+   * Z-Report, Opening Report 등 텍스트 기반 출력에 사용
+   */
+  router.post('/print-text', async (req, res) => {
+    try {
+      const { text, openDrawer = false } = req.body;
+      console.log('📝 [Printer API] Print text request received');
+      
+      if (!text) {
+        return res.status(400).json({ success: false, error: 'No text provided' });
+      }
+      
+      // Front 프린터 찾기 (Receipt 프린터)
+      const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' LIMIT 1");
+      const targetPrinter = frontPrinter?.selected_printer;
+      
+      if (!targetPrinter) {
+        console.error('📝 [Printer API] ERROR: No printer configured for text printing!');
+        return res.status(400).json({ 
+          success: false, 
+          error: 'No printer configured. Please set up a printer in the back office.' 
+        });
+      }
+      
+      console.log(`📝 [Printer API] Target printer: ${targetPrinter}`);
+      
+      // ESC/POS 초기화 + 텍스트 + 용지 커팅 명령
+      const ESC = '\x1B';
+      const GS = '\x1D';
+      const INIT = ESC + '@'; // 프린터 초기화
+      const CUT = GS + 'V' + '\x00'; // Full cut
+      
+      let printData = INIT + text + '\n\n\n' + CUT;
+      
+      // Cash Drawer 열기 옵션
+      if (openDrawer) {
+        const DRAWER_KICK = ESC + 'p' + '\x00' + '\x19' + '\x19';
+        printData = DRAWER_KICK + printData;
+      }
+      
+      const printBuffer = Buffer.from(printData, 'binary');
+      
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      await sendRawToPrinter(targetPrinter, printBuffer);
+      
+      console.log(`📝 [Printer API] Text sent to printer: ${targetPrinter}`);
+      res.json({ success: true, message: 'Text printed successfully', printer: targetPrinter });
+    } catch (err) {
+      console.error('Print text failed:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
    * POST /api/printers/open-drawer - Cash Drawer 열기
    */
   router.post('/open-drawer', async (req, res) => {
@@ -482,6 +536,10 @@ module.exports = (db) => {
       
       const { sendRawToPrinter } = require('../utils/printerUtils');
       
+      // ESC/POS 비프 명령: ESC B n t (n=비프 횟수, t=지속시간 100ms 단위)
+      // 3회 비프, 각 200ms = 주방에서 잘 들리도록
+      const BEEP_CMD = Buffer.from([0x1B, 0x42, 0x03, 0x02]);
+      
       // 그래픽 모드로 출력 시도 (실패 시 텍스트 모드로 fallback)
       let usedTextMode = false;
       if (printMode === 'graphic') {
@@ -492,8 +550,10 @@ module.exports = (db) => {
           const ticketBuffer = buildGraphicKitchenTicket(ticketData, false, true);
           console.log(`🍳 [Printer API] Graphic buffer size: ${ticketBuffer?.length || 0} bytes`);
           
-          await sendRawToPrinter(targetPrinter, ticketBuffer);
-          console.log(`✅ [Printer API] Kitchen Ticket printed successfully (GRAPHIC mode)`);
+          // 비프 명령 + 티켓 데이터 결합
+          const bufferWithBeep = Buffer.concat([BEEP_CMD, ticketBuffer]);
+          await sendRawToPrinter(targetPrinter, bufferWithBeep);
+          console.log(`✅ [Printer API] Kitchen Ticket printed successfully (GRAPHIC mode) with beep`);
         } catch (graphicErr) {
           console.error(`❌ [Printer API] Graphic mode FAILED:`, graphicErr.message);
           console.error(graphicErr.stack);
@@ -537,9 +597,11 @@ module.exports = (db) => {
           ? buildEscPosKitchenTicketWithLayout(ticketData, ticketLayout)
           : buildKitchenTicketText(ticketData);
         
-        const ticketBuffer = Buffer.from(ticketText, 'binary');
+        // 비프 명령 + 티켓 텍스트 결합
+        const beepStr = '\x1B\x42\x03\x02';
+        const ticketBuffer = Buffer.from(beepStr + ticketText, 'binary');
         await sendRawToPrinter(targetPrinter, ticketBuffer);
-        console.log(`🍳 [Printer API] Kitchen Ticket printed successfully (ESC/POS mode)`);
+        console.log(`🍳 [Printer API] Kitchen Ticket printed successfully (ESC/POS mode) with beep`);
       }
       
       res.json({ success: true, message: `Kitchen ticket printed (1 copy)`, printer: targetPrinter || 'default' });
@@ -945,7 +1007,10 @@ module.exports = (db) => {
         footer: ticket.footer
       };
 
-      console.log(`[Serial] Printing kitchen ticket to ${port}`);
+      console.log(`[Serial] Printing kitchen ticket to ${port} (with beep)`);
+      // 비프 명령을 시리얼 프린터에도 전송
+      const beepBuffer = Buffer.from([0x1B, 0x42, 0x03, 0x02]);
+      await utils.sendToSerialPort(port, beepBuffer, portOptions).catch(() => {});
       await utils.printToSerialPrinter(port, printData, portOptions);
       
       res.json({ success: true, message: `Kitchen ticket sent to ${port}` });

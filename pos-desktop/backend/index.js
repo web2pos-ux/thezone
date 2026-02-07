@@ -540,13 +540,13 @@ app.use('/api/app-update', appUpdateRoutes);
 const firebaseSetupRoutes = require('./routes/firebase-setup');
 app.use('/api/firebase-setup', firebaseSetupRoutes);
 
-// Dealer Access Routes (딜러 전용 접근)
-const dealerAccessRoutes = require('./routes/dealer-access');
-app.use('/api/dealer-access', dealerAccessRoutes);
-
 // Remote Sync Routes (실시간 원격 동기화)
 const remoteSyncRoutes = require('./routes/remote-sync');
 app.use('/api/remote-sync', remoteSyncRoutes);
+
+// Dealer Access Routes (딜러/총판/시스템 관리자 전용)
+const dealerAccessRoutes = require('./routes/dealer-access');
+app.use('/api/dealer-access', dealerAccessRoutes);
 
 // --- Basic Endpoints ---
 // 주의: '/' 핸들러는 프론트엔드 서빙과 충돌하므로 /api/status로 변경

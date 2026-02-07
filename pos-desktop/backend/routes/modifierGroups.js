@@ -25,6 +25,33 @@ module.exports = (db) => {
     });
   });
 
+  // Cleanup orphaned links at startup
+  (async () => {
+    try {
+      // Remove links where modifier_group doesn't exist
+      const r1 = await dbRun(`
+        DELETE FROM modifier_group_links 
+        WHERE modifier_group_id NOT IN (SELECT modifier_group_id FROM modifier_groups)
+      `);
+      // Remove links where modifier doesn't exist
+      const r2 = await dbRun(`
+        DELETE FROM modifier_group_links 
+        WHERE modifier_id NOT IN (SELECT modifier_id FROM modifiers)
+      `);
+      // Remove orphaned labels
+      const r3 = await dbRun(`
+        DELETE FROM modifier_labels 
+        WHERE modifier_group_id NOT IN (SELECT modifier_group_id FROM modifier_groups)
+      `);
+      const totalCleaned = (r1.changes || 0) + (r2.changes || 0) + (r3.changes || 0);
+      if (totalCleaned > 0) {
+        console.log(`[ModifierGroups] Cleaned up ${totalCleaned} orphaned records.`);
+      }
+    } catch (err) {
+      console.error('[ModifierGroups] Orphaned links cleanup failed:', err.message);
+    }
+  })();
+
   // GET /api/modifier-groups - Get all modifier groups
   router.get('/', async (req, res) => {
     try {

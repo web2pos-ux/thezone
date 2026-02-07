@@ -406,9 +406,16 @@ const TableMapManagerPage = () => {
       // 4) FOH 반영 신호: localStorage 브로드캐스트 (floor 포함)
       try { localStorage.setItem('tableMapUpdated', JSON.stringify({ floor: selectedFloor, ts: Date.now() })); } catch {}
       // 성공 알림 제거 (요청에 따라 사용자 팝업 표시 안 함)
-    } catch (e) {
+    } catch (e: any) {
       console.error('Save layout failed:', e);
-      alert('레이아웃 저장 중 오류가 발생했습니다.');
+      const errMsg = e?.message || '';
+      if (errMsg.includes('SQLITE_BUSY') || errMsg.includes('database is locked')) {
+        alert('데이터베이스가 사용 중입니다. 잠시 후 다시 시도해주세요.');
+      } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
+        alert('서버에 연결할 수 없습니다. 백엔드가 실행 중인지 확인해주세요.');
+      } else {
+        alert('레이아웃 저장 중 오류가 발생했습니다.\n' + (errMsg ? `상세: ${errMsg}` : ''));
+      }
     }
   };
   

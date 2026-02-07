@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TheZonePOS Brochure</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+      color: #1a1a2e;
+      background: #f0f0f0;
+    }
+
+    .page {
+      width: 8.5in;
+      height: 11in;
+      margin: 20px auto;
+      background: white;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      page-break-after: always;
+    }
+
+    /* ==================== PAGE 1 ==================== */
+    .page1 {
+      display: flex;
+      flex-direction: column;
+      padding: 0;
+    }
+
+    .page1-header {
+      background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 50%, #3b82f6 100%);
+      color: white;
+      padding: 40px 50px 30px;
+      position: relative;
+    }
+
+    .page1-header::after {
+      content: '';
+      position: absolute;
+      bottom: -30px;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: white;
+      border-radius: 30px 30px 0 0;
+    }
+
+    .page1-header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      opacity: 0.8;
+      margin-bottom: 8px;
+    }
+
+    .page1-header h2 {
+      font-size: 32px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 8px;
+    }
+
+    .page1-header p {
+      font-size: 14px;
+      opacity: 0.85;
+      line-height: 1.5;
+    }
+
+    .page1-content {
+      padding: 20px 50px 40px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #3b82f6;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-bottom: 2px;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feature-card {
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 20px;
+      border-left: 4px solid;
+      position: relative;
+    }
+
+    .feature-card.blue { border-left-color: #3b82f6; }
+    .feature-card.green { border-left-color: #10b981; }
+    .feature-card.orange { border-left-color: #f59e0b; }
+    .feature-card.purple { border-left-color: #8b5cf6; }
+    .feature-card.red { border-left-color: #ef4444; }
+    .feature-card.teal { border-left-color: #14b8a6; }
+
+    .feature-icon {
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+
+    .feature-card h3 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: #1e293b;
+    }
+
+    .feature-card p {
+      font-size: 11px;
+      line-height: 1.6;
+      color: #64748b;
+    }
+
+    .feature-card .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
+    .tag {
+      font-size: 9px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: #e2e8f0;
+      color: #475569;
+    }
+
+    .tag.highlight { background: #dbeafe; color: #1d4ed8; }
+
+    /* Full-width feature */
+    .feature-full {
+      background: linear-gradient(135deg, #1e3a5f, #2d5a87);
+      border-radius: 12px;
+      padding: 22px 28px;
+      color: white;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .feature-full .feature-icon { font-size: 36px; }
+
+    .feature-full h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .feature-full p {
+      font-size: 11px;
+      line-height: 1.6;
+      opacity: 0.85;
+    }
+
+    .page1-footer {
+      background: #f1f5f9;
+      padding: 18px 50px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid #e2e8f0;
+    }
+
+    .page1-footer .stat {
+      text-align: center;
+    }
+
+    .page1-footer .stat-number {
+      font-size: 24px;
+      font-weight: 800;
+      color: #3b82f6;
+    }
+
+    .page1-footer .stat-label {
+      font-size: 10px;
+      color: #64748b;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ==================== PAGE 2 ==================== */
+    .page2 {
+      display: flex;
+      flex-direction: column;
+      padding: 0;
+    }
+
+    .page2-header {
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: white;
+      padding: 35px 50px 25px;
+      position: relative;
+    }
+
+    .page2-header::after {
+      content: '';
+      position: absolute;
+      bottom: -25px;
+      left: 0;
+      right: 0;
+      height: 50px;
+      background: white;
+      border-radius: 25px 25px 0 0;
+    }
+
+    .page2-header h2 {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 6px;
+    }
+
+    .page2-header p {
+      font-size: 13px;
+      opacity: 0.8;
+    }
+
+    .page2-content {
+      padding: 15px 50px 30px;
+      flex: 1;
+    }
+
+    .section-block {
+      margin-bottom: 20px;
+    }
+
+    .section-block h3 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-block h3 .icon {
+      font-size: 20px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .info-card {
+      background: #f8fafc;
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .info-card h4 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .info-card ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .info-card ul li {
+      font-size: 10.5px;
+      color: #475569;
+      padding: 3px 0;
+      padding-left: 16px;
+      position: relative;
+      line-height: 1.5;
+    }
+
+    .info-card ul li::before {
+      content: '✓';
+      position: absolute;
+      left: 0;
+      color: #10b981;
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    /* Channel badges */
+    .channel-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .channel-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px 14px;
+      flex: 1;
+      min-width: 140px;
+    }
+
+    .channel-badge .ch-icon {
+      font-size: 20px;
+    }
+
+    .channel-badge .ch-name {
+      font-size: 11px;
+      font-weight: 700;
+      color: #1e293b;
+    }
+
+    .channel-badge .ch-desc {
+      font-size: 9px;
+      color: #94a3b8;
+    }
+
+    /* Report section */
+    .report-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .report-item {
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .report-item .r-icon { font-size: 18px; margin-bottom: 4px; }
+    .report-item .r-name { font-size: 10px; font-weight: 600; color: #334155; }
+
+    /* Bottom CTA */
+    .page2-cta {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      margin: 0 50px 30px;
+      border-radius: 16px;
+      padding: 24px 30px;
+      color: white;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .page2-cta h3 {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .page2-cta p {
+      font-size: 11px;
+      opacity: 0.85;
+    }
+
+    .page2-cta .cta-right {
+      text-align: right;
+    }
+
+    .page2-cta .cta-right .price {
+      font-size: 10px;
+      opacity: 0.7;
+      text-decoration: line-through;
+    }
+
+    .page2-cta .cta-right .cta-btn {
+      display: inline-block;
+      background: white;
+      color: #3b82f6;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 10px 24px;
+      border-radius: 8px;
+      margin-top: 6px;
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: #e2e8f0;
+      margin: 16px 0;
+    }
+
+    /* Print styles */
+    @media print {
+      body { background: white; }
+      .page { 
+        margin: 0; 
+        box-shadow: none; 
+        page-break-after: always;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ==================== PAGE 1: Core Features ==================== -->
+<div class="page page1">
+
+  <div class="page1-header">
+    <h1>TheZonePOS</h1>
+    <h2>All-in-One Restaurant<br>POS Solution</h2>
+    <p>From table service to quick service — one system, every channel, total control.</p>
+  </div>
+
+  <div class="page1-content">
+
+    <div class="section-title">🔷 Core Features</div>
+
+    <!-- Feature: Dual Mode -->
+    <div class="feature-full">
+      <div class="feature-icon">🔄</div>
+      <div>
+        <h3>FSR + QSR Dual Mode</h3>
+        <p>Switch seamlessly between Full-Service (table-based) and Quick-Service (counter-based) modes. 
+           Manage dine-in, togo, pickup, and delivery from a single screen. Perfect for restaurants that need both sit-down and fast-casual service.</p>
+      </div>
+    </div>
+
+    <div class="feature-grid">
+      <!-- Feature 1 -->
+      <div class="feature-card blue">
+        <div class="feature-icon">🗺️</div>
+        <h3>Visual Table Map</h3>
+        <p>Drag & drop table layout editor with multi-floor support. Real-time table status (available, occupied, reserved) at a glance. Resize, rotate, and customize every element.</p>
+        <div class="tag-list">
+          <span class="tag highlight">Multi-Floor</span>
+          <span class="tag">Drag & Drop</span>
+          <span class="tag">Real-time Status</span>
+        </div>
+      </div>
+
+      <!-- Feature 2 -->
+      <div class="feature-card green">
+        <div class="feature-icon">💳</div>
+        <h3>Smart Payment</h3>
+        <p>Split bills by guest, by amount, or by item. Support Cash, Visa, MasterCard, Debit, and Gift Cards. Tip management with automatic tax calculation.</p>
+        <div class="tag-list">
+          <span class="tag highlight">Split Bill</span>
+          <span class="tag">Multi-Payment</span>
+          <span class="tag">Tips</span>
+        </div>
+      </div>
+
+      <!-- Feature 3 -->
+      <div class="feature-card orange">
+        <div class="feature-icon">🖨️</div>
+        <h3>Kitchen & Receipt Printing</h3>
+        <p>High-quality graphic mode printing for kitchen tickets, receipts, and bills. Route orders to specific kitchen printers by menu category. Auto-print on order confirmation.</p>
+        <div class="tag-list">
+          <span class="tag highlight">Kitchen Ticket</span>
+          <span class="tag">Receipt</span>
+          <span class="tag">Bill</span>
+        </div>
+      </div>
+
+      <!-- Feature 4 -->
+      <div class="feature-card purple">
+        <div class="feature-icon">🌐</div>
+        <h3>Online & Delivery Integration</h3>
+        <p>Accept orders from UberEats, DoorDash, SkipTheDishes, GrubHub, and your own online ordering system — all managed from one screen with unified reporting.</p>
+        <div class="tag-list">
+          <span class="tag highlight">UberEats</span>
+          <span class="tag highlight">DoorDash</span>
+          <span class="tag">Skip</span>
+          <span class="tag">GrubHub</span>
+        </div>
+      </div>
+
+      <!-- Feature 5 -->
+      <div class="feature-card red">
+        <div class="feature-icon">📱</div>
+        <h3>Multi-Device POS</h3>
+        <p>Connect Handheld POS, Sub POS tablets, and Table Order devices. Real-time sync via Socket.io ensures all devices see the same data. Servers take orders tableside.</p>
+        <div class="tag-list">
+          <span class="tag highlight">Handheld</span>
+          <span class="tag">Sub POS</span>
+          <span class="tag">Table Order</span>
+        </div>
+      </div>
+
+      <!-- Feature 6 -->
+      <div class="feature-card teal">
+        <div class="feature-icon">🎟️</div>
+        <h3>Promotions & Gift Cards</h3>
+        <p>Create % or $ discounts with scheduling, promo codes, and channel-specific rules. Sell & redeem gift cards with full balance tracking. BOGO and free item promotions supported.</p>
+        <div class="tag-list">
+          <span class="tag highlight">Promo Codes</span>
+          <span class="tag">Gift Cards</span>
+          <span class="tag">BOGO</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="page1-footer">
+    <div class="stat">
+      <div class="stat-number">7+</div>
+      <div class="stat-label">Order Channels</div>
+    </div>
+    <div class="stat">
+      <div class="stat-number">30+</div>
+      <div class="stat-label">Report Types</div>
+    </div>
+    <div class="stat">
+      <div class="stat-number">6+</div>
+      <div class="stat-label">Delivery Partners</div>
+    </div>
+    <div class="stat">
+      <div class="stat-number">∞</div>
+      <div class="stat-label">Multi-Device</div>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ==================== PAGE 2: Management & Analytics ==================== -->
+<div class="page page2">
+
+  <div class="page2-header">
+    <h2>Manage Smarter,<br>Not Harder</h2>
+    <p>Complete back-office tools, real-time analytics, and employee management — all built in.</p>
+  </div>
+
+  <div class="page2-content">
+
+    <!-- Section: Employee & Operations -->
+    <div class="section-block">
+      <h3><span class="icon">👥</span> Employee & Operations Management</h3>
+      <div class="two-col">
+        <div class="info-card">
+          <h4>⏰ Clock In/Out System</h4>
+          <ul>
+            <li>PIN-based employee authentication</li>
+            <li>Real-time work hour tracking</li>
+            <li>Early out approval & reason logging</li>
+            <li>Automatic schedule sync</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h4>📋 Staff Management</h4>
+          <ul>
+            <li>Work schedule creation & management</li>
+            <li>Employee performance reports</li>
+            <li>Server assignment per table</li>
+            <li>Access permissions by role (Manager PIN)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: Reports -->
+    <div class="section-block">
+      <h3><span class="icon">📊</span> Reports & Analytics (30+ Reports)</h3>
+      <div class="report-grid">
+        <div class="report-item">
+          <div class="r-icon">📈</div>
+          <div class="r-name">Daily / Weekly<br>Sales Trend</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">⏰</div>
+          <div class="r-name">Peak Hours<br>Analysis</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">🍽️</div>
+          <div class="r-name">Menu Ranking<br>& Performance</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">💰</div>
+          <div class="r-name">Revenue &<br>Profit Margin</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">🪑</div>
+          <div class="r-name">Table Turnover<br>& Dwell Time</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">💳</div>
+          <div class="r-name">Payment<br>Breakdown</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">🧾</div>
+          <div class="r-name">Z-Report &<br>Day Closing</div>
+        </div>
+        <div class="report-item">
+          <div class="r-icon">👨‍🍳</div>
+          <div class="r-name">Employee &<br>Tip Reports</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: Ordering Channels -->
+    <div class="section-block">
+      <h3><span class="icon">🔗</span> Every Ordering Channel, One System</h3>
+      <div class="channel-row">
+        <div class="channel-badge">
+          <div class="ch-icon">🍽️</div>
+          <div>
+            <div class="ch-name">Dine-In</div>
+            <div class="ch-desc">Table service with guests</div>
+          </div>
+        </div>
+        <div class="channel-badge">
+          <div class="ch-icon">🥡</div>
+          <div>
+            <div class="ch-name">Togo / Pickup</div>
+            <div class="ch-desc">Counter & phone orders</div>
+          </div>
+        </div>
+        <div class="channel-badge">
+          <div class="ch-icon">🌐</div>
+          <div>
+            <div class="ch-name">Online Order</div>
+            <div class="ch-desc">Web & QR code ordering</div>
+          </div>
+        </div>
+        <div class="channel-badge">
+          <div class="ch-icon">🚗</div>
+          <div>
+            <div class="ch-name">Delivery</div>
+            <div class="ch-desc">UberEats, DoorDash, Skip</div>
+          </div>
+        </div>
+      </div>
+      <div class="channel-row" style="margin-top: 8px;">
+        <div class="channel-badge">
+          <div class="ch-icon">📱</div>
+          <div>
+            <div class="ch-name">Table Order</div>
+            <div class="ch-desc">Customer QR self-order</div>
+          </div>
+        </div>
+        <div class="channel-badge">
+          <div class="ch-icon">🖥️</div>
+          <div>
+            <div class="ch-name">Kiosk</div>
+            <div class="ch-desc">Self-service kiosk</div>
+          </div>
+        </div>
+        <div class="channel-badge">
+          <div class="ch-icon">📲</div>
+          <div>
+            <div class="ch-name">Handheld POS</div>
+            <div class="ch-desc">Tableside ordering</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section: Back Office -->
+    <div class="section-block">
+      <h3><span class="icon">⚙️</span> Powerful Back Office</h3>
+      <div class="two-col">
+        <div class="info-card">
+          <h4>🍕 Menu Management</h4>
+          <ul>
+            <li>Drag & drop menu/category ordering</li>
+            <li>Modifier groups with pricing rules</li>
+            <li>Channel-specific menu visibility</li>
+            <li>Firebase cloud sync for online menus</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h4>🛡️ Business Operations</h4>
+          <ul>
+            <li>Day Opening / Z-Report Closing</li>
+            <li>Reservation & Waiting List</li>
+            <li>Table Move & Merge</li>
+            <li>Void, Refund & audit trail</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CTA -->
+  <div class="page2-cta">
+    <div>
+      <h3>Ready to upgrade your restaurant?</h3>
+      <p>Simple setup. No monthly fees. Own your data forever.</p>
+    </div>
+    <div class="cta-right">
+      <div class="cta-btn">Get Started Today →</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

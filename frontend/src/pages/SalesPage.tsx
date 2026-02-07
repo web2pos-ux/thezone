@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
@@ -23,6 +23,7 @@ import TablePaymentModal from '../components/PaymentModal';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
 import OrderDetailModal, { OrderData, OrderChannelType } from '../components/OrderDetailModal';
+import PaymentCompleteModal from '../components/PaymentCompleteModal';
 
 interface TableElement {
   id: string;
@@ -292,6 +293,11 @@ const SalesPage: React.FC = () => {
   // Online/Togo ê²°ì œ ì„¸ì…˜ ê´€ë¦¬ (Dine-Inê³¼ ë™ì¼í•œ ë°©ì‹)
   const [onlineTogoSessionPayments, setOnlineTogoSessionPayments] = useState<Array<{ paymentId: number; method: string; amount: number; tip: number }>>([]);
   const onlineTogoSavedOrderIdRef = React.useRef<number | null>(null);
+
+  // Online/Togo PaymentCompleteModal state
+  const [showOnlineTogoPaymentCompleteModal, setShowOnlineTogoPaymentCompleteModal] = useState<boolean>(false);
+  const [onlineTogoPaymentCompleteData, setOnlineTogoPaymentCompleteData] = useState<{ change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean } | null>(null);
+  const onlineTogoCompletionRef = React.useRef<any>(null);
   
   // ê²°ì œ ì™„ë£Œ í›„ Pickup Complete í™•ì¸ ëª¨ë‹¬
   const [showPickupConfirmModal, setShowPickupConfirmModal] = useState<boolean>(false);
@@ -309,6 +315,7 @@ const SalesPage: React.FC = () => {
   const [showClockInModal, setShowClockInModal] = useState<boolean>(false);
   const [showClockOutModal, setShowClockOutModal] = useState<boolean>(false);
   const [isDayClosed, setIsDayClosed] = useState<boolean>(false);
+  const [requiresOpening, setRequiresOpening] = useState<boolean>(false);
 
   // Day status check
   const checkDayStatus = useCallback(async () => {
@@ -316,10 +323,19 @@ const SalesPage: React.FC = () => {
       const response = await fetch(`${API_URL}/api/daily-closings/today`);
       const result = await response.json();
       if (result.success) {
-        if (!result.isOpen && !result.isClosed) {
-          setShowOpeningModal(true);
+        if (result.isOpen) {
+          // 이미 영업 중 → Opening 모달 안 열림
+          setIsDayClosed(false);
+          setRequiresOpening(false);
+          setShowOpeningModal(false);
         } else if (result.isClosed) {
           setIsDayClosed(true);
+          setRequiresOpening(true);
+          setShowOpeningModal(true);
+        } else {
+          // 오늘 레코드 없음 (첫 Opening 필요)
+          setRequiresOpening(true);
+          setShowOpeningModal(true);
         }
       }
     } catch (error) {
@@ -341,13 +357,13 @@ const SalesPage: React.FC = () => {
   // Cash denomination counts for Opening
   const [openingCashCounts, setOpeningCashCounts] = useState({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
   });
   
   // Cash denomination counts for Closing
   const [closingCashCounts, setClosingCashCounts] = useState({
     cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-    dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+    dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
   });
   
   // Cash denomination definitions
@@ -357,6 +373,7 @@ const SalesPage: React.FC = () => {
     { key: 'cent10', label: '10Â¢', value: 0.10 },
     { key: 'cent25', label: '25Â¢', value: 0.25 },
     { key: 'dollar1', label: '$1', value: 1 },
+    { key: 'dollar2', label: '$2', value: 2 },
     { key: 'dollar5', label: '$5', value: 5 },
     { key: 'dollar10', label: '$10', value: 10 },
     { key: 'dollar20', label: '$20', value: 20 },
@@ -378,14 +395,14 @@ const SalesPage: React.FC = () => {
   const resetOpeningCashCounts = () => {
     setOpeningCashCounts({
       cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-      dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+      dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
     });
   };
   
   const resetClosingCashCounts = () => {
     setClosingCashCounts({
       cent1: 0, cent5: 0, cent10: 0, cent25: 0,
-      dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
+      dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0
     });
   };
   
@@ -6110,7 +6127,7 @@ const SalesPage: React.FC = () => {
     if (!showTogoOrderModal) return null;
     const serverSelectionRequired = shouldPromptServerSelection;
     const hasContactInfo = Boolean((customerPhone || '').trim()) || Boolean((customerName || '').trim());
-    const canSubmitOrder = hasContactInfo && (!serverSelectionRequired || !!selectedTogoServer);
+    const canSubmitOrder = !serverSelectionRequired || !!selectedTogoServer;
 
     const pickupDisplay = formatMinutesToTime(pickupTime);
     const readyTime = readyTimeSnapshot;
@@ -6462,10 +6479,6 @@ const SalesPage: React.FC = () => {
                   alert('Please select a server before creating a Togo order.');
                   return;
                 }
-                if (!hasContactInfo) {
-                  alert('Please enter at least a phone number or a name.');
-                  return;
-                }
                 const sanitizedCustomerName = sanitizeDisplayName(customerName);
                 const {
                   firstName: customerFirstName,
@@ -6743,6 +6756,147 @@ const SalesPage: React.FC = () => {
       </div>
     );
   }
+
+  // === Online/Togo PaymentCompleteModal close handler ===
+  const handleOnlineTogoPaymentCompleteClose = async (receiptCount: number) => {
+    setShowOnlineTogoPaymentCompleteModal(false);
+    
+    const completionData = onlineTogoCompletionRef.current;
+    if (!completionData) return;
+    
+    const { orderType, orderId, orderDetail, paymentOrder, sessionPayments } = completionData;
+    
+    try {
+      if (orderType === 'online' && orderId) {
+        // Online order: update Firebase status to completed
+        const response = await fetch(`${API_URL}/online-orders/order/${orderId}/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (response.ok) {
+          console.log('Online order status updated to completed');
+        } else {
+          console.error('Failed to update online order status');
+        }
+        
+        // Print receipts (user-selected count)
+        if (receiptCount > 0) {
+          try {
+            const orderData = orderDetail?.fullOrder || paymentOrder;
+            const actualPayments = sessionPayments.length > 0
+              ? sessionPayments.map((p: any) => ({ method: p.method, amount: p.amount }))
+              : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
+            const cashPaid = sessionPayments.filter((p: any) => p.method === 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
+            const totalAmount = paymentOrder.total || 0;
+            const nonCashPaid = sessionPayments.filter((p: any) => p.method !== 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
+            const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+            const receiptData = {
+              orderInfo: {
+                orderNumber: paymentOrder.number || paymentOrder.id,
+                orderType: 'ONLINE',
+                customerName: paymentOrder.name || '',
+                customerPhone: paymentOrder.phone || '',
+              },
+              items: orderData?.items?.map((item: any) => ({
+                name: item.name,
+                quantity: item.quantity || 1,
+                unitPrice: item.price || 0,
+                totalPrice: (item.price || 0) * (item.quantity || 1)
+              })) || [],
+              subtotal: paymentOrder.subtotal || 0,
+              taxLines: paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [],
+              taxesTotal: paymentOrder.tax || 0,
+              total: paymentOrder.total || 0,
+              payments: actualPayments,
+              change: changeAmount
+            };
+            await printReceipt(receiptData, receiptCount);
+            console.log(`Receipt printed ${receiptCount} copies`);
+          } catch (printErr) {
+            console.error('Receipt print error:', printErr);
+          }
+        }
+      } else if (orderType === 'togo' && orderId) {
+        // Togo order: update local DB status to PAID
+        const response = await fetch(`${API_URL}/orders/${orderId}/close`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (response.ok) {
+          console.log('Togo order status updated to PAID');
+        } else {
+          console.error('Failed to update Togo order status');
+        }
+        
+        // Print receipts (user-selected count)
+        if (receiptCount > 0) {
+          try {
+            const orderData = orderDetail?.fullOrder || paymentOrder;
+            const actualPayments = sessionPayments.length > 0
+              ? sessionPayments.map((p: any) => ({ method: p.method, amount: p.amount }))
+              : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
+            const cashPaid = sessionPayments.filter((p: any) => p.method === 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
+            const totalAmount = paymentOrder.total || 0;
+            const nonCashPaid = sessionPayments.filter((p: any) => p.method !== 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
+            const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+            const receiptData = {
+              orderInfo: {
+                orderNumber: paymentOrder.number || paymentOrder.id,
+                orderType: 'TOGO',
+                customerName: paymentOrder.name || '',
+                customerPhone: paymentOrder.phone || '',
+              },
+              items: orderData?.items?.map((item: any) => ({
+                name: item.name,
+                quantity: item.quantity || 1,
+                unitPrice: item.price || 0,
+                totalPrice: (item.price || 0) * (item.quantity || 1)
+              })) || [],
+              subtotal: paymentOrder.subtotal || 0,
+              taxLines: paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [],
+              taxesTotal: paymentOrder.tax || 0,
+              total: paymentOrder.total || 0,
+              payments: actualPayments,
+              change: changeAmount
+            };
+            await printReceipt(receiptData, receiptCount);
+            console.log(`Receipt printed ${receiptCount} copies`);
+          } catch (printErr) {
+            console.error('Receipt print error:', printErr);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Payment status update error:', error);
+    }
+    
+    // Remove from order list
+    if (paymentOrder) {
+      setSelectedOrderDetail(null);
+      if (orderType === 'online') {
+        setOnlineQueueCards(prev => prev.filter(card => card.id !== paymentOrder.id));
+      } else if (orderType === 'togo') {
+        setTogoOrders(prev => prev.filter(order => order.id !== paymentOrder.id));
+      }
+    }
+    
+    // Cash drawer는 onPaymentComplete 콜백에서 이미 열었으므로 여기서는 생략
+    // (Dine-in도 동일: onPaymentComplete에서 1회만 오픈)
+    
+    // Show Pickup Confirm modal
+    setPickupConfirmOrder({ ...paymentOrder, orderType });
+    setShowPickupConfirmModal(true);
+    
+    setOnlineTogoPaymentOrder(null);
+    setOnlineTogoSessionPayments([]);
+    onlineTogoSavedOrderIdRef.current = null;
+    onlineTogoCompletionRef.current = null;
+    setOnlineTogoPaymentCompleteData(null);
+    
+    // Refresh order lists
+    loadOnlineOrders();
+    loadTogoOrders();
+  };
 
   return (
     <div className="min-h-screen bg-white" ref={pageHostRef}>
@@ -9404,156 +9558,97 @@ const SalesPage: React.FC = () => {
             alert('An error occurred during payment processing.');
           }
         }}
-        onComplete={async () => {
-          // ê²°ì œ ëª¨ë‹¬ ë‹«ê¸°
+        onPaymentComplete={(data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
+          // Dine-inê³¼ ë™ì¼: PaymentModalì´ ìž”ì•¡ 0 ê°ì§€ ì‹œ ìžë™ìœ¼ë¡œ í˜¸ì¶œ
+          // Cash drawer ì¦‰ì‹œ ì˜¤í”ˆ
+          try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+          
+          // ì™„ë£Œ ë°ì´í„° ì €ìž¥ (close handlerì—ì„œ ì‚¬ìš©)
+          onlineTogoCompletionRef.current = {
+            orderType: selectedOrderType,
+            orderId: onlineTogoPaymentOrder?.id,
+            orderDetail: selectedOrderDetail,
+            paymentOrder: { ...onlineTogoPaymentOrder },
+            sessionPayments: [...onlineTogoSessionPayments],
+          };
+          
+          // PaymentModal ë‹«ê³  PaymentCompleteModal ì—´ê¸°
           setShowOnlineTogoPaymentModal(false);
+          setOnlineTogoPaymentCompleteData({
+            change: data.change,
+            total: data.total,
+            tip: data.tip,
+            payments: data.payments,
+            hasCashPayment: data.hasCashPayment,
+          });
+          setShowOnlineTogoPaymentCompleteModal(true);
+        }}
+        onComplete={async () => {
+          // Calculate change and payment info for PaymentCompleteModal
+          const cashPaid = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+          const totalAmount = onlineTogoPaymentOrder?.total || 0;
+          const nonCashPaid = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
+          const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+          const totalTip = onlineTogoSessionPayments.reduce((s, p) => s + (p.tip || 0), 0);
+          const actualPayments = onlineTogoSessionPayments.length > 0
+            ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
+            : [{ method: 'PAID', amount: totalAmount }];
+          const hasCash = onlineTogoSessionPayments.some(p => p.method === 'CASH');
           
-          try {
-            // ì£¼ë¬¸ íƒ€ìž…ì— ë”°ë¼ ë‹¤ë¥¸ API í˜¸ì¶œ
-            if (selectedOrderType === 'online' && onlineTogoPaymentOrder?.id) {
-              // ì˜¨ë¼ì¸ ì£¼ë¬¸: Firebase ìƒíƒœë¥¼ completedë¡œ ì—…ë°ì´íŠ¸
-              const response = await fetch(`${API_URL}/online-orders/order/${onlineTogoPaymentOrder.id}/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-              });
-              if (response.ok) {
-                console.log('Online order status updated to completed');
-              } else {
-                console.error('Failed to update online order status');
-              }
-              
-              // Receipt 2ìž¥ ì¶œë ¥ (Online Order) - Receipt í”„ë¦°í„°ì—ë§Œ ì¶œë ¥
-              try {
-                // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì •ë³´ë¡œ Receipt ë°ì´í„° êµ¬ì„±
-                const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
-                // ì‹¤ì œ ê²°ì œ ë‚´ì—­ ì‚¬ìš© (ì—†ìœ¼ë©´ ê¸°ë³¸ê°’)
-                const actualPayments = onlineTogoSessionPayments.length > 0
-                  ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
-                  : [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }];
-                // í˜„ê¸ˆ ê²°ì œì—ì„œ Change ê³„ì‚°
-                const cashPaid = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
-                const totalAmount = onlineTogoPaymentOrder.total || 0;
-                const nonCashPaid = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
-                const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
-                const receiptData = {
-                  orderInfo: {
-                    orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
-                    orderType: 'ONLINE',
-                    customerName: onlineTogoPaymentOrder.name || '',
-                    customerPhone: onlineTogoPaymentOrder.phone || '',
-                  },
-                  items: orderData?.items?.map((item: any) => ({
-                    name: item.name,
-                    quantity: item.quantity || 1,
-                    unitPrice: item.price || 0,
-                    totalPrice: (item.price || 0) * (item.quantity || 1)
-                  })) || [],
-                  subtotal: onlineTogoPaymentOrder.subtotal || 0,
-                  taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
-                  taxesTotal: onlineTogoPaymentOrder.tax || 0,
-                  total: onlineTogoPaymentOrder.total || 0,
-                  payments: actualPayments,
-                  change: changeAmount
-                };
-                
-                await printReceipt(receiptData, 2);
-                console.log('Receipt printed 2 copies');
-              } catch (printErr) {
-                console.error('Receipt print error:', printErr);
-              }
-            } else if (selectedOrderType === 'togo' && onlineTogoPaymentOrder?.id) {
-              // Togo ì£¼ë¬¸: ë¡œì»¬ DB ìƒíƒœë¥¼ PAIDë¡œ ì—…ë°ì´íŠ¸
-              const response = await fetch(`${API_URL}/orders/${onlineTogoPaymentOrder.id}/close`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-              });
-              if (response.ok) {
-                console.log('Togo order status updated to PAID');
-              } else {
-                console.error('Failed to update Togo order status');
-              }
-              
-              // Receipt 2ìž¥ ì¶œë ¥ (Togo Order) - Receipt í”„ë¦°í„°ì—ë§Œ ì¶œë ¥
-              try {
-                const orderData = selectedOrderDetail?.fullOrder || onlineTogoPaymentOrder;
-                // ì‹¤ì œ ê²°ì œ ë‚´ì—­ ì‚¬ìš© (ì—†ìœ¼ë©´ ê¸°ë³¸ê°’)
-                const actualPaymentsTogo = onlineTogoSessionPayments.length > 0
-                  ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
-                  : [{ method: 'PAID', amount: onlineTogoPaymentOrder.total || 0 }];
-                // í˜„ê¸ˆ ê²°ì œì—ì„œ Change ê³„ì‚°
-                const cashPaidTogo = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
-                const totalAmountTogo = onlineTogoPaymentOrder.total || 0;
-                const nonCashPaidTogo = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
-                const changeAmountTogo = Math.max(0, cashPaidTogo - (totalAmountTogo - nonCashPaidTogo));
-                const receiptData = {
-                  orderInfo: {
-                    orderNumber: onlineTogoPaymentOrder.number || onlineTogoPaymentOrder.id,
-                    orderType: 'TOGO',
-                    customerName: onlineTogoPaymentOrder.name || '',
-                    customerPhone: onlineTogoPaymentOrder.phone || '',
-                  },
-                  items: orderData?.items?.map((item: any) => ({
-                    name: item.name,
-                    quantity: item.quantity || 1,
-                    unitPrice: item.price || 0,
-                    totalPrice: (item.price || 0) * (item.quantity || 1)
-                  })) || [],
-                  subtotal: onlineTogoPaymentOrder.subtotal || 0,
-                  taxLines: onlineTogoPaymentOrder.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [],
-                  taxesTotal: onlineTogoPaymentOrder.tax || 0,
-                  total: onlineTogoPaymentOrder.total || 0,
-                  payments: actualPaymentsTogo,
-                  change: changeAmountTogo
-                };
-                
-                await printReceipt(receiptData, 2);
-                console.log('Receipt printed 2 copies');
-              } catch (printErr) {
-                console.error('Receipt print error:', printErr);
-              }
-            }
-          } catch (error) {
-            console.error('Payment status update error:', error);
-          }
+          // onComplete fallback: Cash drawer 오픈 (onPaymentComplete 미호출 시)
+          try { await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
           
-          // ê²°ì œ ì™„ë£Œ í›„ ì£¼ë¬¸ ëª©ë¡ì—ì„œ ì¦‰ì‹œ ì œê±°
-          if (selectedOrderDetail && onlineTogoPaymentOrder) {
-            // ì„ íƒëœ ì£¼ë¬¸ ì´ˆê¸°í™”
-            setSelectedOrderDetail(null);
-            
-            // ì£¼ë¬¸ ëª©ë¡ì—ì„œ ì œê±°
-            if (selectedOrderType === 'online') {
-              setOnlineQueueCards(prev => prev.filter(card => card.id !== onlineTogoPaymentOrder.id));
-            } else if (selectedOrderType === 'togo') {
-              setTogoOrders(prev => prev.filter(order => order.id !== onlineTogoPaymentOrder.id));
-            }
-          }
+          // Save completion data for the close handler
+          onlineTogoCompletionRef.current = {
+            orderType: selectedOrderType,
+            orderId: onlineTogoPaymentOrder?.id,
+            orderDetail: selectedOrderDetail,
+            paymentOrder: { ...onlineTogoPaymentOrder },
+            sessionPayments: [...onlineTogoSessionPayments],
+          };
           
-          // ðŸ’° Cash Drawer ì—´ê¸° (Dine-Inê³¼ ë™ì¼)
-          try {
-            console.log('ðŸ’° Opening cash drawer after Online/Togo payment completion...');
-            await openCashDrawer();
-            console.log('ðŸ’° Cash drawer opened successfully');
-          } catch (drawerErr) {
-            console.warn('Cash drawer open failed (ignored):', drawerErr);
-          }
-          
-          // Pickup Complete í™•ì¸ ëª¨ë‹¬ í‘œì‹œ (íƒ€ìž… ì •ë³´ í¬í•¨)
-          setPickupConfirmOrder({ ...onlineTogoPaymentOrder, orderType: selectedOrderType });
-          setShowPickupConfirmModal(true);
-          
-          setOnlineTogoPaymentOrder(null);
-          
-          // ê²°ì œ ì„¸ì…˜ ì´ˆê¸°í™”
-          setOnlineTogoSessionPayments([]);
-          onlineTogoSavedOrderIdRef.current = null;
-          
-          // ì£¼ë¬¸ ëª©ë¡ ìƒˆë¡œê³ ì¹¨ (ë°±ê·¸ë¼ìš´ë“œ)
-          loadOnlineOrders();
-          loadTogoOrders();
+          // Close PaymentModal, open PaymentCompleteModal
+          setShowOnlineTogoPaymentModal(false);
+          setOnlineTogoPaymentCompleteData({
+            change: changeAmount,
+            total: totalAmount,
+            tip: totalTip,
+            payments: actualPayments,
+            hasCashPayment: hasCash,
+          });
+          setShowOnlineTogoPaymentCompleteModal(true);
         }}
       />
       </div>
+
+      {/* Online/Togo Payment Complete Modal */}
+      <PaymentCompleteModal
+        isOpen={showOnlineTogoPaymentCompleteModal}
+        onClose={handleOnlineTogoPaymentCompleteClose}
+        change={onlineTogoPaymentCompleteData?.change || 0}
+        total={onlineTogoPaymentCompleteData?.total || 0}
+        tip={onlineTogoPaymentCompleteData?.tip || 0}
+        payments={onlineTogoPaymentCompleteData?.payments || []}
+        hasCashPayment={onlineTogoPaymentCompleteData?.hasCashPayment || false}
+        onAddCashTip={async (tipAmount: number) => {
+          const orderId = onlineTogoCompletionRef.current?.orderId || onlineTogoSavedOrderIdRef.current;
+          if (!orderId || tipAmount <= 0) return;
+          try {
+            const payRes = await fetch(`${API_URL}/payments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: null })
+            });
+            if (!payRes.ok) throw new Error('Failed to save cash tip');
+            const payData = await payRes.json();
+            setOnlineTogoSessionPayments(prev => ([...prev, { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount }]));
+            console.log('Cash tip saved successfully');
+          } catch (e) {
+            console.error('Failed to save cash tip:', e);
+          }
+        }}
+      />
+
 
       {/* Pickup Complete í™•ì¸ ëª¨ë‹¬ - ê²°ì œ ì™„ë£Œ í›„ í‘œì‹œ */}
       {showPickupConfirmModal && pickupConfirmOrder && (
@@ -9918,13 +10013,15 @@ const SalesPage: React.FC = () => {
       <DayOpeningModal 
         isOpen={showOpeningModal} 
         onClose={() => {
-          // If they close without opening, maybe show exit confirmation or just keep it open
-          setShowOpeningModal(false);
+          // requiresOpening이 true면 닫지 못함 (영업 시작 전 Opening 필수)
+          if (!requiresOpening) {
+            setShowOpeningModal(false);
+          }
         }} 
         onOpeningComplete={(data) => {
           setShowOpeningModal(false);
           setIsDayClosed(false);
-          // Optional: Refresh any day-related state
+          setRequiresOpening(false);
         }} 
       />
 
@@ -9949,7 +10046,10 @@ const SalesPage: React.FC = () => {
                 🔄 Re-Open Day
               </button>
               <button 
-                onClick={() => navigate('/')}
+                onClick={() => {
+                  setIsDayClosed(false);
+                  setShowOpeningModal(true);
+                }}
                 className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl transition-all"
               >
                 Go to Home

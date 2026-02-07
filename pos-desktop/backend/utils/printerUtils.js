@@ -305,7 +305,9 @@ function buildKitchenTicketText(orderData) {
   if (orderData.guestSections && orderData.guestSections.length > 0) {
     orderData.guestSections.forEach((section, idx) => {
       if (orderData.guestSections.length > 1) {
-        output += `--- Guest ${section.guestNumber || idx + 1} ---` + LF;
+        output += CENTER;
+        output += `---------- Guest ${section.guestNumber || idx + 1} ----------` + LF;
+        output += LEFT;
       }
       if (section.items && section.items.length > 0) {
         section.items.forEach(item => {
@@ -314,9 +316,36 @@ function buildKitchenTicketText(orderData) {
       }
     });
   } else if (orderData.items && orderData.items.length > 0) {
-    orderData.items.forEach(item => {
-      output += formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF);
-    });
+    // Check if items have guestNumber - group by guest if multiple guests
+    const items = orderData.items;
+    const guestNumbers = [...new Set(items.map(item => item.guestNumber || item.guest_number || 1))].sort((a, b) => a - b);
+    const hasMultipleGuests = guestNumbers.length > 1;
+    
+    if (hasMultipleGuests) {
+      // Multiple guests - show guest separators
+      guestNumbers.forEach(guestNum => {
+        const guestItems = items.filter(item => (item.guestNumber || item.guest_number || 1) === guestNum);
+        
+        if (guestItems.length > 0) {
+          // Guest separator line
+          output += CENTER;
+          output += `---------- Guest ${guestNum} ----------` + LF;
+          output += LEFT;
+          
+          // Render items for this guest
+          guestItems.forEach(item => {
+            output += formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF);
+          });
+          
+          output += LF; // Extra spacing between guest sections
+        }
+      });
+    } else {
+      // Single guest - no separators needed
+      items.forEach(item => {
+        output += formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF);
+      });
+    }
   }
   
   output += NORMAL_SIZE + BOLD_OFF;
@@ -344,12 +373,23 @@ function formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF) {
   const qty = item.quantity || item.qty || 1;
   const name = item.name || item.short_name || 'Unknown Item';
   
-  // 아이템 라인
+  // ESC/POS commands
+  const ESC = '\x1B';
+  const GS = '\x1D';
+  const BOLD_ON = ESC + 'E' + '\x01';      // Bold ON
+  const BOLD_OFF = ESC + 'E' + '\x00';     // Bold OFF
+  const ITALIC_ON = ESC + '4' + '\x01';    // Italic ON
+  const ITALIC_OFF = ESC + '4' + '\x00';   // Italic OFF
+  const DOUBLE_SIZE = GS + '!' + '\x11';   // 가로세로 2배 (1.3x 효과)
+  const NORMAL = GS + '!' + '\x00';        // 기본 크기
+  
+  // 아이템 라인 - 더 굵은 볼드, 더 큰 크기
+  output += DOUBLE_SIZE + BOLD_ON;
   output += `${qty}x ${name}` + LF;
   
-  // 모디파이어 (">>" 접두사)
+  // 모디파이어 (">>" 접두사) - 아이템과 동일 크기, 이탤릭
   if (item.modifiers && item.modifiers.length > 0) {
-    output += NORMAL_SIZE;  // 모디파이어는 기본 크기
+    output += ITALIC_ON;  // 이탤릭 추가 (크기 유지)
     item.modifiers.forEach(mod => {
       if (typeof mod === 'string') {
         output += `  >> ${mod}` + LF;
@@ -369,18 +409,24 @@ function formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF) {
         output += `  >> ${mod.groupName}` + LF;
       }
     });
-    output += DOUBLE_HEIGHT;  // 다음 아이템은 다시 큰 크기
+    output += ITALIC_OFF;
   }
   
-  // 메모
+  // 메모 - 아이템과 동일 크기, 이탤릭
   if (item.memo) {
-    output += NORMAL_SIZE;
+    output += ITALIC_ON;
     let memoText = typeof item.memo === 'string' ? item.memo : item.memo.text;
     if (memoText) {
-      output += `  >> ${memoText}` + LF;
+      output += `  * ${memoText}` + LF;
     }
-    output += DOUBLE_HEIGHT;
+    output += ITALIC_OFF;
   }
+  
+  // 스타일 리셋
+  output += BOLD_OFF + NORMAL;
+  
+  // 아이템 간 간격 추가 (1.2x)
+  output += LF;
   
   return output;
 }

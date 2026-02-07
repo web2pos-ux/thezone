@@ -1215,6 +1215,7 @@ const QsrOrderPage = () => {
   const [paymentCompleteData, setPaymentCompleteData] = useState<{
     change: number;
     total: number;
+    tip: number;
     payments: Array<{ method: string; amount: number }>;
     hasCashPayment: boolean;
     isPartialPayment?: boolean;  // 부분 결제 (게스트별 결제 중 일부만 결제)
@@ -1334,15 +1335,16 @@ const QsrOrderPage = () => {
   const cashDenominations = [
     { label: '1¢', key: 'cent1', value: 0.01 }, { label: '5¢', key: 'cent5', value: 0.05 },
     { label: '10¢', key: 'cent10', value: 0.10 }, { label: '25¢', key: 'cent25', value: 0.25 },
-    { label: '$1', key: 'dollar1', value: 1 }, { label: '$5', key: 'dollar5', value: 5 },
+    { label: '$1', key: 'dollar1', value: 1 }, { label: '$2', key: 'dollar2', value: 2 },
+    { label: '$5', key: 'dollar5', value: 5 },
     { label: '$10', key: 'dollar10', value: 10 }, { label: '$20', key: 'dollar20', value: 20 },
     { label: '$50', key: 'dollar50', value: 50 }, { label: '$100', key: 'dollar100', value: 100 }
   ];
-  const [openingCashCounts, setOpeningCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  const [openingCashCounts, setOpeningCashCounts] = useState({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
   const [focusedOpeningDenom, setFocusedOpeningDenom] = useState<string | null>(null);
   const calculateCashTotal = (counts: typeof openingCashCounts) => cashDenominations.reduce((sum, d) => sum + (counts[d.key as keyof typeof counts] * d.value), 0);
   const openingCashTotal = calculateCashTotal(openingCashCounts);
-  const resetOpeningCashCounts = () => setOpeningCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
+  const resetOpeningCashCounts = () => setOpeningCashCounts({ cent1: 0, cent5: 0, cent10: 0, cent25: 0, dollar1: 0, dollar2: 0, dollar5: 0, dollar10: 0, dollar20: 0, dollar50: 0, dollar100: 0 });
   
   const [selectedDiscountType, setSelectedDiscountType] = useState<string>('');
   const [discountPercentage, setDiscountPercentage] = useState<string>('');
@@ -2877,7 +2879,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: null }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
@@ -2901,13 +2903,13 @@ const handleVoidPinClear = useCallback(() => {
           }
           return next;
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: undefined } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ]));
         // Pay in Full(ALL) 흐름에서는 결제 직후 완료 판정을 시도하여 즉시 테이블맵으로 전환
         try { setTimeout(() => { try { handleCompletePayment(); } catch {} }, 0); } catch {}
         return;
       } else {
         // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount, tip, guestNumber: Number(guestPaymentMode) }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
@@ -2916,7 +2918,7 @@ const handleVoidPinClear = useCallback(() => {
           const current = prev[key] || 0;
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip: 0, guestNumber: Number(guestPaymentMode) } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
         
         // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
@@ -10781,8 +10783,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
-                    onPaymentComplete: (data: { change: number; total: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
+                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
                       // 결제 완료 시 Payment Complete 모달 표시
+                      // Cash drawer 오픈
+                      try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
                       setPaymentCompleteData(data);
                       setShowPaymentModal(false);  // 결제 모달 닫기
                       setShowPaymentCompleteModal(true);  // 완료 모달 표시
@@ -14775,16 +14779,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <button
                   type="button"
                   onClick={() => {
-                    const hasContactInfo = Boolean((qsrCustomerPhone || '').trim()) || Boolean((qsrCustomerNameInput || '').trim());
-                    if (!hasContactInfo) {
-                      alert('Please enter at least a phone number or a name.');
-                      return;
-                    }
                     const sanitizedCustomerName = sanitizeDisplayName(qsrCustomerNameInput);
                     const readyTimeLabel = qsrReadyTimeSnapshot?.readyDisplay || '';
                     
                     // Save customer info for the order (keep for order page)
-                    setQsrCustomerName(sanitizedCustomerName || qsrCustomerPhone);
+                    setQsrCustomerName(sanitizedCustomerName || qsrCustomerPhone || 'Togo');
                     setOrderCustomerInfo({ name: sanitizedCustomerName, phone: qsrCustomerPhone });
                     setOrderPickupInfo({ readyTimeLabel, pickupMinutes: qsrPickupTime });
                     
@@ -14803,8 +14802,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     setQsrPrepButtonsLocked(false);
                     setQsrPickupTime(15);
                   }}
-                  disabled={!((qsrCustomerPhone || '').trim() || (qsrCustomerNameInput || '').trim())}
-                  className="px-5 py-2 rounded-lg bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
+                  className="px-5 py-2 rounded-lg bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-colors"
                 >
                   OK
                 </button>
@@ -15541,7 +15539,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 🔓 Re-Open Day
               </button>
               <button 
-                onClick={() => navigate('/')}
+                onClick={() => {
+                  setIsDayClosed(false);
+                  setShowOpeningModal(true);
+                }}
                 className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl transition-all"
               >
                 Go to Home
@@ -15564,8 +15565,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         onClose={handlePaymentCompleteClose}
         change={paymentCompleteData?.change || 0}
         total={paymentCompleteData?.total || 0}
+        tip={paymentCompleteData?.tip || 0}
         payments={paymentCompleteData?.payments || []}
         hasCashPayment={paymentCompleteData?.hasCashPayment || false}
+        onAddCashTip={async (tipAmount: number) => {
+          const orderId = savedOrderIdRef.current;
+          if (!orderId || tipAmount <= 0) return;
+          try {
+            const payRes = await fetch(`${API_URL}/payments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: null })
+            });
+            if (payRes.ok) {
+              const payData = await payRes.json();
+              setSessionPayments(prev => ([...prev, { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: undefined }]));
+              console.log(`💰 QSR Cash tip $${tipAmount} saved`);
+            }
+          } catch (e) { console.error('QSR cash tip save failed:', e); }
+        }}
       />
         </>
       )}
