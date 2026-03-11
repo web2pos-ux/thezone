@@ -4,12 +4,14 @@
 const admin = require('firebase-admin');
 const path = require('path');
 
-// Firebase 초기화 확인
+// Firebase 초기화 확인 (읽기 전용 리소스 경로에서 서비스 계정 키 로드)
+const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
+
 function getFirestore() {
   try {
     if (admin.apps.length === 0) {
       admin.initializeApp({
-        credential: admin.credential.cert(require(path.join(__dirname, '../config/firebase-service-account.json')))
+        credential: admin.credential.cert(require(path.join(RESOURCES_CONFIG_DIR, 'firebase-service-account.json')))
       });
     }
     return admin.firestore();

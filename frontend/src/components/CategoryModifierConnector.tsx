@@ -5,7 +5,6 @@ import {
   useDraggable,
   useDroppable,
   closestCenter,
-  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
@@ -185,8 +184,7 @@ const CategoryModifierConnector: React.FC<CategoryModifierConnectorProps> = ({ m
         distance: 8,
         tolerance: 5,
       },
-    }),
-    useSensor(KeyboardSensor)
+    })
   );
 
   // 데이터 로드

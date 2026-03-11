@@ -89,8 +89,14 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	// Filters removed per request
 	// Wheel-only time selection (no extra time panel)
 
+	// Tab state
+	const [activeTab, setActiveTab] = useState<'create' | 'checkin' | 'manage'>('create');
+
 	// Availability calendar state
 	const [availMonthOffset, setAvailMonthOffset] = useState<number>(0);
+	
+	// Monthly reservation counts (date -> count)
+	const [monthReservationCounts, setMonthReservationCounts] = useState<Record<string, number>>({});
 	
 	// Max slots per day setting (2-30)
 	const [maxSlotsPerDay, setMaxSlotsPerDay] = useState<number>(() => {
@@ -100,8 +106,9 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	
 	// Table selection modal state
 	const [showTableSelectionModal, setShowTableSelectionModal] = useState<boolean>(false);
-	// Slot dropdown state
-	const [showSlotDropdown, setShowSlotDropdown] = useState<boolean>(false);
+	// Slot save states
+	const [savingSlots, setSavingSlots] = useState<boolean>(false);
+	const [slotsSaved, setSlotsSaved] = useState<boolean>(false);
 	const [selectedReservationForTable, setSelectedReservationForTable] = useState<{ id: string; name: string; partySize: number } | null>(null);
 
 	// Availability generator - all days open with configurable max slots
@@ -137,6 +144,37 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		return () => { abort = true; };
 	}, [open, today]);
 
+	// Fetch reservation counts for the visible calendar month
+	useEffect(() => {
+		if (!open) return;
+		let abort = false;
+		const base = new Date();
+		base.setMonth(base.getMonth() + availMonthOffset, 1);
+		const year = base.getFullYear();
+		const month = base.getMonth();
+		const firstDay = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+		const lastDate = new Date(year, month + 1, 0);
+		const lastDay = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDate.getDate()).padStart(2, '0')}`;
+		(async () => {
+			try {
+				const res = await fetch(`${API_URL}/reservations/reservations?start_date=${encodeURIComponent(firstDay)}&end_date=${encodeURIComponent(lastDay)}`);
+				if (!res.ok || abort) return;
+				const list = await res.json();
+				if (abort) return;
+				const counts: Record<string, number> = {};
+				(Array.isArray(list) ? list : []).forEach((r: any) => {
+					if (r.status === 'cancelled' || r.status === 'no_show') return; // exclude cancelled/no-show
+					const d = String(r.reservation_date || '').slice(0, 10);
+					counts[d] = (counts[d] || 0) + 1;
+				});
+				setMonthReservationCounts(counts);
+			} catch {
+				if (!abort) setMonthReservationCounts({});
+			}
+		})();
+		return () => { abort = true; };
+	}, [open, availMonthOffset]);
+
 	// Load system settings + recents on open
 	useEffect(() => {
 		if (!open) return;
@@ -147,7 +185,15 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 				if (res.ok) {
 					const js = await res.json();
 					if (abort) return;
-					if (js?.policy) setPolicy(js.policy);
+					if (js?.policy) {
+						setPolicy(js.policy);
+						// Sync maxSlotsPerDay from backend policy
+						const policyMax = Math.max(js.policy.normal_max_per_slot || 0, js.policy.peak_max_per_slot || 0);
+						if (policyMax > 0) {
+							setMaxSlotsPerDay(policyMax);
+							localStorage.setItem('reservation_maxSlots', String(policyMax));
+						}
+					}
 					if (Array.isArray(js?.timeSlots)) setTimeSlotsDef(js.timeSlots);
 					if (Array.isArray(js?.businessHours)) setBusinessHours(js.businessHours);
 				}
@@ -159,6 +205,48 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		} catch {}
 		return () => { abort = true; };
 	}, [open]);
+
+	// Auto no-show: 예약 시간 30분 경과 시 자동 No Show 처리 (1분마다 체크)
+	useEffect(() => {
+		if (!open) return;
+		const runAutoNoShow = async () => {
+			try {
+				const res = await fetch(`${API_URL}/reservations/auto-noshow`, { method: 'PATCH' });
+				if (res.ok) {
+					const data = await res.json();
+					if (data.changes > 0) {
+						// Refresh today's reservations
+						try {
+							const todayRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(today)}`);
+							if (todayRes.ok) {
+								const list = await todayRes.json();
+								setTodayReservations(Array.isArray(list) ? list : []);
+							}
+						} catch {}
+						// Refresh selected date reservations
+						if (date) {
+							try {
+								const dateRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(date)}`);
+								if (dateRes.ok) {
+									const list = await dateRes.json();
+									const grouped: Record<string, any[]> = {};
+									(Array.isArray(list) ? list : []).forEach((r: any) => {
+										const t = String(r?.reservation_time || '').slice(0, 5);
+										if (!grouped[t]) grouped[t] = [];
+										grouped[t].push(r);
+									});
+									setReservationsByTime(grouped);
+								}
+							} catch {}
+						}
+					}
+				}
+			} catch {}
+		};
+		runAutoNoShow(); // 모달 열 때 즉시 1회 실행
+		const interval = setInterval(runAutoNoShow, 60000); // 1분마다 체크
+		return () => clearInterval(interval);
+	}, [open, today, date]);
 
 	// Return empty array (no mock data - real data only)
 	const generateMockDayReservations = (_ds: string) => {
@@ -222,16 +310,24 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 			const root = anchorRef?.current;
 			if (!root) return;
 			const rect = root.getBoundingClientRect();
-            // Position modal in center of screen
             const vw = window.innerWidth;
             const vh = window.innerHeight;
-            const modalWidth = 468;
-            const modalHeight = 600;
+            const modalWidth = Math.min(538, vw - 20); // 468 * 1.15 ≈ 538
+            const modalHeight = 690; // 600 * 1.15 ≈ 690
+            
+            // 메인 모달 오른쪽에 도킹 시도, 35px 왼쪽으로 이동
+            let leftPos = rect.right + 8 - 35;
+            if (leftPos + modalWidth > vw - 10) {
+				// 화면 오른쪽을 넘으면 화면 오른쪽 끝에 맞춤
+				leftPos = Math.max(10, vw - modalWidth - 10);
+            }
+            const topPos = Math.max(10, Math.min((vh - modalHeight) / 2, vh - modalHeight - 10));
             
             setSlotModalStyle({ 
 				position: 'fixed',
-				left: `${(vw - modalWidth) / 2 + 457}px`, 
-				top: `${(vh - modalHeight) / 2}px`,
+				left: `${leftPos}px`, 
+				top: `${topPos}px`,
+				width: `${modalWidth}px`,
 				zIndex: 60
 			});
 		} catch {}
@@ -489,16 +585,10 @@ const time24 = useMemo(() => {
 		return `${hStr}:${mStr}`;
 	}, [hour12, minute, ampm]);
 
-// Remaining capacity for selected time
+// Remaining capacity for selected time - 단일 Max Slots Per Day 값 사용
 const maxForSelectedTime = useMemo(() => {
-	const def = (timeSlotsDef || []).find(s => String(s.time_slot).slice(0,5) === time24);
-	if (def) return def.max_reservations;
-	if (policy && time24) {
-		const withinPeak = policy.peak_start && policy.peak_end && (time24 >= policy.peak_start && time24 < policy.peak_end);
-		return withinPeak ? (policy.peak_max_per_slot || 0) : (policy.normal_max_per_slot || 0);
-	}
-	return undefined;
-}, [timeSlotsDef, policy, time24]);
+	return maxSlotsPerDay;
+}, [maxSlotsPerDay]);
 const existingForSelectedTime = (reservationsByTime[time24] || []).length;
 const remainingForSelectedTime = typeof maxForSelectedTime === 'number' ? Math.max(0, maxForSelectedTime - existingForSelectedTime) : undefined;
 
@@ -540,14 +630,8 @@ const to12hLabel = (time24: string): string => {
 const handleDropOnTimeSlot = async (targetTime24: string) => {
   try {
     if (!rescheduleMode || !dragSource) return;
-    // Check capacity
-    const def = (timeSlotsDef || []).find(s => String(s.time_slot).slice(0,5) === targetTime24);
-    let max = 0;
-    if (def) max = Number(def.max_reservations || 0);
-    else if (policy) {
-      const pk = policy.peak_start && policy.peak_end && (targetTime24 >= (policy.peak_start||'') && targetTime24 < (policy.peak_end||''));
-      max = pk ? Number(policy.peak_max_per_slot||0) : Number(policy.normal_max_per_slot||0);
-    }
+    // Check capacity - 단일 Max Slots Per Day 값 사용
+    const max = maxSlotsPerDay;
     const used = (reservationsByTime[targetTime24] || []).length;
     if (max && used >= max) return; // full
 
@@ -661,7 +745,7 @@ const handleSave = async () => {
 	return (
 		<>
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 p-4">
-			<div className="bg-white rounded-lg shadow-xl w-full max-w-[700px] p-4 max-h-[80vh] overflow-y-auto">
+			<div className="bg-white rounded-lg shadow-xl w-[580px] p-4 flex flex-col" style={{ marginLeft: '-40px', height: '80vh' }}>
                 {showToast && (
                     <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
                         <div className="px-5 py-3 rounded-lg bg-black/80 text-white shadow-2xl" style={{ fontSize: 20 }}>
@@ -669,22 +753,48 @@ const handleSave = async () => {
                         </div>
                     </div>
                 )}
-				<div className="mb-2">
-					<div className="flex items-center justify-between mb-1">
-						<h2 className="text-lg font-semibold whitespace-nowrap">Create Reservation</h2>
+				<div className="mb-2 relative">
+					<div className="flex items-center justify-center mb-1 h-12">
+						<h2 className="text-lg font-semibold whitespace-nowrap">Reservation</h2>
 						<button
 							onClick={onClose}
-							className="p-4 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation"
+							className="absolute w-12 h-12 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full flex items-center justify-center touch-manipulation transition-colors z-[55] backdrop-blur-sm"
+							style={{ right: '-5px', top: 'calc(50% - 25px)', transform: 'translateY(-50%)' }}
 						>
-							<svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+							<svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
+					{/* Tab buttons */}
+					<div className="flex gap-1 border-b border-gray-200 pb-0">
+						{([
+							{ key: 'create' as const, label: '📅 Create', desc: 'New Reservation' },
+							{ key: 'checkin' as const, label: '🪑 Check-in', desc: 'Assign Table' },
+							{ key: 'manage' as const, label: '⚙️ Manage', desc: 'Cancel / Edit' },
+						]).map(tab => (
+							<button
+								key={tab.key}
+								onClick={() => setActiveTab(tab.key)}
+								className={`flex-1 py-2 px-3 text-sm font-semibold rounded-t-lg transition-colors ${
+									activeTab === tab.key
+										? 'bg-blue-600 text-white shadow-sm'
+										: 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+								}`}
+							>
+								{tab.label}
+							</button>
+						))}
+					</div>
 				</div>
 
+				{/* Tab content area - scrollable, fixed size */}
+				<div className="flex-1 overflow-y-auto min-h-0">
+
+				{/* ===== CREATE TAB ===== */}
+				{activeTab === 'create' && <>
 				{/* Main layout: calendar left, slot settings right */}
-				<div className="flex gap-4">
+				<div className="flex gap-2">
 					{/* Left: Calendar Section */}
 					<div className="flex-1 min-w-0">
 						<div className="flex items-center justify-center gap-2 mb-2">
@@ -709,49 +819,45 @@ const handleSave = async () => {
 							</button>
 						</div>
 
-					{/* Availability calendar with mock slots */}
-					<div ref={anchorRef} className="inline-block">
-						<div className="flex text-center text-xs font-medium text-gray-600 mb-0.5">
-							{['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <span key={d} className="w-[53px] text-center">{d}</span>)}
+					{/* Availability calendar */}
+					<div ref={anchorRef} className="bg-gray-50 rounded-xl p-3 border border-gray-200">
+						<div className="grid grid-cols-7 gap-[5px] mb-2">
+							{['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <span key={d} className="text-center text-xs font-bold text-gray-500">{d}</span>)}
 						</div>
-						<div className="flex flex-wrap gap-[2px]" style={{ width: `${51 * 7 + 6 * 2}px` }}>
+						<div className="grid grid-cols-7 gap-[5px]">
 							{Array.from({ length: availabilityMonth.firstWeekday }).map((_, i) => (
-								<div key={`pad-av-${i}`} className="w-[51px] h-[45px]" />
+								<div key={`pad-av-${i}`} style={{ height: '54px' }} />
 							))}
 								{availabilityMonth.days.map((d: any) => {
-									// Single-hue palette (blue) by availability level
-									// closed -> gray, full -> darkest blue, many -> dark blue, medium -> mid blue, low -> light blue
-									let state: 'closed' | 'full' | 'low' | 'medium' | 'many';
-									if (!d.isOpen) state = 'closed';
-									else if (d.slots === 0) state = 'full';
-									else if (d.slots <= 3) state = 'low';
-									else if (d.slots <= 7) state = 'medium';
-									else state = 'many';
-									const cls = state === 'closed' ? 'bg-gray-600 text-white cursor-not-allowed'
-										: state === 'full' ? 'bg-blue-900 text-white cursor-not-allowed'
-										: state === 'many' ? 'bg-blue-500 text-white hover:bg-blue-600'
-										: state === 'medium' ? 'bg-blue-300 text-blue-900 hover:bg-blue-400'
-										: 'bg-blue-100 text-blue-800 hover:bg-blue-200';
+									const hasReservations = (monthReservationCounts[d.date] || 0) > 0;
+									const isSelected = date === d.date;
+									const isToday = d.date === today;
 								return (
 									<button
 										key={d.date}
 										disabled={!d.isOpen}
-								className={`rounded text-sm w-[51px] h-[45px] flex flex-col items-center justify-center ${cls}`}
+										className={`w-full flex flex-col items-center justify-center rounded-lg border transition-all ${
+											isSelected
+												? 'bg-blue-600 text-white border-blue-600 shadow-md'
+												: isToday
+													? 'bg-blue-50 text-blue-700 border-blue-300 hover:bg-blue-100'
+													: !d.isOpen
+														? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
+														: 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100 hover:border-gray-300'
+										}`}
+										style={{ height: '54px' }}
                                     onClick={() => { 
+										if (!d.isOpen) return;
 										setDate(d.date); 
-										// Always show slot modal when date is selected
 										setShowSlotModal(true);
 									}}
 									>
-								<div className="text-base font-bold leading-tight">{d.label}</div>
-								<div className={`text-xs font-normal leading-none ${
-									!d.isOpen ? 'text-gray-300' : // closed dates
-									state === 'closed' ? 'text-gray-300' : // closed
-									state === 'full' ? 'text-white' : // dark blue background
-									state === 'many' ? 'text-white' : // dark blue background
-									state === 'medium' ? 'text-blue-900' : // light blue background
-									'text-blue-800' // lightest blue background
-								}`}>{d.isOpen ? `${d.slots}` : 'X'}</div>
+							<div style={{ fontSize: '15px', fontWeight: isSelected ? 800 : 600, lineHeight: 1.1 }}>{d.label}</div>
+							{d.isOpen && hasReservations && (
+								<div className={`text-[10px] font-bold leading-none mt-0.5 rounded-full px-1.5 py-[1px] min-w-[16px] text-center ${
+									isSelected ? 'bg-white text-blue-600' : 'bg-yellow-400 text-gray-900'
+								}`}>{monthReservationCounts[d.date]}</div>
+							)}
 									</button>
 								);
 							})}
@@ -790,71 +896,71 @@ const handleSave = async () => {
 				</div>
 
 					{/* Right: Slot Settings Panel */}
-					<div className="w-[290px] flex-shrink-0 bg-gray-50 rounded-lg p-3 border border-gray-200">
-						<div className="text-sm font-semibold text-gray-700 mb-2">⚙️ Slot Settings</div>
+					<div className="w-[160px] flex-shrink-0 bg-gray-50 rounded-lg p-3 border border-gray-200">
+						<div className="text-sm font-semibold text-gray-700 mb-3">⚙️ Slot Settings</div>
 						
-						<div className="mb-2 relative">
-							<label className="block text-xs text-gray-500 mb-1">Max Slots Per Day</label>
-							{/* Custom dropdown with 5x6 grid */}
-							<button
-								onClick={() => setShowSlotDropdown(!showSlotDropdown)}
-								className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-semibold text-center bg-white hover:bg-gray-50 flex items-center justify-between"
-							>
-								<span>{maxSlotsPerDay}</span>
-								<svg className={`w-4 h-4 transition-transform ${showSlotDropdown ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-								</svg>
-							</button>
-							{showSlotDropdown && (
-								<div className="absolute top-full right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg p-2 z-50">
-									<div className="grid grid-cols-6 gap-[2px]">
-										{Array.from({ length: 30 }, (_, i) => i + 1).map((num) => (
-											<button
-												key={num}
-												onClick={() => {
-													setMaxSlotsPerDay(num);
-													localStorage.setItem('reservation_maxSlots', String(num));
-													setShowSlotDropdown(false);
-												}}
-												className={`w-[40px] h-[40px] rounded text-base font-semibold transition-colors ${
-													maxSlotsPerDay === num
-														? 'bg-blue-600 text-white'
-														: 'bg-gray-100 text-gray-700 hover:bg-blue-100'
-												}`}
-											>
-												{num}
-											</button>
-										))}
-									</div>
+						<div className="mb-3">
+							<label className="block text-xs text-gray-500 mb-2 text-center">Max Tables Per Day</label>
+							<div className="flex items-center justify-center gap-2">
+								<button
+									onClick={() => {
+										const v = Math.max(1, maxSlotsPerDay - 1);
+										setMaxSlotsPerDay(v);
+										localStorage.setItem('reservation_maxSlots', String(v));
+									}}
+									className="w-9 h-9 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold text-lg flex items-center justify-center transition-colors"
+								>−</button>
+								<div className="w-12 h-9 flex items-center justify-center bg-white border border-gray-300 rounded-md text-lg font-bold text-blue-600">
+									{maxSlotsPerDay}
 								</div>
-							)}
-						</div>
-						
-						<div className="mt-3 pt-2 border-t border-gray-200">
-							<div className="text-xs font-medium text-gray-600 mb-1">Color Guide</div>
-							<div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-xs">
-								<div className="flex items-center gap-1">
-									<div className="w-3 h-3 rounded bg-blue-500"></div>
-									<span>Many</span>
-								</div>
-								<div className="flex items-center gap-1">
-									<div className="w-3 h-3 rounded bg-blue-300"></div>
-									<span>Medium</span>
-								</div>
-								<div className="flex items-center gap-1">
-									<div className="w-3 h-3 rounded bg-blue-100 border border-blue-200"></div>
-									<span>Low</span>
-								</div>
-								<div className="flex items-center gap-1">
-									<div className="w-3 h-3 rounded bg-blue-900"></div>
-									<span>Full</span>
-								</div>
-								<div className="flex items-center gap-1">
-									<div className="w-3 h-3 rounded bg-gray-600"></div>
-									<span>Closed</span>
-								</div>
+								<button
+									onClick={() => {
+										const v = Math.min(99, maxSlotsPerDay + 1);
+										setMaxSlotsPerDay(v);
+										localStorage.setItem('reservation_maxSlots', String(v));
+									}}
+									className="w-9 h-9 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold text-lg flex items-center justify-center transition-colors"
+								>+</button>
 							</div>
 						</div>
+						
+						<button
+							onClick={async () => {
+								try {
+									setSavingSlots(true);
+									const res = await fetch(`${API_URL}/reservation-settings/policy`, {
+										method: 'PUT',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({
+											peak_start: policy?.peak_start || '17:00',
+											peak_end: policy?.peak_end || '21:00',
+											peak_max_per_slot: maxSlotsPerDay,
+											normal_max_per_slot: maxSlotsPerDay,
+											dwell_minutes: policy?.dwell_minutes || 120,
+											no_show_grace_minutes: 10,
+										}),
+									});
+									if (res.ok) {
+										setSlotsSaved(true);
+										setTimeout(() => setSlotsSaved(false), 2000);
+									}
+								} catch (err) {
+									console.error('Failed to save slot settings:', err);
+								} finally {
+									setSavingSlots(false);
+								}
+							}}
+							disabled={savingSlots}
+							className={`w-full py-2 rounded-md text-sm font-semibold transition-colors ${
+								slotsSaved
+									? 'bg-green-500 text-white'
+									: savingSlots
+										? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+										: 'bg-blue-600 text-white hover:bg-blue-700'
+							}`}
+						>
+							{slotsSaved ? '✓ Saved' : savingSlots ? 'Saving...' : 'Save'}
+						</button>
 					</div>
 				</div>
 
@@ -863,6 +969,196 @@ const handleSave = async () => {
 				{/* Inline time slot list removed - using separate modal instead */}
 
 				{/* Bottom time wheel removed per request */}
+				</>}
+
+				{/* ===== CHECK-IN TAB ===== */}
+				{activeTab === 'checkin' && (
+					<div>
+						<div className="text-sm font-semibold mb-2">Today's Reservations — Assign Table</div>
+						<div className="text-xs text-gray-500 mb-3">Select a reservation to assign a table for arrived guests.</div>
+						<div className="border rounded divide-y max-h-[55vh] overflow-auto">
+							{(todayReservations || []).length === 0 && (
+								<div className="px-4 py-8 text-center text-gray-400">No reservations today.</div>
+							)}
+							{(todayReservations || [])
+								.slice()
+								.filter((r: any) => r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed')
+								.sort((a: any, b: any) => {
+									const toMin = (t: string) => { const m = t.match(/^(\d{2}):(\d{2})/); if (!m) return 0; return Number(m[1]) * 60 + Number(m[2]); };
+									return toMin(String(a?.reservation_time || '')) - toMin(String(b?.reservation_time || ''));
+								})
+								.map((r: any, idx: number) => {
+									const t = String(r.reservation_time || '').slice(0, 5);
+									const [hh, mm] = t.split(':').map((n: string) => Number(n));
+									const isAM = hh < 12; const h12 = (hh % 12) === 0 ? 12 : (hh % 12);
+									const tl = `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${isAM ? 'AM' : 'PM'}`;
+									const isAssigned = reservationStatuses[r.id]?.status === 'arrived' || reservationStatuses[r.id]?.status === 'occupied';
+									const assignedTable = reservationStatuses[r.id]?.tableName;
+									return (
+										<div key={idx} className={`px-4 py-3 flex items-center justify-between ${isAssigned ? 'bg-green-50' : 'hover:bg-gray-50'}`}>
+											<div className="flex-1 min-w-0">
+												<div className="flex items-center gap-2">
+													<span className="text-sm font-bold text-gray-800">{tl}</span>
+													<span className="text-sm font-medium text-gray-700">{r.customer_name || 'Guest'}</span>
+													<span className="text-xs text-gray-500">👥 {r.party_size || '-'}</span>
+													{r.phone_number && <span className="text-xs text-gray-400">📞 {r.phone_number}</span>}
+												</div>
+												{isAssigned && assignedTable && (
+													<div className="mt-0.5 text-xs text-green-600 font-medium">✅ Assigned to {assignedTable}</div>
+												)}
+											</div>
+											<div className="flex-shrink-0 ml-3">
+												{isAssigned ? (
+													<span className="px-3 py-1.5 rounded text-xs font-semibold bg-green-100 text-green-700">Seated</span>
+												) : (
+													<button
+														className="px-3 py-1.5 rounded text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+														onClick={() => {
+															setSelectedReservationForTable({
+																id: r.id,
+																name: r.customer_name || 'Guest',
+																partySize: Number(r.party_size || 2)
+															});
+															setShowTableSelectionModal(true);
+														}}
+													>
+														Assign Table
+													</button>
+												)}
+											</div>
+										</div>
+									);
+								})}
+						</div>
+					</div>
+				)}
+
+				{/* ===== MANAGE TAB ===== */}
+				{activeTab === 'manage' && (
+					<div>
+						<div className="text-sm font-semibold mb-2">Manage Reservations</div>
+						{/* Date selector for manage tab */}
+						<div className="flex items-center gap-2 mb-3">
+							<label className="text-xs text-gray-500">Date:</label>
+							<input
+								type="date"
+								value={date || today}
+								onChange={(e) => setDate(e.target.value)}
+								className="border rounded px-2 py-1 text-sm"
+							/>
+							<button
+								className="text-xs text-blue-600 hover:text-blue-800 underline"
+								onClick={() => setDate(today)}
+							>Today</button>
+						</div>
+						<div className="border rounded divide-y max-h-[55vh] overflow-auto">
+							{(() => {
+								// Flatten all reservations for the selected date
+								const allReservations: any[] = [];
+								for (const [, rList] of Object.entries(reservationsByTime)) {
+									(rList || []).forEach((r: any) => allReservations.push(r));
+								}
+								// Also include today's reservations if viewing today
+								if ((date || today) === today) {
+									(todayReservations || []).forEach((r: any) => {
+										if (!allReservations.find((ar: any) => ar.id === r.id)) {
+											allReservations.push(r);
+										}
+									});
+								}
+								const sorted = allReservations.sort((a: any, b: any) => {
+									const toMin = (t: string) => { const m = t.match(/^(\d{2}):(\d{2})/); if (!m) return 0; return Number(m[1]) * 60 + Number(m[2]); };
+									return toMin(String(a?.reservation_time || '')) - toMin(String(b?.reservation_time || ''));
+								});
+								if (sorted.length === 0) {
+									return <div className="px-4 py-8 text-center text-gray-400">No reservations for this date.</div>;
+								}
+								return sorted.map((r: any, idx: number) => {
+									const t = String(r.reservation_time || '').slice(0, 5);
+									const [hh, mm] = t.split(':').map((n: string) => Number(n));
+									const isAM = hh < 12; const h12 = (hh % 12) === 0 ? 12 : (hh % 12);
+									const tl = `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${isAM ? 'AM' : 'PM'}`;
+									const isCancelled = cancelledReservations.has(r.id) || r.status === 'cancelled';
+									const isNoShow = r.status === 'no_show' || cancelledLabelMap[r.id] === 'No Show';
+									const isCompleted = r.status === 'completed';
+									const isInactive = isCancelled || isNoShow || isCompleted;
+									let channelInfo = '';
+									try { const sp = JSON.parse(r.special_requests || '{}'); channelInfo = sp.channel || ''; } catch {}
+									return (
+										<div key={idx} className={`px-4 py-3 flex items-center justify-between ${isInactive ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50'}`}>
+											<div className="flex-1 min-w-0">
+												<div className="flex items-center gap-2">
+													<span className={`text-sm font-bold ${isInactive ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{tl}</span>
+													<span className={`text-sm font-medium ${isInactive ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{r.customer_name || 'Guest'}</span>
+													<span className="text-xs text-gray-500">👥 {r.party_size || '-'}</span>
+													{channelInfo && <span className="text-xs text-gray-400">📌 {channelInfo}</span>}
+												</div>
+												<div className="mt-0.5 flex items-center gap-2">
+													{r.phone_number && <span className="text-xs text-gray-400">📞 {r.phone_number}</span>}
+													{isCancelled && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-medium">Cancelled</span>}
+													{isNoShow && <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-600 font-medium">No Show</span>}
+													{isCompleted && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 font-medium">Completed</span>}
+												</div>
+											</div>
+											{!isInactive && (
+												<div className="flex-shrink-0 ml-3 flex items-center gap-1.5">
+													{/* Reschedule */}
+													<button
+														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+														onClick={() => {
+															setRescheduleMode(true);
+															setRescheduleTarget({ id: r.id, name: r.customer_name, phone: r.phone_number, partySize: r.party_size });
+															setName(r.customer_name || '');
+															setPhone(r.phone_number || '');
+															setPartySize(String(r.party_size || ''));
+															setSelectedSlotTime(t);
+															setShowDetailModal(true);
+														}}
+													>
+														Reschedule
+													</button>
+													{/* Cancel */}
+													<button
+														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+														onClick={() => {
+															setConfirmTarget({ id: r.id, name: r.customer_name, phone: r.phone_number });
+															setConfirmModalOpen(true);
+														}}
+													>
+														Cancel
+													</button>
+													{/* No Show */}
+													<button
+														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors"
+														onClick={() => {
+															handleReservationAction('no_show', r.customer_name, r.phone_number, r.id);
+														}}
+													>
+														No Show
+													</button>
+												</div>
+											)}
+											{isInactive && !isCompleted && (
+												<div className="flex-shrink-0 ml-3">
+													<button
+														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-green-50 text-green-600 hover:bg-green-100 transition-colors"
+														onClick={() => {
+															handleReservationAction('rebook', r.customer_name, r.phone_number, r.id);
+														}}
+													>
+														Rebook
+													</button>
+												</div>
+											)}
+										</div>
+									);
+								});
+							})()}
+						</div>
+					</div>
+				)}
+
+				</div>{/* end scrollable tab content */}
 
 		{/* Time Slot Availability Modal (docked to right of main modal) */}
 		{showSlotModal && (
@@ -870,20 +1166,21 @@ const handleSave = async () => {
 				ref={slotModalRef}
 				style={slotModalStyle}
 			>
-				<div className="bg-white rounded-lg shadow-xl w-[468px] p-4 max-h-[80vh] overflow-y-auto">
+				<div className="bg-white rounded-lg shadow-xl w-full p-4 max-h-[92vh] overflow-y-auto">
 					<div className="flex items-center justify-between mb-3">
 						<div className="text-sm font-semibold">Time Slot Availability • {date}</div>
 						<button 
-							className="p-3 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation"
+							className="p-3 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full touch-manipulation backdrop-blur-sm transition-colors"
 							onClick={() => setShowSlotModal(false)}
 						>
-							<svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+							<svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
 					<div className="mb-0.5">
 						<span className="text-sm text-gray-600">Numbers show available tables</span>
+						<span className="ml-2 text-sm font-semibold text-blue-600">MAX {maxSlotsPerDay}</span>
 					</div>
 					<div className="mb-2" />
 					<div className="border rounded p-2">
@@ -899,18 +1196,41 @@ const handleSave = async () => {
 							const startHour = Math.floor(startM/60), endHour = Math.floor((endM-1)/60);
 							const hours:number[] = []; for (let h=startHour; h<=endHour; h++) hours.push(h);
 							const isEnabled = (t:string) => { const m = toMins(t); return m>=startM && m<endM; };
+							// Dwell time (체류 시간): 예약 1건이 테이블을 점유하는 시간 (분)
+							const dwellMinutes = Number(policy?.dwell_minutes || 120);
+
+							// 파티 사이즈 → 점유 테이블 수 계산
+							// 1-5명: 1테이블, 6-9명: 2테이블, 10-13명: 3테이블, ...
+							const calcTablesNeeded = (partySize: number): number => {
+								if (!partySize || partySize <= 0) return 1;
+								if (partySize <= 5) return 1;
+								return 1 + Math.ceil((partySize - 5) / 4);
+							};
+
 							const computeLeft = (t:string) => {
-								const max = (() => {
-									const def = (timeSlotsDef || []).find(s => String(s.time_slot).slice(0,5) === t);
-									if (def) return def.max_reservations;
-									if (policy) {
-										const pk = policy.peak_start && policy.peak_end && (t >= policy.peak_start && t < policy.peak_end);
-										return pk ? (policy.peak_max_per_slot||0) : (policy.normal_max_per_slot||0);
+								// 단일 Max Slots Per Day 값만 사용
+								const max = maxSlotsPerDay;
+
+								// 체류 시간 기반 점유 계산: 타임슬롯 t에 "아직 점유 중인" 테이블 수를 센다
+								// 예약 시간 s에서 시작 → s + dwellMinutes까지 점유
+								// t에 점유 중 = s <= t < s + dwellMinutes
+								// 각 예약의 party_size에 따라 점유 테이블 수가 다름
+								const tMins = toMins(t);
+								let occupiedTables = 0;
+								for (const [slotTime, reservations] of Object.entries(reservationsByTime)) {
+									const sMins = toMins(slotTime);
+									// 이 슬롯의 예약이 아직 t 시점에 점유 중인지 확인
+									if (sMins <= tMins && tMins < sMins + dwellMinutes) {
+										// cancelled, no_show, completed 제외
+										const activeReservations = (reservations || []).filter(
+											(r: any) => r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed'
+										);
+										for (const r of activeReservations) {
+											occupiedTables += calcTablesNeeded(Number(r.party_size || 1));
+										}
 									}
-									return 0;
-								})();
-								const used = (reservationsByTime[t] || []).length;
-								return Math.max(0, max - used);
+								}
+								return Math.max(0, max - occupiedTables);
 							};
 							return (
 								<div className="space-y-0.5">
@@ -929,7 +1249,7 @@ const handleSave = async () => {
 									<div key={h} className={`grid grid-cols-5 gap-x-0.5 gap-y-0 items-center ${h % 2 === 1 ? 'bg-blue-50' : 'bg-orange-50'}`}>
 										<div className="flex items-center justify-between text-lg font-bold px-1 py-1 whitespace-nowrap text-gray-800">
 											<span className="cursor-pointer select-none" onClick={() => setHourViewHour(String(h).padStart(2,'0'))}>{label}</span>
-                                            <button className="ml-2 inline-flex items-center justify-center text-xs font-semibold px-2 py-1 min-h-[32px] rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+                                            <button className="ml-2 inline-flex items-center justify-center text-sm font-normal px-2.5 py-1.5 min-h-[32px] min-w-[40px] rounded-lg bg-blue-200/30 backdrop-blur-sm border border-blue-200/40 text-blue-400 hover:bg-blue-200/50 hover:shadow-md transition-all shadow-sm"
 												onClick={() => setHourViewHour(String(h).padStart(2,'0'))}
 											>
 												View
@@ -944,7 +1264,8 @@ const handleSave = async () => {
 												return (
                                                 <div
                                                     key={m}
-                                                    className="flex items-center justify-between px-1 py-0 min-h-[12px] w-full"
+                                                    className={`flex items-center justify-between px-1 py-0 min-h-[12px] w-full rounded transition-colors ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-blue-100/50'}`}
+                                                    onClick={() => { if (!full) { setSelectedSlotTime(t); setShowDetailModal(true); } }}
                                                     onDragOver={(e) => { if (!full) e.preventDefault(); }}
                                                     onDrop={(e) => { if (!full) { handleDropOnTimeSlot(t); } }}
                                                 >
@@ -952,9 +1273,9 @@ const handleSave = async () => {
 														<span className="tabular-nums text-base font-semibold inline-block w-[2ch] text-right">{left}</span>
 													</div>
                                                     {full ? (
-                                                    <span className="inline-flex items-center justify-center text-sm px-2.5 py-1.5 rounded bg-red-100 text-red-700 min-h-[32px] min-w-[40px]">Full</span>
+                                                    <span className="inline-flex items-center justify-center text-sm px-2.5 py-1.5 rounded bg-red-200 text-red-800 min-h-[32px] min-w-[40px] cursor-not-allowed select-none">Full</span>
                                                     ) : (
-													<button className="inline-flex items-center justify-center text-sm font-bold px-2.5 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 min-h-[32px] min-w-[40px]" onClick={() => { setSelectedSlotTime(t); setShowDetailModal(true); }}>
+													<button className="inline-flex items-center justify-center text-sm font-normal px-2.5 py-1.5 rounded-lg bg-blue-200/30 backdrop-blur-sm border border-blue-200/40 text-blue-400 hover:bg-blue-200/50 hover:shadow-md transition-all shadow-sm min-h-[32px] min-w-[40px]" onClick={(e) => { e.stopPropagation(); setSelectedSlotTime(t); setShowDetailModal(true); }}>
 														Add
 													</button>
 												)}
@@ -973,39 +1294,129 @@ const handleSave = async () => {
 		)}
 
 		{/* Hour View Overlay Modal */}
-		{hourViewHour && (
+		{hourViewHour && (() => {
+			const dwellMins = Number(policy?.dwell_minutes || 120);
+			const toM = (s: string) => { const [H, M] = s.split(':').map(n => Number(n)); return H * 60 + M; };
+
+			// 각 15분 슬롯별로 "이 슬롯에 예약된 사람" + "이전 예약이지만 아직 체류 중인 사람" 구분
+			const buildSlotData = (slotTime: string) => {
+				const slotMins = toM(slotTime);
+				const directReservations = reservationsByTime[slotTime] || [];
+				// 이전 시간대에 예약했지만 아직 체류 중인 예약들
+				const occupyingReservations: any[] = [];
+				for (const [rTime, rList] of Object.entries(reservationsByTime)) {
+					const rMins = toM(rTime);
+					// 이 슬롯보다 이전 시간에 예약했고, 아직 체류 중인 경우
+					if (rMins < slotMins && slotMins < rMins + dwellMins) {
+						for (const r of (rList || [])) {
+							if (r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed') {
+								occupyingReservations.push({ ...r, _occupyingFrom: rTime });
+							}
+						}
+					}
+				}
+				return { directReservations, occupyingReservations };
+			};
+
+			const renderReservationRow = (r: any, i: number, isOccupying: boolean) => {
+				const statusColor = r.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+					r.status === 'cancelled' ? 'bg-red-100 text-red-700' :
+					r.status === 'no_show' ? 'bg-orange-100 text-orange-700' :
+					r.status === 'completed' ? 'bg-blue-100 text-blue-700' :
+					'bg-yellow-100 text-yellow-700';
+				const statusLabel = r.status === 'confirmed' ? 'Confirmed' :
+					r.status === 'cancelled' ? 'Cancelled' :
+					r.status === 'no_show' ? 'No Show' :
+					r.status === 'completed' ? 'Completed' : 'Pending';
+				let channelInfo = '';
+				let depositInfo = '';
+				try {
+					const sp = JSON.parse(r.special_requests || '{}');
+					channelInfo = sp.channel || '';
+					depositInfo = sp.deposit ? `$${sp.deposit}` : '';
+				} catch {}
+				const tablesUsed = (() => {
+					const ps = Number(r.party_size || 1);
+					if (ps <= 5) return 1;
+					return 1 + Math.ceil((ps - 5) / 4);
+				})();
+				return (
+					<div key={`${isOccupying ? 'occ' : 'dir'}-${i}`} className={`px-3 py-2.5 flex items-center gap-3 ${isOccupying ? 'bg-amber-50/50' : 'hover:bg-gray-50'}`}>
+						<div className="flex-1 min-w-0">
+							<div className="flex items-center gap-2">
+								<span className="font-semibold text-sm text-gray-900">{r.customer_name || 'Guest'}</span>
+								<span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColor}`}>{statusLabel}</span>
+								{isOccupying && (
+									<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+										🕐 {r._occupyingFrom}~
+									</span>
+								)}
+							</div>
+							<div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
+								{r.phone_number && <span>📞 {r.phone_number}</span>}
+								{r.party_size && <span>👥 {r.party_size}</span>}
+								{tablesUsed > 1 && <span>🪑 {tablesUsed} tables</span>}
+								{channelInfo && <span>📌 {channelInfo}</span>}
+								{depositInfo && <span>💰 {depositInfo}</span>}
+							</div>
+						</div>
+						<div className="flex items-center gap-1 flex-shrink-0">
+							{!isOccupying && r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed' && (
+								<button
+									className="px-2 py-1 text-xs rounded bg-red-50 text-red-600 hover:bg-red-100"
+									onClick={() => { setConfirmTarget({ id: r.id, name: r.customer_name, phone: r.phone_number }); setConfirmModalOpen(true); }}
+								>Cancel</button>
+							)}
+						</div>
+					</div>
+				);
+			};
+
+			return (
 			<div className="fixed inset-0 z-[95] flex items-center justify-center bg-black bg-opacity-60">
-				<div className="bg-white rounded-lg shadow-xl w-full max-w-md p-4 max-h-[70vh] overflow-y-auto">
-					<div className="flex items-center justify-between mb-2">
-						<div className="text-base font-semibold">Reservations • {date} {hourViewHour}:00</div>
-						<button className="p-3 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation" onClick={() => setHourViewHour('')}>
+				<div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-4 max-h-[70vh] overflow-y-auto">
+					<div className="flex items-center justify-between mb-3">
+						<div className="text-lg font-semibold">📋 Reservations • {date} {hourViewHour}:00</div>
+						<button className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation" onClick={() => setHourViewHour('')}>
 							<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
-					<div className="max-h-[55vh] overflow-auto divide-y">
+					<div className="max-h-[55vh] overflow-auto space-y-3">
 						{[0,15,30,45].map((min) => {
 							const t = `${hourViewHour}:${String(min).padStart(2,'0')}`;
-							const list = reservationsByTime[t] || [];
+							const { directReservations, occupyingReservations } = buildSlotData(t);
+							const totalCount = directReservations.length + occupyingReservations.length;
 							return (
-								<div key={min} className="py-2">
-									<div className="text-sm font-bold text-gray-700 mb-1">{hourViewHour}:{String(min).padStart(2,'0')}</div>
-                                    {(list.length === 0 ? ([
-                                        { customer_name: 'Guest A', phone_number: '010-1234-5678', party_size: 2 },
-                                        { customer_name: 'Guest B', phone_number: '010-9876-5432', party_size: 4 }
-                                    ]) : list).map((r: any, i: number) => (
-                                        <div key={i} className="text-sm text-gray-800">
-                                            {r.customer_name || 'Guest'} • {r.phone_number || ''} {r.party_size ? `• #${r.party_size}` : ''}
-                                        </div>
-                                    ))}
-							</div>
-						);
+								<div key={min} className="border rounded-lg overflow-hidden">
+									<div className="bg-gray-100 px-3 py-2 flex items-center justify-between">
+										<span className="text-sm font-bold text-gray-700">{hourViewHour}:{String(min).padStart(2,'0')}</span>
+										<div className="flex items-center gap-2">
+											{occupyingReservations.length > 0 && (
+												<span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+													+{occupyingReservations.length} occupying
+												</span>
+											)}
+											<span className="text-xs text-gray-500">{totalCount} total</span>
+										</div>
+									</div>
+									{totalCount === 0 ? (
+										<div className="px-3 py-3 text-sm text-gray-400 italic">No reservations</div>
+									) : (
+										<div className="divide-y">
+											{directReservations.map((r: any, i: number) => renderReservationRow(r, i, false))}
+											{occupyingReservations.map((r: any, i: number) => renderReservationRow(r, i, true))}
+										</div>
+									)}
+								</div>
+							);
 						})}
 					</div>
 				</div>
 			</div>
-		)}
+			);
+		})()}
 
 		{/* Customer History Modal */}
 		{showHistoryModal && (
@@ -1136,16 +1547,58 @@ const handleSave = async () => {
 						<button className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300" onClick={()=>{ setShowDetailModal(false); setRescheduleMode(false); setRescheduleTarget(null); }}>Cancel</button>
 						<button className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700" onClick={async ()=>{
 							try {
+								// Validation
+								if (!name.trim()) { alert('Please enter customer name.'); return; }
+								if (!phone.trim()) { alert('Please enter phone number.'); return; }
+								if (!partySize || Number(partySize) < 1) { alert('Please enter party size (at least 1).'); return; }
+								if (!date) { alert('Please select a date.'); return; }
+								if (!selectedSlotTime) { alert('Please select a time slot.'); return; }
+
+								setSaving(true);
 								const payload:any = { customer_name:name.trim(), phone_number:phone.trim(), reservation_date:date, reservation_time:selectedSlotTime, party_size:Number(partySize), special_requests: JSON.stringify({ channel, deposit: Number(deposit||'0') }) };
 								const res = await fetch(`${API_URL}/reservations/reservations`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-								if (!res.ok) throw new Error(await res.text()||'Failed');
+								if (!res.ok) {
+									const errText = await res.text().catch(() => 'Failed');
+									throw new Error(errText || 'Failed');
+								}
+
+								// Reset form fields
+								setName(''); setPhone(''); setPartySize(''); setDeposit(''); setNote(''); setChannel('Walk-in');
+
+								// Refresh reservations for the selected date
+								try {
+									const refreshRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(date)}`);
+									if (refreshRes.ok) {
+										const list = await refreshRes.json();
+										const grouped: Record<string, any[]> = {};
+										(Array.isArray(list) ? list : []).forEach((r: any) => {
+											const t = String(r?.reservation_time || '').slice(0,5);
+											if (!grouped[t]) grouped[t] = [];
+											grouped[t].push(r);
+										});
+										setReservationsByTime(grouped);
+									}
+								} catch {}
+
+								// Refresh today's reservations
+								try {
+									const todayRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(today)}`);
+									if (todayRes.ok) {
+										const list = await todayRes.json();
+										setTodayReservations(Array.isArray(list) ? list : []);
+									}
+								} catch {}
+
 								setShowDetailModal(false);
 								setRescheduleMode(false);
 								setRescheduleTarget(null);
+								if (onCreated) onCreated();
 							} catch (e:any) {
 								alert(String(e?.message||'Failed to save'));
+							} finally {
+								setSaving(false);
 							}
-						}}>Save</button>
+						}} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
 					</div>
 				</div>
 			</div>

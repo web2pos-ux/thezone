@@ -154,12 +154,7 @@ module.exports = (db) => {
       return res.status(400).json({ error: 'At least one modifier is required.' });
     }
 
-    // Validate each modifier
-    for (const modifier of modifiers) {
-      if (!modifier.name || typeof modifier.name !== 'string' || !modifier.name.trim()) {
-        return res.status(400).json({ error: 'Each modifier must have a valid name.' });
-      }
-    }
+    // Allow blank modifier names ("") per requirements.
 
     try {
       console.log('🔄 Starting transaction for modifier group creation...');
@@ -185,11 +180,12 @@ module.exports = (db) => {
       for (let i = 0; i < modifiers.length; i++) {
         const mod = modifiers[i];
         const newModId = await generateNextId(db, ID_RANGES.MODIFIER);
+        const safeModName = (typeof mod?.name === 'string') ? mod.name.trim() : '';
         
         await dbRun(`INSERT INTO modifiers 
           (modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted) 
           VALUES (?, ?, ?, ?, 'OPTION', ?, 0)`, 
-          [newModId, mod.name.trim(), mod.price_adjustment || 0, mod.price_adjustment_2 || 0, i + 1]);
+          [newModId, safeModName, mod.price_adjustment || 0, mod.price_adjustment_2 || 0, i + 1]);
         
         await dbRun(`INSERT INTO modifier_group_links (modifier_group_id, modifier_id) VALUES (?, ?)`, 
           [newGroupId, newModId]);
@@ -216,7 +212,7 @@ module.exports = (db) => {
         max_selections: defaultMax,
         modifiers: modifiers.map((m, i) => ({ 
           option_id: optionIds[i], 
-          name: m.name.trim(),
+          name: (typeof m?.name === 'string') ? m.name.trim() : '',
           price_adjustment: m.price_adjustment || 0,
           price_adjustment_2: m.price_adjustment_2 || 0
         })),
@@ -270,9 +266,10 @@ module.exports = (db) => {
         const mod = modifiers[i];
         const newModId = await generateNextId(db, ID_RANGES.MODIFIER);
         const price2 = mod.price_adjustment_2 || 0;
+        const safeModName = (typeof mod?.name === 'string') ? mod.name.trim() : '';
         
         await dbRun('INSERT INTO modifiers (modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)', 
-          [newModId, mod.name.trim(), mod.price_adjustment || 0, price2, 'OPTION', i + 1]);
+          [newModId, safeModName, mod.price_adjustment || 0, price2, 'OPTION', i + 1]);
         
         await dbRun('INSERT INTO modifier_group_links (modifier_group_id, modifier_id) VALUES (?, ?)', 
           [groupId, newModId]);
@@ -296,7 +293,7 @@ module.exports = (db) => {
         max_selections: defaultMax,
         modifiers: modifiers.map((m, index) => ({
           option_id: optionIds[index],
-          name: m.name.trim(),
+          name: (typeof m?.name === 'string') ? m.name.trim() : '',
           price_adjustment: m.price_adjustment || 0,
           price_adjustment_2: m.price_adjustment_2 || 0,
         })),

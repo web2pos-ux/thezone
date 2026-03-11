@@ -761,6 +761,14 @@ router.delete('/time-off/:id', (req, res) => {
 // CLOCK IN/OUT ENDPOINTS
 // ======================
 
+const getLocalBusinessDate = () => {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 // POST verify PIN and get employee info
 router.post('/verify-pin', (req, res) => {
   const { pin } = req.body;
@@ -797,7 +805,7 @@ router.post('/clock-in', (req, res) => {
   
   const db = getDb();
   const now = new Date().toISOString();
-  const today = now.split('T')[0];
+  const today = getLocalBusinessDate();
   
   // Verify PIN first
   db.get(
@@ -844,6 +852,18 @@ router.post('/clock-in', (req, res) => {
                     // db.close(); // Shared DB 연결은 닫으면 안 됨
                     return res.status(500).json({ error: err.message });
                   }
+                  const clockRecordId = this.lastID;
+
+                  // Create server shift session (accounting shift)
+                  db.run(
+                    `INSERT INTO server_shifts (server_id, clock_record_id, business_date, clock_in_time, status, updated_at)
+                     VALUES (?, ?, ?, ?, 'open', datetime('now'))`,
+                    [employeeId, clockRecordId, today, now],
+                    function(shiftErr) {
+                      if (shiftErr) {
+                        console.error('[server_shifts] create failed:', shiftErr.message);
+                      }
+                      const serverShiftId = this?.lastID || null;
                   
                   // Update work_schedules worked_start if schedule exists
                   if (scheduleId) {
@@ -857,7 +877,8 @@ router.post('/clock-in', (req, res) => {
                         }
                         res.status(201).json({
                           message: 'Clocked in successfully',
-                          recordId: this.lastID,
+                          recordId: clockRecordId,
+                          shiftId: serverShiftId,
                           clockInTime: now,
                           hasSchedule: true
                         });
@@ -867,11 +888,14 @@ router.post('/clock-in', (req, res) => {
                     // db.close(); // Shared DB 연결은 닫으면 안 됨
                     res.status(201).json({
                       message: 'Clocked in successfully (no schedule found)',
-                      recordId: this.lastID,
+                      recordId: clockRecordId,
+                      shiftId: serverShiftId,
                       clockInTime: now,
                       hasSchedule: false
                     });
                   }
+                    }
+                  );
                 }
               );
             }
@@ -892,7 +916,7 @@ router.post('/clock-out', (req, res) => {
   
   const db = getDb();
   const now = new Date().toISOString();
-  const today = now.split('T')[0];
+  const today = getLocalBusinessDate();
   
   // Verify PIN first
   db.get(
@@ -943,6 +967,20 @@ router.post('/clock-out', (req, res) => {
                 // db.close(); // Shared DB 연결은 닫으면 안 됨
                 return res.status(500).json({ error: err.message });
               }
+
+              // Close server shift session if exists
+              db.run(
+                `UPDATE server_shifts
+                 SET clock_out_time = ?, status = 'closed', updated_at = datetime('now')
+                 WHERE server_id = ?
+                   AND business_date = ?
+                   AND clock_record_id = ?
+                   AND status = 'open'`,
+                [now, employeeId, today, record.id],
+                (shiftErr) => {
+                  if (shiftErr) console.error('[server_shifts] close failed:', shiftErr.message);
+                }
+              );
               
               // Update work_schedules worked_end if schedule exists
               if (record.scheduled_shift_id) {

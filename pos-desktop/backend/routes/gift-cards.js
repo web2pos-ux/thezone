@@ -3,6 +3,11 @@ const express = require('express');
 const router = express.Router();
 
 module.exports = function(db) {
+  const isValidCardNumber = (value) => {
+    const s = String(value || '').trim();
+    return /^\d{4,16}$/.test(s);
+  };
+
   // Helper functions
   const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
     db.run(sql, params, function(err) {
@@ -68,8 +73,8 @@ module.exports = function(db) {
     try {
       const { card_number, amount, payment_method, customer_name, customer_phone, sold_by, seller_pin } = req.body;
 
-      if (!card_number || card_number.length !== 16) {
-        return res.status(400).json({ message: 'Invalid card number. Must be 16 digits.' });
+      if (!isValidCardNumber(card_number)) {
+        return res.status(400).json({ message: 'Invalid card number. Must be 4-16 digits.' });
       }
 
       if (!amount || amount <= 0) {
@@ -119,6 +124,10 @@ module.exports = function(db) {
       const { cardNumber } = req.params;
       const { amount, payment_method, sold_by, seller_pin } = req.body;
 
+      if (!isValidCardNumber(cardNumber)) {
+        return res.status(400).json({ message: 'Invalid card number. Must be 4-16 digits.' });
+      }
+
       if (!amount || amount <= 0) {
         return res.status(400).json({ message: 'Invalid amount.' });
       }
@@ -161,6 +170,10 @@ module.exports = function(db) {
     try {
       const { cardNumber } = req.params;
 
+      if (!isValidCardNumber(cardNumber)) {
+        return res.status(400).json({ message: 'Invalid card number. Must be 4-16 digits.' });
+      }
+
       const card = await dbGet('SELECT * FROM gift_cards WHERE card_number = ?', [cardNumber]);
 
       if (!card) {
@@ -185,6 +198,10 @@ module.exports = function(db) {
     try {
       const { cardNumber } = req.params;
       const { amount, order_id } = req.body;
+
+      if (!isValidCardNumber(cardNumber)) {
+        return res.status(400).json({ message: 'Invalid card number. Must be 4-16 digits.' });
+      }
 
       if (!amount || amount <= 0) {
         return res.status(400).json({ message: 'Invalid amount' });

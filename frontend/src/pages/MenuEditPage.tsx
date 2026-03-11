@@ -34,6 +34,7 @@ import { Menu, Category, MenuItem, TaxGroup, PrinterGroup } from '../types';
 import { getDarkerHexColor } from '../utils/colorUtils';
 
 import { API_URL, API_BASE } from '../config/constants';
+import DangerousActionModal from '../components/DangerousActionModal';
 
 type TabName = 'modifier' | 'tax' | 'printer';
 
@@ -148,6 +149,15 @@ const MenuEditPage = () => {
   // Export/Import state
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [pendingImportFile, setPendingImportFile] = useState<File | null>(null);
+  const [dangerousAction, setDangerousAction] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    warningItems: string[];
+    confirmPhrase: string;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: '', description: '', warningItems: [], confirmPhrase: '', onConfirm: () => {} });
   const [importProgress, setImportProgress] = useState(0);
   const [importStep, setImportStep] = useState('');
   
@@ -1759,8 +1769,8 @@ const MenuEditPage = () => {
 
   const handleAddItemSubmit = () => {
     if (menuEditLocked) { alert('Editing is locked.'); return; }
-    if (!newItemData.name.trim() || newItemData.price <= 0) {
-      alert('Please enter item name and price.');
+    if (newItemData.price <= 0) {
+      alert('Please enter item price.');
       return;
     }
     handleAddItem(
@@ -1773,8 +1783,8 @@ const MenuEditPage = () => {
   };
 
   const handleInlineFormSubmit = () => {
-    if (!inlineFormData.name.trim() || inlineFormData.price <= 0) {
-      alert('Please enter item name and price.');
+    if (inlineFormData.price <= 0) {
+      alert('Please enter item price.');
       return;
     }
     
@@ -2853,8 +2863,8 @@ const MenuEditPage = () => {
                   const description = formData.get('description') as string;
                   const isOpenPrice = formData.get('is_open_price') !== null;
                   
-                  if (!name.trim() || (!isOpenPrice && price <= 0)) {
-                    alert('Please enter item name and price.');
+                  if (!isOpenPrice && price <= 0) {
+                    alert('Please enter item price.');
                     return;
                   }
                   
@@ -2946,8 +2956,8 @@ const MenuEditPage = () => {
                           const description = formData.get('description') as string;
                           const isOpenPrice = formData.get('is_open_price') !== null;
                           
-                          if (!name.trim() || (!isOpenPrice && price <= 0)) {
-                            alert('Please enter item name and price.');
+                          if (!isOpenPrice && price <= 0) {
+                            alert('Please enter item price.');
                             return;
                           }
                           
@@ -3001,8 +3011,8 @@ const MenuEditPage = () => {
                             const description = formData.get('description') as string;
                             const isOpenPrice = formData.get('is_open_price') !== null;
                             
-                            if (!name.trim() || (!isOpenPrice && price <= 0)) {
-                              alert('Please enter item name and price.');
+                            if (!isOpenPrice && price <= 0) {
+                              alert('Please enter item price.');
                               return;
                             }
                             
@@ -3884,7 +3894,13 @@ const MenuEditPage = () => {
           </button>
           <label className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 cursor-pointer">
             {isImporting ? '⏳' : '📤'} Excel Import
-            <input type="file" accept=".xlsx,.xls" onChange={(e) => handleExcelImport(e.target.files?.[0])} className="hidden" />
+            <input type="file" accept=".xlsx,.xls" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                handleExcelImport(file);
+              }
+              e.target.value = '';
+            }} className="hidden" />
           </label>
           <button
             onClick={handleSaveAll}
@@ -4310,6 +4326,20 @@ const MenuEditPage = () => {
           </div>
         </div>
       )}
+      {/* Dangerous Action Lock Modal */}
+      <DangerousActionModal
+        isOpen={dangerousAction.isOpen}
+        onClose={() => { setDangerousAction(prev => ({ ...prev, isOpen: false })); setPendingImportFile(null); }}
+        onConfirm={() => {
+          const action = dangerousAction.onConfirm;
+          setDangerousAction(prev => ({ ...prev, isOpen: false }));
+          action();
+        }}
+        title={dangerousAction.title}
+        description={dangerousAction.description}
+        warningItems={dangerousAction.warningItems}
+        confirmPhrase={dangerousAction.confirmPhrase}
+      />
      </div>
    );
  };

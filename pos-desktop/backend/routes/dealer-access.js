@@ -18,14 +18,28 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { dbRun, dbAll, dbGet } = require('../db');
 
-// Config paths
-const CONFIG_DIR = path.join(__dirname, '..', 'config');
+// Config paths (process.env.CONFIG_PATH 사용 - 패키징된 앱에서 쓰기 가능한 경로)
+const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
+const CONFIG_DIR = process.env.CONFIG_PATH || RESOURCES_CONFIG_DIR;
 const DEALER_CONFIG_PATH = path.join(CONFIG_DIR, 'dealer-access.json');
 const SETUP_STATUS_PATH = path.join(CONFIG_DIR, 'setup-status.json');
+console.log('[Dealer Access] Config directory:', CONFIG_DIR);
 
 // Ensure config directory exists
 if (!fs.existsSync(CONFIG_DIR)) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+// 첫 실행 시 리소스에서 config 파일 복사 (패키징된 앱 지원)
+if (CONFIG_DIR !== RESOURCES_CONFIG_DIR) {
+  if (!fs.existsSync(DEALER_CONFIG_PATH) && fs.existsSync(path.join(RESOURCES_CONFIG_DIR, 'dealer-access.json'))) {
+    fs.copyFileSync(path.join(RESOURCES_CONFIG_DIR, 'dealer-access.json'), DEALER_CONFIG_PATH);
+    console.log('[Dealer Access] Copied dealer-access.json from resources to writable config');
+  }
+  if (!fs.existsSync(SETUP_STATUS_PATH) && fs.existsSync(path.join(RESOURCES_CONFIG_DIR, 'setup-status.json'))) {
+    fs.copyFileSync(path.join(RESOURCES_CONFIG_DIR, 'setup-status.json'), SETUP_STATUS_PATH);
+    console.log('[Dealer Access] Copied setup-status.json from resources to writable config');
+  }
 }
 
 // Default dealer access config
@@ -193,7 +207,7 @@ router.get('/store-settings', requireDealerAccess, async (req, res) => {
     // Get from setup-status.json
     let setupStatus = {};
     if (fs.existsSync(SETUP_STATUS_PATH)) {
-      setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+      setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8').replace(/^\uFEFF/, ''));
     }
     
     // Get from database
@@ -232,19 +246,15 @@ router.post('/store-settings', requireDealerAccess, async (req, res) => {
       });
     }
     
-    // Validate restaurant ID if provided
-    if (restaurantId !== undefined && restaurantId !== null) {
-      // Verify with Firebase if possible
+    // Validate restaurant ID if provided (best-effort Firebase check, never blocks save)
+    if (restaurantId !== undefined && restaurantId !== null && restaurantId !== '') {
       try {
-        const firebaseService = require('../services/firebase');
+        const firebaseService = require('../services/firebaseService');
         const db = firebaseService.getFirestore();
         if (db) {
           const restaurantDoc = await db.collection('restaurants').doc(restaurantId).get();
           if (!restaurantDoc.exists) {
-            return res.status(400).json({ 
-              success: false, 
-              error: 'Restaurant ID not found in Firebase' 
-            });
+            console.warn(`[Dealer Access] Restaurant ID "${restaurantId}" not found in Firebase, saving anyway`);
           }
         }
       } catch (fbErr) {
@@ -255,7 +265,7 @@ router.post('/store-settings', requireDealerAccess, async (req, res) => {
     // Update setup-status.json
     let setupStatus = {};
     if (fs.existsSync(SETUP_STATUS_PATH)) {
-      setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+      setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8').replace(/^\uFEFF/, ''));
     }
     
     const updatedSetup = {

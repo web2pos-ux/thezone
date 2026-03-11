@@ -1,14 +1,14 @@
-import React, { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { MenuCacheProvider, prefetchMenuCache } from './contexts/MenuCacheContext';
-import { loadSettings } from './config/settings';
-import * as constants from './config/constants';
 
 import IntroPage from './pages/IntroPage';
 import InitialSetupPage from './pages/InitialSetupPage';
 import SetupPage from './pages/SetupPage';
 import SalesPage from './pages/SalesPage';
 import BackOfficeLayout from './components/BackOfficeLayout';
+import HandheldCallOverlay from './components/HandheldCallOverlay';
+import DayOpeningModal from './components/DayOpeningModal';
 import MenuListPage from './pages/MenuListPage';
 import MenuEditPage from './pages/MenuEditPage';
 import MenuItemOptionsPage from './pages/MenuItemOptionsPage';
@@ -26,9 +26,7 @@ import QrOrderPage from './pages/QrOrderPage';
 import TableOrderPage from './pages/TableOrderPage';
 import TableOrderSetupPage from './pages/TableOrderSetupPage';
 import HandheldSetupPage from './pages/HandheldSetupPage';
-import HandheldPage from './pages/HandheldPage';
 import SubPosSetupPage from './pages/SubPosSetupPage';
-import SubPosPage from './pages/SubPosPage';
 import QsrSetupPage from './pages/QsrSetupPage';
 import QsrPage from './pages/QsrPage';
 import QsrOrderPage from './pages/QsrOrderPage';
@@ -47,6 +45,7 @@ import PrinterPage from './pages/PrinterPage';
 import AppSettingsPage from './pages/AppSettingsPage';
 import CreditCardReaderPage from './pages/CreditCardReaderPage';
 import TableDevicesPage from './pages/TableDevicesPage';
+import SubPosSettingsPage from './pages/SubPosSettingsPage';
 import QrCodePage from './pages/QrCodePage';
 import KdsPage from './pages/KdsPage';
 import ReportManagerPage from './pages/ReportManagerPage';
@@ -59,9 +58,13 @@ import DebugPaymentPage from './pages/DebugPaymentPage';
 import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
+import DeviceSetupPage from './pages/DeviceSetupPage';
+import { getAPI_URL } from './config/constants';
 import ReportsDashboardPage from './pages/ReportsDashboardPage';
 import PosPromotionsPage from './pages/PosPromotionsPage';
 import DealerSettingsPage from './pages/DealerSettingsPage';
+import ServerSettlementPage from './pages/ServerSettlementPage';
+import SettingsTransferPage from './pages/SettingsTransferPage';
 
 // 🚀 OrderPage를 Lazy Loading으로 변경 (8,693줄 → 즉시 로딩 방지)
 const OrderPage = lazy(() => import('./pages/OrderPage'));
@@ -70,6 +73,42 @@ if (typeof window !== 'undefined') {
   prefetchMenuCache().catch((error) => {
     console.warn('Initial menu prefetch failed:', error);
   });
+}
+
+const API_FETCH_TIMEOUT_MS = 7000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = API_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(input, { ...init, signal: controller.signal });
+    return res;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+// 앱 창 크기(뷰포트) 기준 폰트 조정 — 모니터가 아닌 앱 화면 크기에 비례
+// vh/vw 기반 clamp로 스케일, 고정 대형 폰트(34px 등) 오버라이드 제거
+const applyScreenSizeVars = () => {
+  if (typeof window === 'undefined') return;
+  const root = document.documentElement;
+  // JS 고정값 오버라이드 제거 → index.css의 clamp(12px, 1.8vh, 16px) 등 적용
+  root.style.removeProperty('--bottom-bar-btn-font');
+  root.style.removeProperty('--bottom-bar-btn-height');
+  root.style.removeProperty('--order-label-font');
+  root.style.removeProperty('--order-value-font');
+  root.style.removeProperty('--order-header-font');
+  root.style.removeProperty('--order-item-font');
+  root.style.removeProperty('--order-mod-font');
+  root.style.removeProperty('--order-summary-font');
+  root.style.removeProperty('--order-total-font');
+  root.style.removeProperty('--sales-footer-height');
+};
+
+if (typeof window !== 'undefined') {
+  applyScreenSizeVars();
+  window.addEventListener('resize', applyScreenSizeVars);
 }
 
 const getStoredOperationMode = (): 'QSR' | 'FSR' | null => {
@@ -85,75 +124,256 @@ const getStoredOperationMode = (): 'QSR' | 'FSR' | null => {
   }
 };
 
+const OpeningRequired: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [loading, setLoading] = useState(true);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const [err, setErr] = useState<string>('');
+
+  const fetchToday = useCallback(async () => {
+    try {
+      const apiUrl = getAPI_URL();
+      const res = await fetchWithTimeout(`${apiUrl}/daily-closings/today`, { cache: 'no-store' as any });
+      const json = await res.json().catch(() => ({} as any));
+      if (!res.ok || json?.success === false) {
+        throw new Error(json?.error || 'Failed to load session status');
+      }
+      setSessionOpen(!!json?.isOpen);
+      setErr('');
+    } catch (e: any) {
+      // Be conservative: if we cannot confirm session is open, keep user at Opening screen.
+      setSessionOpen(false);
+      setErr(e?.message || 'Failed to load session status');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      await fetchToday();
+    };
+    run();
+    const t = window.setInterval(() => { fetchToday(); }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [fetchToday]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-100">
+        <div className="text-xl">Loading...</div>
+      </div>
+    );
+  }
+
+  if (sessionOpen) return <>{children}</>;
+
+  return (
+    <div className="min-h-screen bg-gray-100">
+      {err && (
+        <div className="p-3 bg-red-50 border-b border-red-200 text-red-700 text-sm font-semibold">
+          {err}
+        </div>
+      )}
+      <DayOpeningModal
+        isOpen={true}
+        onClose={() => {
+          // Intentionally ignore. Requirement: stay on Opening until completed.
+        }}
+        onOpeningComplete={() => {
+          fetchToday();
+        }}
+      />
+    </div>
+  );
+};
+
 const SalesModeGate: React.FC = () => {
   const mode = getStoredOperationMode();
   if (mode === 'QSR') {
-    return <Navigate to="/qsr" replace />;
+    return (
+      <OpeningRequired>
+        <Navigate to="/qsr" replace />
+      </OpeningRequired>
+    );
   }
-  return <SalesPage />;
+  return (
+    <OpeningRequired>
+      <SalesPage />
+    </OpeningRequired>
+  );
+};
+
+
+const isElectronRenderer = () => {
+  try {
+    return typeof navigator !== 'undefined' && (navigator.userAgent || '').toLowerCase().includes('electron');
+  } catch {
+    return false;
+  }
+};
+
+const isLocalHost = (host: string) => host === 'localhost' || host === '127.0.0.1';
+
+const RequireApprovedDevice: React.FC = () => {
+  const location = useLocation();
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const hostname = (typeof window !== 'undefined' ? window.location.hostname : '') || '';
+    const isRemoteWebClient = !isElectronRenderer() && hostname && !isLocalHost(hostname);
+
+    // Do not gate customer/table-order flows or Back Office.
+    const path = location.pathname || '';
+    const isExempt =
+      path.startsWith('/device-setup') ||
+      path.startsWith('/backoffice') ||
+      path.startsWith('/table-order') ||
+      path.startsWith('/to/') ||
+      path.startsWith('/table-order-setup') ||
+      path.startsWith('/dealer-settings') ||
+      path.startsWith('/d-cfg');
+
+    if (!isRemoteWebClient || isExempt) {
+      setAllowed(true);
+      return;
+    }
+
+    let deviceId = '';
+    try {
+      deviceId = localStorage.getItem('pos_device_id') || '';
+    } catch {}
+
+    if (!deviceId) {
+      setAllowed(false);
+      return;
+    }
+
+    const apiUrl = getAPI_URL();
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, API_FETCH_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/devices/${encodeURIComponent(deviceId)}`, { signal: controller.signal, cache: 'no-store' as any });
+        if (!res.ok) { setAllowed(false); return; }
+        const json = await res.json();
+        const status = json?.device?.status;
+        setAllowed(status === 'active');
+
+        // keep last_seen updated for approved devices
+        if (status === 'active') {
+          try {
+            await fetchWithTimeout(`${apiUrl}/devices/heartbeat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                device_id: deviceId,
+                device_type: 'sub_pos',
+                os_version: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+              }),
+            }, 4000);
+          } catch {}
+        }
+      } catch {
+        if (timedOut) {
+          setAllowed(false);
+          return;
+        }
+        if (!controller.signal.aborted) setAllowed(false);
+      }
+    })();
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [location.pathname]);
+
+  if (allowed === null) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-100">
+        <div className="text-slate-600 font-medium">Checking device registration...</div>
+      </div>
+    );
+  }
+
+  if (!allowed) {
+    const from = `${location.pathname}${location.search || ''}`;
+    const suggestedType =
+      (from.startsWith('/handheld') ? 'handheld' : 'sub_pos');
+    return <Navigate to="/device-setup" replace state={{ from, suggestedType }} />;
+  }
+
+  return <Outlet />;
 };
 
 function App() {
-  // 앱 시작 시 설정 로드
-  useEffect(() => {
-    loadSettings().then((settings) => {
-      // constants.ts의 전역 변수 업데이트
-      (constants as any).API_URL = settings.api_url || constants.API_URL;
-      (constants as any).API_BASE = settings.api_base || constants.API_BASE;
-      console.log('[App] Settings loaded:', { 
-        API_URL: constants.API_URL, 
-        API_BASE: constants.API_BASE 
-      });
-    }).catch((err) => {
-      console.warn('[App] Failed to load settings:', err);
-    });
-  }, []);
-
   return (
     <MenuCacheProvider>
       <BrowserRouter>
         <Routes>
+          {/* Remote Sub POS registration (iPad/Android/Windows browser) */}
+          <Route path="/device-setup" element={<DeviceSetupPage />} />
+
           {/* 메인 페이지들 - 첫 실행 시 SetupPage로 시작 */}
-          <Route path="/" element={<SetupPage />} />
-          <Route path="/intro" element={<IntroPage />} />
-          <Route path="/setup" element={<SetupPage />} />
-          <Route path="/initial-setup" element={<InitialSetupPage />} />
+          <Route element={<RequireApprovedDevice />}>
+            <Route path="/" element={<IntroPage />} />
+            <Route path="/intro" element={<IntroPage />} />
+            <Route path="/setup" element={<SetupPage />} />
+            <Route path="/initial-setup" element={<InitialSetupPage />} />
           
           {/* 고객용 테이블 오더 페이지 */}
+          </Route>
           <Route path="/table-order-setup" element={<TableOrderSetupPage />} />
           <Route path="/table-order/:storeId/:tableId" element={<TableOrderPage />} />
           <Route path="/to/:storeId/:tableId" element={<TableOrderPage />} />
           
           {/* 핸드헬드 POS (서버용 주문기) */}
-          <Route path="/handheld-setup" element={<HandheldSetupPage />} />
-          <Route path="/handheld" element={<HandheldPage />} />
+          <Route element={<RequireApprovedDevice />}>
+            <Route path="/handheld" element={<HandheldSetupPage />} />
+          </Route>
           
           {/* 서브 POS (보조 결제 스테이션) */}
-          <Route path="/sub-pos-setup" element={<SubPosSetupPage />} />
-          <Route path="/sub-pos" element={<SubPosPage />} />
+          <Route element={<RequireApprovedDevice />}>
+            <Route path="/subpos" element={<SubPosSetupPage />} />
+          </Route>
           
           {/* QSR / 카페 모드 */}
-          <Route path="/qsr-setup" element={<QsrSetupPage />} />
-          <Route path="/qsr" element={<QsrOrderPage />} />
-          <Route path="/qsr-old" element={<QsrPage />} />
-          <Route path="/cafe" element={<QsrOrderPage />} />
+          <Route element={<RequireApprovedDevice />}>
+            <Route path="/qsr-setup" element={<QsrSetupPage />} />
+            <Route path="/qsr" element={<OpeningRequired><QsrOrderPage /></OpeningRequired>} />
+            <Route path="/qsr-old" element={<QsrPage />} />
+            <Route path="/cafe" element={<OpeningRequired><QsrOrderPage /></OpeningRequired>} />
           
           {/* 딜러/총판 전용 설정 (숨김 경로 - 일반 메뉴에서 접근 불가) */}
+          </Route>
           <Route path="/dealer-settings" element={<DealerSettingsPage />} />
           <Route path="/d-cfg" element={<DealerSettingsPage />} /> {/* 단축 경로 */}
+          <Route path="/server-settlement" element={<OpeningRequired><ServerSettlementPage /></OpeningRequired>} />
           
-          <Route path="/sales" element={<SalesModeGate />} />
-          <Route path="/sales/order" element={
-            <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
-              <OrderPage />
-            </Suspense>
-          } />
-          <Route path="/order" element={
-            <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
-              <OrderPage />
-            </Suspense>
-          } />
-          <Route path="/debug/payment" element={<DebugPaymentPage />} />
+          <Route element={<RequireApprovedDevice />}>
+            <Route path="/sales" element={<SalesModeGate />} />
+            <Route path="/sales/order" element={
+              <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
+                <OrderPage />
+              </Suspense>
+            } />
+            <Route path="/order" element={
+              <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
+                <OrderPage />
+              </Suspense>
+            } />
+            <Route path="/debug/payment" element={<DebugPaymentPage />} />
+          </Route>
           
           {/* Back Office 레이아웃 */}
           <Route path="/backoffice" element={<BackOfficeLayout />}>
@@ -189,6 +409,7 @@ function App() {
             <Route path="printer" element={<PrinterPage />} />
             <Route path="credit-card-reader" element={<CreditCardReaderPage />} />
             <Route path="table-devices" element={<TableDevicesPage />} />
+            <Route path="sub-pos-settings" element={<SubPosSettingsPage />} />
             <Route path="qr-code" element={<QrCodePage />} />
             <Route path="kds" element={<KdsPage />} />
             <Route path="app-settings" element={<AppSettingsPage />} />
@@ -201,8 +422,10 @@ function App() {
             <Route path="gift-card-report" element={<GiftCardReportPage />} />
             <Route path="togo-settings" element={<BackofficeTogoSettingsPage />} />
             <Route path="sales-summary" element={<BackofficeSalesSummaryPage />} />
+            <Route path="settings-transfer" element={<SettingsTransferPage />} />
           </Route>
         </Routes>
+        <HandheldCallOverlay />
       </BrowserRouter>
     </MenuCacheProvider>
   );

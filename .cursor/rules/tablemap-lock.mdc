@@ -1,0 +1,43 @@
+---
+description: CRITICAL - Table Map code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/pages/TableMapPage.tsx,frontend/src/pages/TableMapManagerPage.tsx,frontend/src/pages/TableOrderPage.tsx,frontend/src/pages/TableOrderSetupPage.tsx,frontend/src/pages/TableDevicesPage.tsx,frontend/src/components/ProtectedTableManager.tsx,frontend/src/components/reservations/TableSelectionModal.tsx,frontend/src/hooks/useMoveMerge.ts,frontend/src/components/MoveMergeHistoryModal.tsx,frontend/src/config/tableProtection.ts,backend/routes/table-map.js,backend/routes/table-operations.js,backend/routes/table-orders.js,backend/routes/table-move-history.js,pos-desktop/backend/routes/table-map.js,pos-desktop/backend/routes/table-operations.js,pos-desktop/backend/routes/table-orders.js,pos-desktop/backend/routes/table-move-history.js
+alwaysApply: true
+---
+
+# TABLE MAP CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Areas
+
+### Frontend Pages
+- `TableMapPage.tsx` - 테이블맵 (메인 화면)
+- `TableMapManagerPage.tsx` - 테이블맵 편집기 (백오피스)
+- `TableOrderPage.tsx` - 테이블 주문
+- `TableOrderSetupPage.tsx` - 테이블 주문 설정
+- `TableDevicesPage.tsx` - 테이블 디바이스 관리
+
+### Frontend Components/Hooks
+- `ProtectedTableManager.tsx` - 테이블 보호 매니저
+- `TableSelectionModal.tsx` - 테이블 선택 모달
+- `useMoveMerge.ts` - 테이블 이동/병합 훅
+- `MoveMergeHistoryModal.tsx` - 이동/병합 이력
+- `tableProtection.ts` - 테이블 보호 설정
+
+### Backend Routes
+- `table-map.js` - 테이블맵 API
+- `table-operations.js` - 테이블 이동/병합
+- `table-orders.js` - 테이블 주문 API
+- `table-move-history.js` - 이동/병합 이력 API
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: 다른 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
+5. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
+   - **WHY**: 왜 이 변경이 필요한지
+   - **IMPACT**: 테이블맵 표시, 테이블 상태, 이동/병합, 주문 연결 등에 미치는 영향
+   - 승인 요청: "이 변경을 진행해도 될까요?"
+6. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
+7. 다른 작업의 "부수 효과로 테이블맵 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.

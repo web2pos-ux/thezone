@@ -58,3 +58,12 @@ web2pos_v7_*.egg
 
 # Config files with secrets
 backend/config/firebase-service-account.json
+
+# Android signing (sideload / release)
+**/keystore.properties
+**/*.keystore
+**/*.jks
+
+# Local Android build toolchain downloads
+android-app/.build-tools/
+android-app/dist-apk/

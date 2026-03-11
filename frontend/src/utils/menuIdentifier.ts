@@ -34,7 +34,7 @@ export async function resolveMenuIdentifiers(apiUrl: string): Promise<MenuIdenti
   }
 
   if (!menuId || menuId === 'null') {
-    const menusRes = await fetch(`${apiUrl}/api/menus`, { cache: 'no-store' });
+    const menusRes = await fetch(`${apiUrl}/menus`, { cache: 'no-store' });
     if (menusRes.ok) {
       const menus = await menusRes.json();
       if (Array.isArray(menus) && menus.length > 0) {

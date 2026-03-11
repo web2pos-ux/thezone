@@ -7,34 +7,129 @@ const db = new sqlite3.Database(dbPath);
 console.log('Creating Work Schedule tables...');
 
 db.serialize(() => {
-  // 1. Employees Table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS employees (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      department TEXT NOT NULL,
-      email TEXT,
-      phone TEXT,
-      hire_date TEXT,
-      permit_level INTEGER DEFAULT 2,
-      status TEXT DEFAULT 'active',
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Error creating employees table:', err);
-    } else {
-      console.log('✓ Employees table created');
-      // Add permit_level column if it doesn't exist (migration for existing tables)
-      db.run(`ALTER TABLE employees ADD COLUMN permit_level INTEGER DEFAULT 2`, (err) => {
-        if (err && !err.message.includes('duplicate column')) {
-          console.error('Error adding permit_level column:', err);
+  // 1. Employees Table - Check if migration needed (old schema had employee_id, new schema has id)
+  db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'", (err, row) => {
+    if (row) {
+      // Table exists - check if it has 'id' column
+      db.all("PRAGMA table_info(employees)", (err, columns) => {
+        const colNames = columns.map(c => c.name);
+        
+        if (colNames.includes('employee_id') && !colNames.includes('id')) {
+          // Old schema detected - need to migrate
+          console.log('⚠️ Old employees schema detected. Migrating...');
+          
+          // Drop and recreate with new schema
+          db.run(`DROP TABLE IF EXISTS employees_backup`, () => {
+            db.run(`ALTER TABLE employees RENAME TO employees_backup`, () => {
+              db.run(`
+                CREATE TABLE employees (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  role TEXT NOT NULL,
+                  department TEXT NOT NULL DEFAULT 'Hall',
+                  email TEXT,
+                  phone TEXT,
+                  hire_date TEXT,
+                  pin TEXT,
+                  permit_level INTEGER DEFAULT 2,
+                  status TEXT DEFAULT 'active',
+                  created_at TEXT DEFAULT (datetime('now')),
+                  updated_at TEXT DEFAULT (datetime('now'))
+                )
+              `, (err) => {
+                if (err) {
+                  console.error('Error recreating employees table:', err);
+                } else {
+                  // Migrate data from backup
+                  db.run(`
+                    INSERT INTO employees (id, name, role, department, pin, status)
+                    SELECT 
+                      CAST(employee_id AS TEXT), 
+                      name, 
+                      role, 
+                      COALESCE(channel_id, 'Hall'),
+                      pin_hash,
+                      'active'
+                    FROM employees_backup
+                  `, (err) => {
+                    if (err) {
+                      console.log('Migration note:', err.message);
+                    }
+                    db.run(`DROP TABLE IF EXISTS employees_backup`);
+                    console.log('✓ Employees table migrated to new schema');
+                  });
+                }
+              });
+            });
+          });
+        } else if (!colNames.includes('id')) {
+          // Neither id nor employee_id - something wrong, recreate
+          console.log('⚠️ Invalid employees schema. Recreating...');
+          db.run(`DROP TABLE employees`, () => {
+            createEmployeesTable();
+          });
+        } else {
+          // Has 'id' column - add missing columns if needed
+          console.log('✓ Employees table exists with correct schema');
+          addMissingColumns(colNames);
         }
       });
+    } else {
+      // Table doesn't exist - create new
+      createEmployeesTable();
     }
   });
+  
+  function createEmployeesTable() {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS employees (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        department TEXT NOT NULL DEFAULT 'Hall',
+        email TEXT,
+        phone TEXT,
+        hire_date TEXT,
+        pin TEXT,
+        permit_level INTEGER DEFAULT 2,
+        status TEXT DEFAULT 'active',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `, (err) => {
+      if (err) {
+        console.error('Error creating employees table:', err);
+      } else {
+        console.log('✓ Employees table created');
+      }
+    });
+  }
+  
+  function addMissingColumns(existingCols) {
+    const columnsToAdd = [
+      { name: 'department', def: "TEXT NOT NULL DEFAULT 'Hall'" },
+      { name: 'email', def: 'TEXT' },
+      { name: 'phone', def: 'TEXT' },
+      { name: 'hire_date', def: 'TEXT' },
+      { name: 'pin', def: 'TEXT' },
+      { name: 'permit_level', def: 'INTEGER DEFAULT 2' },
+      { name: 'status', def: "TEXT DEFAULT 'active'" },
+      { name: 'created_at', def: "TEXT DEFAULT (datetime('now'))" },
+      { name: 'updated_at', def: "TEXT DEFAULT (datetime('now'))" }
+    ];
+    
+    columnsToAdd.forEach(col => {
+      if (!existingCols.includes(col.name)) {
+        db.run(`ALTER TABLE employees ADD COLUMN ${col.name} ${col.def}`, (err) => {
+          if (err && !err.message.includes('duplicate column')) {
+            console.log(`Note: Could not add ${col.name}:`, err.message);
+          } else if (!err) {
+            console.log(`✓ Added column: ${col.name}`);
+          }
+        });
+      }
+    });
+  }
 
   // 2. Work Schedules Table
   db.run(`

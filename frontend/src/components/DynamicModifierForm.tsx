@@ -120,26 +120,14 @@ const DynamicModifierForm = forwardRef<DynamicModifierFormRef, DynamicModifierFo
   };
 
   const handleSave = () => {
-    // Validate: ensure all rows have names (rate can be empty, defaults to 0)
-    const validRows = rows.filter(row => {
-      const name = row.name.trim();
-      // Only require name - empty rate will be treated as 0
-      return name.length > 0;
-    });
-
-    if (validRows.length === 0) {
-      alert('Please add at least one valid option with a name.');
-      return;
-    }
-
-    // Convert to final format - ensure empty/invalid rates become 0
-    const finalData = validRows.map(row => {
+    // Convert to final format - allow blank names; ensure empty/invalid rates become 0
+    const finalData = (rows || []).map(row => {
       const rateStr = String(row.rate ?? '');
       const rate2Str = String(row.rate2 ?? '');
       const rateValue = rateStr === '' ? 0 : parseFloat(rateStr);
       const rate2Value = rate2Str === '' ? 0 : parseFloat(rate2Str);
       return {
-        name: row.name.trim(),
+        name: String(row.name || '').trim(),
         rate: isNaN(rateValue) ? 0 : rateValue,
         rate2: isNaN(rate2Value) ? 0 : rate2Value
       };

@@ -2,6 +2,8 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+import java.util.Properties
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -90,13 +92,32 @@ android {
             keyPassword 'android'
         }
         release {
-            // You need to create a release keystore
-            // keytool -genkey -v -keystore release.keystore -alias table-order -keyalg RSA -keysize 2048 -validity 10000
-            if (project.hasProperty('MYAPP_RELEASE_STORE_FILE')) {
-                storeFile file(MYAPP_RELEASE_STORE_FILE)
-                storePassword MYAPP_RELEASE_STORE_PASSWORD
-                keyAlias MYAPP_RELEASE_KEY_ALIAS
-                keyPassword MYAPP_RELEASE_KEY_PASSWORD
+            // Sideload (non-Play-Store) distribution still requires consistent signing.
+            // We support two ways to provide signing values:
+            // 1) project properties (e.g. ~/.gradle/gradle.properties or -P... flags)
+            // 2) android/keystore.properties (NOT committed)
+            def props = new Properties()
+            def propsFile = rootProject.file("keystore.properties")
+            if (propsFile.exists()) {
+                propsFile.withInputStream { props.load(it) }
+            }
+
+            def pick = { String k ->
+                if (project.hasProperty(k)) return String.valueOf(project.property(k))
+                if (props.containsKey(k)) return String.valueOf(props.getProperty(k))
+                return null
+            }
+
+            def storeFileVal = pick('MYAPP_RELEASE_STORE_FILE')
+            def storePassVal = pick('MYAPP_RELEASE_STORE_PASSWORD')
+            def keyAliasVal = pick('MYAPP_RELEASE_KEY_ALIAS')
+            def keyPassVal = pick('MYAPP_RELEASE_KEY_PASSWORD')
+
+            if (storeFileVal && storePassVal && keyAliasVal && keyPassVal) {
+                storeFile rootProject.file(storeFileVal)
+                storePassword storePassVal
+                keyAlias keyAliasVal
+                keyPassword keyPassVal
             }
         }
     }
@@ -107,7 +128,21 @@ android {
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            def hasReleaseSigning =
+                signingConfigs.release?.storeFile != null &&
+                signingConfigs.release?.storePassword != null &&
+                signingConfigs.release?.keyAlias != null &&
+                signingConfigs.release?.keyPassword != null
+
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+                println("[Sideload APK] Using RELEASE keystore signing.")
+            } else {
+                // Fallback keeps local builds working, but APK upgrades won't work across machines.
+                signingConfig signingConfigs.debug
+                println("[Sideload APK] WARNING: Release keystore not configured. Falling back to DEBUG signing.")
+                println("[Sideload APK] Create android/keystore.properties and a keystore to enable consistent sideload updates.")
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

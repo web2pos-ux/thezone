@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { ShoppingCart, Plus, Minus, X, Send, Utensils, Clock, Trash2, Bell, Receipt, Droplets, HelpCircle, CreditCard, UtensilsCrossed, Sparkles, Package } from 'lucide-react';
+import NeumorphicButton from '../components/NeumorphicButton';
+import SquareNeumorphicButton from '../components/SquareNeumorphicButton';
 
 // 날아가는 아이템 인터페이스
 interface FlyingItem {
@@ -941,18 +943,18 @@ const TableOrderPage: React.FC = () => {
                 </div>
               </div>
               
-              <button
+              <NeumorphicButton
                 onClick={addToCartWithModifiers}
                 disabled={!isModifierSelectionValid()}
-                className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all ${
-                  isModifierSelectionValid()
-                    ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-600 hover:to-emerald-700 shadow-lg'
-                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                }`}
+                size="lg"
+                className={`${isModifierSelectionValid() ? '' : 'opacity-60 cursor-not-allowed'}`}
+                title={isModifierSelectionValid() ? `Add to Cart - $${getItemTotal().toFixed(2)}` : '옵션을 선택하세요'}
               >
-                <ShoppingCart className="w-5 h-5" />
-                Add to Cart - ${getItemTotal().toFixed(2)}
-              </button>
+                <span className="flex items-center gap-3">
+                  <ShoppingCart className="w-5 h-5 text-gradient" />
+                  <span className="font-bold">Add to Cart - ${getItemTotal().toFixed(2)}</span>
+                </span>
+              </NeumorphicButton>
             </div>
           </div>
         </div>
@@ -1165,27 +1167,25 @@ const TableOrderPage: React.FC = () => {
               <span className="text-amber-600">${(cartTotal * 1.05).toFixed(2)}</span>
             </div>
             
-            <button
+            <NeumorphicButton
               onClick={submitOrder}
               disabled={isSubmitting || cart.length === 0}
-              className={`w-full py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-3 transition-all duration-200 ${
-                cart.length > 0 && !isSubmitting
-                  ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-600 hover:to-emerald-700 shadow-lg hover:shadow-xl transform hover:scale-[1.02]'
-                  : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-              }`}
+              size="lg"
+              className={`${isSubmitting || cart.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+              title={cart.length > 0 ? 'Submit Order' : 'Cart is empty'}
             >
               {isSubmitting ? (
-                <>
-                  <div className="w-6 h-6 border-3 border-white border-t-transparent rounded-full animate-spin" />
-                  Submitting...
-                </>
+                <span className="flex items-center gap-3">
+                  <div className="w-6 h-6 border-3 border-black/10 border-t-transparent rounded-full animate-spin" />
+                  <span>Submitting...</span>
+                </span>
               ) : (
-                <>
-                  <Send className="w-6 h-6" />
-                  Submit Order
-                </>
+                <span className="flex items-center gap-3">
+                  <Send className="w-5 h-5" />
+                  <span>Submit Order</span>
+                </span>
               )}
-            </button>
+            </NeumorphicButton>
           </div>
         </aside>
       </div>
@@ -1342,8 +1342,30 @@ const TableOrderPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Fixed bottom 4-icon neumorphic action bar (centered) */}
+      <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-50">
+        <div className="grid grid-cols-4 gap-4">
+          <SquareNeumorphicButton title="Power" ariaLabel="power" gradient="from-pink-400 to-pink-600" onClick={() => console.log('Power')}>
+            ⏻
+          </SquareNeumorphicButton>
+
+          <SquareNeumorphicButton title="Download" ariaLabel="download" gradient="from-indigo-400 to-indigo-600" onClick={() => console.log('Download')}>
+            ↓
+          </SquareNeumorphicButton>
+
+          <SquareNeumorphicButton title="Play" ariaLabel="play" gradient="from-cyan-400 to-blue-500" onClick={() => console.log('Play')}>
+            ▶
+          </SquareNeumorphicButton>
+
+          <SquareNeumorphicButton title="Settings" ariaLabel="settings" gradient="from-orange-400 to-rose-400" onClick={() => console.log('Settings')}>
+            ⚙
+          </SquareNeumorphicButton>
+        </div>
+      </div>
     </div>
   );
 };
 
 export default TableOrderPage;
+

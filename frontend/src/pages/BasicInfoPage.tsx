@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { API_URL } from '../config/constants';
+import DangerousActionModal from '../components/DangerousActionModal';
 
 type TabType = 'business-info' | 'sync';
 
@@ -46,6 +47,17 @@ const BasicInfoPage: React.FC = () => {
   // Sync Tab States
   const [firebaseUrl, setFirebaseUrl] = useState(() => localStorage.getItem('firebase_admin_url') || 'https://thezoneorder.com');
   const [restaurantId, setRestaurantId] = useState(() => localStorage.getItem('firebase_restaurant_id') || '');
+  
+  // Dangerous action lock states
+  const [dangerousAction, setDangerousAction] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    warningItems: string[];
+    confirmPhrase: string;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: '', description: '', warningItems: [], confirmPhrase: '', onConfirm: () => {} });
+
   const [syncStatus, setSyncStatus] = useState<{
     menu: { status: 'idle' | 'syncing' | 'success' | 'error'; message?: string };
     orderScreen: { status: 'idle' | 'syncing' | 'success' | 'error'; message?: string };
@@ -945,13 +957,35 @@ const BasicInfoPage: React.FC = () => {
                 {syncStatus.menu.status === 'success' && <div className="mb-4 p-3 bg-green-100 border border-green-300 rounded text-green-700 text-sm">✅ {syncStatus.menu.message}</div>}
                 {syncStatus.menu.status === 'error' && <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded text-red-700 text-sm">❌ {syncStatus.menu.message}</div>}
                 <div className="flex gap-3">
-                  <button onClick={uploadMenuToFirebase} disabled={syncStatus.menu.status === 'syncing' || !restaurantId}
+                  <button onClick={() => setDangerousAction({
+                    isOpen: true,
+                    title: 'Upload Menu to TZO Cloud',
+                    description: 'This will overwrite ALL menu data currently stored on TZO Cloud with your local POS menu.',
+                    warningItems: [
+                      'All existing cloud menu data will be replaced',
+                      'Other devices syncing from cloud will receive this menu',
+                      'A backup will be created before upload'
+                    ],
+                    confirmPhrase: 'UPLOAD',
+                    onConfirm: uploadMenuToFirebase
+                  })} disabled={syncStatus.menu.status === 'syncing' || !restaurantId}
                     className={`flex-1 px-4 py-3 rounded-lg font-semibold transition ${syncStatus.menu.status === 'syncing' || !restaurantId ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-green-500 text-white hover:bg-green-600'}`}>
-                    {syncStatus.menu.status === 'syncing' ? '⏳ Syncing...' : '⬆️ Upload to TZO'}
+                    {syncStatus.menu.status === 'syncing' ? '⏳ Syncing...' : '🔒 Upload to TZO'}
                   </button>
-                  <button onClick={downloadMenuFromFirebase} disabled={syncStatus.menu.status === 'syncing' || !restaurantId}
+                  <button onClick={() => setDangerousAction({
+                    isOpen: true,
+                    title: 'Download Menu from TZO Cloud',
+                    description: 'This will overwrite your local POS menu with data from TZO Cloud.',
+                    warningItems: [
+                      'Your current POS menu will be replaced',
+                      'Menu item links (modifiers, tax, printer) may change',
+                      'A local backup will be created before download'
+                    ],
+                    confirmPhrase: 'DOWNLOAD',
+                    onConfirm: downloadMenuFromFirebase
+                  })} disabled={syncStatus.menu.status === 'syncing' || !restaurantId}
                     className={`flex-1 px-4 py-3 rounded-lg font-semibold transition ${syncStatus.menu.status === 'syncing' || !restaurantId ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}>
-                    {syncStatus.menu.status === 'syncing' ? '⏳ Syncing...' : '⬇️ Download from TZO'}
+                    {syncStatus.menu.status === 'syncing' ? '⏳ Syncing...' : '🔒 Download from TZO'}
                   </button>
                 </div>
               </div>
@@ -1063,6 +1097,20 @@ const BasicInfoPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Dangerous Action Lock Modal */}
+      <DangerousActionModal
+        isOpen={dangerousAction.isOpen}
+        onClose={() => setDangerousAction(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={() => {
+          setDangerousAction(prev => ({ ...prev, isOpen: false }));
+          dangerousAction.onConfirm();
+        }}
+        title={dangerousAction.title}
+        description={dangerousAction.description}
+        warningItems={dangerousAction.warningItems}
+        confirmPhrase={dangerousAction.confirmPhrase}
+      />
     </div>
   );
 };

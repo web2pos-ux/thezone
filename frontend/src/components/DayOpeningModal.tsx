@@ -108,15 +108,24 @@ const DayOpeningModal: React.FC<DayOpeningModalProps> = ({ isOpen, onClose, onOp
       const result = await response.json();
       
       if (result.success) {
-        // Print Opening Report
-        await fetch(`${API_URL}/daily-closings/print-opening`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            openingCash: openingCashTotal,
-            cashBreakdown: cashCounts
-          })
-        });
+        // Print Opening Report (auto print when opening completes)
+        try {
+          const printRes = await fetch(`${API_URL}/daily-closings/print-opening`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              openingCash: openingCashTotal,
+              cashBreakdown: cashCounts
+            })
+          });
+          const printJson = await printRes.json().catch(() => ({} as any));
+          if (!printRes.ok || printJson?.success === false) {
+            throw new Error(printJson?.error || 'Opening print failed');
+          }
+        } catch (printErr: any) {
+          console.error('Opening print error:', printErr);
+          alert(printErr?.message || 'Opening completed, but printing failed. Please check printer settings.');
+        }
         
         onOpeningComplete(result.data);
       } else {

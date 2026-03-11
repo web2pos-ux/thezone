@@ -54,6 +54,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Skip unsupported schemes (e.g., chrome-extension://) and non-http(s) requests
+  try {
+    const url = new URL(event.request.url);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return;
+    }
+  } catch (_) {
+    return;
+  }
+
   // Skip API requests - always go to network
   if (event.request.url.includes('/api/')) {
     return;

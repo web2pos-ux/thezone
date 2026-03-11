@@ -46,7 +46,7 @@ const ShiftSwapsPage = () => {
 
   const loadShiftSwapRequests = async () => {
     try {
-      const response = await fetch('${API_URL}/work-schedule/shift-swaps');
+      const response = await fetch(`${API_URL}/work-schedule/shift-swaps`);
       if (!response.ok) throw new Error('Failed to load shift swap requests');
       const data = await response.json();
       

@@ -4,6 +4,49 @@ const router = express.Router();
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
 
+// Firebase 동기화 서비스
+let firebaseService = null;
+let remoteSyncService = null;
+try {
+  firebaseService = require('../services/firebaseService');
+  remoteSyncService = require('../services/remoteSyncService');
+} catch (e) {
+  console.warn('[ReservationSettings] Firebase service not available:', e.message);
+}
+
+function getRestaurantId() {
+  if (!remoteSyncService) return null;
+  if (typeof remoteSyncService.getRestaurantId === 'function') return remoteSyncService.getRestaurantId();
+  return null;
+}
+
+// Firebase에 예약 설정 동기화
+async function syncPolicyToFirebase(policyData) {
+  try {
+    const restaurantId = getRestaurantId();
+    if (!restaurantId || !firebaseService) return;
+    const firestore = firebaseService.getFirestore ? firebaseService.getFirestore() : null;
+    if (!firestore) return;
+
+    await firestore.collection('restaurants').doc(restaurantId)
+      .collection('reservationSettings').doc('policy').set({
+        maxTablesPerSlot: Math.max(policyData.peak_max_per_slot || 8, policyData.normal_max_per_slot || 8),
+        dwellMinutes: policyData.dwell_minutes || 120,
+        depositPerPerson: 10,
+        peakStart: policyData.peak_start || '17:00',
+        peakEnd: policyData.peak_end || '21:00',
+        peakMaxPerSlot: policyData.peak_max_per_slot || 8,
+        normalMaxPerSlot: policyData.normal_max_per_slot || 8,
+        onlineQuotaPct: policyData.online_quota_pct || 100,
+        enabled: true,
+        updated_at: new Date().toISOString(),
+      }, { merge: true });
+    console.log('[Firebase] Reservation policy synced successfully');
+  } catch (err) {
+    console.warn('[Firebase] Reservation policy sync failed (non-critical):', err.message);
+  }
+}
+
 // Ensure reservation_policy table exists
 db.serialize(() => {
   db.run(`
@@ -330,6 +373,13 @@ router.put('/policy', async (req, res) => {
         no_show_grace_minutes = excluded.no_show_grace_minutes,
         updated_at = CURRENT_TIMESTAMP
     `, [peak_start, peak_end, peak_max_per_slot, normal_max_per_slot, dwell_minutes, no_show_grace_minutes]);
+
+    // Firebase에 예약 설정 동기화
+    await syncPolicyToFirebase({
+      peak_start, peak_end, peak_max_per_slot, normal_max_per_slot,
+      dwell_minutes, no_show_grace_minutes,
+    });
+
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -349,6 +399,33 @@ router.post('/business-hours/bulk', async (req, res) => {
         (day_of_week, open_time, close_time, is_open, updated_at) 
         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
       `, [hour.day_of_week, hour.open_time, hour.close_time, hour.is_open]);
+    }
+
+    // Firebase에 영업시간 동기화 (TZO 온라인 예약에서 사용)
+    try {
+      const restaurantId = getRestaurantId();
+      if (restaurantId && firebaseService) {
+        const firestore = firebaseService.getFirestore ? firebaseService.getFirestore() : null;
+        if (firestore) {
+          const dayKeys = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+          const bhObj = {};
+          for (const hour of businessHours) {
+            const key = dayKeys[hour.day_of_week] || `day_${hour.day_of_week}`;
+            bhObj[key] = {
+              isOpen: hour.is_open === 1 || hour.is_open === true,
+              openTime: hour.open_time || '11:00',
+              closeTime: hour.close_time || '21:00',
+            };
+          }
+          await firestore.collection('restaurants').doc(restaurantId).set({
+            businessHours: bhObj,
+            updated_at: new Date().toISOString(),
+          }, { merge: true });
+          console.log('[Firebase] Business hours synced for online reservation');
+        }
+      }
+    } catch (fbErr) {
+      console.warn('[Firebase] Business hours sync failed (non-critical):', fbErr.message);
     }
     
     res.json({ message: 'Business hours updated successfully' });

@@ -45,7 +45,8 @@ const OrderSetupPage = () => {
         const response = await fetch(`${API_URL}/menus`);
         if (!response.ok) throw new Error('Failed to fetch menus');
         const data = await response.json();
-        setMenus(data);
+        const list = Array.isArray((data as any)?.value) ? (data as any).value : data;
+        setMenus(Array.isArray(list) ? list : []);
       } catch (error) {
         console.error('Failed to fetch menus:', error);
       } finally {
@@ -174,6 +175,10 @@ const OrderSetupPage = () => {
         }
       });
     }
+  };
+
+  const handleOpenOrderScreenManager = () => {
+    navigate('/backoffice/orders');
   };
 
   const canContinue = selectedOrderType && selectedMenu;
@@ -402,6 +407,14 @@ const OrderSetupPage = () => {
                       }`}
                     >
                       {canContinue ? 'Go to Order Screen' : 'Please select order channel and menu'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleOpenOrderScreenManager}
+                      className="w-full mt-3 px-4 py-3 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 transition-colors"
+                    >
+                      Open Order Screen Manager (Reorder via Drag & Drop)
                     </button>
                   </div>
                 </div>

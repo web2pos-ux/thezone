@@ -135,14 +135,14 @@ async function initSystemPins() {
   try {
     await dbRun(`CREATE TABLE IF NOT EXISTS system_pins (
       id INTEGER PRIMARY KEY CHECK(id=1),
-      backoffice_pin TEXT DEFAULT '0888',
+      backoffice_pin TEXT DEFAULT '0000',
       sales_pin TEXT DEFAULT '0000',
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
-    // Ensure singleton row exists with default backoffice_pin = 0888
+    // Ensure singleton row exists with default pins = 0000
     const row = await dbGet('SELECT id FROM system_pins WHERE id = 1');
     if (!row) {
-      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0888', '0000')");
+      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0000', '0000')");
     }
   } catch (e) {
     try { console.warn('initSystemPins warning:', e && e.message ? e.message : e); } catch {}
@@ -162,7 +162,7 @@ router.post('/verify-backoffice-pin', async (req, res) => {
     }
     
     const row = await dbGet('SELECT backoffice_pin FROM system_pins WHERE id = 1');
-    const correctPin = row?.backoffice_pin || '0888';
+    const correctPin = row?.backoffice_pin || '0000';
     
     if (String(pin) === String(correctPin)) {
       res.json({ success: true, message: 'BackOffice PIN verified' });
@@ -199,7 +199,7 @@ router.post('/verify-sales-pin', async (req, res) => {
 router.get('/system-pins', requireManager, async (req, res) => {
   try {
     const row = await dbGet('SELECT backoffice_pin, sales_pin, updated_at FROM system_pins WHERE id = 1');
-    res.json(row || { backoffice_pin: '0888', sales_pin: '0000' });
+    res.json(row || { backoffice_pin: '0000', sales_pin: '0000' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1293,19 +1293,34 @@ router.get('/reports/table-utilization', async (req, res) => {
   }
 });
 
-// Sales summary report including adjustments
+// Sales summary report including adjustments - payments 기반
 router.get('/reports/sales-summary', async (req, res) => {
   try {
     const q = req.query || {};
     const start = q.start_date ? String(q.start_date) : null;
     const end = q.end_date ? String(q.end_date) : null;
     const channel = q.channel ? String(q.channel).toUpperCase() : null;
-    const params = [];
-    let where = ' WHERE 1=1';
-    if (start && end) { where += ' AND date(created_at) BETWEEN ? AND ?'; params.push(start, end); }
-    if (channel) { where += ' AND UPPER(order_type) = ?'; params.push(channel); }
-    const rows = await dbAll(`SELECT id, total, order_type, status, created_at FROM orders ${where}`, params);
+    const paidStatuses = "UPPER(status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
+
+    const orderParams = [];
+    let orderWhere = ` WHERE ${paidStatuses}`;
+    if (start && end) { orderWhere += ' AND date(created_at) BETWEEN ? AND ?'; orderParams.push(start, end); }
+    if (channel) { orderWhere += ' AND UPPER(order_type) = ?'; orderParams.push(channel); }
+    const rows = await dbAll(`SELECT id, total, order_type, status, created_at FROM orders ${orderWhere}`, orderParams);
     const ids = rows.map(r => r.id);
+
+    // payments 기반 총매출
+    let paymentTotal = 0;
+    if (ids.length > 0) {
+      const ph = ids.map(()=>'?').join(',');
+      const ptRow = await dbGet(
+        `SELECT COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as paid_total
+         FROM payments WHERE order_id IN (${ph})
+           AND UPPER(status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+           AND UPPER(COALESCE(payment_method, '')) != 'NO_SHOW_FORFEITED'`, ids);
+      paymentTotal = Number(ptRow?.paid_total || 0);
+    }
+
     let adjustments = [];
     if (ids.length > 0) {
       const placeholders = ids.map(()=>'?').join(',');
@@ -1313,7 +1328,7 @@ router.get('/reports/sales-summary', async (req, res) => {
     }
     const sum = {
       orders: rows.length,
-      total: rows.reduce((s,r)=>s+Number(r.total||0),0),
+      total: paymentTotal,
       discounts: adjustments.filter(a=>String(a.kind).toUpperCase()==='DISCOUNT').reduce((s,a)=>s+Number(a.amount||0),0),
       bag_fees: adjustments.filter(a=>String(a.kind).toUpperCase()==='BAG_FEE').reduce((s,a)=>s+Number(a.amount||0),0),
     };

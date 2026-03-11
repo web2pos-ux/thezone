@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { DndContext, DragEndEvent, DragOverlay, DragStartEvent } from '@dnd-kit/core';
+import { DndContext, DragEndEvent, DragOverlay, DragStartEvent, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { ArrowLeft, Save, RefreshCw } from 'lucide-react';
 import OptionsLibraryComponent from '../components/OptionsLibrary';
 import OptionsDropZone from '../components/OptionsDropZone';
@@ -73,6 +73,8 @@ const MenuItemOptionsPage: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -200,7 +202,7 @@ const MenuItemOptionsPage: React.FC = () => {
   }
 
   return (
-    <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <div className="min-h-screen bg-gray-50 p-6">
         <div className="max-w-6xl mx-auto">
           {/* Header */}

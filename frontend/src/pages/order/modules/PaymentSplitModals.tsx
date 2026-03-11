@@ -92,6 +92,7 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
         const wholePerGuest = Math.floor(Q / n);
         const remainderUnits = Q % n;
         const splitPiecePrice = Number((unitPrice / n).toFixed(2));
+        const splitOrder = Date.now();
 
         if (wholePerGuest > 0) {
           guestList.forEach(g => {
@@ -103,7 +104,8 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
               totalPrice: unitPrice,
               price: unitPrice,
               type: src.type,
-            };
+              splitOrder,
+            } as any;
             insertAfterGuest(g, wholeClone);
           });
         }
@@ -119,7 +121,9 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
                 totalPrice: splitPiecePrice,
                 price: splitPiecePrice,
                 type: src.type,
-              };
+                splitDenominator: n,
+                splitOrder,
+              } as any;
               insertAfterGuest(g, fracClone);
             }
           });
@@ -132,16 +136,24 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
   );
 
   const handleShareSelected = useCallback(
-    (rowIndex: number, targets: number[]) => {
+    (rowIndices: number[], targets: number[]) => {
       if (!setOrderItems) return;
       if (!Array.isArray(targets) || targets.length === 0) return;
+      if (!Array.isArray(rowIndices) || rowIndices.length === 0) return;
       setOrderItems(prev => {
-        if (rowIndex < 0 || rowIndex >= prev.length) return prev;
-        const src = prev[rowIndex];
-        if (!src || src.type === 'separator') return prev;
-        const n = targets.length;
-        const Q = Math.max(1, src.quantity || 1);
-        let list = prev.filter((_, idx) => idx !== rowIndex);
+        // Validate and collect source items
+        const validIndices = rowIndices.filter(idx => idx >= 0 && idx < prev.length);
+        const sources = validIndices
+          .map(idx => ({ index: idx, item: prev[idx] }))
+          .filter(({ item }) => item && item.type !== 'separator');
+        if (sources.length === 0) return prev;
+
+        // Auto-include source items' guests in targets (share ≠ move)
+        const sourceGuests = sources.map(({ item }) => (typeof item.guestNumber === 'number') ? item.guestNumber : 1);
+        const allTargets = Array.from(new Set([...sourceGuests, ...targets]));
+        const n = allTargets.length;
+        const indicesToRemove = new Set(validIndices);
+        let list = prev.filter((_, idx) => !indicesToRemove.has(idx));
 
         const ensureSep = (g: number) => {
           if (list.findIndex(it => it.type === 'separator' && it.guestNumber === g) === -1) {
@@ -156,7 +168,7 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
             } as OrderItem);
           }
         };
-        targets.forEach(ensureSep);
+        allTargets.forEach(ensureSep);
 
         const insertAfterGuest = (g: number, item: OrderItem) => {
           let sepIdx = list.findIndex(it => it.type === 'separator' && it.guestNumber === g);
@@ -169,41 +181,48 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
           list = [...list.slice(0, insertPos), item, ...list.slice(insertPos)];
         };
 
-        const wholePerGuest = Math.floor(Q / n);
-        const remainderUnits = Q % n;
-        const unitPrice = src.totalPrice;
-        const splitPiecePrice = Number((unitPrice / n).toFixed(2));
+        for (const { item: src } of sources) {
+          const Q = Math.max(1, src.quantity || 1);
+          const unitPrice = src.totalPrice;
+          const wholePerGuest = Math.floor(Q / n);
+          const remainderUnits = Q % n;
+          const splitPiecePrice = Number((unitPrice / n).toFixed(2));
+          const splitOrder = Date.now();
 
-        targets.forEach(g => {
-          if (wholePerGuest > 0) {
-            const mergedWhole: OrderItem = {
-              ...(src as OrderItem),
-              id: `${src.id}-share-${g}-${Date.now()}`,
-              guestNumber: g,
-              quantity: wholePerGuest,
-              totalPrice: unitPrice,
-              price: unitPrice,
-              type: src.type,
-            };
-            insertAfterGuest(g, mergedWhole);
-          }
-        });
-
-        if (remainderUnits > 0) {
-          targets.forEach(g => {
-            for (let r = 0; r < remainderUnits; r++) {
-              const frac: OrderItem = {
+          allTargets.forEach(g => {
+            if (wholePerGuest > 0) {
+              const mergedWhole: OrderItem = {
                 ...(src as OrderItem),
-                id: `${src.id}-share-${g}-${Date.now()}-${r}`,
+                id: `${src.id}-share-${g}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 guestNumber: g,
-                quantity: 1,
-                totalPrice: splitPiecePrice,
-                price: splitPiecePrice,
+                quantity: wholePerGuest,
+                totalPrice: unitPrice,
+                price: unitPrice,
                 type: src.type,
-              };
-              insertAfterGuest(g, frac);
+                splitOrder,
+              } as any;
+              insertAfterGuest(g, mergedWhole);
             }
           });
+
+          if (remainderUnits > 0) {
+            allTargets.forEach(g => {
+              for (let r = 0; r < remainderUnits; r++) {
+                const frac: OrderItem = {
+                  ...(src as OrderItem),
+                  id: `${src.id}-share-${g}-${Date.now()}-${r}-${Math.random().toString(36).slice(2, 6)}`,
+                  guestNumber: g,
+                  quantity: 1,
+                  totalPrice: splitPiecePrice,
+                  price: splitPiecePrice,
+                  type: src.type,
+                  splitDenominator: n,
+                  splitOrder,
+                } as any;
+                insertAfterGuest(g, frac);
+              }
+            });
+          }
         }
 
         return list;

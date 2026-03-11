@@ -146,4 +146,38 @@ If edits are required, they must be done in a separate branch and reviewed, or r
   
   **⚠️ 수정 전 반드시 사용자 컨펌 필요!**
 
-**테이블맵 수정 시:** 반드시 사용자에게 "테이블맵의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것. 
+**테이블맵 수정 시:** 반드시 사용자에게 "테이블맵의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것.
+
+- **Order Screen DnD / Layout (완성됨 - 2026-03-03):**
+  - `frontend/src/components/order/MenuItemGrid.tsx` - 메뉴 아이템 그리드 (DnD, 빈슬롯, EMPTY 토큰, 레이아웃 빌드)
+  - `frontend/src/components/order/ModifierPanel.tsx` - 모디파이어 패널 (DnD, 빈슬롯, 레이아웃)
+  - `frontend/src/pages/order/OrderCatalogPanel.tsx` - 카탈로그 패널 (onMenuGridReorder, layoutIds 전달)
+ 
+ **핵심 기능:**
+ - 드래그 앤 드롭으로 아이템/모디파이어 위치 이동 (삽입+밀어내기 방식)
+ - 빈 슬롯(EMPTY 토큰) 생성/유지/렌더링
+ - 레이아웃 ID 빌드 (layoutIds, capacity, baseIds)
+ - 머지(Mergy) 카테고리 그리드 렌더링
+ - 아이템/모디파이어 커스텀 컬러 적용
+ - menuItemOrderByCategory / modifierLayoutByItem 저장/로드
+ - 카테고리별/아이템별 모디파이어 레이아웃 키 분기 (modLayoutKey, modCategoryKey)
+ 
+ **⚠️ 수정 전 반드시 사용자 컨펌 필요!**
+
+**Order Screen DnD/레이아웃 수정 시:** 반드시 사용자에게 "Order Screen DnD/레이아웃의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것.
+
+- **Excel Import/Export (완성됨 - 2026-03-03):**
+  - `backend/routes/menu.js` - Export/Import 라우트 (export-excel, import-excel)
+  - `pos-desktop/backend/routes/menu.js` - POS Desktop Export/Import 라우트
+  - `pos-desktop/routes/menu.js` - POS Desktop 레거시 Export/Import 라우트
+  - `frontend/src/pages/MenuEditPage.tsx` - handleExcelExport(), handleExcelImport(), UI 버튼
+ 
+ **핵심 기능 (수정 금지):**
+ - Excel Export: 4개 시트 (Menu Date, Modifiers, Taxes, Printers) 생성 및 다운로드
+ - Excel Import: 파일 업로드 → 시트 파싱 → DB 트랜잭션 (카테고리/아이템/그룹 생성 → 연결)
+ - Import 실행 순서: 그룹 생성 → name→id 맵 구축 → 카테고리/아이템 연결 (순서 변경 금지)
+ - EXCEL_COLUMNS 상수, getExcelValue() 헬퍼, LEGACY_COLUMNS 매핑
+ 
+ **⚠️ 수정 전 반드시 사용자 컨펌 필요!**
+
+**Excel Import/Export 수정 시:** 반드시 사용자에게 "Excel Import/Export의 [기능명]을 수정해도 될까요?" 라고 물어보고 승인을 받은 후에만 수정할 것.

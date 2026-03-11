@@ -161,18 +161,23 @@ const TableMapPage = () => {
                 console.log('Clock In button clicked!');
                 setShowClockInModal(true);
               }}
-              className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-colors"
+              title="출근"
+              className="px-4 py-2 h-[48px] flex items-center justify-center gap-2 rounded-xl font-bold text-sm bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500"
             >
-              ⏰ Clock In (출근)
+              <span className="text-xl">⏰</span>
+              <span className="font-semibold">출근</span>
             </button>
+
             <button
               onClick={() => {
                 console.log('Clock Out button clicked!');
                 setShowClockOutModal(true);
               }}
-              className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md transition-colors"
+              title="퇴근"
+              className="px-4 py-2 h-[48px] flex items-center justify-center gap-2 rounded-xl font-bold text-sm bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500"
             >
-              🚪 Clock Out (퇴근)
+              <span className="text-xl">🚪</span>
+              <span className="font-semibold">퇴근</span>
             </button>
           </div>
         </div>
@@ -243,6 +248,38 @@ const TableMapPage = () => {
               </p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Fixed bottom 4-icon neumorphic action bar (centered) for TableMap */}
+      <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-50">
+        <div className="grid grid-cols-4 bg-[#e0e5ec] rounded-2xl" style={{ gap: 'clamp(12px, 2vh, 20px)', padding: 'clamp(10px, 1.5vh, 16px)' }}>
+          {[
+            { label: '⏻', title: 'Power', onClick: () => console.log('Power') },
+            { label: '↓', title: 'Download', onClick: () => console.log('Download') },
+            { label: '▶', title: 'Play', onClick: () => console.log('Play') },
+            { label: '⚙', title: 'Settings', onClick: () => console.log('Settings') },
+          ].map((btn) => (
+            <button
+              key={btn.title}
+              title={btn.title}
+              aria-label={btn.title}
+              onClick={btn.onClick}
+              className={[
+                "flex flex-col items-center justify-center rounded-xl",
+                "bg-[#e0e5ec] text-gray-700 font-bold",
+                "transition-all duration-150",
+                "shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff]",
+                "hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff]",
+                "active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff]",
+                "active:text-gray-500",
+              ].join(" ")}
+              style={{ width: 'clamp(72px, 10vh, 112px)', height: 'clamp(72px, 10vh, 112px)', fontSize: 'clamp(20px, 3vh, 32px)' }}
+            >
+              <span>{btn.label}</span>
+              <span className="mt-1 font-semibold text-gray-500" style={{ fontSize: 'clamp(9px, 1.3vh, 13px)' }}>{btn.title}</span>
+            </button>
+          ))}
         </div>
       </div>
 

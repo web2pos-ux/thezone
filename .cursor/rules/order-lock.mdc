@@ -1,0 +1,53 @@
+---
+description: CRITICAL - Order Page code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/pages/OrderPage.tsx,frontend/src/pages/TableOrderPage.tsx,frontend/src/pages/QsrOrderPage.tsx,frontend/src/pages/PosOrderPage.tsx,frontend/src/pages/KioskOrderPage.tsx,frontend/src/pages/QrOrderPage.tsx,frontend/src/pages/OnlineOrderPage.tsx,frontend/src/pages/OrderSetupPage.tsx,frontend/src/pages/OrderPageManagerPage.tsx,frontend/src/components/order/BottomActionBar.tsx,frontend/src/components/order/CategoryBar.tsx,frontend/src/components/order/MenuItemGrid.tsx,frontend/src/components/order/ModifierPanel.tsx,frontend/src/components/order/VirtualKeyboard.tsx,frontend/src/components/OrderDetailModal.tsx,frontend/src/components/OnlineOrderPanel.tsx,frontend/src/pages/order/orderTypes.ts,frontend/src/pages/order/OrderCatalogPanel.tsx,frontend/src/pages/order/OrderLoadingSkeleton.tsx,frontend/src/pages/order/CatalogSnapshotOverlay.tsx,frontend/src/utils/orderSequence.ts,frontend/src/utils/orderBootstrap.ts,frontend/src/hooks/useOrderManagement.ts,backend/routes/orders.js,backend/routes/online-orders.js,backend/routes/table-orders.js,backend/routes/order-page-setups.js,pos-desktop/backend/routes/orders.js,pos-desktop/backend/routes/online-orders.js,pos-desktop/backend/routes/table-orders.js,pos-desktop/backend/routes/order-page-setups.js
+alwaysApply: true
+---
+
+# ORDER PAGE CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Areas
+
+### Frontend Pages
+- `OrderPage.tsx` - 메인 주문 페이지
+- `TableOrderPage.tsx` - 테이블 주문 페이지
+- `QsrOrderPage.tsx` - QSR 주문
+- `PosOrderPage.tsx` - POS 주문
+- `KioskOrderPage.tsx` - 키오스크 주문
+- `QrOrderPage.tsx` - QR 주문
+- `OnlineOrderPage.tsx` - 온라인 주문
+- `OrderSetupPage.tsx` - 주문 설정
+- `OrderPageManagerPage.tsx` - 주문 페이지 관리
+
+### Frontend Components
+- `BottomActionBar.tsx` - 하단 액션바 (결제, 전송 등)
+- `CategoryBar.tsx` - 카테고리 바
+- `MenuItemGrid.tsx` - 메뉴 아이템 그리드
+- `ModifierPanel.tsx` - 수정자 패널
+- `VirtualKeyboard.tsx` - 가상 키보드
+- `OrderDetailModal.tsx` - 주문 상세 모달
+- `OnlineOrderPanel.tsx` - 온라인 주문 패널
+
+### Frontend Modules/Utils/Hooks
+- `orderTypes.ts`, `OrderCatalogPanel.tsx`, `OrderLoadingSkeleton.tsx`, `CatalogSnapshotOverlay.tsx`
+- `orderSequence.ts`, `orderBootstrap.ts`, `useOrderManagement.ts`
+
+### Backend Routes
+- `orders.js` - 주문 CRUD API
+- `online-orders.js` - 온라인 주문 API
+- `table-orders.js` - 테이블 주문 API
+- `order-page-setups.js` - 주문 페이지 설정 API
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: 다른 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
+5. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
+   - **WHY**: 왜 이 변경이 필요한지
+   - **IMPACT**: 주문 생성, 주문 수정, 주문 전송, 메뉴 표시, 금액 계산 등에 미치는 영향
+   - 승인 요청: "이 변경을 진행해도 될까요?"
+6. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
+7. 다른 작업의 "부수 효과로 주문 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.

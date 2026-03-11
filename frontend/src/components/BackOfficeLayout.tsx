@@ -40,7 +40,9 @@ const hardwareSubMenus = [
   { path: '/backoffice/table-devices', label: 'Table Devices', icon: '📱' },
   { path: '/backoffice/qr-code', label: 'QR Code', icon: '📱' },
   { path: '/backoffice/kds', label: 'KDS', icon: '📺' },
+  { path: '/backoffice/sub-pos-settings', label: 'Sub POS Settings', icon: '🖥️' },
   { path: '/backoffice/app-settings', label: 'System Settings', icon: '⚙️' },
+  { path: '/backoffice/settings-transfer', label: 'Settings Transfer', icon: '📦' },
 ];
 
 const reportSubMenus = [
@@ -462,7 +464,7 @@ const BackOfficeLayout = () => {
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
                 <span className="text-2xl">🏪</span>
-                {serviceType === 'QSR' ? 'Go to QSR' : 'Go to Sales'}
+                Go to Sales
               </button>
               
               {/* Go to Windows 버튼 (앱 종료 또는 Intro로 이동) */}

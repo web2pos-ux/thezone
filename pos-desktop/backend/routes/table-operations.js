@@ -354,7 +354,7 @@ module.exports = (db) => {
           if (remainingCount > 0) {
             await renumberOrderGuests(order.id);
           }
-          const sourceStatus = remainingCount > 0 ? 'Occupied' : 'Preparing';
+          const sourceStatus = remainingCount > 0 ? 'Occupied' : 'Available';
           const sourceOrderIdValue = remainingCount > 0 ? order.id : null;
 
           if (!remainingCount) {
@@ -400,10 +400,10 @@ module.exports = (db) => {
       await dbRun('BEGIN TRANSACTION');
 
       try {
-        // Update source table to Preparing
+        // Update source table to Available
         await dbRun(
           'UPDATE table_map_elements SET status = ?, current_order_id = NULL WHERE element_id = ? AND floor = ?',
-          ['Preparing', fromTableId, floor || '1F']
+          ['Available', fromTableId, floor || '1F']
         );
 
         // Update target table to Occupied
@@ -434,7 +434,7 @@ module.exports = (db) => {
         res.json({
           success: true,
           message: `Table ${fromTableId} moved to ${toTableId}`,
-          fromTable: { id: fromTableId, status: 'Preparing' },
+          fromTable: { id: fromTableId, status: 'Available' },
           toTable: { id: toTableId, status: 'Occupied', orderId: order ? order.id : null }
         });
 
@@ -610,7 +610,7 @@ module.exports = (db) => {
           if (remainingCount > 0) {
             await renumberOrderGuests(fromOrder.id);
           }
-          const sourceStatus = remainingCount > 0 ? 'Occupied' : 'Preparing';
+          const sourceStatus = remainingCount > 0 ? 'Occupied' : 'Available';
           const sourceOrderIdValue = remainingCount > 0 ? fromOrder.id : null;
 
           if (!remainingCount) {
@@ -673,10 +673,10 @@ module.exports = (db) => {
         await dbRun('BEGIN TRANSACTION');
         
         try {
-          // Update source table to Preparing
+          // Update source table to Available
           await dbRun(
             'UPDATE table_map_elements SET status = ?, current_order_id = NULL WHERE element_id = ? AND floor = ?',
-            ['Preparing', fromTableId, floor || '1F']
+            ['Available', fromTableId, floor || '1F']
           );
           
           // Record merge history
@@ -706,7 +706,7 @@ module.exports = (db) => {
           return res.json({
             success: true,
             message: `Table ${fromTableId} status merged into ${toTableId} (no orders)`,
-            fromTable: { id: fromTableId, status: 'Preparing' },
+            fromTable: { id: fromTableId, status: 'Available' },
             toTable: { id: toTableId, status: 'Occupied' }
           });
         } catch (error) {
@@ -722,10 +722,10 @@ module.exports = (db) => {
     await dbRun('BEGIN TRANSACTION');
 
     try {
-          // Update source table to Preparing
+          // Update source table to Available
           await dbRun(
             'UPDATE table_map_elements SET status = ?, current_order_id = NULL WHERE element_id = ? AND floor = ?',
-            ['Preparing', fromTableId, floor || '1F']
+            ['Available', fromTableId, floor || '1F']
           );
 
           // Update target table to Occupied
@@ -752,7 +752,7 @@ module.exports = (db) => {
           return res.json({
         success: true,
             message: `Table ${fromTableId} order moved to ${toTableId}`,
-            fromTable: { id: fromTableId, status: 'Preparing' },
+            fromTable: { id: fromTableId, status: 'Available' },
             toTable: { id: toTableId, status: 'Occupied', orderId: fromOrder.id }
           });
     } catch (error) {
@@ -768,10 +768,10 @@ module.exports = (db) => {
         await dbRun('BEGIN TRANSACTION');
         
         try {
-          // Update source table to Preparing
+          // Update source table to Available
           await dbRun(
             'UPDATE table_map_elements SET status = ?, current_order_id = NULL WHERE element_id = ? AND floor = ?',
-            ['Preparing', fromTableId, floor || '1F']
+            ['Available', fromTableId, floor || '1F']
           );
 
           // Record merge history
@@ -801,7 +801,7 @@ module.exports = (db) => {
           return res.json({
                 success: true,
             message: `Table ${fromTableId} merged into ${toTableId} (no source order)`,
-            fromTable: { id: fromTableId, status: 'Preparing' },
+            fromTable: { id: fromTableId, status: 'Available' },
             toTable: { id: toTableId, status: 'Occupied', orderId: toOrder.id }
           });
         } catch (error) {
@@ -882,10 +882,10 @@ module.exports = (db) => {
           );
         }
 
-        // Update source table to Preparing
+        // Update source table to Available
       await dbRun(
         'UPDATE table_map_elements SET status = ?, current_order_id = NULL WHERE element_id = ? AND floor = ?',
-          ['Preparing', fromTableId, floor || '1F']
+          ['Available', fromTableId, floor || '1F']
       );
 
         // Mark source order as merged
@@ -929,7 +929,7 @@ module.exports = (db) => {
         res.json({
             success: true,
           message: `Table ${fromTableId} merged into ${toTableId}`,
-          fromTable: { id: fromTableId, status: 'Preparing' },
+          fromTable: { id: fromTableId, status: 'Available' },
           toTable: { id: toTableId, status: 'Occupied', orderId: toOrder.id },
         mergedOrder: {
             id: toOrder.id,
@@ -1125,7 +1125,7 @@ module.exports = (db) => {
           sourceOrderIdValue = fromOrder.id;
           await renumberOrderGuests(fromOrder.id);
         } else {
-          sourceStatus = 'Preparing';
+          sourceStatus = 'Available';
           sourceOrderIdValue = null;
           
           // Mark source order as merged

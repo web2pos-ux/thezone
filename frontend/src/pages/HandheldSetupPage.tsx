@@ -1,27 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Settings, Wifi, User, Save, RefreshCw, CheckCircle, AlertCircle, Smartphone, Lock } from 'lucide-react';
+import { Wifi, Save, RefreshCw, CheckCircle, AlertCircle, Smartphone } from 'lucide-react';
 
 interface SetupConfig {
   posHost: string;
-  serverName: string;
-  serverPin: string;
   configured: boolean;
 }
 
 const STORAGE_KEY = 'handheld-pos-setup';
+const HANDHELD_MODE_KEY = 'handheld-mode-active';
+
+function activateHandheldMode(posHost: string) {
+  localStorage.setItem(HANDHELD_MODE_KEY, JSON.stringify({
+    active: true,
+    posHost,
+  }));
+}
 
 const HandheldSetupPage: React.FC = () => {
   const navigate = useNavigate();
   const [config, setConfig] = useState<SetupConfig>({
     posHost: '',
-    serverName: '',
-    serverPin: '',
     configured: false
   });
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [businessName, setBusinessName] = useState('');
 
   // Load saved config on mount
@@ -32,11 +35,9 @@ const HandheldSetupPage: React.FC = () => {
         const parsed = JSON.parse(savedConfig);
         setConfig(parsed);
         
-        // If already configured, auto-navigate to handheld main
-        if (parsed.configured && parsed.posHost && parsed.serverName) {
-          setTimeout(() => {
-            navigate('/handheld');
-          }, 500);
+        if (parsed.configured && parsed.posHost) {
+          activateHandheldMode(parsed.posHost);
+          setTimeout(() => navigate('/sales', { replace: true }), 300);
         }
       } catch (e) {
         console.error('Failed to parse saved config:', e);
@@ -83,16 +84,15 @@ const HandheldSetupPage: React.FC = () => {
 
   // Save config and navigate
   const handleSave = () => {
-    if (!config.posHost || !config.serverName) {
-      setErrorMessage('Please fill in POS address and your name');
+    if (!config.posHost) {
+      setErrorMessage('Please fill in POS address');
       return;
     }
 
     const configToSave = { ...config, configured: true };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(configToSave));
-    
-    // Navigate to handheld main page
-    navigate('/handheld');
+    activateHandheldMode(config.posHost);
+    navigate('/sales', { replace: true });
   };
 
   // Reset configuration
@@ -105,8 +105,6 @@ const HandheldSetupPage: React.FC = () => {
         : `http://${currentHost}:3177`;
       setConfig({
         posHost: apiHost,
-        serverName: '',
-        serverPin: '',
         configured: false
       });
       setConnectionStatus('idle');
@@ -125,7 +123,7 @@ const HandheldSetupPage: React.FC = () => {
             </div>
             <div>
               <h1 className="text-2xl font-bold">Handheld POS Setup</h1>
-              <p className="text-blue-100 text-sm">Configure this device for server ordering</p>
+              <p className="text-blue-100 text-sm">Shared device for all servers</p>
             </div>
           </div>
         </div>
@@ -175,55 +173,15 @@ const HandheldSetupPage: React.FC = () => {
             )}
           </div>
 
-          {/* Server Name */}
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-              <User className="w-4 h-4" />
-              Server Name (Required)
-            </label>
-            <input
-              type="text"
-              value={config.serverName}
-              onChange={(e) => setConfig({ ...config, serverName: e.target.value })}
-              placeholder="Enter your name"
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:outline-none transition-colors text-lg"
-            />
-            <p className="text-gray-500 text-xs">
-              Your name will appear on orders you submit
-            </p>
-          </div>
-
-          {/* Advanced Settings */}
-          <div>
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-            >
-              <Settings className="w-4 h-4" />
-              {showAdvanced ? 'Hide' : 'Show'} Advanced Settings
-            </button>
-            
-            {showAdvanced && (
-              <div className="mt-3 p-4 bg-gray-50 rounded-xl space-y-3">
-                <div>
-                  <label className="text-sm text-gray-600 flex items-center gap-1">
-                    <Lock className="w-3 h-3" /> Server PIN (Optional)
-                  </label>
-                  <input
-                    type="password"
-                    value={config.serverPin}
-                    onChange={(e) => setConfig({ ...config, serverPin: e.target.value })}
-                    placeholder="4-digit PIN"
-                    maxLength={4}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg mt-1 font-mono"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    PIN protects this device from unauthorized use
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Info */}
+          {connectionStatus === 'success' && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-700">
+              <p className="font-medium mb-1">Shared Handheld POS</p>
+              <p className="text-xs text-blue-500">
+                서버들이 공유하여 사용합니다. 주문 시 메인 POS와 동일하게 서버를 선택할 수 있습니다.
+              </p>
+            </div>
+          )}
 
           {/* Error Message */}
           {errorMessage && connectionStatus !== 'error' && (
@@ -243,7 +201,7 @@ const HandheldSetupPage: React.FC = () => {
             </button>
             <button
               onClick={handleSave}
-              disabled={!config.posHost || !config.serverName || connectionStatus !== 'success'}
+              disabled={!config.posHost || connectionStatus !== 'success'}
               className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-gray-300 disabled:to-gray-400 rounded-xl text-white font-bold transition-all shadow-lg hover:shadow-xl disabled:shadow-none flex items-center justify-center gap-2"
             >
               <Save className="w-5 h-5" />

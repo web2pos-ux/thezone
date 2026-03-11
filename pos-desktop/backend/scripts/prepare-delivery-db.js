@@ -359,7 +359,7 @@ db.serialize(() => {
   console.log('Inserting bare minimum default data...');
 
   db.run("INSERT INTO business_profile (id, business_name) VALUES (1, 'New Restaurant')");
-  db.run("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0888', '0000')");
+  db.run("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0000', '0000')");
   
   const defaultPrinterSettings = {
     dineInKitchen: {

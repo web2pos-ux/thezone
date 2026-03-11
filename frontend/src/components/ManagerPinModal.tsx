@@ -46,7 +46,7 @@ const ManagerPinModal: React.FC<ManagerPinModalProps> = ({ isOpen, onClose, menu
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('${API_URL}/menu/manager-pins');
+      const response = await fetch(`${API_URL}/menu/manager-pins`);
       if (response.ok) {
         const data = await response.json();
         setConfig(data);
@@ -80,7 +80,7 @@ const ManagerPinModal: React.FC<ManagerPinModalProps> = ({ isOpen, onClose, menu
 
   const loadOpenPriceSettings = async () => {
     try {
-      const response = await fetch('${API_URL}/open-price/settings');
+      const response = await fetch(`${API_URL}/open-price/settings`);
       if (response.ok) {
         const data = await response.json();
         setOpenPriceSettings(data);
@@ -112,7 +112,7 @@ const ManagerPinModal: React.FC<ManagerPinModalProps> = ({ isOpen, onClose, menu
     setMessage('');
     try {
       // Manager PIN 설정 저장
-      const pinResponse = await fetch('${API_URL}/menu/manager-pins', {
+      const pinResponse = await fetch(`${API_URL}/menu/manager-pins`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -125,7 +125,7 @@ const ManagerPinModal: React.FC<ManagerPinModalProps> = ({ isOpen, onClose, menu
       }
 
       // Open Price Settings 저장
-      const settingsResponse = await fetch('${API_URL}/open-price/settings', {
+      const settingsResponse = await fetch(`${API_URL}/open-price/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(openPriceSettings)

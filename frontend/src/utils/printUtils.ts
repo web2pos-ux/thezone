@@ -1,8 +1,46 @@
 /**
  * 공통 프린트 유틸리티 (FSR/QSR 공유)
+ * Sub POS 모드에서는 app_settings의 sub_pos_print_enabled 설정에 따라 출력 여부 결정
  */
 
 import { API_URL } from '../config/constants';
+
+const SUB_POS_MODE_KEY = 'sub-pos-mode-active';
+
+let _subPosPrintAllowed: boolean | null = null;
+let _subPosPrintCheckedAt = 0;
+
+function isSubPosMode(): boolean {
+  try {
+    const raw = localStorage.getItem(SUB_POS_MODE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed.active === true;
+  } catch { return false; }
+}
+
+async function isSubPosPrintEnabled(): Promise<boolean> {
+  if (!isSubPosMode()) return true;
+
+  const now = Date.now();
+  if (_subPosPrintAllowed !== null && now - _subPosPrintCheckedAt < 30000) {
+    return _subPosPrintAllowed;
+  }
+
+  try {
+    const resp = await fetch(`${API_URL}/app-settings/sub_pos_print_enabled`);
+    if (resp.ok) {
+      const data = await resp.json();
+      _subPosPrintAllowed = data.value === 'true' || data.value === '1';
+    } else {
+      _subPosPrintAllowed = false;
+    }
+  } catch {
+    _subPosPrintAllowed = false;
+  }
+  _subPosPrintCheckedAt = now;
+  return _subPosPrintAllowed;
+}
 
 export interface PrintItem {
   name: string;
@@ -108,6 +146,10 @@ export interface KitchenTicketData {
  * Receipt 출력 (FSR/QSR 공통)
  */
 export async function printReceipt(data: ReceiptData, copies: number = 2): Promise<void> {
+  if (!(await isSubPosPrintEnabled())) {
+    console.log('ℹ️ Sub POS print disabled — skipping receipt');
+    return;
+  }
   try {
     const response = await fetch(`${API_URL}/printers/print-receipt`, {
       method: 'POST',
@@ -130,6 +172,10 @@ export async function printReceipt(data: ReceiptData, copies: number = 2): Promi
  * Kitchen Ticket 출력 (FSR/QSR 공통)
  */
 export async function printKitchenTicket(data: KitchenTicketData, copies: number = 1): Promise<void> {
+  if (!(await isSubPosPrintEnabled())) {
+    console.log('ℹ️ Sub POS print disabled — skipping kitchen ticket');
+    return;
+  }
   try {
     const response = await fetch(`${API_URL}/printers/print-order`, {
       method: 'POST',
@@ -152,6 +198,10 @@ export async function printKitchenTicket(data: KitchenTicketData, copies: number
  * Bill 출력 (FSR/QSR 공통)
  */
 export async function printBill(data: ReceiptData, copies: number = 1): Promise<void> {
+  if (!(await isSubPosPrintEnabled())) {
+    console.log('ℹ️ Sub POS print disabled — skipping bill');
+    return;
+  }
   try {
     const response = await fetch(`${API_URL}/printers/print-bill`, {
       method: 'POST',

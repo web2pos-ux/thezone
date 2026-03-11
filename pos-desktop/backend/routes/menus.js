@@ -132,11 +132,36 @@ module.exports = (db) => {
 
       const [categories, items] = await Promise.all([categoriesPromise, itemsPromise]);
 
+      // 아이템별 printer_groups 조회 (menu_printer_links)
+      let printerLinksMap = {};
+      try {
+        const allItemIds = items.map(i => i.item_id);
+        if (allItemIds.length > 0) {
+          const placeholders = allItemIds.map(() => '?').join(',');
+          const printerLinks = await new Promise((resolve, reject) => {
+            db.all(
+              `SELECT item_id, GROUP_CONCAT(printer_group_id) as printer_groups FROM menu_printer_links WHERE item_id IN (${placeholders}) GROUP BY item_id`,
+              allItemIds,
+              (err, rows) => err ? reject(err) : resolve(rows || [])
+            );
+          });
+          printerLinks.forEach(row => {
+            printerLinksMap[row.item_id] = row.printer_groups ? row.printer_groups.split(',').map(Number) : [];
+          });
+        }
+      } catch (plErr) {
+        console.warn('Failed to load printer links for structure:', plErr.message);
+      }
+
       const itemsByCategoryId = items.reduce((acc, item) => {
         if (!acc[item.category_id]) {
           acc[item.category_id] = [];
         }
-        acc[item.category_id].push(item);
+        const printerGroups = printerLinksMap[item.item_id];
+        acc[item.category_id].push({
+          ...item,
+          ...(printerGroups && printerGroups.length > 0 ? { printer_groups: printerGroups } : {})
+        });
         return acc;
       }, {});
 
@@ -593,7 +618,7 @@ module.exports = (db) => {
 
           // Copy options from the original group using modifier_group_links
           const originalOptions = await dbAll(`
-            SELECT m.modifier_id, m.name, m.price_delta, m.sort_order, m.type
+            SELECT m.modifier_id, m.name, m.price_delta, m.sort_order, m.type, m.button_color
             FROM modifiers m 
             JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id 
             WHERE mgl.modifier_group_id = ? AND m.is_deleted = 0

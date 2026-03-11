@@ -344,9 +344,26 @@ npm start
 - DB 파일은 SQLite로 로컬 저장되며, Google Drive 백업 지원 예정
 
 ## 🔒 보호 파일 안내
-- `tools/protect-split-files.js` 스크립트가 Split Order 핵심 파일과 가상 키보드 모듈을 동시에 보호합니다.
-- `frontend/src/components/order/VirtualKeyboard.tsx`를 수정하려면 커밋 전에 **`ALLOW_VKEY_EDITS=1`** 환경 변수를 명시적으로 설정해야 합니다.
+
+모든 보호 영역은 **HARD-LOCK** 상태이며, AI 에이전트(Cursor Rule `alwaysApply: true`) + Git pre-commit hook으로 이중 보호됩니다.
+
+- (권장) 저장소에 포함된 훅을 활성화하면 커밋 시 자동으로 보호 검사가 실행됩니다:
+  - `git config core.hooksPath .githooks`
+
+| 보호 영역 | 환경변수 (일시 해제) |
+|---|---|
+| Split Order | `ALLOW_SPLIT_EDITS=1` |
+| Virtual Keyboard | `ALLOW_VKEY_EDITS=1` |
+| Payment Modal / Split Payment / Payments API | `ALLOW_PAYMENT_MODAL_EDITS=1` |
+| Order Screen DnD / Merge / Color / Move / Empty Slot | `ALLOW_ORDER_DND_EDITS=1` |
+| Order Page / Order Flow / Order Components | `ALLOW_ORDER_PAGE_EDITS=1` |
+| Menu Management / Menu Components / Menu API | `ALLOW_MENU_EDITS=1` |
+| Table Map / Table Operations / Move-Merge | `ALLOW_TABLEMAP_EDITS=1` |
+| Closing Report (Z-Report) | `ALLOW_CLOSING_REPORT_EDITS=1` |
+
 - 보호 해제는 일시적으로만 사용하고, 변경은 별도 브랜치/PR 리뷰를 거치는 것을 권장합니다.
+- 상세 보호 파일 목록: `tools/protect-split-files.js` 참조
+- Cursor Rule 파일: `.cursor/rules/*.mdc` 참조
 
 ## 📁 관련 파일
 - `idGenerator.js`: 모든 ID 생성 로직 정의

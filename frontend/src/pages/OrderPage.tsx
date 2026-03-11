@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 // import { X } from 'lucide-react';
 import '../styles/scrollbar.css';
 import { PointerSensor, useSensor, useSensors, closestCenter, pointerWithin } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
 // import { CSS } from '@dnd-kit/utilities';
 import { LibraryTaxGroup, LibraryPrinterGroup } from '../types';
 import { OrderItem, MenuItem, Category, LayoutSettings } from './order/orderTypes';
@@ -12,6 +11,7 @@ import { useMenuData } from '../hooks/useMenuData';
 import { useOrderManagement } from '../hooks/useOrderManagement';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import ManagerPinModal from '../components/ManagerPinModal';
+import SoldOutModal from '../components/SoldOutModal';
 import { API_URL } from '../config/constants';
 import BottomActionBar from '../components/order/BottomActionBar';
 import ModifierPanel from '../components/order/ModifierPanel';
@@ -24,6 +24,7 @@ import { Keyboard as KeyboardIcon } from 'lucide-react';
 import { CSS } from '@dnd-kit/utilities';
 import { usePromotion } from '../hooks/usePromotion';
 import { computePromotionAdjustment, buildPromotionReceiptLine } from '../utils/promotionCalculator';
+import { calculateOrderPricing, summarizePricingByGuest, applySubtotalAdjustments, computeDiscountAmount } from '../utils/orderPricing';
 import { getFirebasePromotions, FirebasePromotion, checkPromotionApplicable, calculatePromotionDiscount } from '../services/firebasePromotionsApi';
 import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
@@ -31,6 +32,7 @@ import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { PrintBillModal } from '../components/PrintBillModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
+import TipEntryModal from '../components/TipEntryModal';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
 const CATALOG_SNAPSHOT_KEY = 'orderLayout:lastCatalogSnapshot';
@@ -131,7 +133,7 @@ const OrderPage = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   const hideOrderListPanel = !isSalesOrder && windowWidth <= 1280;
-  const { orderType, menuId, menuName, priceType: locationPriceType } = locationState;
+  const { orderType, menuId, menuName, priceType: locationPriceType, soldOutModeFromSales } = locationState;
   const menuIdNumber = typeof menuId === 'number' ? menuId : Number(menuId) || undefined;
   const normalizedOrderType = typeof orderType === 'string' ? orderType : 'pos';
   const normalizedOrderTypeLower = normalizedOrderType.toLowerCase();
@@ -218,10 +220,12 @@ const OrderPage = () => {
   }, []);
   
   const layoutSnapshotSeed = useMemo(() => readLayoutSettingsSnapshotSeed(), []);
-  const { layoutSettings, setLayoutSettings, updateLayoutSetting, loadLayoutSettings, saveLayoutSettings, resetLayoutSettings } = useLayoutSettings(layoutSnapshotSeed.data || undefined);
+  const { layoutSettings, setLayoutSettings, updateLayoutSetting, loadLayoutSettings, saveLayoutSettings, resetLayoutSettings, modifierColors, setModifierColors, modifierColorsLoaded, modifierLayoutByItem: hookModifierLayout, setModifierLayoutByItem: hookSetModifierLayout, modifierLayoutLoaded } = useLayoutSettings(layoutSnapshotSeed.data || undefined);
   const mergedGroups = useMemo(() => layoutSettings.mergedGroups || [], [layoutSettings.mergedGroups]);
   const savedCategoryOrder = useMemo(() => layoutSettings.categoryBarOrder || [], [layoutSettings.categoryBarOrder]);
   const selectServerPromptEnabled = layoutSettings.selectServerOnEntry ?? false;
+  const modifierColorsAutoSaveRef = useRef(modifierColors);
+  modifierColorsAutoSaveRef.current = modifierColors;
   
   // Layout Tab 권한 체크: Admin과 Distributor만 수정 가능 (Select Server 제외)
   // localStorage에서 'pos_user_role' 값을 확인 (admin, distributor, dealer, owner, staff)
@@ -233,6 +237,49 @@ const OrderPage = () => {
     }
   }, []);
   const canEditLayoutTab = posUserRole === 'admin' || posUserRole === 'distributor';
+
+  // Device type (approved device registration)
+  const registeredDeviceType = useMemo(() => {
+    try {
+      return (localStorage.getItem('pos_device_type') || '').toLowerCase();
+    } catch {
+      return '';
+    }
+  }, []);
+  const isHandheldDevice = registeredDeviceType === 'handheld';
+
+  // Back Office: auto-save layout settings (rows/cols/colors/heights, etc.)
+  const layoutAutoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLayoutAutoSavedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isSalesOrder) return; // only Back Office screen
+    if (!canEditLayoutTab) return;
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(layoutSettings);
+    } catch {
+      return;
+    }
+    if (lastLayoutAutoSavedRef.current === serialized) return;
+    if (layoutAutoSaveTimerRef.current) {
+      clearTimeout(layoutAutoSaveTimerRef.current);
+    }
+    layoutAutoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const currentModColors = modifierColorsAutoSaveRef.current;
+        const args = Object.keys(currentModColors).length > 0 ? { modifierColors: currentModColors } : undefined;
+        await saveLayoutSettings(args);
+        lastLayoutAutoSavedRef.current = serialized;
+      } catch (e) {
+        console.error('[OrderPage] Failed to auto-save layout settings:', e);
+      }
+    }, 600);
+    return () => {
+      if (layoutAutoSaveTimerRef.current) {
+        clearTimeout(layoutAutoSaveTimerRef.current);
+      }
+    };
+  }, [isSalesOrder, canEditLayoutTab, layoutSettings, saveLayoutSettings]);
 
   useEffect(() => {
     // 백그라운드에서 테이블 이름 로드 (화면 표시 후 300ms 지연)
@@ -388,6 +435,8 @@ const OrderPage = () => {
   const [renderSize, setRenderSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [orderPageScale, setOrderPageScale] = useState<number>(1);
   const [actualScreenSize, setActualScreenSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const rightAreaRef = useRef<HTMLDivElement | null>(null);
+  const [boCanvasZoom, setBoCanvasZoom] = useState<number>(1);
   const floorFromState = (location.state as any)?.floor;
   
   useEffect(() => {
@@ -449,6 +498,29 @@ const OrderPage = () => {
     console.log(`[OrderPage] Screen scaling: BO=${boWidth}x${boHeight}, Actual=${actualWidth}x${actualHeight}, Scale=${calculatedScale.toFixed(2)}`);
   }, [boScreenSize, actualScreenSize, isSalesOrder]);
 
+  // Back Office: auto-zoom canvas to fit the available right-area space
+  useEffect(() => {
+    if (isSalesOrder) { setBoCanvasZoom(1); return; }
+    const el = rightAreaRef.current;
+    if (!el) return;
+    const compute = () => {
+      const rect = el.getBoundingClientRect();
+      const availW = rect.width - 32;
+      const availH = rect.height - 32;
+      const parts = layoutSettings.screenResolution.split('x').map(Number);
+      const canvasW = parts[0] || 1024;
+      const canvasH = parts[1] || 768;
+      if (canvasW <= availW && canvasH <= availH) { setBoCanvasZoom(1); return; }
+      const z = Math.max(0.3, Math.min(1, Math.min(availW / canvasW, availH / canvasH)));
+      setBoCanvasZoom(z);
+    };
+    compute();
+    window.addEventListener('resize', compute);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(compute) : null;
+    if (ro) ro.observe(el);
+    return () => { window.removeEventListener('resize', compute); if (ro) ro.disconnect(); };
+  }, [isSalesOrder, layoutSettings.screenResolution]);
+
   // Measure actual rendered size of the canvas (to verify no scaling)
   useEffect(() => {
     const measure = () => {
@@ -485,6 +557,7 @@ const OrderPage = () => {
   // Payment modal state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [adhocSplitCount, setAdhocSplitCount] = useState<number>(0); // Even Split count
+  const originalSplitDenomRef = useRef<number>(0); // original N before partial payment cancel
   const [showKitchenMemoModal, setShowKitchenMemoModal] = useState(false);
   const [kitchenMemo, setKitchenMemo] = useState<string>('');
   const [savedKitchenMemo, setSavedKitchenMemo] = useState<string>('');
@@ -495,8 +568,16 @@ const OrderPage = () => {
   const [soldOutTimes, setSoldOutTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
   const [soldOutMode, setSoldOutMode] = useState(false);
   const [selectedSoldOutType, setSelectedSoldOutType] = useState<string>('');
-  const [selectedExtendItemId, setSelectedExtendItemId] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<string>('Staff'); // TODO: Replace with actual signed-in user info
+
+  // Auto-open Sold Out modal when navigated from SalesPage
+  const soldOutFromSalesHandled = useRef(false);
+  useEffect(() => {
+    if (soldOutModeFromSales && !soldOutFromSalesHandled.current) {
+      soldOutFromSalesHandled.current = true;
+      setShowSoldOutModal(true);
+    }
+  }, [soldOutModeFromSales]);
   
   // Gift Card States
   const [showGiftCardModal, setShowGiftCardModal] = useState(false);
@@ -607,6 +688,11 @@ const handleVoidPinClear = useCallback(() => {
     }, {});
   }, [menuTaxes]);
 
+  const allTaxNames = useMemo(() => {
+    const names = new Set<string>();
+    Object.values(taxGroupIdToTaxes).forEach(taxes => taxes.forEach(t => names.add(t.name)));
+    return Array.from(names);
+  }, [taxGroupIdToTaxes]);
 
   useEffect(() => {
     if (showVoidModal) {
@@ -646,16 +732,13 @@ const handleVoidPinClear = useCallback(() => {
   }, [API_URL, menuId]);
 
   useEffect(() => {
-    // 백그라운드에서 품절 정보 로드 (화면 표시 후 500ms 지연)
-    const timer = setTimeout(() => {
-      loadSoldOutFromServer(menuId);
-    }, 500);
+    // 즉시 품절 정보 로드 (Sold Out 표시를 위해 지연 없이)
+    loadSoldOutFromServer(menuId);
     
     // 60초마다 갱신
     const interval = setInterval(() => loadSoldOutFromServer(menuId), 60000);
     
     return () => {
-      clearTimeout(timer);
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -696,137 +779,78 @@ const handleVoidPinClear = useCallback(() => {
     setShowSoldOutModal(true);
   };
 
-  const handleSoldOutOption = (option: string) => {
-    setSelectedSoldOutType(option);
-    setSoldOutMode(true);
-    setShowSoldOutModal(false);
-  };
+  // === Reprint Kitchen Ticket ===
+  const handleReprint = async () => {
+    const items = (orderItems || []).filter((it: any) => it.type === 'item');
+    if (items.length === 0) {
+      console.warn('[Reprint] No items to reprint.');
+      return;
+    }
 
-  const handleSoldOutConfirm = async () => {
+    const printItems: any[] = items.map((it: any) => {
+      const printerGroupIds = Array.isArray(it.printerGroupIds) ? it.printerGroupIds : 
+                              Array.isArray(it.printer_groups) ? it.printer_groups :
+                              (it.printerGroupId || it.printer_group_id) ? [it.printerGroupId || it.printer_group_id] : [];
+      return {
+        id: it.id,
+        orderLineId: it.orderLineId || null,
+        name: it.short_name || it.name || 'Unknown',
+        qty: it.quantity,
+        lineQuantityAfter: it.quantity,
+        guestNumber: it.guestNumber || 1,
+        modifiers: (it as any).modifiers || [],
+        memo: (it as any).memo || null,
+        discount: (it as any).discount || null,
+        togoLabel: !!(it as any).togoLabel,
+        printerGroupIds: printerGroupIds,
+      };
+    });
+
+    const currentOrderType = (orderType || 'dine-in').toUpperCase();
+    const orderTypeDisplay = currentOrderType === 'TOGO' ? 'TOGO' : 
+                             currentOrderType === 'ONLINE' ? 'ONLINE' : 
+                             currentOrderType === 'DELIVERY' ? 'DELIVERY' : 'DINE-IN';
+
+    const printTableName = resolvedTableName || tableNameFromState || '';
+    const printServerName = selectedServer?.name || '';
+    const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current || `ORD-${Date.now()}`);
+
     try {
-      const mid = String(menuId || '');
-      if (!mid) { setShowSoldOutModal(false); setSoldOutMode(false); return; }
-      // Ensure all current items are persisted
-      const putOps: Promise<any>[] = [];
-      soldOutItems.forEach((itemId) => {
-        const info = soldOutTimes.get(itemId) || { type: 'indefinite', endTime: 0, selector: currentUser } as any;
-        putOps.push(fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(String(itemId))}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: info.type || 'indefinite', endTime: typeof info.endTime === 'number' ? info.endTime : 0, selector: currentUser })
-        }));
+      const response = await fetch(`${API_URL}/printers/print-order`, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ 
+          items: printItems,
+          orderInfo: {
+            orderNumber: printOrderNumber,
+            table: printTableName,
+            server: printServerName,
+            orderType: orderTypeDisplay,
+            channel: orderTypeDisplay,
+            pickupTime: orderPickupInfo.readyTimeLabel || '',
+            pickupMinutes: orderPickupInfo.pickupMinutes,
+            kitchenNote: savedKitchenMemo || '',
+          },
+          isAdditionalOrder: false,
+          isPaid: false,
+          isReprint: true
+        }) 
       });
-      // Optionally reconcile deletions: remove server records not in current set
-      try {
-        const res = await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}`);
-        if (res.ok) {
-          const data = await res.json();
-          const serverItemIds: string[] = Array.isArray(data?.records) ? data.records.filter((r: any) => String(r.scope) === 'item').map((r: any) => String(r.key_id)) : [];
-          serverItemIds.forEach((sid) => {
-            if (!soldOutItems.has(String(sid))) {
-              putOps.push(fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(String(sid))}`, { method: 'DELETE' }));
-            }
-          });
-        }
-      } catch {}
-      await Promise.all(putOps);
-    } catch {}
-    setShowSoldOutModal(false);
-    setSoldOutMode(false);
-  };
-
-  // Toggle selection for extending a sold-out item
-  const handleExtendSoldOut = (itemId: string) => {
-    setSelectedExtendItemId(prev => prev === itemId ? null : itemId);
-  };
-
-  // Add time to a selected sold-out item based on option type
-  const handleAddTimeToSoldOut = async (optionType: string) => {
-    if (!selectedExtendItemId) return;
-    
-    const now = Date.now();
-    const info = soldOutTimes.get(selectedExtendItemId);
-    const newTimes = new Map(soldOutTimes);
-    
-    let addMs = 0;
-    let newType = optionType;
-    
-    switch (optionType) {
-      case '30min':
-        addMs = 30 * 60 * 1000;
-        break;
-      case '1hour':
-        addMs = 60 * 60 * 1000;
-        break;
-      case 'today':
-        addMs = 24 * 60 * 60 * 1000; // Add 1 day
-        break;
-      case 'indefinite':
-        // Set to indefinite (0)
-        newTimes.set(selectedExtendItemId, { type: 'indefinite', endTime: 0, selector: info?.selector || currentUser });
-        setSoldOutTimes(newTimes);
-        setSelectedExtendItemId(null);
-        try {
-          const mid = String(menuId || '');
-          if (mid) {
-            await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(selectedExtendItemId)}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ type: 'indefinite', endTime: 0, selector: currentUser })
-            });
-          }
-        } catch {}
-        return;
-    }
-    
-    // Calculate new end time by adding to current end time (or from now if expired/indefinite)
-    let baseTime = now;
-    if (info && info.endTime > now) {
-      baseTime = info.endTime;
-    }
-    const newEndTime = baseTime + addMs;
-    
-    // Determine type based on total remaining time
-    const totalRemaining = newEndTime - now;
-    if (totalRemaining >= 24 * 60 * 60 * 1000) {
-      newType = 'today'; // More than 1 day
-    } else if (totalRemaining >= 60 * 60 * 1000) {
-      newType = '1hour';
-    } else {
-      newType = '30min';
-    }
-    
-    newTimes.set(selectedExtendItemId, { type: newType, endTime: newEndTime, selector: info?.selector || currentUser });
-    setSoldOutTimes(newTimes);
-    setSelectedExtendItemId(null);
-    
-    try {
-      const mid = String(menuId || '');
-      if (mid) {
-        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(selectedExtendItemId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: newType, endTime: newEndTime, selector: currentUser })
-        });
+      const result = await response.json();
+      if (result.success) {
+        console.log(`🖨️ Kitchen Reprint complete: ${result.message}`);
+      } else {
+        console.error('❌ Kitchen Reprint failed:', result.error);
+        console.error('[Reprint] Failed:', result.error || 'Unknown error');
       }
-    } catch {}
+    } catch (err) {
+      console.error('❌ Kitchen Reprint error:', err);
+      console.error('[Reprint] Failed. Check printer connection.');
+    }
   };
 
-  // Clear Sold Out for a single item
-  const handleClearSoldOutItem = async (itemId: string) => {
-    const next = new Set(soldOutItems);
-    next.delete(itemId);
-    setSoldOutItems(next);
-    const times = new Map(soldOutTimes);
-    times.delete(itemId);
-    setSoldOutTimes(times);
-    try {
-      const mid = String(menuId || '');
-      if (mid) {
-        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(itemId)}`, { method: 'DELETE' });
-      }
-    } catch {}
-  };
+  // handleSoldOutOption, handleSoldOutConfirm, handleExtendSoldOut, handleAddTimeToSoldOut, handleClearSoldOutItem
+  // are now handled by SoldOutModal component
 
   // Gift Card Functions
   const resetGiftCardForm = () => {
@@ -1056,6 +1080,8 @@ const handleVoidPinClear = useCallback(() => {
     };
   }, [orderItems, orderDiscount]);
   const savedOrderIdRef = React.useRef<number | null>(null);
+  const savedOrderNumberRef = React.useRef<string | null>(null);
+  const gratuityAmountRef = React.useRef<number>(0);
   // Track original saved quantities: orderLineId -> original quantity
   const originalSavedQuantitiesRef = React.useRef<{ [orderLineId: string]: number }>({});
   const [guestPaymentMode, setGuestPaymentMode] = useState<'ALL' | number>('ALL');
@@ -1065,12 +1091,15 @@ const handleVoidPinClear = useCallback(() => {
   const splitGuestsInitDoneRef = useRef<boolean>(false);
   // Track whether PaymentModal was opened via Split -> Pay in Full flow
   const payInFullFromSplitRef = useRef<boolean>(false);
+  const priorPaymentIdsRef = useRef<Set<number>>(new Set());
   // Track whether PaymentModal was opened from Split screen (any path)
   const openedFromSplitRef = useRef<boolean>(false);
   // Lock ALL mode when Pay in Full is chosen (from Split or inside PaymentModal)
   const allModeStickyRef = useRef<boolean>(false);
   // Track whether receipt has been printed for this payment session (prevent duplicate prints)
   const receiptPrintedRef = useRef<boolean>(false);
+  // Prevent accidental duplicate guest-receipt prints (double-click / re-render edge cases)
+  const lastGuestReceiptPrintRef = useRef<{ key: string; ts: number } | null>(null);
   // Payment Complete Modal state
   const [showPaymentCompleteModal, setShowPaymentCompleteModal] = useState(false);
   const [paymentCompleteData, setPaymentCompleteData] = useState<{
@@ -1081,9 +1110,27 @@ const handleVoidPinClear = useCallback(() => {
     hasCashPayment: boolean;
     isPartialPayment?: boolean;
     currentGuestNumber?: number;
+    discount?: {
+      percent: number;
+      amount: number;
+      originalSubtotal: number;
+      discountedSubtotal: number;
+      taxLines: Array<{ name: string; amount: number }>;
+      taxesTotal: number;
+    };
   } | null>(null);
+  const [showTipEntryModal, setShowTipEntryModal] = useState(false);
+  const [pendingReceiptCountForTip, setPendingReceiptCountForTip] = useState<number>(0);
   // Persisted PAID locks from DB (order_guest_status) to ensure UI remains locked across navigation
-  const [persistedPaidGuests, setPersistedPaidGuests] = useState<number[]>([]);
+  const [persistedPaidGuests, _setPersistedPaidGuests] = useState<number[]>([]);
+  const persistedPaidGuestsRef = useRef<number[]>([]);
+  const setPersistedPaidGuests: typeof _setPersistedPaidGuests = (val) => {
+    _setPersistedPaidGuests(prev => {
+      const next = typeof val === 'function' ? val(prev) : val;
+      persistedPaidGuestsRef.current = next;
+      return next;
+    });
+  };
 
   // TOGO channel settings (must be declared before use in calculations)
   const [togoSettings, setTogoSettings] = useState<{
@@ -1201,70 +1248,75 @@ const handleVoidPinClear = useCallback(() => {
     });
   }, [orderItems, guestCount, paymentsByGuest, persistedPaidGuests]);
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ✅ Single source of truth for all money calculations
+  // Item unit price (Open/Edit applied) + modifiers + memo − discounts (item + order) + taxes
+  // Used everywhere (screen, payment, history, print) via shared results.
+  // ─────────────────────────────────────────────────────────────────────────────
+  const pricingAll = useMemo(() => {
+    return calculateOrderPricing(orderItems as any, {
+      itemTaxGroups,
+      categoryTaxGroups,
+      itemIdToCategoryId,
+      taxGroupIdToTaxes,
+    } as any);
+  }, [orderItems, itemTaxGroups, categoryTaxGroups, itemIdToCategoryId, taxGroupIdToTaxes]);
+
+  const pricingLineByLineId = useMemo(() => {
+    const m = new Map<string, any>();
+    (pricingAll.lines || []).forEach((l: any) => {
+      if (l && l.orderLineId) m.set(String(l.orderLineId), l);
+    });
+    return m;
+  }, [pricingAll]);
+
+  const getPricingLineForItem = useCallback((orderItem: any) => {
+    if (!orderItem || orderItem.type === 'separator') return null;
+    const lid = String(orderItem.orderLineId || '');
+    if (lid && pricingLineByLineId.has(lid)) return pricingLineByLineId.get(lid);
+    // Fallback (should be rare): compute as single-line (no order-level discount allocation).
+    try {
+      const one = calculateOrderPricing([orderItem] as any, {
+        itemTaxGroups,
+        categoryTaxGroups,
+        itemIdToCategoryId,
+        taxGroupIdToTaxes,
+      } as any);
+      return (one.lines && one.lines[0]) ? one.lines[0] : null;
+    } catch {
+      return null;
+    }
+  }, [pricingLineByLineId, itemTaxGroups, categoryTaxGroups, itemIdToCategoryId, taxGroupIdToTaxes]);
+
+  const guestPricingMap = useMemo(() => summarizePricingByGuest(pricingAll as any), [pricingAll]);
+
+  // Backward-compatible helpers (now powered by pricingAll)
   const computeItemLineBase = useCallback((orderItem: any): number => {
-    if (!orderItem || orderItem.type === 'separator') return 0;
-    const perUnit = Number(((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0));
-    const qty = Number(orderItem.quantity || 1);
-    return Number((perUnit * qty).toFixed(2));
-  }, []);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.lineGross || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeItemDiscountAmount = useCallback((orderItem: any): number => {
-    const base = computeItemLineBase(orderItem);
-    const d = (orderItem && (orderItem as any).discount) || null;
-    if (!d || typeof d.value !== 'number' || d.value <= 0) return 0;
-    let amt = 0;
-    if (d.mode === 'percent') {
-      amt = base * (Math.max(0, Math.min(100, d.value)) / 100);
-    } else {
-      amt = Math.max(0, d.value);
-    }
-    return Math.max(0, Math.min(base, Number(amt.toFixed(2))));
-  }, [computeItemLineBase]);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.itemDiscount || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeOrderItemNetTotal = useCallback((orderItem: any): number => {
-    if (!orderItem || orderItem.type === 'separator') return 0;
-    // Discount items have negative price - return as is
-    if (orderItem.type === 'discount') {
-      const price = Number((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0);
-      return Number((price * (orderItem.quantity || 1)).toFixed(2));
-    }
-    const memoPrice =
-      orderItem.memo && typeof orderItem.memo.price === 'number' ? Number(orderItem.memo.price) : 0;
-    const perUnit =
-      Number((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0) + memoPrice;
-    const qty = Number(orderItem.quantity || 1);
-    const discount = computeItemDiscountAmount(orderItem);
-    const gross = perUnit * qty;
-    return Math.max(0, Number((gross - discount).toFixed(2)));
-  }, [computeItemDiscountAmount]);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.lineTaxable || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeGuestTotals = useCallback((mode: 'ALL' | number) => {
-    const items =
-      (orderItems || []).filter(
-        (it) => it.type !== 'separator' && (mode === 'ALL' ? true : (it.guestNumber || 1) === mode)
-      );
-    const subtotal = items.reduce((sum, orderItem: any) => sum + computeOrderItemNetTotal(orderItem), 0);
-    const taxAmountByName: { [taxName: string]: number } = {};
-    items.forEach((orderItem: any) => {
-      const itemKey = orderItem.id?.toString();
-      const itemSubtotal = computeOrderItemNetTotal(orderItem);
-      const itemGroupIds = itemKey && itemTaxGroups[itemKey] ? itemTaxGroups[itemKey] : [];
-      const catId = itemKey ? itemIdToCategoryId[itemKey] : undefined;
-      const catGroupIds = typeof catId === 'number' && categoryTaxGroups[catId] ? categoryTaxGroups[catId] : [];
-      const mergedGroupIds = Array.from(new Set<number>([...itemGroupIds, ...catGroupIds]));
-      mergedGroupIds.forEach((gid) => {
-        const taxes = taxGroupIdToTaxes[gid] || [];
-        taxes.forEach((t) => {
-          const delta = itemSubtotal * (t.rate / 100);
-          taxAmountByName[t.name] = (taxAmountByName[t.name] || 0) + delta;
-        });
-      });
-    });
-    const taxLines = Object.entries(taxAmountByName).map(([name, amount]) => ({ name, amount }));
-    const taxTotal = taxLines.reduce((s, t) => s + t.amount, 0);
-    const grand = subtotal + taxTotal;
-    return { subtotal, taxLines, grand };
-  }, [orderItems, itemTaxGroups, itemIdToCategoryId, categoryTaxGroups, taxGroupIdToTaxes, computeOrderItemNetTotal]);
+    if (mode === 'ALL') {
+      const subtotal = Number((pricingAll.totals?.subtotalAfterAllDiscounts || 0).toFixed(2));
+      const taxLines = (pricingAll.totals?.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+      const grand = Number((pricingAll.totals?.total || 0).toFixed(2));
+      return { subtotal, taxLines, grand };
+    }
+    const g = Number(mode || 1);
+    const res = guestPricingMap[g] || { subtotal: 0, taxLines: [], total: 0 };
+    return { subtotal: Number((res.subtotal || 0).toFixed(2)), taxLines: res.taxLines || [], grand: Number((res.total || 0).toFixed(2)) };
+  }, [pricingAll, guestPricingMap]);
 
   const guestStatusMap: Record<number, 'PAID' | 'PARTIAL' | 'UNPAID'> = useMemo(() => {
     const EPS = 0.05;
@@ -1283,21 +1335,17 @@ const handleVoidPinClear = useCallback(() => {
     try {
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
       const orderId = savedOrderIdRef.current || (location.state && (location.state as any).orderId) || null;
-      const anyPaidSession = Object.values(paymentsByGuest).some(v => (v || 0) > 0);
       
-      // orderId가 있을 때만 localStorage에서 PAID 정보를 가져옴
       if (orderId) {
         const orderKey = `paidGuests_order_${orderId}`;
         try {
           const raw = localStorage.getItem(orderKey);
           if (raw) {
             const parsed = JSON.parse(raw);
-            // orderId가 정확히 일치하는 경우에만 적용
             if (parsed && parsed.orderId && String(parsed.orderId) === String(orderId)) {
               const list: number[] = Array.isArray(parsed?.paidGuests) ? parsed.paidGuests : [];
               list.forEach((guest: number) => { 
                 if (guestIds.includes(guest)) {
-                  // 안전장치: 실제 결제 내역이 있는 경우에만 외부 PAID 정보 인정 (0원 결제 등 특수 상황 제외)
                   const paidAmount = Number((paymentsByGuest[String(guest)] || 0).toFixed(2));
                   if (paidAmount > 0.01) {
                     map[guest] = 'PAID';
@@ -1310,7 +1358,6 @@ const handleVoidPinClear = useCallback(() => {
       }
     } catch {}
     try {
-      // DB에서 불러온 persistedPaidGuests는 이미 결제가 완료된 것이므로 무조건 PAID로 설정
       if (Array.isArray(persistedPaidGuests) && persistedPaidGuests.length > 0) {
         persistedPaidGuests.forEach((guest) => { 
           if (guestIds.includes(guest)) {
@@ -1320,7 +1367,20 @@ const handleVoidPinClear = useCallback(() => {
       }
     } catch {}
     return map;
-  }, [guestIds, paymentsByGuest, orderItems, promotionEnabled, promotionType, promotionValue, promotionEligibleItemIds, promotionRules, persistedPaidGuests, computeGuestTotals, location.state]);
+  }, [guestIds, paymentsByGuest, orderItems, promotionEnabled, promotionType, promotionValue, promotionEligibleItemIds, promotionRules, persistedPaidGuests, computeGuestTotals, location.state, adhocSplitCount]);
+
+  const effectiveSplitCount: number = useMemo(() => {
+    if (adhocSplitCount > 1) return adhocSplitCount;
+    try {
+      const orderId = savedOrderIdRef.current || (location.state && (location.state as any).orderId) || null;
+      if (!orderId) return 0;
+      const raw = localStorage.getItem(`paidGuests_order_${orderId}`);
+      if (!raw) return 0;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.splitCount > 1) return parsed.splitCount;
+    } catch {}
+    return 0;
+  }, [adhocSplitCount, persistedPaidGuests, location.state]);
 
   const isGuestLocked = (g: number | null | undefined): boolean => {
     if (!g || !Number.isFinite(g as any)) return false;
@@ -1359,10 +1419,32 @@ const handleVoidPinClear = useCallback(() => {
     const items = (orderItems || []).filter((it:any) => it.type === 'item');
     const now = new Date();
     const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR' }) });
+    // Calculate totals before saving (shared adjustment rules)
+    const orderTotals = computeGuestTotals('ALL');
+    const baseSubtotal = Number((orderTotals.subtotal || 0).toFixed(2));
+    const baseTaxLines = (orderTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
+    }
+    const applied = applySubtotalAdjustments({ subtotal: baseSubtotal, taxLines: baseTaxLines }, adjustments);
+    const calcSubtotal = Number((applied.subtotal || 0).toFixed(2));
+    const calcTax = Number((applied.taxesTotal || 0).toFixed(2));
+    const calcTotal = Number((applied.total || 0).toFixed(2));
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, splitNumerator: it.splitNumerator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR' }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
+    savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
     
     // Live Order 실시간 업데이트를 위한 이벤트 발생
     const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -1559,7 +1641,7 @@ const handleVoidPinClear = useCallback(() => {
     });
   };
 
-  const handleAddPayment = async ({ method, amount, tip }:{ method:string; amount:number; tip:number }) => {
+  const handleAddPayment = async ({ method, amount, tip, discountedGrand, change: changeVal = 0 }:{ method:string; amount:number; tip:number; discountedGrand?: number; change?: number }) => {
     try {
       // 저장된 주문 id가 없으므로, 우선 OK에서 저장되는 흐름과 달리 Payment에서는 주문 저장 선행 필요할 수 있음
       // 간단히 임시 order 저장 후 id 회수
@@ -1567,10 +1649,16 @@ const handleVoidPinClear = useCallback(() => {
       const now = new Date();
       const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
       if (!savedOrderIdRef.current) {
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: 'FSR' }) });
+        // Calculate tax before saving
+        const payTotals = computeGuestTotals('ALL');
+        const paySubtotal = Number((payTotals.subtotal || 0).toFixed(2));
+        const payTax = Number(((payTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        const payTotal = Number((paySubtotal + payTax).toFixed(2));
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, splitNumerator: it.splitNumerator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: 'FSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
+        savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
         
         // Live Order 실시간 업데이트를 위한 이벤트 발생
         const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -1579,7 +1667,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null, changeAmount: changeVal }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
@@ -1590,7 +1678,7 @@ const handleVoidPinClear = useCallback(() => {
             return acc;
           }, {} as Record<string, number>);
           const next = { ...prev } as Record<string, number>;
-          let remaining = Number((amount + tip).toFixed(2));
+          let remaining = Number(amount.toFixed(2));
           for (const g of guestIds) {
             if (remaining <= 0) break;
             const key = String(g);
@@ -1603,30 +1691,70 @@ const handleVoidPinClear = useCallback(() => {
           }
           return next;
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number(amount.toFixed(2)), tip, guestNumber: undefined } ]));
         // onPaymentComplete 콜백이 PaymentModal에서 결제 완료를 감지하여 PaymentCompleteModal을 표시함
         return;
       } else {
         // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), changeAmount: changeVal }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
         setPaymentsByGuest(prev => {
           const key = String(guestPaymentMode);
           const current = prev[key] || 0;
-          return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
+          return { ...prev, [key]: Number((current + amount).toFixed(2)) };
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number(amount.toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
         
         // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
           const guestNum = Number(guestPaymentMode);
-          const guestTotals = computeGuestTotals(guestNum);
-          const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
-          const guestTaxLines = guestTotals.taxLines || [];
-          const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-          const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+          // IMPORTANT:
+          // - For Equal Split(adhocSplitCount), items are not physically split by guestNumber.
+          // - Therefore computeGuestTotals(guestNum) is NOT the correct "due" for Guest 2/3... (often 0),
+          //   and Guest 1 becomes the whole order (causing an extra payment loop).
+          // - Use the same fair-penny distribution used by PaymentModal for the "guest share due".
+          let guestSubtotal = 0;
+          let guestTaxLines: any[] = [];
+          let guestTaxTotal = 0;
+          let guestTotal = 0;
+
+          const hasPartialPaidHistory = (persistedPaidGuestsRef.current || []).length > 0;
+          const isEvenSplit = (adhocSplitCount > 1 || (adhocSplitCount === 1 && hasPartialPaidHistory)) && Number.isFinite(guestNum) && guestNum >= 1;
+          if (isEvenSplit) {
+            const n = Math.max(1, Math.floor(Number(adhocSplitCount) || 0));
+            const idx = guestNum;
+
+            const priorPaid = sessionPayments
+              .filter(p => priorPaymentIdsRef.current.has(p.paymentId))
+              .reduce((s, p) => s + (p.amount || 0), 0);
+            const fullBase = (typeof discountedGrand === 'number' && discountedGrand > 0) ? discountedGrand : payGrandAll;
+            const effectiveBase = Math.max(0, Number((fullBase - priorPaid).toFixed(2)));
+            const grandCents = Math.round(Number(effectiveBase || 0) * 100);
+            const baseGrand = Math.floor(grandCents / n);
+            const remGrand = grandCents % n;
+            guestTotal = (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
+
+            const balanceRatio = fullBase > 0 ? effectiveBase / fullBase : 1;
+            const totalLines = Array.isArray(payTaxLinesAll) ? payTaxLinesAll : [];
+            guestTaxLines = totalLines.map((t: any) => {
+              const scaledCents = Math.round(Number(t?.amount || 0) * balanceRatio * 100);
+              const tBase = Math.floor(scaledCents / n);
+              const tRem = scaledCents % n;
+              const myT = (tBase + (idx <= tRem ? 1 : 0)) / 100;
+              return { ...t, amount: myT };
+            });
+            guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+
+            guestSubtotal = Number((guestTotal - guestTaxTotal).toFixed(2));
+          } else {
+            const guestTotals = computeGuestTotals(guestNum);
+            guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
+            guestTaxLines = guestTotals.taxLines || [];
+            guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+            guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+          }
           
           // 이전 결제 + 현재 결제 합계
           const previousPaid = Number((paymentsByGuest[String(guestNum)] || 0).toFixed(2));
@@ -1689,24 +1817,37 @@ const handleVoidPinClear = useCallback(() => {
     try {
       // Guard: only close order when ALL guests are fully paid
       const totals = computeGuestTotals('ALL');
-      const baseSubtotal = Number((totals.subtotal || 0).toFixed(2));
-      const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
-      let expectedGrand = Number((baseSubtotal + taxTotal).toFixed(2));
-      if ((orderType || '').toLowerCase() === 'togo') {
-        const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-        const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
-        const discountValue = Number(togoSettings.discountValue || 0);
-        const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
-        const discountAmtBase = discountActive
-          ? (togoSettings.discountMode === 'percent'
-              ? (baseSubtotal * discountValue) / 100
-              : discountValue)
-          : 0;
-        const discountAmt = Number(discountAmtBase.toFixed(2));
-        const subtotalAfterDiscount = Math.max(0, Number((baseSubtotal - discountAmt).toFixed(2)));
-        const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
-        expectedGrand = Number((subtotalAfterDiscount + bagFeeAmt + taxTotal).toFixed(2));
+      const baseNetSubtotal = Number((totals.subtotal || 0).toFixed(2)); // after item+order discounts (pre-TOGO adj)
+      const baseTaxLines: { name: string; amount: number }[] =
+        (totals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+      const baseTaxesTotal = Number((baseTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+      const baseGrand = Number((totals.grand || 0).toFixed(2));
+
+      // Receipt subtotal line should match item sums (before order-wide discount line),
+      // so we add back orderDiscountTotal for display while keeping tax/total discounted.
+      const orderDiscountTotal = Number((pricingAll.totals?.orderDiscountTotal || 0).toFixed(2));
+      const subtotalForReceipt = Number((baseNetSubtotal + orderDiscountTotal).toFixed(2));
+
+      const isTogo = (orderType || '').toLowerCase() === 'togo';
+      const togoAdjustments: any[] = [];
+      let togoDiscountAmt = 0;
+      let bagFeeAmt = 0;
+      if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        togoDiscountAmt = computeDiscountAmount(baseNetSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
       }
+      if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        bagFeeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (bagFeeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: bagFeeAmt });
+      }
+      const appliedTotals = (togoAdjustments.length > 0)
+        ? applySubtotalAdjustments({ subtotal: baseNetSubtotal, taxLines: baseTaxLines }, togoAdjustments)
+        : { subtotal: baseNetSubtotal, taxLines: baseTaxLines, taxesTotal: baseTaxesTotal, total: baseGrand } as any;
+      const taxLinesForReceipt: { name: string; amount: number }[] =
+        (appliedTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+      const taxTotal = Number((appliedTotals.taxesTotal || 0).toFixed(2));
+      const expectedGrand = Number((appliedTotals.total || 0).toFixed(2));
       const paidByGuests = Object.values(paymentsByGuest).reduce((s, v) => s + (v || 0), 0);
       const paidBySession = (Array.isArray(sessionPayments) ? sessionPayments.reduce((s, p) => s + (p.amount || 0), 0) : 0);
       const paidTotal = Math.max(Number((paidByGuests).toFixed(2)), Number((paidBySession).toFixed(2)));
@@ -1735,16 +1876,38 @@ const handleVoidPinClear = useCallback(() => {
         return;
       }
 
-      // 모든 게스트 결제가 완료된 경우에만 테이블 상태를 Preparing으로 변경
+      // 모든 게스트 결제가 완료된 경우: 테이블 상태를 Available로 변경 (Preparing 제거)
       try {
         if (tableIdForMap) {
-          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Preparing' }) });
-          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() })); } catch {}
+          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' }) });
+          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
         }
       } catch {}
 
       if (orderId) {
-        try { await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' }); } catch (e) { console.warn('Order status update failed (can be ignored):', e); }
+        // Save gratuity (service_charge) to order if applicable
+        const gRate = layoutSettings.gratuityRate ?? 0;
+        const gratuityAmt = gratuityAmountRef.current > 0
+          ? gratuityAmountRef.current
+          : (gRate > 0 ? Number((baseNetSubtotal * gRate / 100).toFixed(2)) : 0);
+        if (gratuityAmt > 0) {
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/service-charge`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ service_charge: gratuityAmt })
+            });
+          } catch (e) { console.warn('Failed to save service_charge:', e); }
+        }
+
+        const pmDiscountForClose = paymentCompleteData?.discount;
+        try {
+          await fetch(`${API_URL}/orders/${orderId}/close`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(pmDiscountForClose && pmDiscountForClose.percent > 0 ? { discount: pmDiscountForClose } : {})
+          });
+        } catch (e) { console.warn('Order status update failed (can be ignored):', e); }
       }
       try {
         if (tableIdForMap) {
@@ -1770,7 +1933,7 @@ const handleVoidPinClear = useCallback(() => {
         try {
           // Build receipt data
         const guestSections = guestIds.map((g: number) => {
-          const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === g);
+          const guestItems = (orderItems || []).filter(it => it.type === 'item' && (it.guestNumber || 1) === g);
           return {
             guestNumber: g,
             items: guestItems.map(item => ({
@@ -1779,63 +1942,53 @@ const handleVoidPinClear = useCallback(() => {
               price: item.price || 0,
               totalPrice: item.totalPrice || item.price || 0,
               modifiers: item.modifiers || [],
-              memo: item.memo
+              memo: item.memo,
+              togoLabel: !!(item as any).togoLabel
             }))
           };
         }).filter(s => s.items.length > 0);
 
-        // Build adjustments for receipt (할인 정보)
+        // Build adjustments for receipt (Discount / Fees)
         const receiptAdjustments: Array<{ label: string; amount: number }> = [];
-        
-        // Togo 할인
-        if ((orderType || '').toLowerCase() === 'togo') {
-          const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-          const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
-          const discountValue = Number(togoSettings.discountValue || 0);
-          const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
-          
-          if (discountActive && discountValue > 0) {
-            const discountAmtBase = togoSettings.discountMode === 'percent'
-              ? (baseSubtotal * discountValue) / 100
-              : discountValue;
-            const discountAmt = Number(discountAmtBase.toFixed(2));
-            if (discountAmt > 0) {
-              const discountLabel = togoSettings.discountMode === 'percent' 
-                ? `Discount (${discountValue}%)` 
-                : 'Discount';
-              receiptAdjustments.push({ label: discountLabel, amount: -discountAmt });
-            }
-          }
-          
-          if (bagActive && bagFeeValue > 0) {
-            receiptAdjustments.push({ label: `Bag Fee`, amount: Number(bagFeeValue.toFixed(2)) });
-          }
-        }
-        
-        // Order D/C (전체 할인)
-        const orderDiscountItem = (orderItems || []).find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
-        if (orderDiscountItem) {
-          const discountData = (orderDiscountItem as any).discount || {};
+
+        // Order D/C (전체 할인) - use pricing module's applied amount for accuracy
+        if (orderDiscountTotal > 0.01) {
+          const orderDiscountItem = (orderItems || []).find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
+          const discountData = (orderDiscountItem as any)?.discount || {};
           const discountMode = discountData.mode || 'percent';
           const discountValue = Number(discountData.value || 0);
           const discountType = discountData.type || 'Order D/C';
-          
-          if (discountValue > 0) {
-            let discountAmount = 0;
-            if (discountMode === 'percent') {
-              discountAmount = baseSubtotal * (discountValue / 100);
-            } else {
-              discountAmount = Math.abs(Number(orderDiscountItem.totalPrice || orderDiscountItem.price || 0));
-            }
-            if (discountAmount > 0) {
-              receiptAdjustments.push({ label: discountType, amount: -Number(discountAmount.toFixed(2)) });
-            }
-          }
+          const label = (discountMode === 'percent' && discountValue > 0)
+            ? `${discountType} (${discountValue}%)`
+            : discountType;
+          receiptAdjustments.push({ label, amount: -Number(orderDiscountTotal.toFixed(2)) });
+        }
+
+        // TOGO Discount / Bag Fee (channel adjustments; applied pre-tax with tax recalculation)
+        if (togoDiscountAmt > 0.01) receiptAdjustments.push({ label: 'TOGO Discount', amount: -Number(togoDiscountAmt.toFixed(2)) });
+        if (bagFeeAmt > 0.01) receiptAdjustments.push({ label: 'Bag Fee', amount: Number(bagFeeAmt.toFixed(2)) });
+
+        // PaymentModal discount (결제 시 적용된 할인)
+        const pmDiscount2 = paymentCompleteData?.discount;
+        console.log('🧾 [handleCompletePayment] discount data:', JSON.stringify(pmDiscount2));
+        let finalSubtotal2 = subtotalForReceipt;
+        let finalTaxLines2 = taxLinesForReceipt;
+        let finalTaxTotal2 = taxTotal;
+        let finalTotal2 = expectedGrand;
+
+        if (pmDiscount2 && pmDiscount2.percent > 0) {
+          receiptAdjustments.push({
+            label: `Discount (${pmDiscount2.percent}%)`,
+            amount: -Number(pmDiscount2.amount.toFixed(2))
+          });
+          finalTaxLines2 = pmDiscount2.taxLines.map(t => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+          finalTaxTotal2 = Number(pmDiscount2.taxesTotal.toFixed(2));
+          finalTotal2 = Number((pmDiscount2.discountedSubtotal + pmDiscount2.taxesTotal).toFixed(2));
         }
         
         const receiptData = {
           header: {
-            orderNumber: orderId || '',
+            orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (orderId || ''),
             channel: orderType || 'Dine-in',
             tableName: resolvedTableName || '',
             serverName: selectedServer?.name || ''
@@ -1845,7 +1998,7 @@ const handleVoidPinClear = useCallback(() => {
             tableName: resolvedTableName || '',
             serverName: selectedServer?.name || ''
           },
-          items: (orderItems || []).filter(it => it.type !== 'separator').map(item => {
+          items: (orderItems || []).filter(it => it.type === 'item').map(item => {
             const memoPrice =
               item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
             const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
@@ -1865,18 +2018,22 @@ const handleVoidPinClear = useCallback(() => {
                 amount: discountAmount
               } : undefined,
               modifiers: item.modifiers || [],
-              memo: item.memo
+              memo: item.memo,
+              togoLabel: !!(item as any).togoLabel
             };
           }),
           guestSections,
-          subtotal: baseSubtotal,
+          // Receipt: show item-level TOGO label and hide TOGO separator line
+          togoDisplayMode: 'per_item',
+          showTogoSeparator: false,
+          subtotal: finalSubtotal2,
           adjustments: receiptAdjustments,
-          taxLines: totals.taxLines || [],
-          taxesTotal: taxTotal,
-          total: expectedGrand,
+          taxLines: finalTaxLines2,
+          taxesTotal: finalTaxTotal2,
+          total: finalTotal2,
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
-            amount: p.amount || 0,
+            amount: (p.amount || 0) + (p.tip || 0),
             tip: p.tip || 0
           })),
           change: 0,
@@ -1885,8 +2042,9 @@ const handleVoidPinClear = useCallback(() => {
 
         // 스플릿빌: 개별 게스트 결제 시 PaymentCompleteModal에서 이미 출력됨 (스킵)
         // ALL 모드 결제 시: 스플릿빌이어도 통합 영수증 출력
-        const isSplitBill = guestCount > 1;
-        if (receiptCount > 0 && (!isSplitBill || guestPaymentMode === 'ALL')) {
+        const isSplitBill = guestCount > 1 || adhocSplitCount > 0;
+        const allowFinalReceiptInAllMode = guestPaymentMode === 'ALL' && adhocSplitCount <= 0; // NEVER print final receipt in Equal Split(adhoc)
+        if (receiptCount > 0 && (!isSplitBill || allowFinalReceiptInAllMode)) {
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1905,7 +2063,7 @@ const handleVoidPinClear = useCallback(() => {
     
     clearServerAssignmentForContext();
     setSelectedServer(null);
-    navigate('/sales');
+    navigate('/sales', { replace: true });
     } catch (e) {
       console.error(e);
       alert('Error during payment completion');
@@ -1918,13 +2076,325 @@ const handleVoidPinClear = useCallback(() => {
 
   // 결제 완료 모달에서 최종 완료 처리 (전체 결제 완료 시)
   const handlePaymentCompleteClose = async (receiptCount: number) => {
-    // 스플릿 결제 마지막 게스트: 해당 게스트 영수증 먼저 출력 (paymentCompleteData 초기화 전)
-    if (paymentCompleteData?.currentGuestNumber && guestIds.length > 1 && receiptCount > 0) {
-      await handlePartialPrintReceipt(receiptCount);
-    }
+    const savedPaymentData = paymentCompleteData;
     setShowPaymentCompleteModal(false);
     setPaymentCompleteData(null);
-    await handleCompletePayment(receiptCount);
+
+    // Equal Split(adhoc) / Split 결제에서 "마지막 게스트"까지 결제 완료된 경우:
+    // - Receipt 선택 후 즉시 테이블맵으로 이동
+    // - 테이블 상태/주문 close/current-order 해제는 백그라운드로 처리 (UX 개선)
+    try {
+      const splitAllGuests: number[] =
+        (adhocSplitCount > 0)
+          ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
+          : Array.from(guestIds || []);
+      const currentGuest = savedPaymentData?.currentGuestNumber;
+      const latestPaid = persistedPaidGuestsRef.current;
+      const paidSet = new Set<number>([
+        ...(Array.isArray(latestPaid) ? latestPaid : []),
+        ...(typeof currentGuest === 'number' ? [currentGuest] : []),
+      ]);
+      const unpaid = splitAllGuests.filter(g => !paidSet.has(g));
+      const isLastGuest = unpaid.length === 0 && typeof currentGuest === 'number';
+      const hasSplitContext = (adhocSplitCount > 0) || splitAllGuests.length > 1;
+
+      if (hasSplitContext && isLastGuest) {
+        // Double-check paid-in-full to avoid navigating away prematurely
+        const totals = computeGuestTotals('ALL');
+        const baseSubtotal = Number((totals.subtotal || 0).toFixed(2));
+        const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        let expectedGrand = Number((baseSubtotal + taxTotal).toFixed(2));
+
+        // PaymentModal에서 적용된 할인 반영
+        const pmDiscount = savedPaymentData?.discount;
+        if (pmDiscount && pmDiscount.percent > 0) {
+          const discountedSub = Number((pmDiscount.discountedSubtotal || 0).toFixed(2));
+          const discountedTax = Number((pmDiscount.taxesTotal || 0).toFixed(2));
+          expectedGrand = Number((discountedSub + discountedTax).toFixed(2));
+        } else if ((orderType || '').toLowerCase() === 'togo') {
+          const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
+          const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
+          const discountValue = Number(togoSettings.discountValue || 0);
+          const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
+          const discountAmtBase = discountActive
+            ? (togoSettings.discountMode === 'percent'
+                ? (baseSubtotal * discountValue) / 100
+                : discountValue)
+            : 0;
+          const discountAmt = Number(discountAmtBase.toFixed(2));
+          const subtotalAfterDiscount = Math.max(0, Number((baseSubtotal - discountAmt).toFixed(2)));
+          const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
+          expectedGrand = Number((subtotalAfterDiscount + bagFeeAmt + taxTotal).toFixed(2));
+        }
+        const paidByGuests = Object.values(paymentsByGuest).reduce((s, v) => s + (v || 0), 0);
+        const paidBySession = (Array.isArray(sessionPayments) ? sessionPayments.reduce((s, p) => s + (p.amount || 0), 0) : 0);
+        const paidTotal = Math.max(Number((paidByGuests).toFixed(2)), Number((paidBySession).toFixed(2)));
+        const outstanding = Math.max(0, Number((expectedGrand - paidTotal).toFixed(2)));
+        const EPS = 0.05;
+
+        if (outstanding <= EPS) {
+          const orderId = savedOrderIdRef.current;
+          const tableIdForMap = (location.state && (location.state as any).tableId) || null;
+          const floor = (location.state && (location.state as any).floor) || null;
+
+          // Receipt count was chosen in PaymentCompleteModal; ensure we print BEFORE leaving to TableMap.
+          // In split/adhoc mode, the per-guest receipt is the expected output.
+          try {
+            await handlePartialPrintReceipt(receiptCount);
+          } catch (e) {
+            try { console.warn('Guest receipt print failed (ignored):', e); } catch {}
+          }
+
+          // Immediate UI cleanup + navigate first
+          clearServerAssignmentForContext();
+          setSelectedServer(null);
+          navigate('/sales', { replace: true });
+
+          // Background finalization (no UI state updates)
+          void (async () => {
+            try {
+              if (tableIdForMap) {
+                try {
+                  await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'Available' })
+                  });
+                  try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
+                } catch {}
+              }
+
+              if (orderId) {
+                try {
+                  await fetch(`${API_URL}/orders/${orderId}/close`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(pmDiscount && pmDiscount.percent > 0 ? { discount: pmDiscount } : {})
+                  });
+                } catch {}
+              }
+
+              if (tableIdForMap) {
+                try {
+                  await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/current-order`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ orderId: null })
+                  });
+                } catch {}
+              }
+
+              try {
+                window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
+              } catch {}
+
+              // Optional: open drawer (ignore failures)
+              try { await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+            } catch {}
+          })();
+          return;
+        }
+      }
+    } catch {}
+
+    // Split 결제인 경우: 위의 split 경로에서 이미 처리됨 (outstanding 불일치로 여기까지 온 경우에도 전체 영수증 출력 방지)
+    const hasSplitContextFallback = (adhocSplitCount > 0) || (guestIds || []).length > 1;
+
+    // Non-split (single payment) completion:
+    const orderId = savedOrderIdRef.current;
+    const tableIdForMap = (location.state && (location.state as any).tableId) || null;
+    const floor = (location.state && (location.state as any).floor) || null;
+
+    // Print receipt (split 결제가 아닌 경우에만 전체 영수증 출력)
+    if (!hasSplitContextFallback && !receiptPrintedRef.current && receiptCount > 0) {
+      receiptPrintedRef.current = true;
+      try {
+        const totals = computeGuestTotals('ALL');
+        const baseNetSubtotal = Number((totals.subtotal || 0).toFixed(2)); // after item+order discounts (pre-TOGO adj)
+        const baseTaxLines: { name: string; amount: number }[] =
+          (totals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+        const baseTaxesTotal = Number((baseTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        const baseGrand = Number((totals.grand || 0).toFixed(2));
+
+        const orderDiscountTotal = Number((pricingAll.totals?.orderDiscountTotal || 0).toFixed(2));
+        const subtotalForReceipt = Number((baseNetSubtotal + orderDiscountTotal).toFixed(2));
+
+        const isTogo = (orderType || '').toLowerCase() === 'togo';
+        const togoAdjustments: any[] = [];
+        let togoDiscountAmt = 0;
+        let bagFeeAmt = 0;
+        if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+          const dv = Number(togoSettings.discountValue || 0);
+          togoDiscountAmt = computeDiscountAmount(baseNetSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+          if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
+        }
+        if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+          bagFeeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+          if (bagFeeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: bagFeeAmt });
+        }
+        const appliedTotals = (togoAdjustments.length > 0)
+          ? applySubtotalAdjustments({ subtotal: baseNetSubtotal, taxLines: baseTaxLines }, togoAdjustments)
+          : { subtotal: baseNetSubtotal, taxLines: baseTaxLines, taxesTotal: baseTaxesTotal, total: baseGrand } as any;
+        const taxLinesForReceipt: { name: string; amount: number }[] =
+          (appliedTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+        const taxTotal = Number((appliedTotals.taxesTotal || 0).toFixed(2));
+        const expectedGrand = Number((appliedTotals.total || 0).toFixed(2));
+
+        const guestSections = guestIds.map((g: number) => {
+          const guestItems = (orderItems || []).filter(it => it.type === 'item' && (it.guestNumber || 1) === g);
+          return {
+            guestNumber: g,
+            items: guestItems.map(item => ({
+              name: item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: item.totalPrice || item.price || 0,
+              modifiers: item.modifiers || [],
+              memo: item.memo,
+              togoLabel: !!(item as any).togoLabel
+            }))
+          };
+        }).filter(s => s.items.length > 0);
+
+        const receiptAdjustments: Array<{ label: string; amount: number }> = [];
+        if (orderDiscountTotal > 0.01) {
+          const orderDiscountItem = (orderItems || []).find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
+          const discountData = (orderDiscountItem as any)?.discount || {};
+          const discountMode = discountData.mode || 'percent';
+          const discountValue = Number(discountData.value || 0);
+          const discountType = discountData.type || 'Order D/C';
+          const label = (discountMode === 'percent' && discountValue > 0)
+            ? `${discountType} (${discountValue}%)`
+            : discountType;
+          receiptAdjustments.push({ label, amount: -Number(orderDiscountTotal.toFixed(2)) });
+        }
+        if (togoDiscountAmt > 0.01) receiptAdjustments.push({ label: 'TOGO Discount', amount: -Number(togoDiscountAmt.toFixed(2)) });
+        if (bagFeeAmt > 0.01) receiptAdjustments.push({ label: 'Bag Fee', amount: Number(bagFeeAmt.toFixed(2)) });
+
+        // PaymentModal discount (결제 시 적용된 할인)
+        const pmDiscount = savedPaymentData?.discount;
+        console.log('🧾 Receipt discount data:', JSON.stringify(pmDiscount), 'savedPaymentData keys:', savedPaymentData ? Object.keys(savedPaymentData) : 'null');
+        let finalSubtotal = subtotalForReceipt;
+        let finalTaxLines = taxLinesForReceipt;
+        let finalTaxTotal = taxTotal;
+        let finalTotal = expectedGrand;
+
+        if (pmDiscount && pmDiscount.percent > 0) {
+          console.log(`🧾 Adding Discount (${pmDiscount.percent}%) = -$${pmDiscount.amount.toFixed(2)} to receipt`);
+          receiptAdjustments.push({
+            label: `Discount (${pmDiscount.percent}%)`,
+            amount: -Number(pmDiscount.amount.toFixed(2))
+          });
+          finalTaxLines = pmDiscount.taxLines.map(t => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+          finalTaxTotal = Number(pmDiscount.taxesTotal.toFixed(2));
+          finalTotal = Number((pmDiscount.discountedSubtotal + pmDiscount.taxesTotal).toFixed(2));
+        }
+
+        const receiptData = {
+          header: {
+            orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (orderId || ''),
+            channel: orderType || 'Dine-in',
+            tableName: resolvedTableName || '',
+            serverName: selectedServer?.name || ''
+          },
+          orderInfo: {
+            channel: orderType || 'Dine-in',
+            tableName: resolvedTableName || '',
+            serverName: selectedServer?.name || ''
+          },
+          items: (orderItems || []).filter(it => it.type === 'item').map(item => {
+            const memoPrice =
+              item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+            const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
+            const gross = perUnit * (item.quantity || 1);
+            const discountAmount = computeItemDiscountAmount(item as any);
+            const lineTotal = Math.max(0, gross - discountAmount);
+            return {
+              name: item.name,
+              quantity: item.quantity || 1,
+              price: item.price || 0,
+              totalPrice: item.totalPrice || item.price || 0,
+              lineTotal,
+              originalTotal: discountAmount > 0 ? gross : undefined,
+              discount: discountAmount > 0 ? {
+                type: (item as any).discount?.type || 'Item Discount',
+                value: (item as any).discount?.value || 0,
+                amount: discountAmount
+              } : undefined,
+              modifiers: item.modifiers || [],
+              memo: item.memo,
+              togoLabel: !!(item as any).togoLabel
+            };
+          }),
+          guestSections,
+          // Receipt: show item-level TOGO label and hide TOGO separator line
+          togoDisplayMode: 'per_item',
+          showTogoSeparator: false,
+          subtotal: finalSubtotal,
+          adjustments: receiptAdjustments,
+          taxLines: finalTaxLines,
+          taxesTotal: finalTaxTotal,
+          total: finalTotal,
+          payments: sessionPayments.map(p => ({
+            method: p.method || 'Unknown',
+            amount: (p.amount || 0) + (p.tip || 0),
+            tip: p.tip || 0
+          })),
+          change: savedPaymentData?.change || 0,
+          footer: {}
+        };
+
+        await fetch(`${API_URL}/printers/print-receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ receiptData, copies: receiptCount })
+        });
+        console.log(`Receipt printed successfully (${receiptCount} copies) from PaymentCompleteClose`);
+      } catch (printErr) {
+        console.warn('Receipt print failed (ignored):', printErr);
+      }
+    }
+
+    // Navigate to table map immediately
+    clearServerAssignmentForContext();
+    setSelectedServer(null);
+    navigate('/sales', { replace: true });
+
+    // Background finalization
+    void (async () => {
+      try {
+        if (tableIdForMap) {
+          try {
+            await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'Available' })
+            });
+            try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
+          } catch {}
+        }
+        if (orderId) {
+          const pmDiscClose = savedPaymentData?.discount;
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/close`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(pmDiscClose && pmDiscClose.percent > 0 ? { discount: pmDiscClose } : {})
+            });
+          } catch {}
+        }
+        if (tableIdForMap) {
+          try {
+            await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/current-order`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId: null })
+            });
+          } catch {}
+        }
+        window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
+      } catch {}
+    })();
   };
 
   // 스플릿 결제 중 개별 게스트 영수증 출력
@@ -1933,13 +2403,69 @@ const handleVoidPinClear = useCallback(() => {
     
     const guestNum = paymentCompleteData.currentGuestNumber;
     try {
-      const guestTotals = computeGuestTotals(guestNum);
-      const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
-      const guestTaxLines = guestTotals.taxLines || [];
-      const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-      const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
-      
-      const guestItems = (orderItems || []).filter(it => it.type !== 'separator' && (it.guestNumber || 1) === guestNum);
+      const safeCopies = Math.max(0, Math.min(10, Math.floor(Number(receiptCount) || 0)));
+      if (safeCopies <= 0) return;
+      const orderKey = String(savedOrderIdRef.current || orderIdFromState || '');
+      const dedupeKey = `${orderKey}|G${guestNum}|C${safeCopies}|ES${adhocSplitCount}`;
+      const now = Date.now();
+      const last = lastGuestReceiptPrintRef.current;
+      if (last && last.key === dedupeKey && (now - last.ts) < 2500) {
+        console.warn(`🧾 Skipping duplicate receipt print (dedupe): ${dedupeKey}`);
+        return;
+      }
+      lastGuestReceiptPrintRef.current = { key: dedupeKey, ts: now };
+
+      const isEvenSplit = adhocSplitCount > 0;
+      const splitCount = adhocSplitCount;
+      const splitIndex = Number(guestNum);
+
+      // Equal Split(adhoc) mode: receipt should show the SAME form for every guest.
+      // - Items list: show full order items (same as Guest 1 typically has)
+      // - Totals: show THIS guest's 1/N share (fair penny distribution)
+      let guestSubtotal = 0;
+      let guestTaxLines: any[] = [];
+      let guestTaxTotal = 0;
+      let guestTotal = 0;
+
+      // PaymentModal 할인 정보
+      const pmDiscount = paymentCompleteData?.discount;
+      const hasPaymentDiscount = pmDiscount && pmDiscount.percent > 0;
+
+      if (isEvenSplit && splitCount > 1 && Number.isFinite(splitIndex) && splitIndex >= 1) {
+        // 할인 적용된 grand 사용 (PaymentModal에서 할인 적용 시)
+        const effectiveGrand = hasPaymentDiscount
+          ? Number((pmDiscount.discountedSubtotal + pmDiscount.taxesTotal).toFixed(2))
+          : Number(payGrandAll || 0);
+        const grandCents = Math.round(effectiveGrand * 100);
+        const baseGrand = Math.floor(grandCents / splitCount);
+        const remGrand = grandCents % splitCount;
+        guestTotal = (baseGrand + (splitIndex <= remGrand ? 1 : 0)) / 100;
+
+        // Tax share per line (할인 적용된 세금 사용)
+        const effectiveTaxLines = hasPaymentDiscount ? pmDiscount.taxLines : (Array.isArray(payTaxLinesAll) ? payTaxLinesAll : []);
+        guestTaxLines = effectiveTaxLines.map((t: any) => {
+          const amt = Number(t?.amount || 0);
+          const tCents = Math.round(amt * 100);
+          const tBase = Math.floor(tCents / splitCount);
+          const tRem = tCents % splitCount;
+          const myT = (tBase + (splitIndex <= tRem ? 1 : 0)) / 100;
+          return { ...t, amount: myT };
+        });
+        guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+
+        // Subtotal = Total - Tax
+        guestSubtotal = Number((guestTotal - guestTaxTotal).toFixed(2));
+      } else {
+        const guestTotals = computeGuestTotals(guestNum);
+        guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
+        guestTaxLines = guestTotals.taxLines || [];
+        guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+      }
+
+      const guestItems = (orderItems || []).filter(it =>
+        it.type !== 'separator' && (isEvenSplit ? true : ((it.guestNumber || 1) === guestNum))
+      );
       
       // 해당 게스트의 모든 결제 내역 수집
       const guestPaymentsList = sessionPayments
@@ -1949,17 +2475,19 @@ const handleVoidPinClear = useCallback(() => {
       const guestReceiptData = {
         header: {
           title: '*** RECEIPT ***',
-          orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
+          orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`),
           channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
           tableName: (location.state as any)?.tableName || resolvedTableName || '',
           serverName: selectedServer?.name || '',
-          guestNumber: guestNum
+          guestNumber: guestNum,
+          ...(isEvenSplit && splitCount > 1 ? { equalSplit: { index: splitIndex, count: splitCount } } : {})
         },
         orderInfo: {
           channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
           tableName: (location.state as any)?.tableName || resolvedTableName || '',
           serverName: selectedServer?.name || '',
-          guestNumber: guestNum
+          guestNumber: guestNum,
+          ...(isEvenSplit && splitCount > 1 ? { equalSplit: { index: splitIndex, count: splitCount } } : {})
         },
         items: [],
         guestSections: [{
@@ -1970,11 +2498,30 @@ const handleVoidPinClear = useCallback(() => {
             price: item.price || 0,
             totalPrice: item.totalPrice || item.price || 0,
             modifiers: item.modifiers || [],
-            memo: item.memo
+            memo: item.memo,
+            togoLabel: !!(item as any).togoLabel
           }))
         }],
-        subtotal: guestSubtotal,
-        adjustments: [],
+        // Receipt: show item-level TOGO label and hide TOGO separator line
+        togoDisplayMode: 'per_item',
+        showTogoSeparator: false,
+        subtotal: (() => {
+          if (!hasPaymentDiscount || !isEvenSplit) return guestSubtotal;
+          // 할인 전 원래 subtotal의 1/N (fair penny)
+          const origSubCents = Math.round(Number(pmDiscount.originalSubtotal || 0) * 100);
+          const bSub = Math.floor(origSubCents / splitCount);
+          const rSub = origSubCents % splitCount;
+          return (bSub + (splitIndex <= rSub ? 1 : 0)) / 100;
+        })(),
+        adjustments: (() => {
+          if (!hasPaymentDiscount || !isEvenSplit) return [] as any[];
+          // 할인 금액의 1/N (fair penny)
+          const discCents = Math.round(Number(pmDiscount.amount || 0) * 100);
+          const bDisc = Math.floor(discCents / splitCount);
+          const rDisc = discCents % splitCount;
+          const myDisc = (bDisc + (splitIndex <= rDisc ? 1 : 0)) / 100;
+          return [{ label: `Discount (${pmDiscount.percent}%)`, amount: -myDisc }];
+        })(),
         taxLines: guestTaxLines,
         taxesTotal: guestTaxTotal,
         total: guestTotal,
@@ -1983,11 +2530,11 @@ const handleVoidPinClear = useCallback(() => {
         footer: { message: 'Thank you for dining with us!' }
       };
       
-      console.log(`🧾 Printing Receipt for Guest ${guestNum} (${receiptCount} copies)...`);
+      console.log(`🧾 Printing Receipt for Guest ${guestNum} (${safeCopies} copies)...`);
       await fetch(`${API_URL}/printers/print-receipt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ receiptData: guestReceiptData, copies: receiptCount })
+        body: JSON.stringify({ receiptData: guestReceiptData, copies: safeCopies })
       });
       console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
     } catch (printErr) {
@@ -2035,9 +2582,6 @@ const handleVoidPinClear = useCallback(() => {
       setActiveGuestNumber(guestNumber);
     }
     setPrefillDueNonce(n => n + 1);
-    setTimeout(() => {
-      setShowPaymentModal(true);
-    }, 0);
   };
 
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -2207,66 +2751,46 @@ useEffect(() => {
     } catch {}
   })();
 }, []);
-  const [modifierColors, setModifierColors] = useState<{ [key: string]: string }>({});
-  const [modifierColorsLoaded, setModifierColorsLoaded] = useState(false);
   const modifierColorsSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  // 서버에서 modifierColors 로드
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/layout-settings`);
-        if (res.ok) {
-          const result = await res.json();
-          console.log('🎨 [Modifier Color] Loaded from server:', result?.data?.modifierColors);
-          if (result?.success && result?.data?.modifierColors) {
-            setModifierColors(result.data.modifierColors);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load modifierColors:', err);
-      } finally {
-        setModifierColorsLoaded(true);
+  // modifierColors 변경 시 서버에 직접 저장 (debounce)
+  const saveModifierColorsDirect = useCallback(async (colors: Record<string, string>) => {
+    try {
+      const res = await fetch(`${API_URL}/layout-settings`);
+      if (!res.ok) return;
+      const result = await res.json();
+      const existing = result?.data || {};
+      const payload = { ...existing, modifierColors: colors };
+      const saveRes = await fetch(`${API_URL}/layout-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (saveRes.ok) {
+        console.log('🎨 [Modifier Color] Saved directly:', colors);
+      } else {
+        console.error('🎨 [Modifier Color] Save failed:', saveRes.status);
       }
-    })();
+    } catch (err) {
+      console.error('Failed to save modifierColors:', err);
+    }
   }, []);
-  
-  // modifierColors 변경 시 서버에 저장 (debounce 적용)
+
   useEffect(() => {
     if (!modifierColorsLoaded) return;
-    if (Object.keys(modifierColors).length === 0) return; // 빈 객체는 저장하지 않음
+    if (Object.keys(modifierColors).length === 0) return;
     if (modifierColorsSaveTimeoutRef.current) {
       clearTimeout(modifierColorsSaveTimeoutRef.current);
     }
-    modifierColorsSaveTimeoutRef.current = setTimeout(async () => {
-      try {
-        console.log('🎨 [Modifier Color] Saving to server:', modifierColors);
-        // 현재 설정을 가져와서 modifierColors만 업데이트
-        const currentRes = await fetch(`${API_URL}/layout-settings`);
-        if (currentRes.ok) {
-          const currentResult = await currentRes.json();
-          const currentSettings = currentResult?.data || {};
-          const response = await fetch(`${API_URL}/layout-settings`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...currentSettings, modifierColors }),
-          });
-          if (response.ok) {
-            console.log('🎨 [Modifier Color] Saved successfully!');
-          } else {
-            console.error('🎨 [Modifier Color] Save failed:', response.status);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to save modifierColors:', err);
-      }
-    }, 500); // 500ms debounce
+    modifierColorsSaveTimeoutRef.current = setTimeout(() => {
+      saveModifierColorsDirect(modifierColorsAutoSaveRef.current);
+    }, 500);
     return () => {
       if (modifierColorsSaveTimeoutRef.current) {
         clearTimeout(modifierColorsSaveTimeoutRef.current);
       }
     };
-  }, [modifierColors, modifierColorsLoaded]);
+  }, [modifierColors, modifierColorsLoaded, saveModifierColorsDirect]);
   
   const [selectedModifierIdForColor, setSelectedModifierIdForColor] = useState<string | null>(null);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
@@ -2491,8 +3015,50 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
 
   // 선택된 메뉴 아이템 상태
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<string | null>(null);
+  // 주문목록에서 선택한 라인(중간 아이템) 모디파이어 편집 타겟
+  const [modifierEditTargetLineId, setModifierEditTargetLineId] = useState<string | null>(null);
+  const [modifierEditTargetRowIndex, setModifierEditTargetRowIndex] = useState<number | null>(null);
+  const pendingModifierJumpRef = useRef<null | { itemId: string; categoryName: string; selected: { [key: string]: string[] } }>(null);
   // 모디파이어 커스텀 배치: itemId -> 배열(슬롯에 배치된 modifierId들), 빈 슬롯은 'EMPTY:idx'
-  const [modifierLayoutByItem, setModifierLayoutByItem] = useState<{ [itemId: string]: string[] }>({});
+  // DB(layoutSettings)에서 초기값을 로드하고, localStorage는 fallback
+  const modifierLayoutByItem = hookModifierLayout;
+  const setModifierLayoutByItem = hookSetModifierLayout;
+
+  // modifierLayoutByItem 변경 시 서버에 저장 (debounce)
+  const modLayoutSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const modLayoutAutoSaveRef = useRef(modifierLayoutByItem);
+  modLayoutAutoSaveRef.current = modifierLayoutByItem;
+
+  const saveModifierLayoutDirect = useCallback(async (layout: Record<string, string[]>) => {
+    try {
+      const res = await fetch(`${API_URL}/layout-settings`);
+      if (!res.ok) return;
+      const result = await res.json();
+      const existing = result?.data || {};
+      const payload = { ...existing, modifierLayoutByItem: layout };
+      await fetch(`${API_URL}/layout-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!modifierLayoutLoaded) return;
+    if (Object.keys(modifierLayoutByItem).length === 0) return;
+    if (modLayoutSaveTimeoutRef.current) {
+      clearTimeout(modLayoutSaveTimeoutRef.current);
+    }
+    modLayoutSaveTimeoutRef.current = setTimeout(() => {
+      saveModifierLayoutDirect(modLayoutAutoSaveRef.current);
+    }, 800);
+    return () => {
+      if (modLayoutSaveTimeoutRef.current) {
+        clearTimeout(modLayoutSaveTimeoutRef.current);
+      }
+    };
+  }, [modifierLayoutByItem, modifierLayoutLoaded, saveModifierLayoutDirect]);
 
   // 레이아웃 매니저 탭 접기/펼침 상태
   const [panelWidthExpanded, setPanelWidthExpanded] = useState(true);
@@ -2606,6 +3172,13 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
       } catch {}
     })();
   }, [showOpenPriceModal, menuId, selectedPrinterGroupId]);
+
+  // Item-level TOGO label button (Dine-in only, separate from orderType TOGO)
+  const [itemTogoEnabled, setItemTogoEnabled] = useState(() => {
+    try { return localStorage.getItem('item_togo_enabled') === '1'; } catch { return false; }
+  });
+  useEffect(() => { try { localStorage.setItem('item_togo_enabled', itemTogoEnabled ? '1' : '0'); } catch {} }, [itemTogoEnabled]);
+  const lastAddedItemIdRef = React.useRef<string | null>(null);
 
   // Table-only Bag Fee UI states
   const [tableBagFeeEnabled, setTableBagFeeEnabled] = useState(() => {
@@ -2963,12 +3536,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (modifierGroup && modifierGroup.max_selections === 1) {
         newSelectedModifiers[groupId] = [modifierId];
       } else {
-        const index = newSelectedModifiers[groupId].indexOf(modifierId);
-        if (index > -1) {
-          newSelectedModifiers[groupId].splice(index, 1);
+        const cur = Array.isArray(newSelectedModifiers[groupId]) ? [...newSelectedModifiers[groupId]] : [];
+        const maxSel = Number((modifierGroup as any)?.max_selections ?? (modifierGroup as any)?.max_selection ?? 0);
+        const distinctCount = new Set(cur).size;
+        const alreadySelected = cur.includes(modifierId);
+        // Multi-select: clicking again increases count (duplicates mean 2x/3x...)
+        // If max selections is set, enforce it by distinct options (but still allow increasing an already selected modifier).
+        if (!alreadySelected && Number.isFinite(maxSel) && maxSel > 0 && distinctCount >= maxSel) {
+          // ignore
         } else {
-          newSelectedModifiers[groupId].push(modifierId);
+          cur.push(modifierId);
         }
+        newSelectedModifiers[groupId] = cur;
       }
     }
     
@@ -3265,12 +3844,32 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     console.log('📂 [Category Change] Category selected:', selectedCategory, '→ ID:', category.category_id);
     
-    // 현재 선택된 메뉴 아이템 초기화
-    setSelectedMenuItemId(null);
-    setSelectedModifiers({});
-    
-    // 카테고리 모디파이어 로드
-    fetchCategoryModifiers(category.category_id);
+    const pending = pendingModifierJumpRef.current;
+    const hasPending = !!(pending && pending.categoryName === selectedCategory);
+
+    // 일반 카테고리 이동일 때만 초기화 (주문목록 클릭으로 "해당 아이템"으로 점프하는 경우는 유지)
+    if (!hasPending) {
+      setSelectedMenuItemId(null);
+      setSelectedModifiers({});
+      setModifierEditTargetLineId(null);
+      setModifierEditTargetRowIndex(null);
+    }
+
+    // 카테고리 모디파이어 로드 후, 주문목록 클릭 점프가 있으면 해당 아이템 모디파이어 편집으로 진입
+    (async () => {
+      await fetchCategoryModifiers(category.category_id);
+      const pendingAfter = pendingModifierJumpRef.current;
+      if (pendingAfter && pendingAfter.categoryName === selectedCategory) {
+        pendingModifierJumpRef.current = null;
+        try {
+          setSelectedMenuItemId(pendingAfter.itemId);
+          setSelectedMenuItemIds([pendingAfter.itemId]);
+          setModifierTabExpanded(true);
+          await fetchItemModifiers(pendingAfter.itemId);
+          setSelectedModifiers(pendingAfter.selected || {});
+        } catch {}
+      }
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategory, categories]);
 
@@ -3377,8 +3976,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   useEffect(() => { try { localStorage.setItem('svc_percent', String(svcPercent)); } catch {} }, [svcPercent]);
 
   // Extra items (Bag Fee / Extra2) available for placement (normal and merged)
+ const TOGO_LABEL_ITEM_ID = '__TOGO_LABEL__';
  const extraButtons: MenuItem[] = useMemo(() => {
    const items: MenuItem[] = [] as any;
+   if (itemTogoEnabled && !isTogo) items.push({ id: TOGO_LABEL_ITEM_ID, name: 'Togo', price: 0, category: 'TogoLabel', color: 'bg-gray-500' } as any);
    const wantBag = !!tableBagFeeEnabled;
    const wantExtra2 = typeof extra2Enabled !== 'undefined' ? !!extra2Enabled : false;
    const wantSvc = !!svcEnabled;
@@ -3387,7 +3988,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
    if (!!extra3Enabled) items.push({ id: '__EXTRA3_ITEM__', name: extra3Name || 'Service', price: 0, category: 'Extra3', color: extra3Color, percent: Number(extra3Amount || 0) } as any);
    if (wantSvc) items.push({ id: SERVICE_CHARGE_ITEM_ID, name: `${svcName} ${svcPercent}%`, price: 0, category: 'Service', color: 'bg-amber-600' } as any);
    return items;
- }, [tableBagFeeEnabled, extra2Enabled, bagFeeButtonName, tableBagFeeValue, bagFeeColor, extra2Name, extra2Amount, extra2Color, extra3Enabled, extra3Name, extra3Amount, extra3Color, svcEnabled, svcName, svcPercent]);
+ }, [itemTogoEnabled, isTogo, tableBagFeeEnabled, extra2Enabled, bagFeeButtonName, tableBagFeeValue, bagFeeColor, extra2Name, extra2Amount, extra2Color, extra3Enabled, extra3Name, extra3Amount, extra3Color, svcEnabled, svcName, svcPercent]);
 
   // 메뉴 아이템 클릭 시 모디파이어 로드
   const handleMenuItemClick = async (item: MenuItem) => {
@@ -3397,6 +3998,48 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       return;
     }
     
+    // Block ordering sold out items (double safety)
+    if (soldOutItems.has(item.id)) {
+      return;
+    }
+
+    // 주문목록 아이템(중간 라인) 편집 모드 해제: 오른쪽 메뉴를 눌러 추가 주문으로 들어가면 기존 동작 유지
+    setModifierEditTargetLineId(null);
+    setModifierEditTargetRowIndex(null);
+    pendingModifierJumpRef.current = null;
+    
+    // Togo Label: apply to selected order item, or last added item if none selected
+    if (item.id === TOGO_LABEL_ITEM_ID) {
+      setOrderItems(prev => {
+        let targetIdx = -1;
+        if (selectedRowIndex != null && selectedOrderItemId != null) {
+          targetIdx = selectedRowIndex;
+        } else if (lastAddedItemIdRef.current) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].id === lastAddedItemIdRef.current && prev[i].type !== 'separator') {
+              targetIdx = i;
+              break;
+            }
+          }
+        }
+        if (targetIdx < 0) {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].type !== 'separator' && prev[i].type !== 'discount' && !(prev[i] as any).type?.includes('void')) {
+              targetIdx = i;
+              break;
+            }
+          }
+        }
+        if (targetIdx < 0) return prev;
+        const target = prev[targetIdx];
+        if (!target || target.type === 'separator') return prev;
+        const copy = [...prev];
+        copy[targetIdx] = { ...target, togoLabel: !(target as any).togoLabel } as any;
+        return copy;
+      });
+      return;
+    }
+
     // Bag Fee pseudo item handling
     if (item.id === BAG_FEE_ITEM_ID) {
       setSelectedMenuItemId(item.id);
@@ -3419,6 +4062,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           totalPrice: amount,
           taxGroupId: typeof bagFeeTaxGroupId === 'number' ? bagFeeTaxGroupId : null,
           printerGroupId: bagFeePrinterGroupId ? (isNaN(Number(bagFeePrinterGroupId)) ? null : Number(bagFeePrinterGroupId)) as any : null,
+          type: 'item',
+          guestNumber: activeGuestNumber
+        };
+        return [...prev, newItem];
+      });
+      return;
+    }
+    // Extra2 pseudo item handling
+    if (item.id === '__EXTRA2_ITEM__') {
+      setSelectedMenuItemId(item.id);
+      const amount = Number(extra2Amount || 0);
+      if (amount <= 0) return;
+      setOrderItems(prev => {
+        const name = extra2Name || 'Extra';
+        const idx = prev.findIndex(it => it.type !== 'separator' && it.name === name && (it.guestNumber || 1) === (activeGuestNumber || 1) && Number(it.price) === amount);
+        if (idx >= 0) {
+          const copy = [...prev];
+          const target = copy[idx];
+          copy[idx] = { ...target, quantity: (target.quantity || 1) + 1 } as any;
+          return copy;
+        }
+        const newItem: OrderItem = {
+          id: `extra2-${Date.now()}`,
+          name,
+          quantity: 1,
+          price: amount,
+          totalPrice: amount,
+          taxGroupId: typeof extra2TaxGroupId === 'number' ? extra2TaxGroupId : null,
+          printerGroupId: extra2PrinterGroupId ? (isNaN(Number(extra2PrinterGroupId)) ? null : Number(extra2PrinterGroupId)) as any : null,
           type: 'item',
           guestNumber: activeGuestNumber
         };
@@ -3604,11 +4276,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     // 메뉴 아이템을 바로 주문에 추가 (기본 가격으로)
     // Block adding when active guest is locked (PAID)
-    if (isGuestLocked(activeGuestNumber)) {
+    if (adhocSplitCount > 1) {
+      // Equal Split: 새 아이템은 전체 주문에 추가 (특정 게스트에 속하지 않음)
+    } else if (isGuestLocked(activeGuestNumber)) {
       try { alert('Cannot add to a guest that has already paid.'); } catch {}
       return;
     }
     addToOrder(item);
+    lastAddedItemIdRef.current = item.id;
   };
 
   const toggleSelectMenuItem = (itemId: string) => {
@@ -3681,10 +4356,53 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     setSelectedOrderLineId(orderLineId || null);
     setSelectedOrderGuestNumber(typeof guestNum === 'number' ? guestNum : null);
     setSelectedRowIndex(Number.isFinite(rowIndex) ? rowIndex : null);
+    setModifierEditTargetLineId(orderLineId || null);
+    setModifierEditTargetRowIndex(Number.isFinite(rowIndex) ? rowIndex : null);
     // Ensure subsequent menu additions go to the clicked guest
     if (typeof guestNum === 'number') {
       setActiveGuestNumber(guestNum);
     }
+
+    // 주문목록 아이템 클릭 → 오른쪽 카테고리 이동 + 해당 아이템 모디파이어 편집 진입
+    try {
+      const clickedRow: any = (orderItems as any[])[rowIndex];
+      if (!clickedRow || clickedRow.type === 'separator') return;
+      const menuItem = menuItems.find(mi => String(mi.id) === String(itemId));
+      if (!menuItem) return;
+      const categoryName = String((menuItem as any).category || '');
+      if (!categoryName) return;
+
+      // 기존 선택된 모디파이어를 패널 선택값으로 복원
+      const restoreSelected: { [key: string]: string[] } = {};
+      const mods = Array.isArray(clickedRow.modifiers) ? clickedRow.modifiers : [];
+      mods.forEach((m: any) => {
+        const gid = String(m.groupId ?? m.modifier_group_id ?? '');
+        if (!gid || gid.startsWith('__')) return; // __MOD_EXTRA1__/__MOD_EXTRA2__ 등은 패널 대상 아님
+        const ids = Array.isArray(m.modifierIds) ? m.modifierIds : (Array.isArray(m.modifier_ids) ? m.modifier_ids : []);
+        if (!ids || ids.length === 0) return;
+        restoreSelected[gid] = ids.map((x: any) => String(x));
+      });
+
+      const doApply = async () => {
+        try {
+          pendingModifierJumpRef.current = null;
+          setSelectedMenuItemId(String(menuItem.id));
+          setSelectedMenuItemIds([String(menuItem.id)]);
+          setModifierTabExpanded(true);
+          await fetchItemModifiers(String(menuItem.id));
+          setSelectedModifiers(restoreSelected);
+        } catch {}
+      };
+
+      // 카테고리가 이미 선택된 상태면 즉시 적용, 아니면 카테고리 이동 후 effect에서 적용
+      if (selectedCategory === categoryName) {
+        void doApply();
+      } else {
+        pendingModifierJumpRef.current = { itemId: String(menuItem.id), categoryName, selected: restoreSelected };
+        try { setActiveCategoryId(menuItem.category_id ? String(menuItem.category_id) : null); } catch {}
+        setSelectedCategory(categoryName);
+      }
+    } catch {}
   };
 
   const handleEditPriceClick = () => {
@@ -3898,41 +4616,34 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
 
 
-  // 주문 총액 계산
-  const subtotal = orderItems.reduce((sum, item) => sum + computeOrderItemNetTotal(item), 0);
-  const grossSubtotal = orderItems.reduce((sum, item) => {
-    if (item.type === 'separator') return sum;
-    const memoPrice =
-      item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
-    const perUnit =
-      Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
-    return sum + perUnit * (item.quantity || 1);
-  }, 0);
-  const discountTotal = Math.max(0, Number((grossSubtotal - subtotal).toFixed(2)));
-  // 아이템별 모든 세금 그룹을 적용하여 세금 합산 (옵션2)
-  const taxAmountByName: { [taxName: string]: number } = {};
-  orderItems.forEach((orderItem) => {
-    if (orderItem.type === 'separator') return;
-    const itemKey = orderItem.id?.toString();
-    const itemSubtotal = computeOrderItemNetTotal(orderItem);
-    const itemGroupIds = itemKey && itemTaxGroups[itemKey] ? itemTaxGroups[itemKey] : [];
-    const catId = itemKey ? itemIdToCategoryId[itemKey] : undefined;
-    const catGroupIds = typeof catId === 'number' && categoryTaxGroups[catId] ? categoryTaxGroups[catId] : [];
-    // 아이템 + 카테고리 + 주문행 지정 세금 그룹 통합(중복 제거)
-    const overrideGroupIds = typeof (orderItem as any).taxGroupId === 'number' ? [(orderItem as any).taxGroupId as number] : [];
-    const mergedGroupIds = Array.from(new Set<number>([...itemGroupIds, ...catGroupIds, ...overrideGroupIds]));
-    mergedGroupIds.forEach((gid) => {
-      const taxes = taxGroupIdToTaxes[gid] || [];
-      taxes.forEach((t) => {
-        const delta = itemSubtotal * (t.rate / 100);
-        taxAmountByName[t.name] = (taxAmountByName[t.name] || 0) + delta;
-      });
-    });
-  });
+  // 주문 총액 계산 (단일 계산 모듈 결과를 그대로 사용)
+  const baseSubtotal = Number((pricingAll.totals?.subtotalAfterAllDiscounts || 0).toFixed(2));
+  const grossSubtotal = Number((pricingAll.totals?.grossSubtotal || 0).toFixed(2));
+  const baseTaxLines: { name: string; amount: number }[] = (pricingAll.totals?.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+  const baseTaxesTotal = Number((pricingAll.totals?.taxesTotal || 0).toFixed(2));
+  const baseTotal = Number((pricingAll.totals?.total || 0).toFixed(2));
 
-  const taxLines: { name: string; amount: number }[] = Object.entries(taxAmountByName).map(([name, amount]) => ({ name, amount }));
-  const taxesTotal = taxLines.reduce((sum, t) => sum + t.amount, 0);
-  const total = subtotal + taxesTotal;
+  // Apply channel-level adjustments (TOGO discount + Bag Fee) via shared helper.
+  const togoAdjustments: any[] = [];
+  let togoDiscountAmt = 0;
+  if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+    const dv = Number(togoSettings.discountValue || 0);
+    togoDiscountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+    if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
+  }
+  if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+    const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+    if (feeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+  }
+  const appliedTotals = (togoAdjustments.length > 0)
+    ? applySubtotalAdjustments({ subtotal: baseSubtotal, taxLines: baseTaxLines }, togoAdjustments)
+    : { subtotal: baseSubtotal, taxLines: baseTaxLines, taxesTotal: baseTaxesTotal, total: baseTotal, discountTotal: 0, feeTotal: 0 } as any;
+
+  const subtotal = Number((appliedTotals.subtotal || 0).toFixed(2));
+  const taxLines: { name: string; amount: number }[] = (appliedTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+  const taxesTotal = Number((appliedTotals.taxesTotal || 0).toFixed(2));
+  const total = Number((appliedTotals.total || 0).toFixed(2));
+  const discountTotal = Number(((pricingAll.totals?.itemDiscountTotal || 0) + (pricingAll.totals?.orderDiscountTotal || 0) + (togoDiscountAmt || 0)).toFixed(2));
 
   // HEX 색상의 밝기를 계산하는 함수
   const getHexLuminance = (hex: string): number => {
@@ -3947,11 +4658,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // 선택된 메뉴 아이템의 주문을 모디파이어 정보와 함께 업데이트
   const updateOrderItemWithModifiers = (item: MenuItem) => {
     setOrderItems(prev => {
-      // Guest 별 독립처리: 현재 활성 게스트의 해당 메뉴 아이템만 찾기
-      const existingItemIndex = prev.findIndex(orderItem => 
-        orderItem.id === item.id && 
-        orderItem.guestNumber === activeGuestNumber
-      );
+      // Guest 별 독립처리: 가장 최근에 추가된 (마지막) 해당 메뉴 아이템 찾기
+      let existingItemIndex = -1;
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].id === item.id && prev[i].guestNumber === activeGuestNumber) {
+          existingItemIndex = i;
+          break;
+        }
+      }
       
       if (existingItemIndex !== -1) {
         // 기존 아이템이 있으면 모디파이어 정보만 업데이트
@@ -4064,11 +4778,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         });
       });
 
-      // Guest 별: 같은 메뉴 라인을 찾음 (시그니처 비교 없이)
-      const existingItemIndex = prev.findIndex(orderItem => 
-        orderItem.id === item.id && 
-        orderItem.guestNumber === activeGuestNumber
-      );
+      // 주문목록 클릭 편집 모드면 해당 라인(중간 아이템)을 우선 업데이트
+      let existingItemIndex = -1;
+      if (modifierEditTargetLineId) {
+        existingItemIndex = prev.findIndex(it => String((it as any).orderLineId || '') === String(modifierEditTargetLineId));
+      }
+      if (existingItemIndex === -1 && modifierEditTargetRowIndex != null) {
+        const idx = Number(modifierEditTargetRowIndex);
+        if (Number.isFinite(idx) && idx >= 0 && idx < prev.length && prev[idx]?.type !== 'separator') {
+          existingItemIndex = idx;
+        }
+      }
+      // 기본 동작: Guest 별 가장 최근(마지막) 해당 메뉴 아이템
+      if (existingItemIndex === -1) {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].id === item.id && prev[i].guestNumber === activeGuestNumber) {
+            existingItemIndex = i;
+            break;
+          }
+        }
+      }
 
       if (existingItemIndex !== -1) {
         // 기존 아이템 업데이트
@@ -4145,6 +4874,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   useEffect(() => {
     loadLayoutSettings();
   }, [loadLayoutSettings]);
+
+  // Fallback: modifierColors가 로드되지 않았으면 직접 로드
+  useEffect(() => {
+    if (modifierColorsLoaded && Object.keys(modifierColors).length === 0) {
+      (async () => {
+        try {
+          const res = await fetch(`${API_URL}/layout-settings`);
+          if (res.ok) {
+            const result = await res.json();
+            if (result?.success && result?.data?.modifierColors && Object.keys(result.data.modifierColors).length > 0) {
+              setModifierColors(result.data.modifierColors);
+            }
+          }
+        } catch {}
+      })();
+    }
+  }, [modifierColorsLoaded, modifierColors, setModifierColors]);
 
   // resetLayoutSettings is provided by useLayoutSettings hook
 
@@ -4270,11 +5016,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   const computeDefaultLayout = (entries: Array<{id:string}>, capacity: number) => {
     const ids = entries.map(e => e.id).slice(0, capacity);
-    if (!shouldShowButtonPlaceholders) {
-      return ids;
-    }
-    while (ids.length < capacity) {
-      ids.push(`EMPTY:${ids.length}`);
+    if (shouldShowButtonPlaceholders) {
+      while (ids.length < capacity) {
+        ids.push(`EMPTY:${ids.length}`);
+      }
     }
     return ids;
   };
@@ -4285,20 +5030,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     if (existing && Array.isArray(existing)) {
       for (const val of existing) {
         if (val.startsWith('EMPTY:')) {
-          if (shouldShowButtonPlaceholders) {
-            result.push(val);
-          }
+          result.push(val);
         } else if (availableIds.has(val)) {
           result.push(val);
         }
       }
-      // append any new ids that were not in existing
       Array.from(availableIds).forEach((id) => {
         if (!result.includes(id) && result.length < capacity) {
           result.push(id);
         }
       });
-      // trim or pad to capacity
       if (result.length > capacity) {
         result.length = capacity;
       }
@@ -4307,7 +5048,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           result.push(`EMPTY:${result.length}`);
         }
       }
-      return shouldShowButtonPlaceholders ? result : result.slice(0, capacity);
+      return result.slice(0, capacity);
     }
     return computeDefaultLayout(entries, capacity);
   };
@@ -4318,51 +5059,79 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   let combinedEntries = getCombinedModifierEntries();
   // Bag Fee is no longer injected into the modifier panel
   const entryMap = new Map(combinedEntries.map(e => [e.id, e]));
-  const currentItemLayout = selectedMenuItemId ? modifierLayoutByItem[selectedMenuItemId] : undefined;
+  const modCategoryKey = (() => {
+    const cat = categories.find(c => c.name === selectedCategory);
+    return cat ? `__cat_${cat.category_id}` : (selectedCategory ? `__cat_${selectedCategory}` : undefined);
+  })();
+  const modLayoutKey = (() => {
+    if (selectedMenuItemId && modifierLayoutByItem[selectedMenuItemId]) return selectedMenuItemId;
+    if (modCategoryKey) return modCategoryKey;
+    return selectedMenuItemId;
+  })();
+  const currentItemLayout = modLayoutKey ? modifierLayoutByItem[modLayoutKey] : undefined;
   let slotItemIds = sanitizeExistingLayout(currentItemLayout, combinedEntries, capacity);
 
-  // persist layout when dependencies change
+  // persist layout when dependencies change (only after DB load completes)
   useEffect(() => {
-    if (!selectedMenuItemId) return;
-    const sanitized = sanitizeExistingLayout(modifierLayoutByItem[selectedMenuItemId], combinedEntries, capacity);
-    if (!modifierLayoutByItem[selectedMenuItemId] || sanitized.join('|') !== (modifierLayoutByItem[selectedMenuItemId] || []).join('|')) {
-      setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: sanitized }));
-      try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(sanitized)); } catch {}
+    const key = modLayoutKey;
+    if (!key) return;
+    if (!modifierLayoutLoaded) return;
+    const sanitized = sanitizeExistingLayout(modifierLayoutByItem[key], combinedEntries, capacity);
+    const existing = (modifierLayoutByItem[key] || []).join('|');
+    const sanitizedStr = sanitized.join('|');
+    if (!modifierLayoutByItem[key] || sanitizedStr !== existing) {
+      setModifierLayoutByItem(prev => ({ ...prev, [key]: sanitized }));
+      try { localStorage.setItem(getLayoutKey(key), JSON.stringify(sanitized)); } catch {}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMenuItemId, layoutSettings.modifierColumns, layoutSettings.modifierRows, selectedItemModifiers]);
+  }, [modLayoutKey, modifierLayoutLoaded, layoutSettings.modifierColumns, layoutSettings.modifierRows, selectedItemModifiers]);
 
-  // initialize from localStorage on item change
+  // initialize modifier layout on item/category change: prefer hook state (from DB), fallback to localStorage
   useEffect(() => {
-    if (!selectedMenuItemId) return;
+    const key = modLayoutKey;
+    if (!key) return;
+    if (modifierLayoutByItem[key]) return;
     try {
-      const raw = localStorage.getItem(getLayoutKey(selectedMenuItemId));
+      const raw = localStorage.getItem(getLayoutKey(key));
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: parsed }));
+          setModifierLayoutByItem(prev => ({ ...prev, [key]: parsed }));
         }
       }
     } catch {}
-  }, [selectedMenuItemId]);
+  }, [modLayoutKey, modifierLayoutByItem]);
 
   const handleModifierDragEnd = (event: any) => {
     const { active, over } = event;
-    if (!selectedMenuItemId || !over || active.id === over.id) return;
-    const current = modifierLayoutByItem[selectedMenuItemId] || slotItemIds;
-    const oldIndex = current.indexOf(active.id);
-    const newIndex = current.indexOf(over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
-    const reordered = arrayMove(current, oldIndex, newIndex);
+    const saveKey = modLayoutKey || modCategoryKey || selectedMenuItemId;
+    if (!saveKey || !over || active.id === over.id) return;
+    const current = (modifierLayoutByItem[saveKey] || slotItemIds).map(String);
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    const oldIdx = current.indexOf(activeId);
+    const newIdx = current.indexOf(overId);
+    if (oldIdx === -1 || newIdx === -1) return;
 
-    // Persist Bag Fee global position
-    if (active.id === BAG_FEE_ID || over.id === BAG_FEE_ID) {
-      const newPos = reordered.indexOf(BAG_FEE_ID);
+    const next = current.slice();
+    const emptyToken = `EMPTY:mod:${oldIdx}:${Date.now()}`;
+    next[oldIdx] = emptyToken;
+    const insertIdx = next.indexOf(overId);
+    if (insertIdx !== -1) {
+      next.splice(insertIdx, 0, activeId);
+    }
+    if (next.length > current.length && next[next.length - 1].startsWith('EMPTY:') && next[next.length - 1] !== emptyToken) {
+      next.pop();
+    }
+
+    if (activeId === BAG_FEE_ID || overId === BAG_FEE_ID) {
+      const newPos = next.indexOf(BAG_FEE_ID);
       if (newPos >= 0) setBagFeeSlotIndex(newPos);
     }
 
-    setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: reordered }));
-    try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(reordered)); } catch {}
+    setModifierLayoutByItem(prev => ({ ...prev, [saveKey]: next }));
+    try { localStorage.setItem(getLayoutKey(saveKey), JSON.stringify(next)); } catch {}
+    modDragItemIdRef.current = null;
   };
 
   // Drag end handlers
@@ -4453,6 +5222,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeModifierId, setActiveModifierId] = useState<string | null>(null);
+  const modDragItemIdRef = useRef<string | null>(null);
 
 
 
@@ -4765,7 +5535,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             amount: discountAmount
           } : undefined,
           modifiers: item.modifiers || [],
-          memo: item.memo
+          memo: item.memo,
+          togoLabel: !!(item as any).togoLabel
         };
       }),
       // Split 테이블인 경우 Guest 분리 표시를 위한 guestSections 생성
@@ -4789,7 +5560,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             price: item.price || 0,
             totalPrice: discountAmount > 0 ? itemNet : itemGross,
             modifiers: item.modifiers || [],
-            memo: item.memo
+            memo: item.memo,
+            togoLabel: !!(item as any).togoLabel
           });
         });
         
@@ -4851,7 +5623,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             type: discountType,
             value: (it as any).discount?.value || 0,
             amount: disc
-          } : undefined
+          } : undefined,
+          togoLabel: !!(it as any).togoLabel
         });
       });
 
@@ -4957,7 +5730,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       if (mode === 'ALL_DETAILS') {
          // 공통 Bill 데이터 빌드 함수 사용 (주문 제출 시 Bill과 동일한 로직)
-         const printOrderNumber = savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber;
+         const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber);
          const channelDisplay = normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase();
          
          const billData = buildBillDataForPrint({
@@ -5073,9 +5846,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
   };
 
-  const saveOrderToBackend = async () => {
+  const saveOrderToBackend = async (orderItemsOverride?: any[]) => {
+    const source = Array.isArray(orderItemsOverride) ? orderItemsOverride : (orderItems || []);
     // Include discount items so they are saved with guest numbers
-    const items = (orderItems || []).filter(it => it.type === 'item' || it.type === 'discount');
+    const items = (source || []).filter((it: any) => it && (it.type === 'item' || it.type === 'discount'));
     if (items.length === 0) return false;
 
     const now = new Date();
@@ -5277,7 +6051,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             orderNumber,
             orderType: orderType || 'POS',
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })), 
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, splitNumerator: it.splitNumerator || null, orderLineId: it.orderLineId, togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })),
             adjustments,
             tableId: tableIdForMap,
             serverId: selectedServer?.id || null,
@@ -5287,13 +6061,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
-            kitchenNote: savedKitchenMemo || null
+            kitchenNote: savedKitchenMemo || null,
+            orderSource: (location.state as any)?.deliveryCompany || null
           })
         });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const savedOrder = await saveRes.json();
         const newOrderId = savedOrder?.orderId ?? savedOrder?.id;
         try { savedOrderIdRef.current = newOrderId ?? savedOrderIdRef.current; } catch {}
+        try { savedOrderNumberRef.current = savedOrder?.order_number || String(savedOrder?.dailyNumber || '').padStart(3, '0') || savedOrderNumberRef.current; } catch {}
         
         // New Order Created: Clear stale paidGuests state for this table to prevent merging old data
         try {
@@ -5305,7 +6081,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         if (selectedServer) persistServerSelection(selectedServer);
         
         setOrderItems(prev => prev.map(it => {
-          if (it.type !== 'item') return it;
+          if (it.type !== 'item' && it.type !== 'discount') return it;
           const found = itemsWithLineId.find((item:any) => 
             item.id === it.id && 
             (item.guestNumber || 1) === (it.guestNumber || 1) &&
@@ -5337,7 +6113,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             total: adjustedTotal,
-            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })),
+            items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, splitNumerator: it.splitNumerator || null, orderLineId: it.orderLineId, togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })),
             adjustments,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
@@ -5346,14 +6122,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
-            kitchenNote: savedKitchenMemo || null
+            kitchenNote: savedKitchenMemo || null,
+            orderSource: (location.state as any)?.deliveryCompany || null
           })
         });
         if (!putRes.ok) throw new Error('Failed to update order');
         if (selectedServer) persistServerSelection(selectedServer);
         
         setOrderItems(prev => prev.map(it => {
-          if (it.type !== 'item') return it;
+          if (it.type !== 'item' && it.type !== 'discount') return it;
           const found = itemsWithLineId.find((item:any) => 
             item.id === it.id && 
             (item.guestNumber || 1) === (it.guestNumber || 1) &&
@@ -5413,17 +6190,42 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     return true;
   };
 
-  const printKitchenOrders = async (wasUpdateMode: boolean) => {
-      const items = (orderItems || []).filter(it => it.type === 'item');
+  const printKitchenOrders = async (wasUpdateMode: boolean, orderItemsOverride?: any[]) => {
+      const source = Array.isArray(orderItemsOverride) ? orderItemsOverride : (orderItems || []);
+      const items = (source || []).filter((it: any) => it && it.type === 'item');
       const printItems: any[] = [];
       
       items.forEach((it:any) => {
         const hasOrderLineId = !!it.orderLineId;
-        const quantityDelta = Number(it.quantityDelta || 0);
+        const orderLineId = hasOrderLineId ? String(it.orderLineId) : '';
+        const currentQty = Number(it.quantity || 0);
+        const originalSavedQtyRaw =
+          (wasUpdateMode && orderLineId)
+            ? (originalSavedQuantitiesRef.current[orderLineId] as any)
+            : undefined;
+        // In update mode, a line that is NOT in originalSavedQuantitiesRef is a newly added line.
+        const isNewLineInUpdate = !!(wasUpdateMode && orderLineId && (originalSavedQtyRaw == null));
         
-        // 새 주문이거나 추가 주문(quantityDelta > 0)인 경우만 출력
-        if (!wasUpdateMode || !hasOrderLineId || quantityDelta > 0) {
-          const printQty = (wasUpdateMode && hasOrderLineId && quantityDelta > 0) ? quantityDelta : it.quantity;
+        // Print policy:
+        // - New order OR no orderLineId: print full quantity
+        // - Update mode:
+        //   - New line (not in baseline): print full quantity
+        //   - Existing line: print (currentQty - originalSavedQty), do NOT rely on quantityDelta (can be missing in prod builds)
+        let printQty = 0;
+        if (!wasUpdateMode || !hasOrderLineId) {
+          printQty = currentQty;
+        } else if (isNewLineInUpdate) {
+          printQty = currentQty;
+        } else {
+          const originalSavedQtyNum = Number(originalSavedQtyRaw ?? 0);
+          if (Number.isFinite(originalSavedQtyNum)) {
+            printQty = currentQty - originalSavedQtyNum;
+          } else {
+            // Fallback: if baseline is invalid, treat as full quantity (better than silently skipping)
+            printQty = currentQty;
+          }
+        }
+        if (!printQty || Number(printQty) <= 0) return;
           
           // 프린터 그룹 ID들 수집
           const printerGroupIds = Array.isArray(it.printerGroupIds) ? it.printerGroupIds : 
@@ -5432,14 +6234,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           
           printItems.push({
             id: it.id,
+            orderLineId: it.orderLineId || null,
             name: it.short_name || it.name || 'Unknown',
             qty: printQty,
+            lineQuantityAfter: it.quantity,
             guestNumber: it.guestNumber || 1,
             modifiers: (it as any).modifiers || [],
-            memo: (it as any).memo?.text || null,
-            printerGroupIds: printerGroupIds
+            memo: (it as any).memo || null,
+            discount: (it as any).discount || null,
+            printerGroupIds: printerGroupIds,
+            togoLabel: !!(it as any).togoLabel
           });
-        }
       });
       
       // Kitchen Note는 orderInfo.kitchenNote로 전달됨 (Body 하단에 고정 출력)
@@ -5461,7 +6266,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
       const printTableName = resolvedTableName || tableNameFromState || '';
       const printServerName = selectedServer?.name || '';
-      const printOrderNumber = savedOrderIdRef.current || `ORD-${Date.now()}`;
+      const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current || `ORD-${Date.now()}`);
       
       // 딜리버리 정보 추출
       const deliveryCompany = (location.state as any)?.deliveryCompany || '';
@@ -5477,6 +6282,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             orderInfo: {
               orderNumber: printOrderNumber,
               table: printTableName,
+              tableName: printTableName,
+              tableId: tableIdFromState || '',
               server: printServerName,
               orderType: orderTypeDisplay,
               channel: orderTypeDisplay,
@@ -5485,10 +6292,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               kitchenNote: savedKitchenMemo || '',
               // 딜리버리 주문 정보 추가
               deliveryCompany: deliveryCompany,
-              deliveryOrderNumber: deliveryOrderNumber
+              deliveryOrderNumber: deliveryOrderNumber,
+              // 고객 정보 (입력값 있을 때만 출력됨)
+              customerName: getPersistableCustomerName() || '',
+              customerPhone: orderCustomerInfo?.phone || ''
             },
             isAdditionalOrder: wasUpdateMode,
-            isPaid: false
+            // Delivery 주문은 항상 PAID로 출력
+            isPaid: isDeliveryOrder
           }) 
         });
         const result = await response.json();
@@ -5496,110 +6307,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         if (result.success) {
           console.log(`🖨️ Kitchen print complete: ${result.message}`);
+          // Mark printed lines as "saved baseline" so future additional prints don't reprint them.
+          // For existing lines, this advances the baseline to the current quantity.
+          // For newly added lines, this records their initial saved quantity.
+          try {
+            if (wasUpdateMode && Array.isArray(printItems)) {
+              for (const pi of printItems) {
+                const lid = pi?.orderLineId ? String(pi.orderLineId) : '';
+                if (!lid) continue;
+                const qAfter = Number(pi?.lineQuantityAfter);
+                if (Number.isFinite(qAfter) && qAfter > 0) {
+                  originalSavedQuantitiesRef.current[lid] = qAfter;
+                }
+              }
+            }
+          } catch {}
         } else {
           console.error('❌ Print-order failed:', result.error);
         }
 
-        // TOGO, ONLINE 주문일 경우 Receipt Printer에 Bill도 함께 출력
-        if ((orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'ONLINE') && !wasUpdateMode) {
-          try {
-            console.log(`🧾 ${orderTypeDisplay} order - printing Bill to receipt printer`);
-            
-            // 공통 Bill 데이터 빌드 함수 사용 (Print Bill과 동일한 로직)
-            const billData = buildBillDataForPrint({
-              orderNumber: String(printOrderNumber),
-              channel: orderTypeDisplay,
-              tableName: printTableName || orderTypeDisplay,
-              serverName: printServerName
-            });
-
-            console.log(`🧾 [TOGO/ONLINE Bill] Using buildBillDataForPrint - adjustments:`, billData.adjustments);
-            
-            await fetch(`${API_URL}/printers/print-bill`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ billData, copies: 1 })
-            });
-            console.log(`🧾 ${orderTypeDisplay} Bill printed successfully (1 copy)`);
-          } catch (billErr) {
-            console.warn(`🧾 ${orderTypeDisplay} Bill print failed (ignored):`, billErr);
-          }
-        }
-        
-        // DELIVERY 주문일 경우: Bill 1장 + Receipt 1장 (Kitchen Ticket은 위에서 이미 출력됨)
-        if (orderTypeDisplay === 'DELIVERY' && !wasUpdateMode) {
-          // Bill 1장 출력
-          try {
-            console.log(`🧾 DELIVERY order - printing Bill (1 copy)`);
-            
-            const billData = buildBillDataForPrint({
-              orderNumber: String(printOrderNumber),
-              channel: 'DELIVERY',
-              tableName: printTableName || 'DELIVERY',
-              serverName: printServerName
-            });
-            
-            await fetch(`${API_URL}/printers/print-bill`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ billData, copies: 1 })
-            });
-            console.log(`🧾 DELIVERY Bill printed successfully (1 copy)`);
-          } catch (billErr) {
-            console.warn(`🧾 DELIVERY Bill print failed (ignored):`, billErr);
-          }
-          
-          // Receipt 1장 출력
-          try {
-            console.log(`🧾 DELIVERY order - printing Receipt (1 copy)`);
-            
-            // Receipt 데이터 구성
-            const items = (orderItems || []).filter(it => it.type === 'item');
-            const receiptItems = items.map(it => ({
-              name: it.name || 'Unknown',
-              qty: it.quantity || 1,
-              price: it.price || 0,
-              amount: (it.price || 0) * (it.quantity || 1),
-              modifiers: (it as any).modifiers || []
-            }));
-            
-            const subtotal = receiptItems.reduce((sum, it) => sum + it.amount, 0);
-            const taxRate = 0.1; // 10% 기본 세율
-            const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
-            const total = subtotal + taxAmount;
-
-            const receiptData = {
-              header: {
-                title: '*** DELIVERY ORDER ***',
-                orderNumber: String(printOrderNumber),
-                deliveryCompany: deliveryCompany,
-                deliveryOrderNumber: deliveryOrderNumber
-              },
-              orderInfo: {
-                orderType: 'DELIVERY',
-                table: printTableName,
-                server: printServerName,
-                pickupTime: orderPickupInfo.readyTimeLabel || ''
-              },
-              items: receiptItems,
-              subtotal,
-              taxLines: [{ label: 'Tax', rate: taxRate, amount: taxAmount }],
-              total,
-              payments: [],
-              change: 0,
-              footer: {}
-            };
-
-            await fetch(`${API_URL}/printers/print-receipt`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ receiptData, copies: 1 })
-            });
-            console.log(`🧾 DELIVERY Receipt printed successfully (1 copy)`);
-          } catch (receiptErr) {
-            console.warn(`🧾 DELIVERY Receipt print failed (ignored):`, receiptErr);
-          }
-        }
+        // TOGO/ONLINE/DELIVERY 주문 완료 시: Kitchen Ticket만 출력 (Bill/Receipt 자동 출력 제거)
       } catch (err) {
         console.error('❌ Print-order error:', err);
       }
@@ -5632,7 +6359,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
      
      if (!hasSplit) {
         await executePrintBill('ALL_DETAILS');
-        navigate('/sales');
+        navigate('/sales', { replace: true });
      } else {
         setShowPrintBillModal(true);
      }
@@ -5646,6 +6373,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const floor = (location.state && (location.state as any).floor) || null;
       const allGuestsPaid = (() => {
         try {
+          const totalPaidSoFar = sessionPayments.reduce((s, p) => s + p.amount, 0);
+          if (totalPaidSoFar > 0 && totalPaidSoFar < payGrandAll - 0.01) return false;
           const ids = Array.isArray(guestIds) ? guestIds : [];
           if (ids.length === 0) return false;
           return ids.every(g => (guestStatusMap as any)[g] === 'PAID');
@@ -5657,10 +6386,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         try {
           if (tableIdForMap) {
             // If no items at all: Don't change status (keep Available if it was)
-            // If all guests paid: Set to Preparing
+            // If all guests paid: Set to Available (Preparing 제거)
             if (allGuestsPaid && items.length > 0) {
-              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Preparing' }) });
-              try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() })); } catch {}
+              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' }) });
+              try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
             }
             // If items.length === 0: Don't update status at all (leave it as is)
             
@@ -5671,7 +6400,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         } catch {}
         clearServerAssignmentForContext();
         setSelectedServer(null);
-        navigate('/sales');
+        navigate('/sales', { replace: true });
         return;
       }
 
@@ -5679,8 +6408,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const wasUpdateMode = !!savedOrderIdRef.current;
       const hasNewItems = items.some((it:any) => !it.orderLineId);
 
+      // 추가주문(update mode)에서는 "증가분 기준"이 꼬여서 0으로 계산되는 것을 피하기 위해:
+      // - 먼저 현재 스냅샷 기준으로 출력(증가분만)
+      // - 그 다음 저장
+      // 신규 주문은 기존대로 저장 후 출력
+      const stamp = Date.now();
+      let seq = 0;
+      const orderItemsSnapshot = (orderItems || []).map((it: any) => {
+        if (!it || (it.type !== 'item' && it.type !== 'discount')) return it;
+        if (it.orderLineId) return it;
+        seq += 1;
+        return { ...it, orderLineId: `${it.id}-${stamp}-${seq}` };
+      });
+
+      if (wasUpdateMode) {
+        try {
+          await printKitchenOrders(true, orderItemsSnapshot);
+        } catch {}
+      }
+
       // 1. DB 저장
-      const saved = await saveOrderToBackend();
+      const saved = await saveOrderToBackend(orderItemsSnapshot);
       
       // 1.5. Delivery 주문이면 delivery_orders 테이블에 order_id 연결
       const isDeliveryOrder = (orderType || '').toUpperCase() === 'DELIVERY';
@@ -5700,7 +6448,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       
       // 2. 주방 프린트
       if (saved) {
-         await printKitchenOrders(wasUpdateMode);
+         if (!wasUpdateMode) {
+           await printKitchenOrders(false, orderItemsSnapshot);
+         }
       }
 
       // 3. 게스트 상태 저장 - 제거됨 (OK 시점에 불완전한 상태를 저장하면 재진입시 PAID로 잠기는 문제 발생)
@@ -5771,7 +6521,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       }
 
       // 5) 정리 및 이동: 테이블맵으로 이동하지만, VOID 표시를 유지하기 위해 로컬 스냅샷은 삭제하지 않음
-      navigate('/sales');
+      navigate('/sales', { replace: true });
     } catch (e) {
       console.error('OK flow failed', e);
       alert('OK processing failed');
@@ -5795,7 +6545,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           const key = String(removed.guestNumber);
           setPaymentsByGuest(prev => {
             const next = { ...prev } as Record<string, number>;
-            next[key] = Math.max(0, Number(((next[key] || 0) - (removed!.amount + (removed!.tip||0))).toFixed(2)));
+            next[key] = Math.max(0, Number(((next[key] || 0) - (removed!.amount)).toFixed(2)));
             return next;
           });
         } else {
@@ -5825,6 +6575,87 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     } finally {
       setSessionPayments([]);
       setPaymentsByGuest({});
+    }
+  };
+
+  const handleClearScopedPayments = async (paymentIds: number[]) => {
+    try {
+      const idSet = new Set((paymentIds || []).filter((id) => typeof id === 'number' && Number.isFinite(id)));
+      if (idSet.size === 0) return;
+      const toVoid = sessionPayments.filter(p => idSet.has(p.paymentId));
+      for (const p of toVoid) {
+        try {
+          const res = await fetch(`${API_URL}/payments/${p.paymentId}/void`, { method: 'POST' });
+          if (!res.ok) throw new Error('Payment cancellation failed');
+        } catch (e) {
+          console.warn('Some payment cancellation failed:', p.paymentId, e);
+        }
+      }
+      // Remove locally (single state update)
+      setSessionPayments(prev => prev.filter(p => !idSet.has(p.paymentId)));
+      // Adjust guest paid tracking and revert persisted PAID status if fully voided
+      const affectedGuests = new Set<number>();
+      const voidedAmountByGuest: Record<string, number> = {};
+      toVoid.forEach((p) => {
+        const g = p.guestNumber;
+        if (typeof g === 'number') {
+          affectedGuests.add(g);
+          const key = String(g);
+          voidedAmountByGuest[key] = (voidedAmountByGuest[key] || 0) + (p.amount || 0);
+        }
+      });
+      setPaymentsByGuest(prev => {
+        const next = { ...prev } as Record<string, number>;
+        affectedGuests.forEach(g => {
+          const key = String(g);
+          next[key] = Math.max(0, Number(((next[key] || 0) - (voidedAmountByGuest[key] || 0)).toFixed(2)));
+        });
+        return next;
+      });
+      // Revert persisted PAID guests whose remaining paid amount is now 0
+      const guestsToUnpaid: number[] = [];
+      affectedGuests.forEach(g => {
+        const key = String(g);
+        const remainingSessionPaid = sessionPayments
+          .filter(p => !idSet.has(p.paymentId) && p.guestNumber === g)
+          .reduce((s, p) => s + (p.amount || 0), 0);
+        if (remainingSessionPaid < 0.01) {
+          guestsToUnpaid.push(g);
+        }
+      });
+      if (guestsToUnpaid.length > 0) {
+        const unpaidSet = new Set(guestsToUnpaid);
+        setPersistedPaidGuests(prev => prev.filter(g => !unpaidSet.has(g)));
+        // Update DB guest status back to UNPAID
+        const currentOrderId = savedOrderIdRef.current || (location.state && (location.state as any).orderId);
+        if (currentOrderId) {
+          try {
+            await fetch(`${API_URL}/orders/${encodeURIComponent(String(currentOrderId))}/guest-status/bulk`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ statuses: guestsToUnpaid.map(g => ({ guestNumber: g, status: 'UNPAID', locked: false })) })
+            });
+          } catch (dbErr) {
+            console.error('Failed to revert guest PAID status in DB:', dbErr);
+          }
+        }
+        // Clear localStorage paid guest data
+        if (currentOrderId) {
+          try {
+            const orderKey = `paidGuests_order_${currentOrderId}`;
+            const raw = localStorage.getItem(orderKey);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed && Array.isArray(parsed.paidGuests)) {
+                parsed.paidGuests = parsed.paidGuests.filter((g: number) => !unpaidSet.has(g));
+                localStorage.setItem(orderKey, JSON.stringify(parsed));
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.error('Clear scoped payments failed:', e);
     }
   };
 
@@ -5866,37 +6697,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // Precompute ALL-scope totals for PaymentModal (used for Pay in Full)
   const { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll } = useMemo(() => {
     const base = computeGuestTotals('ALL');
-    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
     const baseTaxLines = base.taxLines || [];
-    
-    if ((orderType || '').toLowerCase() === 'togo') {
-      const discountActive = togoSettings.discountEnabled && togoSettings.discountValue > 0;
-      const bagActive = togoSettings.bagFeeEnabled && togoSettings.bagFeeValue > 0;
-      const dv = Number(togoSettings.discountValue || 0);
-      const bv = Number(togoSettings.bagFeeValue || 0);
-      const discountAmtBase = discountActive ? (togoSettings.discountMode === 'percent' ? (base.subtotal * dv / 100) : dv) : 0;
-      const bagFeeAmt = bagActive ? bv : 0;
-      const discountAmt = Number(discountAmtBase.toFixed(2));
-      const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-      // Adjust tax proportionally based on discount
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfter <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grandFixed = Number((subtotalAfter + (bagFeeAmt || 0) + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
-    } else {
-      const subtotalAfter = Math.max(0, Number((base.subtotal).toFixed(2)));
-      // If subtotal is 0 (100% discount), tax should also be 0
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfter <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grandFixed = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
+
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
     }
+
+    const applied = applySubtotalAdjustments({ subtotal: base.subtotal, taxLines: baseTaxLines }, adjustments);
+    return { subtotal: applied.subtotal, taxLines: applied.taxLines, grand: applied.total } as any;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderItems, orderType, taxLines, computeGuestTotals, togoSettings]);
 
@@ -5905,53 +6723,39 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       return { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll };
     }
     const base = computeGuestTotals(guestPaymentMode);
-    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
     const baseTaxLines = base.taxLines || [];
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
 
-    if ((orderType || '').toLowerCase() === 'togo') {
-      const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-      const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
-      const discountValue = Number(togoSettings.discountValue || 0);
-      const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
-      const discountAmtBase = discountActive
-        ? (togoSettings.discountMode === 'percent'
-            ? (base.subtotal * discountValue) / 100
-            : discountValue)
-        : 0;
-      const discountAmt = Number(discountAmtBase.toFixed(2));
-      const subtotalAfterDiscount = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-      const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
-      // If subtotal is 0 (100% discount), tax should also be 0
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfterDiscount <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfterDiscount <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grand = Number((subtotalAfterDiscount + bagFeeAmt + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfterDiscount, taxLines: adjustedTaxLines, grand };
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
+    } else {
+      const items = (orderItems || []).filter(it =>
+        it.type !== 'separator' && (it.guestNumber || 1) === guestPaymentMode
+      );
+      const promoAdj = computePromotionAdjustment(items as any, {
+        enabled: promotionEnabled,
+        type: promotionType as any,
+        value: (typeof promotionValue === 'number' ? promotionValue : 0),
+        eligibleItemIds: promotionEligibleItemIds,
+        codeInput: '',
+        rules: promotionRules,
+      });
+      const discountAmt = promoAdj ? promoAdj.amountApplied : 0;
+      if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'Promotion', amount: Number(discountAmt.toFixed(2)) });
     }
 
-    const items = (orderItems || []).filter(it =>
-      it.type !== 'separator' && (it.guestNumber || 1) === guestPaymentMode
-    );
-    const promoAdj = computePromotionAdjustment(items as any, {
-      enabled: promotionEnabled,
-      type: promotionType as any,
-      value: (typeof promotionValue === 'number' ? promotionValue : 0),
-      eligibleItemIds: promotionEligibleItemIds,
-      codeInput: '',
-      rules: promotionRules,
-    });
-    const discountAmt = promoAdj ? promoAdj.amountApplied : 0;
-    const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-    // If subtotal is 0 (100% discount), tax should also be 0
-    const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-    const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-    const adjustedTaxLines = subtotalAfter <= 0 
-      ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-      : baseTaxLines;
-    const grand = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
-    return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand };
+    const applied = applySubtotalAdjustments({ subtotal: base.subtotal, taxLines: baseTaxLines }, adjustments);
+    return { subtotal: applied.subtotal, taxLines: applied.taxLines, grand: applied.total };
+
   }, [
     guestPaymentMode,
     computeGuestTotals,
@@ -5977,6 +6781,47 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const { grand: allGrand } = useMemo(() => computeGuestTotals('ALL'), [orderItems, itemTaxGroups, itemIdToCategoryId, categoryTaxGroups, taxGroupIdToTaxes]);
   const paidSoFarAll = useMemo(() => Object.values(paymentsByGuest).reduce((s, v) => s + (v||0), 0), [paymentsByGuest]);
   const outstandingDueAll = useMemo(() => Math.max(0, Number((allGrand - paidSoFarAll).toFixed(2))), [allGrand, paidSoFarAll]);
+
+  const paymentModalCalc = useMemo(() => {
+    const foodPaid = sessionPayments.reduce((s, p) => s + (p.amount || 0), 0);
+    const remaining = Math.max(0, Number((payGrandAll - foodPaid).toFixed(2)));
+    const ratio = payGrandAll > 0 ? remaining / payGrandAll : 1;
+
+    let sub: number;
+    let tl: Array<{ name: string; amount: number }>;
+    let tot: number;
+    let oDue: number;
+    let pSoFar: number;
+    let filteredPayments: typeof sessionPayments;
+
+    if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
+      const balance = Math.max(0, Number((payGrandAll - foodPaid).toFixed(2)));
+      const balanceRatio = payGrandAll > 0 ? balance / payGrandAll : 1;
+      sub = Number((paySubtotalAll * balanceRatio).toFixed(2));
+      tl = payTaxLinesAll.map((t: any) => ({ ...t, amount: Number((t.amount * balanceRatio).toFixed(2)) }));
+      tot = balance;
+      oDue = balance;
+      pSoFar = 0;
+      filteredPayments = sessionPayments.filter(p => !priorPaymentIdsRef.current.has(p.paymentId));
+    } else if (foodPaid > 0.005) {
+      sub = Number((paySubtotalAll * ratio).toFixed(2));
+      tl = payTaxLinesAll.map((t: any) => ({ ...t, amount: Number((t.amount * ratio).toFixed(2)) }));
+      tot = remaining;
+      oDue = remaining;
+      pSoFar = 0;
+      filteredPayments = sessionPayments.filter(p => !priorPaymentIdsRef.current.has(p.paymentId));
+    } else {
+      sub = guestPaymentMode === 'ALL' ? paySubtotalAll : paySubtotal;
+      tl = guestPaymentMode === 'ALL' ? payTaxLinesAll : payTaxLines;
+      tot = guestPaymentMode === 'ALL' ? payGrandAll : payGrand;
+      oDue = guestPaymentMode === 'ALL' ? remaining : Math.max(0, Number((payGrand - paidSoFarCurrent).toFixed(2)));
+      pSoFar = guestPaymentMode === 'ALL' ? paidSoFarAll : paidSoFarCurrent;
+      filteredPayments = sessionPayments;
+    }
+
+    return { subtotal: sub, taxLines: tl, total: tot, outstandingDue: oDue, paidSoFar: pSoFar, filteredPayments };
+  }, [sessionPayments, payGrandAll, paySubtotalAll, payTaxLinesAll, adhocSplitCount, guestPaymentMode,
+      paySubtotal, payTaxLines, payGrand, paidSoFarCurrent, paidSoFarAll]);
 
   // Removed auto-complete: require explicit Next click to navigate to table map
 
@@ -6008,7 +6853,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         // 테이블맵으로 이동 (Receipt는 이미 개별 게스트 결제 시 출력됨)
         clearServerAssignmentForContext();
         setSelectedServer(null);
-        navigate('/sales');
+        navigate('/sales', { replace: true });
       }
     } catch (err) {
       console.error('Auto-complete check error:', err);
@@ -6228,8 +7073,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
            return paidAmount > 0.01;
         });
 
-      const payload = { paidGuests, ts: Date.now(), orderId: orderId };
+      let splitN = adhocSplitCount > 1 ? adhocSplitCount : (guestIds.length > 1 ? guestIds.length : 0);
       const orderKey = `paidGuests_order_${orderId}`;
+      let existingPreSplitLineIds: string[] | undefined;
+      let existingSplitCount = 0;
+      try {
+        const existingRaw = localStorage.getItem(orderKey);
+        if (existingRaw) {
+          const existingParsed = JSON.parse(existingRaw);
+          if (existingParsed && Array.isArray(existingParsed.preSplitLineIds)) {
+            existingPreSplitLineIds = existingParsed.preSplitLineIds;
+          }
+          if (existingParsed && existingParsed.splitCount > 1) {
+            existingSplitCount = existingParsed.splitCount;
+          }
+        }
+      } catch {}
+      if (splitN <= 0 && existingSplitCount > 1) {
+        splitN = existingSplitCount;
+      }
+      const preSplitLineIds = existingPreSplitLineIds || (orderItems || []).filter((it: any) => it && it.orderLineId && it.type === 'item').map((it: any) => it.orderLineId);
+      const payload = { paidGuests, ts: Date.now(), orderId: orderId, splitCount: splitN, preSplitLineIds };
       localStorage.setItem(orderKey, JSON.stringify(payload));
     } catch {}
   }, [guestStatusMap, paymentsByGuest]);
@@ -6264,22 +7128,52 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const st: any = location.state || {};
         if (!st || !st.tableId) return;
         if (!st.loadExisting) return;
-        try {
-          const elRes = await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(st.tableId)}`);
-          if (!elRes.ok) return;
-          const el = await elRes.json();
-          if (!el || el.current_order_id == null) {
-            try { localStorage.removeItem(`lastOrderIdByTable_${st.tableId}`); } catch {}
-            return;
-          }
-        } catch {}
+        
+        // 주문 ID 결정: 여러 소스에서 가장 신뢰할 수 있는 값 사용
+        // 1순위: navigation state의 orderId (SalesPage에서 직접 전달)
+        // 2순위: localStorage (주문 저장 시 설정됨)
+        // 3순위: table element의 current_order_id (DB)
+        let resolvedOrderId: string | null = null;
+        
+        // navigation state에서 orderId 확인
+        if (st.orderId) {
+          resolvedOrderId = String(st.orderId);
+        }
+        
+        // localStorage에서 확인
         const mapKey = `lastOrderIdByTable_${st.tableId}`;
         const savedOrderId = localStorage.getItem(mapKey);
-        if (!savedOrderId) return;
-        try { savedOrderIdRef.current = Number(savedOrderId); } catch {}
-        const res = await fetch(`${API_URL}/orders/${encodeURIComponent(savedOrderId)}`);
+        if (!resolvedOrderId && savedOrderId) {
+          resolvedOrderId = savedOrderId;
+        }
+        
+        // table element의 current_order_id에서 확인 (보조 수단)
+        try {
+          const elRes = await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(st.tableId)}`);
+          if (elRes.ok) {
+            const el = await elRes.json();
+            if (el && el.current_order_id != null) {
+              // DB에 current_order_id가 있으면 이를 우선 사용
+              resolvedOrderId = String(el.current_order_id);
+              // localStorage도 동기화
+              try { localStorage.setItem(mapKey, resolvedOrderId); } catch {}
+            } else if (!resolvedOrderId) {
+              // DB에도 없고 다른 소스에서도 못 찾았으면 → 주문 없음
+              try { localStorage.removeItem(mapKey); } catch {}
+              return;
+            }
+            // DB의 current_order_id가 null이지만 다른 소스에서 orderId를 찾은 경우 → 계속 진행
+          }
+          // fetch 실패 시 → resolvedOrderId가 있으면 계속 진행 (localStorage/navigation state 기반)
+        } catch {}
+        
+        if (!resolvedOrderId) return;
+        try { savedOrderIdRef.current = Number(resolvedOrderId); } catch {}
+        const res = await fetch(`${API_URL}/orders/${encodeURIComponent(resolvedOrderId)}`);
+        try { savedOrderNumberRef.current = null; } catch {}
         if (!res.ok) return;
         const json = await res.json();
+        savedOrderNumberRef.current = json?.order?.order_number || null;
         applyCustomerInfoFromOrder(json?.order);
         const serverIdFromApi = json?.order?.server_id || json?.order?.serverId;
         const serverNameFromApi = json?.order?.server_name || json?.order?.serverName;
@@ -6299,6 +7193,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           }
         });
         
+        let preSplitLineIdSet: Set<string> | null = null;
+        let lsSplitCountRestore = 0;
+        try {
+          const pgRaw = localStorage.getItem(`paidGuests_order_${resolvedOrderId}`);
+          if (pgRaw) {
+            const pgParsed = JSON.parse(pgRaw);
+            if (pgParsed && Array.isArray(pgParsed.preSplitLineIds)) {
+              preSplitLineIdSet = new Set(pgParsed.preSplitLineIds.map(String));
+            }
+            if (pgParsed && pgParsed.splitCount > 1) {
+              lsSplitCountRestore = pgParsed.splitCount;
+            }
+          }
+        } catch {}
         const restored = items.map((it:any) => ({
           id: it.item_id?.toString() || it.id?.toString() || Math.random().toString(),
           name: it.name,
@@ -6311,9 +7219,40 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           memo: (() => { try { return it.memo_json ? JSON.parse(it.memo_json) : undefined; } catch { return undefined; } })(),
           discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
           splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
+          splitNumerator: (typeof it.split_numerator === 'number' && it.split_numerator > 0) ? it.split_numerator : undefined,
           orderLineId: it.order_line_id || undefined,
-          item_source: it.item_source || undefined
+          item_source: it.item_source || undefined,
+          togoLabel: !!(it.togo_label || it.togoLabel),
+          _preSplit: preSplitLineIdSet
+            ? preSplitLineIdSet.has(it.order_line_id || '')
+            : (lsSplitCountRestore > 1 && Number(it.price || 0) >= 0)
         }));
+        // Restore existing payments from DB
+        try {
+          if (resolvedOrderId) {
+            const payRes = await fetch(`${API_URL}/payments/order/${resolvedOrderId}`);
+            if (payRes.ok) {
+              const payJson = await payRes.json();
+              const dbPayments = Array.isArray(payJson.payments) ? payJson.payments : [];
+              const activePayments = dbPayments.filter((p: any) => p.status !== 'voided' && p.status !== 'VOIDED');
+              if (activePayments.length > 0) {
+                setSessionPayments(activePayments.map((p: any) => ({
+                  paymentId: p.id,
+                  method: p.payment_method || '',
+                  amount: Math.max(0, Number(p.amount || 0) - Number(p.tip || 0)),
+                  tip: Number(p.tip || 0),
+                  guestNumber: p.guest_number || undefined,
+                })));
+                const byGuest: Record<string, number> = {};
+                activePayments.forEach((p: any) => {
+                  const key = String(p.guest_number || 1);
+                  byGuest[key] = (byGuest[key] || 0) + Math.max(0, Number(p.amount || 0) - Number(p.tip || 0));
+                });
+                setPaymentsByGuest(byGuest);
+              }
+            }
+          }
+        } catch {}
         // Restore order-level Discount as a discount line from adjustments
         try {
           const adjs = Array.isArray(json.adjustments) ? json.adjustments : [];
@@ -6340,7 +7279,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           const rawVoid = localStorage.getItem(keyVoid);
           if (rawVoid) {
             const data = JSON.parse(rawVoid);
-            if (data && String(data.orderId) === String(savedOrderId)) {
+            if (data && String(data.orderId) === String(resolvedOrderId)) {
               const voids = Array.isArray(data.voids) ? data.voids : [];
               voids.forEach((v:any) => {
                 restored.push({ id: `void-${v.orderLineId||v.itemId}-${Math.random().toString(36).slice(2,8)}`, name: v.name, quantity: v.qty, price: 0, totalPrice: 0, type: 'void', guestNumber: Number(v.guestNumber||1) });
@@ -6355,7 +7294,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           if (guestsPresent.length > 1) {
             const paidSet = new Set<number>();
             try {
-              const gs = await fetch(`${API_URL}/orders/${encodeURIComponent(String(savedOrderId))}/guest-status`);
+              const gs = await fetch(`${API_URL}/orders/${encodeURIComponent(String(resolvedOrderId))}/guest-status`);
               if (gs.ok) {
                 const data = await gs.json();
                 const rows = Array.isArray(data?.statuses) ? data.statuses : [];
@@ -6452,6 +7391,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             }
           });
           
+          let preSplitLineIdSet2: Set<string> | null = null;
+          let lsSplitCount2 = 0;
+          try {
+            const pgRaw2 = localStorage.getItem(`paidGuests_order_${st.orderId}`);
+            if (pgRaw2) {
+              const pgParsed2 = JSON.parse(pgRaw2);
+              if (pgParsed2 && Array.isArray(pgParsed2.preSplitLineIds)) {
+                preSplitLineIdSet2 = new Set(pgParsed2.preSplitLineIds.map(String));
+              }
+              if (pgParsed2 && pgParsed2.splitCount > 1) {
+                lsSplitCount2 = pgParsed2.splitCount;
+              }
+            }
+          } catch {}
           setOrderItems(items.map((it:any) => ({
           id: it.item_id?.toString() || it.id?.toString() || Math.random().toString(),
           name: it.name,
@@ -6464,7 +7417,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           memo: (() => { try { return it.memo_json ? JSON.parse(it.memo_json) : undefined; } catch { return undefined; } })(),
           discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
           splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
-          orderLineId: it.order_line_id || undefined
+          splitNumerator: (typeof it.split_numerator === 'number' && it.split_numerator > 0) ? it.split_numerator : undefined,
+          orderLineId: it.order_line_id || undefined,
+          togoLabel: !!(it.togo_label || it.togoLabel),
+          _preSplit: preSplitLineIdSet2
+            ? preSplitLineIdSet2.has(it.order_line_id || '')
+            : (lsSplitCount2 > 1 && Number(it.price || 0) >= 0)
         })));
         // After loading, if multiple guest numbers exist, add separators via initializeSplitGuests
         try {
@@ -6477,10 +7435,38 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
           loadPersistedPaidGuests();
+
+          // Restore existing payments from DB
+          try {
+            const payRes = await fetch(`${API_URL}/payments/order/${st.orderId}`);
+            if (payRes.ok) {
+              const payJson = await payRes.json();
+              const dbPayments = Array.isArray(payJson.payments) ? payJson.payments : [];
+              const activePayments = dbPayments.filter((p: any) => p.status !== 'voided' && p.status !== 'VOIDED');
+              if (activePayments.length > 0) {
+                setSessionPayments(activePayments.map((p: any) => ({
+                  paymentId: p.id,
+                  method: p.payment_method || '',
+                  amount: Math.max(0, Number(p.amount || 0) - Number(p.tip || 0)),
+                  tip: Number(p.tip || 0),
+                  guestNumber: p.guest_number || undefined,
+                })));
+                const byGuest: Record<string, number> = {};
+                activePayments.forEach((p: any) => {
+                  const key = String(p.guest_number || 1);
+                  byGuest[key] = (byGuest[key] || 0) + Math.max(0, Number(p.amount || 0) - Number(p.tip || 0));
+                });
+                setPaymentsByGuest(byGuest);
+              }
+            }
+          } catch {}
           
           // If openPayment flag is set, open payment modal after loading
           if (st.openPayment) {
-            setTimeout(() => setShowPaymentModal(true), 100);
+            setTimeout(() => {
+              priorPaymentIdsRef.current = new Set(sessionPayments.map(p => p.paymentId));
+              setShowPaymentModal(true);
+            }, 100);
           }
         } catch {}
       } catch (e) {
@@ -6950,7 +7936,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // }
 
   return (
-    <div className="orderpage-scope h-screen bg-gray-100 flex fixed inset-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+    <div className="orderpage-scope h-screen bg-gray-100 flex fixed inset-0" data-pos-page="order" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
       {/* Background overlay to close FloatingActionBar on outside click */}
       {((selectedOrderItemId != null) || (selectedOrderLineId != null)) && (
         <div
@@ -7208,6 +8194,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       </button>
                     </div>
                     <p className="text-xs text-gray-400">Show server selection modal when entering Table/ToGo orders</p>
+                  </div>
+                </div>
+
+                <div className="pt-1 border-t border-gray-600">
+                  <div className="p-2 bg-gray-600 rounded-lg space-y-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-sm font-medium text-gray-300">Gratuity %</label>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          value={layoutSettings.gratuityRate ?? 0}
+                          onChange={async (e) => {
+                            const val = Math.max(0, Math.min(100, Number(e.target.value) || 0));
+                            updateLayoutSetting('gratuityRate', val);
+                            try {
+                              await saveLayoutSettings({ gratuityRate: val } as any);
+                            } catch (err) {
+                              console.error('Failed to save gratuityRate:', err);
+                            }
+                          }}
+                          className="w-20 px-2 py-1 text-sm text-right bg-gray-700 border border-gray-500 rounded text-white focus:outline-none focus:border-yellow-500"
+                        />
+                        <span className="text-sm text-gray-300">%</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-400">Auto-apply gratuity as restaurant revenue (not server tip)</p>
                   </div>
                 </div>
               </div>
@@ -7485,6 +8500,123 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
                 </div>
 
+                {/* Fixed Rows (6x4 등 고정 그리드 지원) */}
+                <div className="mb-2 border-t border-gray-600 pt-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-sm text-gray-300">
+                      Rows: {Number(layoutSettings.menuGridRows || 0) > 0 ? layoutSettings.menuGridRows : 'Auto'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const cur = Number(layoutSettings.menuGridRows || 0);
+                        updateLayoutSetting('menuGridRows' as any, cur > 0 ? 0 : 4);
+                      }}
+                      className="px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-xs text-white"
+                      title="Toggle fixed rows"
+                    >
+                      {Number(layoutSettings.menuGridRows || 0) > 0 ? 'Auto' : 'Fixed'}
+                    </button>
+                  </div>
+                  {Number(layoutSettings.menuGridRows || 0) > 0 && (
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={Number(layoutSettings.menuGridRows || 1)}
+                      onChange={(e) => updateLayoutSetting('menuGridRows' as any, parseInt(e.target.value))}
+                      className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider mt-1"
+                    />
+                  )}
+                </div>
+
+                {/* Row Pattern (예: 4,6,3,4) -> EMPTY 슬롯 자동 생성 */}
+                <div className="mb-2 border-t border-gray-600 pt-2">
+                  <label className="block text-sm mb-1 text-gray-300">Row pattern (comma):</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={String((layoutSettings as any).menuGridRowPattern?.join(',') || '4,6,3,4')}
+                      onChange={(e) => {
+                        const raw = String(e.target.value || '');
+                        const nums = (raw.match(/\d+/g) || []).map(n => parseInt(n, 10)).filter(n => Number.isFinite(n));
+                        updateLayoutSetting('menuGridRowPattern' as any, nums);
+                      }}
+                      className="flex-1 h-10 px-3 rounded bg-gray-800 border border-gray-600 text-gray-100 text-sm font-mono"
+                      placeholder="e.g. 4,6,3,4"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          if (!selectedCategory || selectedCategory === MERGY_CATEGORY_ID) {
+                            alert('Please select a category first.');
+                            return;
+                          }
+                          const cat = categories.find(c => c.name === selectedCategory);
+                          if (!cat) {
+                            alert('Selected category not found.');
+                            return;
+                          }
+                          const cols = Math.max(1, Number(layoutSettings.menuGridColumns) || 1);
+                          const rows = Math.max(1, Number(layoutSettings.menuGridRows || 0) > 0 ? Number(layoutSettings.menuGridRows) : 4);
+                          const patRaw = Array.isArray((layoutSettings as any).menuGridRowPattern) ? (layoutSettings as any).menuGridRowPattern : [];
+                          const pat = Array.from({ length: rows }, (_, i) => {
+                            const v = Number(patRaw[i] ?? cols);
+                            if (!Number.isFinite(v)) return cols;
+                            return Math.max(0, Math.min(cols, Math.floor(v)));
+                          });
+
+                          // Build ordered list of real items (preserve existing layout order first)
+                          const available = filteredMenuItems.map(it => String(it.id));
+                          const map = { ...((layoutSettings as any).menuItemOrderByCategory || {}) };
+                          const saved: string[] = Array.isArray(map[cat.category_id]) ? map[cat.category_id] : [];
+                          const ordered: string[] = [];
+                          for (const id of saved) {
+                            const sid = String(id);
+                            if (sid.startsWith('EMPTY:')) continue;
+                            if (available.includes(sid) && !ordered.includes(sid)) ordered.push(sid);
+                          }
+                          for (const id of available) {
+                            if (!ordered.includes(id)) ordered.push(id);
+                          }
+
+                          let cursor = 0;
+                          const nextIds: string[] = [];
+                          let emptySeq = 0;
+                          for (let r = 0; r < rows; r++) {
+                            const take = pat[r] ?? cols;
+                            for (let c = 0; c < take; c++) {
+                              if (cursor < ordered.length) nextIds.push(ordered[cursor++]);
+                            }
+                            for (let c = take; c < cols; c++) {
+                              nextIds.push(`EMPTY:${cat.category_id}:${r}:${emptySeq++}`);
+                            }
+                          }
+                          while (cursor < ordered.length) nextIds.push(ordered[cursor++]);
+
+                          map[cat.category_id] = nextIds;
+                          updateLayoutSetting('menuItemOrderByCategory' as any, map);
+                          // Ensure fixed rows is enabled for predictable 6x4 behavior
+                          if (!(Number(layoutSettings.menuGridRows || 0) > 0)) {
+                            updateLayoutSetting('menuGridRows' as any, rows);
+                          }
+                        } catch (err: any) {
+                          console.warn('Failed to apply row pattern:', err);
+                          alert('Failed to apply row pattern.');
+                        }
+                      }}
+                      className="h-10 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold"
+                      title="Apply pattern to current category"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-400">
+                    Example: 6x4 with <span className="font-mono">4,6,3,4</span> keeps empty slots to lock line breaks.
+                  </div>
+                </div>
+
                 {/* Font Size Settings */}
                 <div className="mb-1">
                   <div className="flex items-center justify-between">
@@ -7606,7 +8738,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <input
                       type="range"
                       min="1"
-                      max="6"
+                      max="10"
                       value={layoutSettings.modifierRows}
                       onChange={(e) => updateLayoutSetting('modifierRows', parseInt(e.target.value))}
                       className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
@@ -7618,11 +8750,134 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <input
                       type="range"
                       min="2"
-                      max="8"
+                      max="10"
                       value={layoutSettings.modifierColumns}
                       onChange={(e) => updateLayoutSetting('modifierColumns', parseInt(e.target.value))}
                       className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
                     />
+                  </div>
+                </div>
+
+                {/* Per-item modifier layout override */}
+                {selectedMenuItemId && modCategoryKey && (
+                  <div className="mb-2 border-t border-gray-600 pt-2">
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm text-gray-300 flex-1">Per-item modifier layout:</label>
+                      {modifierLayoutByItem[selectedMenuItemId] ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModifierLayoutByItem(prev => {
+                              const copy = { ...prev };
+                              delete copy[selectedMenuItemId];
+                              return copy;
+                            });
+                            try { localStorage.removeItem(getLayoutKey(selectedMenuItemId)); } catch {}
+                          }}
+                          className="h-8 px-3 rounded bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-bold"
+                        >
+                          Reset to Category
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const catLayout = modCategoryKey ? modifierLayoutByItem[modCategoryKey] : undefined;
+                            const base = catLayout ? catLayout.slice() : slotItemIds.slice();
+                            setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: base }));
+                            try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(base)); } catch {}
+                          }}
+                          className="h-8 px-3 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold"
+                        >
+                          Override for this item
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {modifierLayoutByItem[selectedMenuItemId]
+                        ? 'This item has its own modifier layout. DnD changes apply to this item only.'
+                        : 'Using category layout. DnD changes apply to all items in this category.'}
+                    </p>
+                  </div>
+                )}
+
+                {/* Modifier Row Pattern (예: 4,6,3,4) -> EMPTY 슬롯 자동 생성 */}
+                <div className="mb-2 border-t border-gray-600 pt-2">
+                  <label className="block text-sm mb-1 text-gray-300">Row pattern (comma):</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={String((layoutSettings as any).modifierRowPattern?.join(',') || '')}
+                      onChange={(e) => {
+                        const raw = String(e.target.value || '');
+                        const nums = (raw.match(/\d+/g) || []).map(n => parseInt(n, 10)).filter(n => Number.isFinite(n));
+                        updateLayoutSetting('modifierRowPattern' as any, nums);
+                      }}
+                      className="flex-1 h-10 px-3 rounded bg-gray-800 border border-gray-600 text-gray-100 text-sm font-mono"
+                      placeholder="e.g. 4,6,3,4"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          const cols = Math.max(1, Number(layoutSettings.modifierColumns) || 1);
+                          const rows = Math.max(1, Number(layoutSettings.modifierRows) || 1);
+                          const capacity = cols * rows;
+                          const patRaw = Array.isArray((layoutSettings as any).modifierRowPattern) ? (layoutSettings as any).modifierRowPattern : [];
+                          const pat = Array.from({ length: rows }, (_, i) => {
+                            const v = Number(patRaw[i] ?? cols);
+                            if (!Number.isFinite(v)) return cols;
+                            return Math.max(0, Math.min(cols, Math.floor(v)));
+                          });
+
+                          const targetKey = modLayoutKey || modCategoryKey;
+                          if (!targetKey) {
+                            alert('Please select a menu item (or a category) first.');
+                            return;
+                          }
+
+                          const allAvailable = combinedEntries.map((e: any) => String(e.id));
+                          const currentIds = (modifierLayoutByItem[targetKey] || slotItemIds || []).map(String);
+                          const ordered: string[] = [];
+                          for (const id of currentIds) {
+                            if (id.startsWith('EMPTY:')) continue;
+                            if (id === '__MOD_EXTRA1__' || id === '__MOD_EXTRA2__') continue;
+                            if (allAvailable.includes(id) && !ordered.includes(id)) ordered.push(id);
+                          }
+                          for (const id of allAvailable) {
+                            if (!ordered.includes(id)) ordered.push(id);
+                          }
+
+                          let cursor = 0;
+                          const nextIds: string[] = [];
+                          let emptySeq = 0;
+                          for (let r = 0; r < rows; r++) {
+                            const take = pat[r] ?? cols;
+                            for (let c = 0; c < take; c++) {
+                              if (cursor < ordered.length && nextIds.length < capacity) nextIds.push(ordered[cursor++]);
+                            }
+                            for (let c = take; c < cols; c++) {
+                              if (nextIds.length < capacity) nextIds.push(`EMPTY:${targetKey}:${r}:${emptySeq++}`);
+                            }
+                          }
+                          while (cursor < ordered.length && nextIds.length < capacity) nextIds.push(ordered[cursor++]);
+                          while (nextIds.length < capacity) nextIds.push(`EMPTY:${targetKey}:tail:${emptySeq++}`);
+
+                          setModifierLayoutByItem((prev: any) => ({ ...(prev || {}), [targetKey]: nextIds }));
+                          try { localStorage.setItem(getLayoutKey(targetKey), JSON.stringify(nextIds)); } catch {}
+                        } catch (err: any) {
+                          console.warn('Failed to apply modifier row pattern:', err);
+                          alert('Failed to apply modifier row pattern.');
+                        }
+                      }}
+                      className="h-10 px-3 rounded bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold"
+                      title="Apply pattern to current modifier grid"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-400">
+                    Tip: set Columns=6, Rows=4, pattern <span className="font-mono">4,6,3,4</span>.
                   </div>
                 </div>
 
@@ -7731,6 +8986,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   {/* Item Extra Buttons */}
                   <div className="space-y-1 p-1.5 rounded-lg bg-gray-700 border border-gray-500">
                     <h4 className="text-xs font-semibold text-white">Item Extra Buttons</h4>
+                    {/* Togo Label Button */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-200">Togo Label Enable</span>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setItemTogoEnabled(v => !v)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${itemTogoEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}>
+                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${itemTogoEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                        </button>
+                      </div>
+                    </div>
                     {/* Extra Button 1 */}
                     <div className="flex items-center justify-between">
                       <span className="text-gray-200">Extra 1 Enable</span>
@@ -8067,10 +9331,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       </div>
       {/* Right Area - Canvas with Order Interface (Back Office: 70% 고정) */}
       <div 
-        className="flex flex-col items-center justify-start relative z-50"
+        ref={rightAreaRef}
+        className="flex flex-col items-center justify-start relative z-50 overflow-hidden"
         style={{ width: !isSalesOrder ? '70%' : undefined, flex: !isSalesOrder ? undefined : 1 }}
         onClick={(e) => {
-          // FloatingActionBar 또는 order-item 외부 클릭 시 선택 해제
           const target = e.target as HTMLElement;
           if (!target.closest('.floating-action-bar') && !target.closest('[data-order-item]')) {
             if (selectedOrderItemId || selectedOrderLineId) {
@@ -8092,18 +9356,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             maxHeight: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined,
             overflow: 'hidden',
             position: 'relative',
-            transform: isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)',
-            transformOrigin: 'top left',
+            transform: isSalesOrder ? `scale(${orderPageScale})` : 'none',
+            transformOrigin: 'top center',
+            zoom: !isSalesOrder && boCanvasZoom < 1 ? boCanvasZoom : undefined,
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'
-          }}
+          } as React.CSSProperties}
            id="pos-canvas-anchor"
          >
-            {/* Content wrapper - 스케일링 없이 꽉 차게 */}
+            {/* Content wrapper - 스케일링 없이 꽉 차게 (하단 버튼 잘림 방지 위해 20px 여유) */}
             <div
               style={{
                 width: '100%',
-                height: '100%',
+                height: 'calc(100% - 20px)',
                 display: 'flex',
                 flexDirection: 'column'
               }}
@@ -8112,11 +9377,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             <div className="flex flex-1 min-h-0">
             {/* Left Panel - Order List (숨김: Back Office + 화면 ≤ 1280px) */}
             {!hideOrderListPanel && (
-            <div className="bg-white flex flex-col h-full" style={{ width: `${layoutSettings.leftPanelWidth}%` }}>
+            <div className="bg-white flex flex-col h-full" data-pos-lock="order-left-panel" style={{ width: `${layoutSettings.leftPanelWidth}%` }}>
               {/* Order Management Section */}
               <div className="bg-gray-100 flex-shrink-0">
                 {/* Header */}
-                <div className="p-2">
+                <div className="px-1 py-0">
                   <div className="flex justify-between items-center">
                     {(() => {
                       const st: any = (location && (location as any).state) ? (location as any).state : {};
@@ -8132,9 +9397,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       };
                       const serverName = formatServerName(serverNameRaw);
                       return (
-                        <div>
-                          <span className="text-sm text-gray-600">Server: </span>
-                          <span className="font-medium">{serverName || ''}</span>
+                        <div data-pos-lock="order-server-block">
+                          <span className="text-gray-600" data-pos-lock="order-server-label" style={{ fontSize: 'var(--order-label-font)' }}>Server: </span>
+                          <span className="font-medium" data-pos-lock="order-server-value" style={{ fontSize: 'var(--order-value-font)' }}>{serverName || ''}</span>
                         </div>
                       );
                     })()}
@@ -8190,19 +9455,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
                       const customerBadge = formatNameBadge(customerNameRaw) || formatPhoneBadge(customerPhoneRaw);
 
-                      let right = '';
+                      let channelInfo = '';
                       if (ch === 'togo') {
-                        right = `Togo${customerBadge ? ` • ${customerBadge}` : ''}`;
+                        channelInfo = `Togo${customerBadge ? ` • ${customerBadge}` : ''}`;
                       } else if (ch === 'delivery') {
-                        right = tableName || 'Delivery';
+                        channelInfo = tableName || 'Delivery';
+                      } else if (ch === 'online') {
+                        channelInfo = 'Online';
                       } else {
-                        right = tableName ? `Table ${tableName}` : '';
+                        channelInfo = tableName ? `Table ${tableName}` : '';
                       }
 
+                      const displayOrderId = savedOrderIdRef.current || ((location.state as any)?.orderId) || '';
+
                       return (
-                        <div>
-                          <span className="text-sm text-gray-600">Channel: </span>
-                          <span className="font-medium">{right}</span>
+                        <div data-pos-lock="order-channel-block" className="flex items-center gap-2">
+                          {displayOrderId && <span className="font-medium" data-pos-lock="order-number-value" style={{ fontSize: 'var(--order-value-font)' }}>#{displayOrderId}</span>}
+                          {channelInfo && <span className="font-medium" data-pos-lock="order-channel-value" style={{ fontSize: 'var(--order-value-font)' }}>{channelInfo}</span>}
                         </div>
                       );
                     })()}
@@ -8211,13 +9480,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               </div>
 
               {/* Order Items Table */}
-              <div className="flex-1 overflow-hidden p-1 bg-gray-100 flex flex-col">
+              <div className="flex-1 overflow-hidden px-1 py-0 bg-gray-100 flex flex-col min-h-0">
                 {/* (Removed top banner; using centered banner within the list) */}
-                <div className="mb-1">
-                  <div className="grid grid-cols-12 gap-1 text-sm font-medium text-gray-700 bg-blue-200 py-1">
-                    <div className="col-span-6">Item Name</div>
-                    <div className="col-span-3 text-center">Qty</div>
-                    <div className="col-span-3 text-right">E.Total</div>
+                <div className="mb-0">
+                  <div className="bg-blue-200 py-1" data-pos-lock="order-items-header" style={{ fontSize: 'var(--order-header-font)' }}>
+                    <div className="grid grid-cols-12 gap-1 font-medium text-gray-700">
+                      <div className="col-span-6">Item Name</div>
+                      <div className="col-span-3 text-center">Qty</div>
+                      <div className="col-span-3 text-right">E.Total</div>
+                    </div>
                   </div>
                 </div>
                 {/* Removed split banner as requested */}
@@ -8233,7 +9504,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         <div className="text-yellow-700 text-sm md:text-base mt-1 text-center">Click on the menu and click the Done button below.</div>
                         <div className="mt-3 flex justify-center">
                           <button
-                            onClick={() => { setSoldOutMode(false); setSelectedSoldOutType(''); }}
+                            onClick={() => {
+                              setSoldOutMode(false);
+                              setSelectedSoldOutType('');
+                              if (soldOutModeFromSales) {
+                                navigate('/sales', { replace: true });
+                              }
+                            }}
                             className="min-w-[120px] h-12 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-base font-semibold shadow"
                           >
                             Done
@@ -8242,7 +9519,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       </div>
                     </div>
                   )}
-                  <div ref={orderListRef} className="absolute inset-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 pt-0">
+                  <div ref={orderListRef} className="absolute inset-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 pt-0" data-pos-lock="order-items-scroll">
                   <DndContext sensors={sensors} onDragEnd={handleOrderDragEnd} onDragOver={handleOrderDragOver} collisionDetection={pointerWithin}>
                     {guestIds.map((g) => {
                       // 해당 게스트의 모든 아이템(Separator 제외)을 원본 인덱스와 함께 수집
@@ -8264,7 +9541,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <div style={{ height: `${layoutSettings.menuItemHeight * 0.4}px` }} />
                             </GuestRowDropZone>
                           ) : null}
-                          {guestRows.filter(row => row.it.type !== 'discount').map(({ it: item, idx: index }) => (
+                          {guestRows.filter(row => row.it.type !== 'discount' && !(row.it as any).togoLabel).map(({ it: item, idx: index }) => (
                             <DraggableDroppableOrderRow disabled={guestStatusMap[item.guestNumber || 1] === 'PAID'} guest={item.guestNumber || 1} idx={index} key={`${item.id}-${index}-${item.modifiers?.length || 0}-${(item as any).orderLineId || ''}-${item.splitDenominator || 'whole'}`}>
                               <div 
                                   data-order-item="true"
@@ -8284,16 +9561,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 <div className={`grid grid-cols-12 gap-1 items-center py-0 px-1 ${item.type === 'discount' ? 'bg-yellow-100 border-l-4 border-yellow-500' : (((item as any).type === 'void') ? 'bg-red-50 border-l-4 border-red-500' : (index % 2 === 0 ? 'bg-blue-100' : 'bg-blue-50'))}`}>
                                   {/* 메뉴 아이템 이름 (고정 위치) */}
                                   <div className="col-span-6">
-                                    <div className={`font-medium text-sm ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`}>
+                                    <div className={`font-medium ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`} data-pos-lock="order-item-name" style={{ fontSize: 'calc(var(--order-item-font) - 2px)', lineHeight: '1.2' }}>
                                       {(item as any).item_source === 'TABLE_ORDER' && (
                                         <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBL</span>
                                       )}
-                                      <span className="truncate">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
+                                      <span className="truncate" data-pos-lock="order-item-name-text">{item.type === 'discount' ? item.name : (layoutSettings.useShortName && item.short_name ? item.short_name : item.name)}</span>
                                     </div>
                                   </div>
                                   
                                   {/* 수량 조절 (고정 위치) */}
-                                  <div className="col-span-3 flex items-center justify-center space-x-2">
+                                  <div className="col-span-3 flex items-center justify-center space-x-2" style={{ transform: 'translateX(14px)' }}>
                                     {item.type === 'discount' ? (
                                       <button
                                         onClick={(e) => {
@@ -8306,7 +9583,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                           width: '40px',
                                           height: '40px',
                                           minWidth: '40px',
-                                          minHeight: '40px'
+                                          minHeight: '40px',
+                                          fontSize: 'calc(var(--order-item-font) - 2px)'
                                         }}
                                       >
                                         X
@@ -8314,29 +9592,44 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     ) : ((item as any).type === 'void') ? (
                                       <div className="flex items-center gap-2">
                                         <div className="text-xs font-bold text-red-600 px-2 py-1 border border-red-400 rounded">VOID</div>
-                                        <div className="text-sm font-bold text-red-600">x{item.quantity || 1}</div>
+                                        <div className="text-sm font-bold text-red-600" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>x{item.quantity || 1}</div>
                                       </div>
                                     ) : (
                                       <>
                 {(() => {
-                  const hasOrderLineId = !!(item as any).orderLineId;
                   const orderSaved = !!savedOrderIdRef.current;
-                  const isStoredItem = hasOrderLineId && orderSaved;
-                  
-                  // Check if current quantity is greater than original saved quantity
+                  const orderLineIdRaw = (item as any).orderLineId;
+                  const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
+                  const hasOrderLineId = !!orderLineId;
+
+                  // In update mode (Occupied / saved order), "existing saved line" means:
+                  // - has orderLineId
+                  // - and it existed in the originally loaded DB snapshot (tracked in originalSavedQuantitiesRef).
+                  // Newly added lines in update mode also have orderLineId, but are NOT present in originalSavedQuantitiesRef.
+                  const hasOriginal =
+                    hasOrderLineId &&
+                    Object.prototype.hasOwnProperty.call(originalSavedQuantitiesRef.current || {}, orderLineId);
+                  const isExistingSavedLine = orderSaved && hasOrderLineId && hasOriginal;
+
+                  // For existing saved lines: '-' only allowed when currentQty > originalQty.
+                  // For newly added lines (even in update mode): treat as new → '-' enabled (handled by "new item" branch).
                   const currentQty = item.quantity || 1;
-                  const originalQty = hasOrderLineId ? (originalSavedQuantitiesRef.current[(item as any).orderLineId] || currentQty) : currentQty;
+                  const originalQty = hasOriginal ? (originalSavedQuantitiesRef.current[orderLineId] || currentQty) : currentQty;
                   const canDecrement = currentQty > originalQty;
-                  
-                  console.log(`🔍 ${item.name}: orderLineId=${(item as any).orderLineId}, savedOrderId=${savedOrderIdRef.current}, isStoredItem=${isStoredItem}, hasOrderLineId=${hasOrderLineId}, orderSaved=${orderSaved}, currentQty=${currentQty}, originalQty=${originalQty}, canDecrement=${canDecrement}`);
-                  return isStoredItem;
+
+                  console.log(`🔍 ${item.name}: orderLineId=${orderLineId}, savedOrderId=${savedOrderIdRef.current}, isExistingSavedLine=${isExistingSavedLine}, hasOrderLineId=${hasOrderLineId}, hasOriginal=${hasOriginal}, currentQty=${currentQty}, originalQty=${originalQty}, canDecrement=${canDecrement}`);
+                  return isExistingSavedLine;
                 })() ? (
                   // 저장된 메뉴: 현재 수량 > 원래 수량일 때만 - 버튼 활성화
                   <>
                     {(() => {
-                      const hasOrderLineId = !!(item as any).orderLineId;
+                      const orderLineIdRaw = (item as any).orderLineId;
+                      const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
                       const currentQty = item.quantity || 1;
-                      const originalQty = hasOrderLineId ? (originalSavedQuantitiesRef.current[(item as any).orderLineId] || currentQty) : currentQty;
+                      const hasOriginal =
+                        !!orderLineId &&
+                        Object.prototype.hasOwnProperty.call(originalSavedQuantitiesRef.current || {}, orderLineId);
+                      const originalQty = hasOriginal ? (originalSavedQuantitiesRef.current[orderLineId] || currentQty) : currentQty;
                       const canDecrement = currentQty > originalQty;
                       
                       return (
@@ -8344,7 +9637,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           disabled={!canDecrement}
                           onClick={() => { 
                             if (isGuestLocked(item.guestNumber) || !canDecrement) return; 
-                            preserveOrderListScroll(() => updateQuantityByLineId((item as any).orderLineId, -1)); 
+                            preserveOrderListScroll(() => updateQuantityByLineId(orderLineId, -1)); 
                           }}
                           className={`text-white rounded-md transition-colors flex items-center justify-center text-lg font-bold ${canDecrement ? 'hover:bg-red-600' : 'opacity-30 cursor-not-allowed'}`}
                           style={{ 
@@ -8352,18 +9645,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             height: '40px', 
                             minWidth: '40px', 
                             minHeight: '40px',
-                            backgroundColor: 'rgba(239, 68, 68, 0.75)' // red-500 with 75% opacity
+                            backgroundColor: 'rgba(239, 68, 68, 0.75)', // red-500 with 75% opacity
+                            fontSize: 'calc(var(--order-item-font) - 2px)'
                           }}
                         >
                           -
                         </button>
                       );
                     })()}
-                    <span className="w-8 text-center font-medium text-base">{((item as any).splitDenominator && Number((item as any).splitDenominator) > 0) ? (`1/${Number((item as any).splitDenominator)}`) : item.quantity}</span>
+                    {(() => {
+                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
+                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
+                      const qty = item.quantity || 1;
+                      return remaining > 0 ? (
+                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
+                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
+                        </span>
+                      ) : (
+                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
+                      );
+                    })()}
                     <button
-                      onClick={() => { 
-                        if (isGuestLocked(item.guestNumber)) return; 
-                        preserveOrderListScroll(() => updateQuantityByLineId((item as any).orderLineId, 1)); 
+                      onClick={() => {
+                        if (isGuestLocked(item.guestNumber)) return;
+                        const orderLineIdRaw = (item as any).orderLineId;
+                        const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
+                        if (!orderLineId) return;
+                        preserveOrderListScroll(() => updateQuantityByLineId(orderLineId, 1)); 
                       }}
                       className="text-white rounded-md hover:bg-green-600 transition-colors flex items-center justify-center text-lg font-bold"
                       style={{ 
@@ -8371,7 +9679,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         height: '40px', 
                         minWidth: '40px', 
                         minHeight: '40px',
-                        backgroundColor: 'rgba(34, 197, 94, 0.75)' // green-500 with 75% opacity
+                        backgroundColor: 'rgba(34, 197, 94, 0.75)', // green-500 with 75% opacity
+                        fontSize: 'calc(var(--order-item-font) - 2px)'
                       }}
                     >
                       +
@@ -8404,12 +9713,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         height: '40px', 
                         minWidth: '40px', 
                         minHeight: '40px',
-                        backgroundColor: 'rgba(239, 68, 68, 0.75)' // red-500 with 75% opacity
+                        backgroundColor: 'rgba(239, 68, 68, 0.75)', // red-500 with 75% opacity
+                        fontSize: 'calc(var(--order-item-font) - 2px)'
                       }}
                     >
                       -
                     </button>
-                    <span className="w-8 text-center font-medium text-base">{((item as any).splitDenominator && Number((item as any).splitDenominator) > 0) ? (`1/${Number((item as any).splitDenominator)}`) : item.quantity}</span>
+                    {(() => {
+                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
+                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
+                      const qty = item.quantity || 1;
+                      return remaining > 0 ? (
+                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
+                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
+                        </span>
+                      ) : (
+                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
+                      );
+                    })()}
                     <button
                       onClick={(e) => { 
                         e.stopPropagation();
@@ -8431,7 +9752,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         height: '40px', 
                         minWidth: '40px', 
                         minHeight: '40px',
-                        backgroundColor: 'rgba(34, 197, 94, 0.75)' // green-500 with 75% opacity
+                        backgroundColor: 'rgba(34, 197, 94, 0.75)', // green-500 with 75% opacity
+                        fontSize: 'calc(var(--order-item-font) - 2px)'
                       }}
                     >
                       +
@@ -8445,45 +9767,51 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                   {/* 총 가격 (고정 위치) - 아이템 원가만 표시 (모디파이어 제외) */}
                                   <div className="col-span-3 text-right">
                                     {item.type === 'discount' ? (
-                                      <div className="font-medium text-red-600 text-sm">
-                                        ${item.totalPrice.toFixed(2)}
+                                      <div className="font-medium text-red-600 text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
+                                        {item.totalPrice.toFixed(2)}
                                       </div>
                                     ) : ((item as any).type === 'void') ? (
-                                      <div className="font-medium text-gray-500 text-sm line-through">$0.00</div>
+                                      <div className="font-medium text-gray-500 text-base line-through" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>0.00</div>
                                     ) : (() => {
-                                      // 아이템 원가만 사용 (모디파이어 가격 제외)
-                                      const itemBasePrice = Number(item.price || 0) * Number(item.quantity || 1);
-                                      const disc = computeItemDiscountAmount(item as any);
+                                      const line = getPricingLineForItem(item as any);
+                                      const itemBasePrice = line ? Number(line.lineGross || 0) : (Number(item.price || 0) * Number(item.quantity || 1));
+                                      const disc = line ? Number(line.itemDiscount || 0) : computeItemDiscountAmount(item as any);
+                                      const splitPaidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
+                                      const splitRemaining = effectiveSplitCount > 1 && splitPaidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - splitPaidCount : 0;
                                       if (disc > 0) {
                                         const after = Math.max(0, Number((itemBasePrice - disc).toFixed(2)));
+                                        const displayPrice = splitRemaining > 0 ? Number((after * splitRemaining / effectiveSplitCount).toFixed(2)) : after;
                                         const d = (item as any).discount || {};
-                                        const label = d.mode === 'percent'
-                                          ? `-${Math.max(0, Math.min(100, Number(d.value || 0)))}%`
-                                          : `-$${disc.toFixed(2)}`;
-                                                                       return (
+                                        return (
                                            <div>
                                              {d.mode === 'percent' ? (
                                                <>
-                                                 <div className="text-gray-500 line-through text-xs">${itemBasePrice.toFixed(2)}</div>
+                                                <div className="text-gray-500 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{itemBasePrice.toFixed(2)}</div>
                                                  <div className="text-red-600 text-xs">
-                                                   {`${Math.max(0, Math.min(100, Number(d.value || 0)))}% -$${disc.toFixed(2)}`}
+                                                   {`${Math.max(0, Math.min(100, Number(d.value || 0)))}% -${disc.toFixed(2)}`}
                                                  </div>
-                                                 <div className="text-gray-900 text-sm font-medium">${after.toFixed(2)}</div>
+                                                {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
+                                                <div className={`text-sm font-medium ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
                                                </>
                                             ) : (
                                               <>
-                                                <div className="text-gray-500 line-through text-xs">${itemBasePrice.toFixed(2)}</div>
+                                                <div className="text-gray-500 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{itemBasePrice.toFixed(2)}</div>
                                                 <div className="text-red-600 text-xs">
                                                   -${disc.toFixed(2)}
                                                 </div>
-                                                <div className="text-gray-900 text-sm font-bold">${after.toFixed(2)}</div>
+                                                {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
+                                                <div className={`text-sm font-bold ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
                                               </>
                                             )}
                                            </div>
                                          );
                                       }
+                                      const displayPrice = splitRemaining > 0 ? Number((itemBasePrice * splitRemaining / effectiveSplitCount).toFixed(2)) : itemBasePrice;
                                       return (
-                                        <div className="font-medium text-gray-800 text-sm">${itemBasePrice.toFixed(2)}</div>
+                                        <div>
+                                          {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{itemBasePrice.toFixed(2)}</div>}
+                                          <div className={`font-medium text-sm ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-800'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
+                                        </div>
                                       );
                                     })()}
                                   </div>
@@ -8498,27 +9826,49 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                         {/* 모든 모디파이어 동일하게 표시 (확장 + 일반) */}
                                         {item.modifiers.flatMap((mod: any, modIndex: number) => (
                                           (mod.selectedEntries && mod.selectedEntries.length > 0
-                                            ? mod.selectedEntries.map((entry: any, entryIdx: number) => (
-                                                <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                  <div className="flex items-center">
-                                                    <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                    <span className="ml-0.5 font-medium italic">{entry.name}</span>
-                                                  </div>
-                                                  <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                    {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
-                                                  </span>
-                                                </div>
-                                              ))
-                                            : (Array.isArray((mod as any).modifierNames)
-                                                ? (mod as any).modifierNames.map((name: string, entryIdx: number) => (
-                                                    <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                            ? (() => {
+                                                const grouped = new Map<string, { name: string; priceDelta: number; count: number }>();
+                                                (mod.selectedEntries || []).forEach((entry: any) => {
+                                                  const name = String(entry?.name || '');
+                                                  const priceDelta = Number(entry?.price_delta || 0);
+                                                  const key = `${name}@@${priceDelta}`;
+                                                  const cur = grouped.get(key) || { name, priceDelta, count: 0 };
+                                                  cur.count += 1;
+                                                  grouped.set(key, cur);
+                                                });
+                                                return Array.from(grouped.values()).map((g, entryIdx: number) => {
+                                                  const label = `${g.count}x ${g.name}`;
+                                                  const totalDelta = Number((g.priceDelta * g.count).toFixed(2));
+                                                  return (
+                                                    <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                                       <div className="flex items-center">
                                                         <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                        <span className="ml-0.5 font-medium italic">{name}</span>
+                                                        <span className="ml-0.5 font-medium italic">{label}</span>
                                                       </div>
-                                                      <span className="text-gray-500 font-medium italic">$0.00</span>
+                                                      <span className={`${totalDelta > 0 ? 'text-red-600' : totalDelta < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                        {totalDelta > 0 ? '+' : ''}${Math.abs(totalDelta).toFixed(2)}
+                                                      </span>
                                                     </div>
-                                                  ))
+                                                  );
+                                                });
+                                              })()
+                                            : (Array.isArray((mod as any).modifierNames)
+                                                ? (() => {
+                                                    const counts = new Map<string, number>();
+                                                    (mod as any).modifierNames.forEach((n: string) => {
+                                                      const key = String(n || '');
+                                                      counts.set(key, (counts.get(key) || 0) + 1);
+                                                    });
+                                                    return Array.from(counts.entries()).map(([name, count], entryIdx: number) => (
+                                                      <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                                        <div className="flex items-center">
+                                                          <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                          <span className="ml-0.5 font-medium italic">{`${count}x ${name}`}</span>
+                                                        </div>
+                                                        <span className="text-gray-500 font-medium italic">0.00</span>
+                                                      </div>
+                                                    ));
+                                                  })()
                                                 : []
                                               )
                                           )
@@ -8528,7 +9878,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     
                                     {/* 메모 정보 */}
                                     {(item as any).memo && (item as any).memo.text && (
-                                      <div className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                      <div className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-memoline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                         <div className="flex items-center">
                                            <span className="text-blue-600 font-medium mr-2">{'-->'}</span>
                                           <span className="ml-0.5 font-medium italic">{(item as any).memo.text}</span>
@@ -8558,6 +9908,187 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           </div>
                         </DraggableDroppableOrderRow>
                           ))}
+                          {/* TOGO separator + TOGO items */}
+                          {(() => {
+                            const togoRows = guestRows.filter(row => row.it.type !== 'discount' && !!(row.it as any).togoLabel);
+                            if (togoRows.length === 0) return null;
+                            return (
+                              <>
+                                {togoRows.map(({ it: item, idx: index }) => (
+                            <DraggableDroppableOrderRow disabled={guestStatusMap[item.guestNumber || 1] === 'PAID'} guest={item.guestNumber || 1} idx={index} key={`togo-${item.id}-${index}-${(item as any).orderLineId || ''}`}>
+                              <div 
+                                  data-order-item="true"
+                                  className={`transition-all duration-200 ${
+                                   `cursor-pointer ${
+                                       ((selectedOrderLineId && (item as any).orderLineId === selectedOrderLineId) || (selectedOrderItemId === item.id && (selectedOrderGuestNumber||1) === (item.guestNumber||1) && (selectedRowIndex === index)))
+                                         ? 'bg-blue-200 border-2 border-blue-600 shadow-lg' 
+                                         : 'hover:bg-blue-50 border-2 border-transparent'
+                                     } ${guestStatusMap[item.guestNumber || 1] === 'PAID' ? 'opacity-60 pointer-events-none' : ''}`
+                                 }`}
+                                  onClick={guestStatusMap[item.guestNumber || 1] === 'PAID' ? undefined : () => preserveOrderListScroll(() => handleOrderItemClick(item.id, item.guestNumber, index, (item as any).orderLineId))}
+                                  style={{ pointerEvents: guestStatusMap[item.guestNumber || 1] === 'PAID' ? 'none' : 'auto', marginBottom: '0px' }}
+                                >
+                                <div className={`grid grid-cols-12 gap-1 items-center py-0 px-1 ${index % 2 === 0 ? 'bg-orange-50' : 'bg-orange-100'}`}>
+                                  <div className="col-span-6">
+                                    <div className="font-medium text-gray-800 flex flex-col gap-0" data-pos-lock="order-item-name" style={{ fontSize: 'calc(var(--order-item-font) - 2px)', lineHeight: '1.2' }}>
+                                      <span className="truncate" data-pos-lock="order-item-name-text">{layoutSettings.useShortName && item.short_name ? item.short_name : item.name}</span>
+                                      <span className="text-gray-600 font-medium italic leading-none" style={{ fontSize: 'var(--order-mod-font)' }}>{'<<TOGO>>'}</span>
+                                    </div>
+                                  </div>
+                                  <div className="col-span-3 flex items-center justify-center space-x-2" style={{ transform: 'translateX(14px)' }}>
+                                    {(() => {
+                                      const togoOrderLineId = (item as any).orderLineId || '';
+                                      const togoHasOriginal = !!togoOrderLineId && Object.prototype.hasOwnProperty.call(originalSavedQuantitiesRef.current || {}, togoOrderLineId);
+                                      const togoIsExistingSaved = !!savedOrderIdRef.current && !!togoOrderLineId && togoHasOriginal;
+                                      const togoCurrentQty = item.quantity || 1;
+                                      const togoOriginalQty = togoHasOriginal ? (originalSavedQuantitiesRef.current[togoOrderLineId] || togoCurrentQty) : togoCurrentQty;
+                                      const togoCanDecrement = togoIsExistingSaved ? togoCurrentQty > togoOriginalQty : true;
+                                      return (
+                                    <button
+                                      disabled={!togoCanDecrement}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isGuestLocked(item.guestNumber) || !togoCanDecrement) return;
+                                        preserveOrderListScroll(() => {
+                                          setOrderItems(prev => {
+                                            const updated = prev.map((it, i) => {
+                                              if (i === index && it.id === item.id && (it.guestNumber || 1) === (item.guestNumber || 1)) {
+                                                const newQty = (it.quantity || 0) - 1;
+                                                if (newQty <= 0) return null as any;
+                                                return { ...it, quantity: newQty };
+                                              }
+                                              return it;
+                                            }).filter(Boolean);
+                                            return updated as any;
+                                          });
+                                        });
+                                      }}
+                                      className={`text-white rounded-md transition-colors flex items-center justify-center text-lg font-bold ${togoCanDecrement ? 'hover:bg-red-600' : 'opacity-30 cursor-not-allowed'}`}
+                                      style={{ width: '40px', height: '40px', minWidth: '40px', minHeight: '40px', backgroundColor: 'rgba(239, 68, 68, 0.75)', fontSize: 'calc(var(--order-item-font) - 2px)' }}
+                                    >-</button>
+                                      );
+                                    })()}
+                                    {(() => {
+                                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
+                                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
+                                      const qty = item.quantity || 1;
+                                      return remaining > 0 ? (
+                                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
+                                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
+                                        </span>
+                                      ) : (
+                                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
+                                      );
+                                    })()}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (isGuestLocked(item.guestNumber)) return;
+                                        preserveOrderListScroll(() => {
+                                          setOrderItems(prev => prev.map((it, i) => {
+                                            if (i === index && it.id === item.id && (it.guestNumber || 1) === (item.guestNumber || 1)) {
+                                              return { ...it, quantity: (it.quantity || 0) + 1 };
+                                            }
+                                            return it;
+                                          }));
+                                        });
+                                      }}
+                                      className="text-white rounded-md hover:bg-green-600 transition-colors flex items-center justify-center text-lg font-bold"
+                                      style={{ width: '40px', height: '40px', minWidth: '40px', minHeight: '40px', backgroundColor: 'rgba(34, 197, 94, 0.75)', fontSize: 'calc(var(--order-item-font) - 2px)' }}
+                                    >+</button>
+                                  </div>
+                                  <div className="col-span-3 text-right">
+                                    {(() => {
+                                      const togoBasePrice = (((item.totalPrice || item.price || 0) + ((item.memo?.price || 0))) * (item.quantity || 1));
+                                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
+                                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
+                                      const displayPrice = remaining > 0 ? Number((togoBasePrice * remaining / effectiveSplitCount).toFixed(2)) : togoBasePrice;
+                                      return (
+                                        <div data-pos-lock="order-item-total">
+                                          {remaining > 0 && <div className="text-gray-400 line-through text-xs text-right" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{togoBasePrice.toFixed(2)}</div>}
+                                          <div className={`font-medium text-right ${remaining > 0 ? 'text-orange-600' : 'text-gray-800'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                </div>
+                                {/* 모디파이어 및 메모 정보 (TOGO 아이템 - <<TOGO>> 아래 표시) */}
+                                {(item.modifiers && item.modifiers.length > 0) || ((item as any).memo && (item as any).memo.text) ? (
+                                  <div className={`px-2 pb-0 ${index % 2 === 0 ? 'bg-orange-50' : 'bg-orange-100'}`}>
+                                    {/* 모디파이어 정보 */}
+                                    {item.modifiers && item.modifiers.length > 0 && (
+                                      <div className="space-y-0 mb-0">
+                                        {item.modifiers.flatMap((mod: any, modIndex: number) => (
+                                          (mod.selectedEntries && mod.selectedEntries.length > 0
+                                            ? (() => {
+                                                const grouped = new Map<string, { name: string; priceDelta: number; count: number }>();
+                                                (mod.selectedEntries || []).forEach((entry: any) => {
+                                                  const name = String(entry?.name || '');
+                                                  const priceDelta = Number(entry?.price_delta || 0);
+                                                  const key = `${name}@@${priceDelta}`;
+                                                  const cur = grouped.get(key) || { name, priceDelta, count: 0 };
+                                                  cur.count += 1;
+                                                  grouped.set(key, cur);
+                                                });
+                                                return Array.from(grouped.values()).map((g, entryIdx: number) => {
+                                                  const label = `${g.count}x ${g.name}`;
+                                                  const totalDelta = Number((g.priceDelta * g.count).toFixed(2));
+                                                  return (
+                                                    <div key={`${item.id}-togo-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
+                                                      <div className="flex items-center">
+                                                        <span className="ml-0.5 font-medium italic">{label}</span>
+                                                      </div>
+                                                      <span className={`${totalDelta > 0 ? 'text-red-600' : totalDelta < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                        {totalDelta > 0 ? '+' : ''}{Math.abs(totalDelta).toFixed(2)}
+                                                      </span>
+                                                    </div>
+                                                  );
+                                                });
+                                              })()
+                                            : (Array.isArray((mod as any).modifierNames)
+                                                ? (() => {
+                                                    const counts = new Map<string, number>();
+                                                    (mod as any).modifierNames.forEach((n: string) => {
+                                                      const key = String(n || '');
+                                                      counts.set(key, (counts.get(key) || 0) + 1);
+                                                    });
+                                                    return Array.from(counts.entries()).map(([name, count], entryIdx: number) => (
+                                                      <div key={`${item.id}-togo-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
+                                                        <div className="flex items-center">
+                                                          <span className="ml-0.5 font-medium italic">{`${count}x ${name}`}</span>
+                                                        </div>
+                                                        <span className="text-gray-500 font-medium italic">0.00</span>
+                                                      </div>
+                                                    ));
+                                                  })()
+                                                : []
+                                              )
+                                          )
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    {/* 메모 정보 */}
+                                    {(item as any).memo && (item as any).memo.text && (
+                                      <div className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-memoline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
+                                        <div className="flex items-center">
+                                          <span className="ml-0.5 font-medium italic">{(item as any).memo.text}</span>
+                                        </div>
+                                        {(item as any).memo.price && (item as any).memo.price > 0 && (
+                                          <span className="text-green-600 font-medium italic">
+                                            +{(item as any).memo.price.toFixed(2)}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </DraggableDroppableOrderRow>
+                                ))}
+                              </>
+                            );
+                          })()}
                           {/* Display Discount Items (Type 'discount') at the bottom of the list */}
                           {guestRows.filter(row => row.it.type === 'discount').map(({ it: item, idx: index }) => {
                              const d = (item as any).discount || {};
@@ -8575,7 +10106,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                              const amount = Math.abs(Number((item.totalPrice != null ? item.totalPrice : item.price) || 0));
                              
                              return (
-                               <div key={`disc-${item.id}-${index}`} className="px-2 py-2 bg-yellow-50 border-l-4 border-yellow-400 mb-1 flex items-center justify-between">
+                               <div key={`disc-${item.id}-${index}`} className="px-2 py-2 bg-yellow-50 border-l-4 border-yellow-400 mb-1 flex items-center justify-between" data-pos-lock="order-discount-row" style={{ fontSize: 'var(--order-mod-font)' }}>
                                    <div className="font-medium text-sm text-red-600">
                                        {displayName}{percentText}
                                    </div>
@@ -8625,14 +10156,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                   </div>
                 )}
-                
-                  {/* 주문목록과 요약 섹션 사이의 여백 */}
-                  <div className="bg-gray-100 h-2"></div>
+
                 </div>
-                
+
                 {/* Summary Section */}
-                <div className="p-2 bg-blue-200 border-t border-blue-300 flex-shrink-0">
-                    <div className="space-y-1 text-sm">
+                <div className="px-2 py-0.5 bg-blue-200 border-t border-blue-300 flex-shrink-0" data-pos-lock="order-summary" style={{ fontSize: 'var(--order-summary-font)' }}>
+                    <div className="space-y-0">
                     {(() => {
                       // Use unpaid-only totals when split is active
                       const splitActive = (guestCount > 1) || ((orderItems||[]).some(it=>it.type==='separator'));
@@ -8648,61 +10177,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         tax = Math.max(0, Number((allTaxVal - paidTax).toFixed(2)));
                         tot = Math.max(0, Number((sub + tax).toFixed(2)));
                       }
-                      // 할인 전 원가 계산 (totalPrice 사용하여 모디파이어 포함, DC 제외, void 제외)
-                      const grossTotal = (orderItems || []).filter(it => {
-                        const item = it as any;
-                        return item.type !== 'separator' && item.type !== 'discount' && !item.void_id && !item.voidId && !item.is_void;
-                      }).reduce((sum, it: any) => {
-                        // Use totalPrice if available (includes modifiers), otherwise base price
-                        const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0) + ((it.memo?.price) || 0);
-                        return sum + (base * (it.quantity || 1));
-                      }, 0);
-                      
-                      // 아이템 할인 금액 합계 (직접 계산, void 제외)
-                      const itemDiscountsTotal = (orderItems || []).filter(it => {
-                        const item = it as any;
-                        return item.type !== 'separator' && item.type !== 'discount' && !item.void_id && !item.voidId && !item.is_void;
-                      }).reduce((sum, it: any) => {
-                        // Use totalPrice if available (includes modifiers), otherwise base price
-                        const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0) + ((it.memo?.price) || 0);
-                        const gross = base * (it.quantity || 1);
-                        const d = it.discount;
-                        if (d && typeof d.value === 'number' && d.value > 0) {
-                           return sum + (d.mode === 'percent' ? (gross * d.value / 100) : Math.min(d.value, gross));
-                        }
-                        return sum;
-                      }, 0);
-                      
-                      // Order D/C 합계 (totalPrice 우선 사용, void 제외)
-                      const orderDiscountsTotal = (orderItems || []).filter(it => {
-                        const item = it as any;
-                        return item.type === 'discount' && !item.void_id && !item.voidId && !item.is_void;
-                      }).reduce((sum, it: any) => {
-                        return sum + Math.abs(Number((it.totalPrice != null ? it.totalPrice : it.price) || 0));
-                      }, 0);
-                      
-                      // 총 할인
+                      // ✅ Summary도 단일 계산 모듈 결과만 사용 (중복 계산 금지)
+                      const grossTotal = Number((pricingAll.totals?.grossSubtotal || 0).toFixed(2));
+                      const itemDiscountsTotal = Number((pricingAll.totals?.itemDiscountTotal || 0).toFixed(2));
+                      const orderDiscountsTotal = Number((pricingAll.totals?.orderDiscountTotal || 0).toFixed(2));
                       const totalDiscountDisplay = Number((itemDiscountsTotal + orderDiscountsTotal).toFixed(2));
-                      
-                      // 할인 전 Sub Total
                       const subBeforeDiscount = grossTotal;
-                      
-                      // 할인 후 금액
-                      const subAfterDiscount = Math.max(0, Number((grossTotal - totalDiscountDisplay).toFixed(2)));
-                      
-                      // 세금을 할인 후 금액 비율로 재계산
-                      // tax 변수는 이미 Item Discount가 적용된 금액에 대한 세금임.
-                      // 따라서 Order Discount 비율만큼만 추가로 차감해야 함.
-                      const subAfterItemDiscount = Math.max(0, grossTotal - itemDiscountsTotal);
-                      const discountRatio = subAfterItemDiscount > 0 ? subAfterDiscount / subAfterItemDiscount : 0;
-                      const taxAfterDiscount = Number((tax * discountRatio).toFixed(2));
+                      const subAfterDiscount = Number((pricingAll.totals?.subtotalAfterAllDiscounts || Math.max(0, grossTotal - totalDiscountDisplay)).toFixed(2));
+                      const taxAfterDiscount = Number((tax || 0).toFixed(2)); // tax는 상단에서 unpaid/ALL 모드에 맞게 이미 결정됨
                       const totalAfterDiscount = Number((subAfterDiscount + taxAfterDiscount).toFixed(2));
-                      
-                      // 개별 세금 라인 가져오기 (GST, PST 등 각각 표시)
-                      const allTotals = computeGuestTotals('ALL');
-                      const individualTaxLines: Array<{ name: string; amount: number }> = (allTotals.taxLines || []).map((t: any) => ({
+
+                      const individualTaxLines: Array<{ name: string; amount: number }> = (taxLines || []).map((t: any) => ({
                         name: t.name || 'Tax',
-                        amount: Number(((t.amount || 0) * discountRatio).toFixed(2))
+                        amount: Number((t.amount || 0).toFixed(2)),
                       }));
                       
                       return (
@@ -8736,10 +10223,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <span>${fmt(taxAfterDiscount)}</span>
                             </div>
                           )}
-                          <div className="flex justify-between text-base font-bold">
+                          <div className="flex justify-between font-bold" data-pos-lock="order-summary-total" style={{ fontSize: 'var(--order-total-font)' }}>
                             <span>Total:</span>
                             <span>${fmt(totalAfterDiscount)}</span>
                           </div>
+                          {(() => {
+                            const paidSoFar = sessionPayments.reduce((s, p) => s + p.amount, 0);
+                            if (paidSoFar > 0.01) {
+                              const balance = Math.max(0, Number((totalAfterDiscount - paidSoFar).toFixed(2)));
+                              return (
+                                <>
+                                  <div className="flex justify-between text-green-700 font-bold" style={{ borderTop: '2px solid #16a34a', paddingTop: '4px', marginTop: '4px', fontSize: 'calc(var(--order-summary-font) + 1px)' }}>
+                                    <span>Paid:</span>
+                                    <span>- ${fmt(paidSoFar)}</span>
+                                  </div>
+                                  <div className="flex justify-between font-extrabold text-orange-600" style={{ fontSize: 'var(--order-total-font)', borderTop: '2px solid #ea580c', paddingTop: '2px', marginTop: '2px' }}>
+                                    <span>Balance:</span>
+                                    <span>${fmt(balance)}</span>
+                                  </div>
+                                </>
+                              );
+                            }
+                            return null;
+                          })()}
                         </>
                       );
                     })()}
@@ -8842,24 +10348,63 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
  
                 {/* Action Buttons */}
-                <div className="pt-2 pb-[2px] px-2 bg-blue-100 border-t border-blue-200 flex-shrink-0">
-                  <div className="grid gap-1" style={{ gridTemplateColumns: '3fr 3fr 4fr' }}>
-                    <button className="bg-gray-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={handlePrintBill}>
-                      Print Bill
+                <div className="py-1 px-2 bg-[#e0e5ec] border-t border-gray-200 flex-shrink-0 rounded-b-xl">
+                  <div
+                    className="grid"
+                    data-pos-lock="order-primary-actions"
+                    style={{
+                      gridTemplateColumns: isHandheldDevice ? '3fr 4fr' : '3fr 4fr 4fr',
+                      gap: 'clamp(6px, 1vh, 12px)'
+                    }}
+                  >
+                    <button className="px-1 py-2 flex items-center justify-center rounded-xl font-bold bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))', lineHeight: '1.2', textAlign: 'center', wordBreak: 'keep-all' }} onClick={handlePrintBill}>
+                      Print<br/>Bill
                     </button>
-                    <button className="bg-gray-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={() => { 
-                      // reset any previous prefill intents; show keypad display as 0
-                      try { setPrefillUseTotalOnceNonce(0); setPrefillDueNonce(n=>n+0); } catch {}
-                      if ((guestCount||0) > 1 || (orderItems||[]).some(it => it.type === 'separator')) { 
-                        if (!splitOriginalSnapshotRef.current) { splitOriginalSnapshotRef.current = JSON.parse(JSON.stringify(orderItems)); } 
-                        setShowSplitBillModal(true); 
-                      } else { 
-                        setShowPaymentModal(true); 
-                      } 
-                    }}>
-                      Payment
-                    </button>
-                    <button className="bg-green-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-green-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={handleOkClick}>
+                    {!isHandheldDevice && (
+                      <button className="px-1 py-2 flex items-center justify-center rounded-xl font-bold bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))', lineHeight: '1.2', textAlign: 'center' }} onClick={() => {
+                        try { setPrefillUseTotalOnceNonce(0); setPrefillDueNonce(n=>n+0); } catch {}
+                        priorPaymentIdsRef.current = new Set(sessionPayments.map(p => p.paymentId));
+
+                        const paid = persistedPaidGuestsRef.current || [];
+                        if (adhocSplitCount > 1 && paid.length > 0) {
+                          const allG = Array.from({ length: adhocSplitCount }, (_, i) => i + 1);
+                          const nextUnpaid = allG.find(g => !paid.includes(g));
+                          if (nextUnpaid) { setGuestPaymentMode(nextUnpaid); setActiveGuestNumber(nextUnpaid); }
+                          openedFromSplitRef.current = true;
+                          setShowPaymentModal(true);
+                          return;
+                        }
+                        let lsSplit = 0;
+                        if (paid.length > 0) {
+                          try {
+                            const oid = savedOrderIdRef.current || (location.state && (location.state as any).orderId) || null;
+                            if (oid) {
+                              const raw = localStorage.getItem(`paidGuests_order_${oid}`);
+                              if (raw) { const p = JSON.parse(raw); if (p && p.splitCount > 1) lsSplit = p.splitCount; }
+                            }
+                          } catch {}
+                        }
+                        if (lsSplit > 1 && paid.length > 0) {
+                          setAdhocSplitCount(lsSplit);
+                          const allG = Array.from({ length: lsSplit }, (_, i) => i + 1);
+                          const nextUnpaid = allG.find(g => !paid.includes(g));
+                          if (nextUnpaid) { setGuestPaymentMode(nextUnpaid); setActiveGuestNumber(nextUnpaid); }
+                          openedFromSplitRef.current = true;
+                          setShowPaymentModal(true);
+                          return;
+                        }
+
+                        if ((guestCount||0) > 1 || (orderItems||[]).some(it => it.type === 'separator')) {
+                          if (!splitOriginalSnapshotRef.current) { splitOriginalSnapshotRef.current = JSON.parse(JSON.stringify(orderItems)); }
+                          setShowSplitBillModal(true);
+                        } else {
+                          setShowPaymentModal(true);
+                        }
+                      }}>
+                        Payment
+                      </button>
+                    )}
+                    <button className="px-1 py-2 flex items-center justify-center rounded-xl font-bold bg-[#22c55e] text-white transition-all duration-150 shadow-[4px_4px_8px_#15803d,_-4px_-4px_8px_#34d399] hover:shadow-[6px_6px_10px_#15803d,_-6px_-6px_10px_#34d399] active:shadow-[inset_3px_3px_6px_#15803d,_inset_-3px_-3px_6px_#34d399] active:text-green-100" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))', lineHeight: '1.2', textAlign: 'center' }} onClick={handleOkClick}>
                       OK
                     </button>
                   </div>
@@ -8868,93 +10413,85 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <PaymentSplitModals
                   showPaymentModal={showPaymentModal}
                   showSplitBillModal={showSplitBillModal}
-                  paymentModalKey={`pay-${guestPaymentMode}`}
+                  paymentModalKey="pay-modal"
                   paymentModalProps={{
                     isOpen: showPaymentModal,
                     onClose: () => {
                       setShowPaymentModal(false);
-                      setAdhocSplitCount(0); // Reset Even Split
                       try { setPrefillUseTotalOnceNonce(0); } catch {}
-                      try { /* keep split closed */ } catch {}
                       payInFullFromSplitRef.current = false;
                       openedFromSplitRef.current = false;
                       allModeStickyRef.current = false;
-                      receiptPrintedRef.current = false; // Reset receipt print flag for next payment
+                      receiptPrintedRef.current = false;
+
+                      const paid = persistedPaidGuestsRef.current || [];
+                      const hasPartiallyPaidSplit = paid.length > 0 && adhocSplitCount > 1;
+                      let lsSplitCount = 0;
+                      if (!hasPartiallyPaidSplit && paid.length > 0) {
+                        try {
+                          const oid = savedOrderIdRef.current || (location.state && (location.state as any).orderId) || null;
+                          if (oid) {
+                            const raw = localStorage.getItem(`paidGuests_order_${oid}`);
+                            if (raw) { const p = JSON.parse(raw); if (p && p.splitCount > 1) lsSplitCount = p.splitCount; }
+                          }
+                        } catch {}
+                      }
+
+                      if (hasPartiallyPaidSplit || lsSplitCount > 1) {
+                        const sc = hasPartiallyPaidSplit ? adhocSplitCount : lsSplitCount;
+                        setAdhocSplitCount(sc);
+                        const allGuests = Array.from({ length: sc }, (_, i) => i + 1);
+                        const nextUnpaid = allGuests.find(g => !paid.includes(g));
+                        setGuestPaymentMode(nextUnpaid ?? 'ALL');
+                      } else {
+                        setAdhocSplitCount(0);
+                        setGuestPaymentMode('ALL');
+                      }
                     },
+                    paidGuests: Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [],
                     onCreateAdhocGuests: (n: number) => {
+                      const prevPaid = persistedPaidGuestsRef.current || [];
+                      setPersistedPaidGuests([]);
+                      try {
+                        const oid = savedOrderIdRef.current;
+                        if (oid) {
+                          localStorage.removeItem(`paidGuests_order_${oid}`);
+                          if (prevPaid.length > 0) {
+                            fetch(`${API_URL}/orders/${encodeURIComponent(String(oid))}/guest-status/bulk`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ statuses: prevPaid.map(g => ({ guestNumber: g, status: 'UNPAID', locked: false })) })
+                            }).catch(() => {});
+                          }
+                        }
+                      } catch {}
                       setAdhocSplitCount(n);
-                      setGuestPaymentMode(1); // Guest 1 자동 선택
+                      setGuestPaymentMode(1);
                       setActiveGuestNumber(1);
+                      setOrderItems(prev => prev.map(it => it.type === 'item' ? { ...it, _preSplit: true } as any : it));
                     },
-                    subtotal: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        
-                        // Calculate My Total Share First (Fair Penny Distribution)
-                        const grandCents = Math.round(payGrandAll * 100);
-                        const baseGrand = Math.floor(grandCents / n);
-                        const remGrand = grandCents % n;
-                        const myGrand = (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
-
-                        // Calculate My Tax Share Sum
-                        const myTaxSum = payTaxLinesAll.reduce((sum: number, t: any) => {
-                           const tCents = Math.round(t.amount * 100);
-                           const tBase = Math.floor(tCents / n);
-                           const tRem = tCents % n;
-                           const myT = (tBase + (idx <= tRem ? 1 : 0)) / 100;
-                           return sum + myT;
-                        }, 0);
-
-                        // Subtotal = Total - Tax (ensures Sub + Tax = Total)
-                        return Number((myGrand - myTaxSum).toFixed(2));
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.subtotal : paySubtotalAll)
-                        : paySubtotal;
-                    })(),
-                    taxLines: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const totalLines = payTaxLinesAll;
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        return totalLines.map((t: any) => {
-                           const tCents = Math.round(t.amount * 100);
-                           const tBase = Math.floor(tCents / n);
-                           const tRem = tCents % n;
-                           const amt = (tBase + (idx <= tRem ? 1 : 0)) / 100;
-                           return { ...t, amount: amt };
-                        });
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.taxLines : payTaxLinesAll)
-                        : payTaxLines;
-                    })(),
-                    total: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        const grandCents = Math.round(payGrandAll * 100);
-                        const baseGrand = Math.floor(grandCents / n);
-                        const remGrand = grandCents % n;
-                        return (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.grand : payGrandAll)
-                        : payGrand;
-                    })(),
+                    subtotal: paymentModalCalc.subtotal,
+                    taxLines: paymentModalCalc.taxLines,
+                    total: paymentModalCalc.total,
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
-                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; isPartialPayment?: boolean }) => {
+                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; isPartialPayment?: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number }; gratuity?: number }) => {
+                      if (data.gratuity && data.gratuity > 0) {
+                        gratuityAmountRef.current = data.gratuity;
+                      }
                       const currentGuest = typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined;
-                      const hasSplitBill = guestIds.length > 1 || (orderItems || []).some(it => it.type === 'separator');
+                      const hasSplitBill = (adhocSplitCount > 0) || guestIds.length > 1 || (orderItems || []).some(it => it.type === 'separator');
                       
                       // 실제 부분 결제 여부: 스플릿 결제에서 아직 미결제 게스트가 남아있는 경우
                       let isActuallyPartial = false;
                       if (hasSplitBill && currentGuest) {
-                        const newPaidGuests = Array.from(new Set([...persistedPaidGuests, currentGuest]));
-                        const unpaidGuests = guestIds.filter(g => !newPaidGuests.includes(g));
+                        const latestPaid = persistedPaidGuestsRef.current;
+                        const newPaidGuests = Array.from(new Set([...latestPaid, currentGuest]));
+                        const allGuestsForSplit = (adhocSplitCount > 0)
+                          ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
+                          : guestIds;
+                        const unpaidGuests = allGuestsForSplit.filter(g => !newPaidGuests.includes(g));
                         isActuallyPartial = unpaidGuests.length > 0;
                       }
                       
@@ -8966,8 +10503,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         isPartialPayment: isActuallyPartial,
                         currentGuestNumber: currentGuest,
                       });
-                      setShowPaymentModal(false);
-                      setShowPaymentCompleteModal(true);
+                      if (isActuallyPartial && hasSplitBill && currentGuest) {
+                        setShowPaymentCompleteModal(true);
+                      } else {
+                        setShowPaymentModal(false);
+                        setShowPaymentCompleteModal(true);
+                      }
                     },
                     channel: orderType,
                     customerName: (location.state && (location.state as any).customerName) || undefined,
@@ -8991,38 +10532,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         if (typeof mode === 'number') setActiveGuestNumber(mode);
                       }
                     },
-                    outstandingDue: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        
-                        const grandCents = Math.round(payGrandAll * 100);
-                        const baseGrand = Math.floor(grandCents / n);
-                        const remGrand = grandCents % n;
-                        const myTotal = (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
-
-                        const myPaid = sessionPayments
-                          .filter(p => p.guestNumber === guestPaymentMode)
-                          .reduce((s, p) => s + p.amount, 0);
-                        return Math.max(0, Number((myTotal - myPaid).toFixed(2)));
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? outstandingDueAll
-                        : Math.max(0, Number((payGrand - paidSoFarCurrent).toFixed(2)));
-                    })(),
-                    paidSoFar: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                         return sessionPayments
-                          .filter(p => p.guestNumber === guestPaymentMode)
-                          .reduce((s, p) => s + p.amount, 0);
-                      }
-                      return guestPaymentMode === 'ALL' ? paidSoFarAll : paidSoFarCurrent;
-                    })(),
-                    payments: sessionPayments,
+                    outstandingDue: paymentModalCalc.outstandingDue,
+                    paidSoFar: paymentModalCalc.paidSoFar,
+                    payments: paymentModalCalc.filteredPayments,
                     onVoidPayment: handleVoidPayment,
                     onClearAllPayments: handleClearAllPayments,
+                    onClearScopedPayments: handleClearScopedPayments,
                     prefillDueNonce,
                     prefillUseTotalOnceNonce,
+                    serviceMode: 'FSR',
+                    gratuityRate: layoutSettings.gratuityRate ?? 0,
+                    allTaxNames,
+                    onApplyGratuity: (gratuityAmount: number) => {
+                      gratuityAmountRef.current = gratuityAmount;
+                    },
+                    initialSplitN: adhocSplitCount > 1 ? adhocSplitCount : undefined,
                   }}
                   splitBillModalProps={{
                     isOpen: showSplitBillModal,
@@ -9040,6 +10564,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       setPrefillDueNonce(n => n + 1);
                       setShowSplitBillModal(false);
                       openedFromSplitRef.current = true;
+                      priorPaymentIdsRef.current = new Set(sessionPayments.map(p => p.paymentId));
                       setTimeout(() => {
                         setShowPaymentModal(true);
                       }, 0);
@@ -9050,6 +10575,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       payInFullFromSplitRef.current = true;
                       openedFromSplitRef.current = true;
                       allModeStickyRef.current = true;
+                      priorPaymentIdsRef.current = new Set(sessionPayments.map(p => p.paymentId));
                       setTimeout(() => {
                         setPrefillUseTotalOnceNonce(n => n + 1);
                         setShowPaymentModal(true);
@@ -9064,7 +10590,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               </div>
             )}
               {/* Right Panel - Menu Categories and Items (Back Office: 주문목록 숨김시 100%) */}
-              <div className="bg-white flex flex-col overflow-hidden" style={{ width: hideOrderListPanel ? '100%' : `${layoutSettings.rightPanelWidth}%` }}>
+              <div className="bg-white flex flex-col overflow-hidden h-full" style={{ width: hideOrderListPanel ? '100%' : `${layoutSettings.rightPanelWidth}%` }}>
                 <OrderCatalogPanel
                   layoutSettings={layoutSettings}
                   showInitialMenuLoading={showInitialMenuLoading}
@@ -9082,7 +10608,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   activeCategoryId={activeCategoryId}
                   setActiveCategoryId={setActiveCategoryId}
                   handleCategoryDragEnd={handleCategoryDragEnd}
-                  layoutLockReady={layoutLockReady}
+                  layoutLockReady={isSalesOrder}
                   showBackgroundMenuLoading={showBackgroundMenuLoading}
                   filteredMenuItems={filteredMenuItems}
                   itemColors={itemColors}
@@ -9103,7 +10629,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   soldOutTimes={soldOutTimes}
                   updateLayoutSetting={updateLayoutSetting}
                   catalogSnapshot={catalogSnapshot}
-                  showEmptySlots={shouldShowButtonPlaceholders}
+                  showEmptySlots={true}
+                  emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
                   showAllCategoriesGrouped={layoutSettings.showAllCategoriesGrouped}
                 />
 
@@ -9117,9 +10644,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   modifierColors={modifierColors}
                   isLoading={isLoadingModifiers}
                   activeModifierId={activeModifierId}
-                  setActiveModifierId={setActiveModifierId}
+                  setActiveModifierId={(id: string | null) => {
+                    setActiveModifierId(id);
+                    if (id !== null) {
+                      if (selectedMenuItemId) {
+                        modDragItemIdRef.current = selectedMenuItemId;
+                      } else {
+                        const cat = categories.find(c => c.name === selectedCategory);
+                        modDragItemIdRef.current = cat ? `__cat_${cat.category_id}` : (selectedCategory ? `__cat_${selectedCategory}` : null);
+                      }
+                    }
+                  }}
                   handleModifierSelection={handleModifierSelection}
                   handleModifierDragEnd={handleModifierDragEnd}
+                  onModifierReorder={(reordered: string[]) => {
+                    const key = modLayoutKey || modCategoryKey;
+                    if (!key) return;
+                    setModifierLayoutByItem(prev => ({ ...prev, [key]: reordered }));
+                    try { localStorage.setItem(getLayoutKey(key), JSON.stringify(reordered)); } catch {}
+                    modDragItemIdRef.current = null;
+                  }}
                   setSelectedModifierIdForColor={(id: string) => setSelectedModifierIdForColor(id)}
                   canAddAdhoc={!!selectedMenuItemId}
                   onAddAdhocModifier={({ name, price }) => {
@@ -9163,13 +10707,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   }}
                   extraButton1={{ enabled: modExtra1Enabled, name: modExtra1Name, price: modExtra1Amount, colorClass: modExtra1Color }}
                   extraButton2={{ enabled: modExtra2Enabled, name: modExtra2Name, price: modExtra2Amount, colorClass: modExtra2Color }}
-                  showEmptySlots={shouldShowButtonPlaceholders}
-                  lockLayout={layoutLockReady}
+                  showEmptySlots={true}
+                  emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
+                  lockLayout={isSalesOrder}
                 />
 
                 {/* Right-side Function Buttons (placed under modifier panel) */}
-                <div className="pl-2 pr-0 py-0">
+                <div className="pl-2 pr-0 py-0 flex-shrink-0 mt-auto">
                   <BottomActionBar
+                    onReprint={handleReprint}
                     onVoid={() => { handleOpenVoid(); }}
                     onSplitOrder={handleSplitOrderClick}
                     onItemMemo={handleOpenKitchenMemo}
@@ -9203,7 +10749,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               try {
                 const item = (menuItems || []).find(m => String(m.id) === String(it.id));
                 if (item) {
-                  if (isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
+                  if (!(adhocSplitCount > 1) && isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
                   addToOrder(item);
                   setShowSearchModal(false);
                   setSoftKbTarget(null);
@@ -10034,7 +11580,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             {/* Reset to Default Button */}
             <div className="mb-6">
               <button
-                onClick={() => {
+                onClick={async () => {
                   setItemColors(prev => {
                     const newColors = { ...prev };
                     if (selectedItemForColor) {
@@ -10042,6 +11588,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     }
                     return newColors;
                   });
+                  try {
+                    if (selectedItemForColor) {
+                      // null/empty value means "delete override" (reset to default)
+                      await fetch(`${API_URL}/menu-item-colors`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [selectedItemForColor.id]: null }),
+                      });
+                    }
+                  } catch {}
                   setShowItemColorModal(false);
                 }}
                 className="w-full bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors font-medium"
@@ -10203,13 +11759,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             {selectedColors.length > 0 && selectedItemForColor && (
               <div className="mb-6">
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     // Apply the first selected color to the selected menu item
                     const colorToApply = selectedColors[0];
                     setItemColors(prev => ({
                       ...prev,
                       [selectedItemForColor.id]: colorToApply
                     }));
+                    try {
+                      await fetch(`${API_URL}/menu-item-colors`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [selectedItemForColor.id]: colorToApply }),
+                      });
+                    } catch {}
                     setSelectedColors([]);
                     setShowCustomColorModal(false);
                   }}
@@ -11658,7 +13221,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             onPrintAllDetails={async () => {
                 await executePrintBill('ALL_DETAILS');
                 setShowPrintBillModal(false);
-                navigate('/sales');
+                navigate('/sales', { replace: true });
             }}
             onPrintIndividualGuest={async (guestId) => {
                 await executePrintBill('INDIVIDUAL_GUEST', guestId);
@@ -11667,7 +13230,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             onPrintAllSeparateBills={async () => {
                 await executePrintBill('ALL_SEPARATE');
                 setShowPrintBillModal(false);
-                navigate('/sales');
+                navigate('/sales', { replace: true });
             }}
             guestIds={Array.from(guestIds)}
         />
@@ -11677,6 +13240,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       <PaymentCompleteModal
         isOpen={showPaymentCompleteModal}
         onClose={handlePaymentCompleteClose}
+        mode={paymentCompleteData?.isPartialPayment ? 'full' : 'receiptOnly'}
+        onAddTips={(receiptCount) => {
+          setPendingReceiptCountForTip(receiptCount);
+          setShowPaymentCompleteModal(false);
+          setShowTipEntryModal(true);
+        }}
         change={paymentCompleteData?.change || 0}
         total={paymentCompleteData?.total || 0}
         tip={paymentCompleteData?.tip || 0}
@@ -11684,12 +13253,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         hasCashPayment={paymentCompleteData?.hasCashPayment || false}
         isPartialPayment={paymentCompleteData?.isPartialPayment}
         currentGuestNumber={paymentCompleteData?.currentGuestNumber}
-        allGuests={Array.from(guestIds)}
+        allGuests={adhocSplitCount > 0 ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1) : Array.from(guestIds)}
         paidGuests={Array.from(new Set([...persistedPaidGuests, ...(paymentCompleteData?.currentGuestNumber ? [paymentCompleteData.currentGuestNumber] : [])]))}
         onPrintReceipt={handlePartialPrintReceipt}
         onSelectGuest={handleGuestSelectFromModal}
-        onBackToOrder={() => { setShowPaymentCompleteModal(false); setPaymentCompleteData(null); }}
+        onBackToOrder={() => { setShowPaymentCompleteModal(false); setPaymentCompleteData(null); setShowPaymentModal(false); }}
         onAddCashTip={handleAddCashTip}
+      />
+
+      <TipEntryModal
+        isOpen={showTipEntryModal}
+        onClose={() => {
+          setShowTipEntryModal(false);
+          setShowPaymentCompleteModal(true);
+        }}
+        onSave={async (tipAmount) => {
+          await handleAddCashTip(tipAmount);
+          setShowTipEntryModal(false);
+          await handlePaymentCompleteClose(pendingReceiptCountForTip);
+        }}
       />
 
       {/* Discount Modal - Enhanced */}
@@ -11966,123 +13548,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       )}
 
       {/* Sold Out Modal */}
-      {showSoldOutModal && (() => {
-        // Helper function to format remaining time in 30-min units
-        const formatRemainingTime = (endTime: number) => {
-          if (endTime === 0) return 'Until cleared';
-          const now = Date.now();
-          const remaining = endTime - now;
-          if (remaining <= 0) return 'Expired';
-          
-          const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
-          const hours = Math.floor((remaining % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
-          const mins = Math.ceil((remaining % (60 * 60 * 1000)) / (30 * 60 * 1000)) * 30; // Round up to 30-min units
-          
-          if (days > 0) return `${days}d ${hours}h`;
-          if (hours > 0) return `${hours}h ${mins > 0 ? mins + 'm' : ''}`;
-          return `${mins}m`;
-        };
-        
-        return (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-[798px] max-h-[80vh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-800">Sold Out Options</h3>
-                  {selectedExtendItemId && (
-                    <div className="text-sm text-blue-600 font-medium mt-1">
-                      Select time to add to: {menuItems.find(i => i.id === selectedExtendItemId)?.name}
-                    </div>
-                  )}
-                </div>
-                <button 
-                  onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} 
-                  className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-10 h-10 flex items-center justify-center"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                {/* Left column: actions */}
-                <div className="space-y-3">
-                  <button
-                    onClick={() => selectedExtendItemId ? handleAddTimeToSoldOut('30min') : handleSoldOutOption('30min')}
-                    className={`w-full p-4 text-left border rounded-lg transition-colors ${selectedExtendItemId ? 'border-blue-400 bg-blue-50 hover:bg-blue-100' : 'border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    <div className="font-medium text-gray-800">{selectedExtendItemId ? '+ Add 30 minutes' : 'Pause for 30 minutes'}</div>
-                    <div className="text-sm text-gray-600">{selectedExtendItemId ? 'Adds 30 minutes to current time' : 'Resumes automatically after 30 minutes'}</div>
-                  </button>
-                  <button
-                    onClick={() => selectedExtendItemId ? handleAddTimeToSoldOut('1hour') : handleSoldOutOption('1hour')}
-                    className={`w-full p-4 text-left border rounded-lg transition-colors ${selectedExtendItemId ? 'border-blue-400 bg-blue-50 hover:bg-blue-100' : 'border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    <div className="font-medium text-gray-800">{selectedExtendItemId ? '+ Add 1 hour' : 'Pause for 1 hour'}</div>
-                    <div className="text-sm text-gray-600">{selectedExtendItemId ? 'Adds 1 hour to current time' : 'Resumes automatically after 1 hour'}</div>
-                  </button>
-                  <button
-                    onClick={() => selectedExtendItemId ? handleAddTimeToSoldOut('today') : handleSoldOutOption('today')}
-                    className={`w-full p-4 text-left border rounded-lg transition-colors ${selectedExtendItemId ? 'border-blue-400 bg-blue-50 hover:bg-blue-100' : 'border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    <div className="font-medium text-gray-800">{selectedExtendItemId ? '+ Add 1 day' : 'Pause for today'}</div>
-                    <div className="text-sm text-gray-600">{selectedExtendItemId ? 'Adds 24 hours to current time' : 'Available after midnight'}</div>
-                  </button>
-                  <button
-                    onClick={() => selectedExtendItemId ? handleAddTimeToSoldOut('indefinite') : handleSoldOutOption('indefinite')}
-                    className={`w-full p-4 text-left border rounded-lg transition-colors ${selectedExtendItemId ? 'border-blue-400 bg-blue-50 hover:bg-blue-100' : 'border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    <div className="font-medium text-gray-800">Sold Out until cleared</div>
-                    <div className="text-sm text-gray-600">Remains sold out until manually cleared</div>
-                  </button>
-                </div>
-
-                {/* Right column: list with per-item actions */}
-                <div>
-                  <div className="font-medium text-gray-800 mb-2">Current Sold Out Items</div>
-                  <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
-                    {Array.from(soldOutItems).length === 0 ? (
-                      <div className="text-sm text-gray-500">No items are currently sold out.</div>
-                    ) : (
-                      Array.from(soldOutItems).map(itemId => {
-                        const item = menuItems.find(i => i.id === itemId);
-                        const info = soldOutTimes.get(itemId);
-                        if (!item) return null;
-                        const isSelected = selectedExtendItemId === itemId;
-                        const timeLabel = formatRemainingTime(info?.endTime || 0);
-                        return (
-                          <div key={itemId} className={`flex items-center justify-between border rounded p-2 transition-all ${isSelected ? 'bg-blue-100 border-blue-400' : 'bg-gray-50'}`}>
-                            <div>
-                              <div className="text-sm font-medium text-gray-800">{item.name}</div>
-                              <div className={`text-xs font-semibold ${info?.endTime === 0 ? 'text-orange-600' : 'text-blue-600'}`}>{timeLabel}</div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button 
-                                onClick={() => handleExtendSoldOut(itemId)} 
-                                className={`min-w-[80px] h-9 px-3 rounded-lg text-sm font-semibold shadow transition-all ${isSelected ? 'bg-blue-800 text-white' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'}`}
-                              >
-                                {isSelected ? 'Selected' : 'Extend'}
-                              </button>
-                              <button 
-                                onClick={() => { handleClearSoldOutItem(itemId); setSelectedExtendItemId(null); }} 
-                                className="min-w-[80px] h-9 px-3 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold shadow"
-                              >
-                                Clear
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-                <div className="col-span-2 flex justify-end gap-3 pt-4">
-                  <button onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} className="min-w-[100px] px-6 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold">Cancel</button>
-                  <button onClick={() => { handleSoldOutConfirm(); setSelectedExtendItemId(null); }} className="min-w-[100px] px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold">OK</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      <SoldOutModal
+        isOpen={showSoldOutModal}
+        onClose={() => {
+          setShowSoldOutModal(false);
+          if (soldOutModeFromSales) {
+            navigate('/sales', { replace: true });
+          }
+        }}
+        menuId={menuId}
+        apiUrl={API_URL}
+        menuItems={menuItems.map(i => ({ id: i.id, name: i.name }))}
+        onSoldOutChange={(items: Set<string>, times: Map<string, any>) => {
+          // Only update if modal actually loaded data (prevent reset from empty initial state)
+          if (items.size > 0 || soldOutItems.size === 0) {
+            setSoldOutItems(items);
+            setSoldOutTimes(times);
+          }
+        }}
+        onEnterSoldOutMode={(durationType?: string) => {
+          setSelectedSoldOutType(durationType || 'indefinite');
+          setSoldOutMode(true);
+          setShowSoldOutModal(false);
+          // Immediately load sold out data to ensure menu grid shows correct state
+          loadSoldOutFromServer(menuId);
+        }}
+        currentUser={currentUser}
+      />
 
       {/* Gift Card Modal */}
       {showGiftCardModal && (

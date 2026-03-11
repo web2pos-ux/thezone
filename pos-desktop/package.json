@@ -1,16 +1,16 @@
 {
   "name": "thezonepos",
-  "version": "1.0.1",
+  "version": "1.0.21",
   "description": "TheZonePOS - Restaurant POS System",
   "main": "main.js",
-  "scripts": {
-    "start": "electron .",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
-    "build:portable": "electron-builder --win portable"
-  },
   "author": "WEB2POS",
   "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
   "dependencies": {
     "canvas": "^3.2.1",
     "cors": "^2.8.5",
@@ -34,23 +34,28 @@
   "build": {
     "appId": "com.thezonepos.pos",
     "productName": "TheZonePOS",
-    "npmRebuild": false,
-    "asar": false,
     "directories": {
-      "output": "dist"
+      "output": "dist22"
     },
     "files": [
       "main.js",
       "preload.js",
       "updater.js",
+      "icon.ico",
       "node_modules/**/*"
     ],
+    "asarUnpack": [
+      "node_modules/sqlite3/**",
+      "node_modules/canvas/**",
+      "node_modules/@serialport/**",
+      "node_modules/serialport/**",
+      "node_modules/pdf-to-printer/**",
+      "node_modules/node-gyp-build/**",
+      "node_modules/bindings/**",
+      "node_modules/node-addon-api/**"
+    ],
+    "npmRebuild": false,
     "extraResources": [
-      {
-        "from": "db",
-        "to": "db",
-        "filter": ["**/*"]
-      },
       {
         "from": "backend",
         "to": "backend",
@@ -60,6 +65,16 @@
         "from": "frontend-build",
         "to": "frontend/build",
         "filter": ["**/*"]
+      },
+      {
+        "from": "db",
+        "to": "db",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "apk",
+        "to": "apk",
+        "filter": ["*.apk"]
       }
     ],
     "win": {
@@ -73,16 +88,18 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "icon.png"
+      "icon": "icon.ico"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    },
-    "portable": {
-      "artifactName": "${productName}-Portable-${version}.${ext}"
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "TheZonePOS",
+      "runAfterFinish": true
     }
   }
 }

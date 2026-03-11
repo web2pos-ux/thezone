@@ -192,7 +192,11 @@ const WaitingListModal: React.FC<WaitingListModalProps> = ({ open, onClose, onAs
       <div className="w-[660px] max-w-[72vw] bg-white rounded-lg shadow-xl overflow-hidden">
         <div className="p-4 border-b flex items-center justify-between">
           <div className="text-lg font-bold">Waiting List</div>
-          <button onClick={onClose} aria-label="Close" title="Close" className="w-11 h-11 flex items-center justify-center border rounded-full text-gray-700 hover:bg-gray-100 text-lg">×</button>
+          <button onClick={onClose} aria-label="Close" title="Close" className="w-12 h-12 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full flex items-center justify-center touch-manipulation transition-colors backdrop-blur-sm">
+            <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
         <form

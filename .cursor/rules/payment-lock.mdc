@@ -1,0 +1,42 @@
+---
+description: CRITICAL - Payment Modal/Split Payment/Payments API is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/components/PaymentModal.tsx,frontend/src/components/PaymentCompleteModal.tsx,frontend/src/components/SplitBillModal.tsx,frontend/src/pages/order/modules/PaymentSplitModals.tsx,frontend/src/pages/DebugPaymentPage.tsx,backend/routes/payments.js,pos-desktop/backend/routes/payments.js
+alwaysApply: true
+---
+
+# PAYMENT CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Files
+- `frontend/src/components/PaymentModal.tsx` - 결제 모달
+- `frontend/src/components/PaymentCompleteModal.tsx` - 결제 완료 모달
+- `frontend/src/components/SplitBillModal.tsx` - 스플릿 빌 모달
+- `frontend/src/pages/order/modules/PaymentSplitModals.tsx` - 스플릿 결제 모달
+- `backend/routes/payments.js` - 결제 API
+- `pos-desktop/backend/routes/payments.js` - POS 결제 API
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 “기능 영향이 없어 보이는 변경”도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 “사실상 수정”하는 행위도 승인 없이는 절대 불가.
+4. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - Explain WHAT you want to change (specific lines/functions)
+   - Explain WHY the change is necessary
+   - Explain the IMPACT on existing payment functionality
+   - Ask for explicit approval: "이 변경을 진행해도 될까요?"
+5. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 **파일을 편집하지 말고**, 변경을 시도하지 마라.
+6. 다른 작업의 “부수 효과로 결제 코드 수정이 필요”해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+
+## Example
+
+```
+❌ BAD: Silently editing PaymentModal.tsx
+❌ BAD: "I'll update the payment logic" then editing
+
+✅ GOOD:
+"PaymentModal.tsx를 수정해야 합니다.
+- 변경 내용: handlePayment 함수에 Gift Card 결제 집계 로직 추가
+- 변경 이유: Closing 레포트에 Gift Card 결제 금액을 표시하기 위해 필요
+- 영향 범위: 기존 결제 플로우에는 영향 없음, 결제 완료 후 트랜잭션 기록만 추가
+이 변경을 진행해도 될까요?"
+```

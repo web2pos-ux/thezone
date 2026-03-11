@@ -20,8 +20,8 @@ export async function fetchMenuStructure(
   storeId: string
 ): Promise<MenuCachePayload> {
   const [structureRes, modifiersRes] = await Promise.all([
-    fetch(`${apiUrl}/api/menus/${menuId}/structure`, { cache: 'no-store' }),
-    fetch(`${apiUrl}/api/modifier-groups?store_id=${storeId}`, { cache: 'no-store' })
+    fetch(`${apiUrl}/menus/${menuId}/structure`, { cache: 'no-store' }),
+    fetch(`${apiUrl}/modifier-groups?store_id=${storeId}`, { cache: 'no-store' })
   ]);
 
   if (!structureRes.ok || !modifiersRes.ok) {

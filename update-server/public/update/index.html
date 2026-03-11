@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TheZonePOS Update Server</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+    .container {
+      text-align: center;
+      padding: 40px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 20px;
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.2);
+      max-width: 500px;
+    }
+    .logo {
+      font-size: 64px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+    .subtitle {
+      color: rgba(255,255,255,0.7);
+      margin-bottom: 30px;
+    }
+    .version-info {
+      background: rgba(0,0,0,0.2);
+      padding: 20px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+    }
+    .version {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4ade80;
+    }
+    .date {
+      color: rgba(255,255,255,0.6);
+      font-size: 14px;
+      margin-top: 5px;
+    }
+    .links {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .link {
+      padding: 10px 20px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 8px;
+      color: white;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .link:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    .footer {
+      margin-top: 30px;
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">🍽️</div>
+    <h1>TheZonePOS</h1>
+    <p class="subtitle">Update Server</p>
+    
+    <div class="version-info">
+      <div class="version" id="version">Loading...</div>
+      <div class="date" id="date"></div>
+    </div>
+    
+    <div class="links">
+      <a href="/version.json" class="link">📋 Version Info</a>
+      <a href="/build.zip" class="link" id="download-link" style="display:none">📦 Download</a>
+    </div>
+    
+    <div class="footer">
+      © 2026 TheZonePOS. All rights reserved.
+    </div>
+  </div>
+
+  <script>
+    fetch('/version.json')
+      .then(res => res.json())
+      .then(data => {
+        document.getElementById('version').textContent = 'v' + data.version;
+        document.getElementById('date').textContent = 'Released: ' + data.releaseDate;
+        if (data.downloadUrl) {
+          const link = document.getElementById('download-link');
+          link.href = data.downloadUrl;
+          link.style.display = 'inline-block';
+        }
+      })
+      .catch(err => {
+        document.getElementById('version').textContent = 'Error loading version';
+      });
+  </script>
+</body>
+</html>

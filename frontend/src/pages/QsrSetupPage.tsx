@@ -202,7 +202,7 @@ const QsrSetupPage: React.FC = () => {
             <ul className="text-sm text-amber-700 space-y-1">
               <li>• Quick counter ordering without table selection</li>
               <li>• Order number based system</li>
-              <li>• For Here / To Go / Pickup options</li>
+              <li>• Eat In / To Go / Pickup options</li>
               <li>• Fast payment processing</li>
               <li>• Kitchen ticket printing</li>
             </ul>

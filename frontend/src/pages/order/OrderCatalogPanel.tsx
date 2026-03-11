@@ -57,6 +57,7 @@ interface OrderCatalogPanelProps {
   updateLayoutSetting: (key: keyof LayoutSettings, value: any) => void;
   catalogSnapshot?: CatalogSnapshot | null;
   showEmptySlots?: boolean;
+  emptySlotMode?: 'none' | 'configured' | 'fill';
   showAllCategoriesGrouped?: boolean;
 }
 
@@ -99,6 +100,7 @@ const OrderCatalogPanel: React.FC<OrderCatalogPanelProps> = ({
   updateLayoutSetting,
   catalogSnapshot,
   showEmptySlots = true,
+  emptySlotMode,
   showAllCategoriesGrouped = false,
 }) => {
   const placeholdersEnabled = showEmptySlots !== false;
@@ -170,7 +172,7 @@ const OrderCatalogPanel: React.FC<OrderCatalogPanelProps> = ({
             activeCategoryId={activeCategoryId}
             setActiveCategoryId={setActiveCategoryId}
             handleCategoryDragEnd={handleCategoryDragEnd}
-            lockLayout={false}
+            lockLayout={layoutLockReady}
           />
         )}
       </div>
@@ -245,23 +247,20 @@ const OrderCatalogPanel: React.FC<OrderCatalogPanelProps> = ({
               }}
               layoutIdsForCategory={layoutIdsForSelectedCategory}
               getLayoutIdsForCategory={getLayoutIdsForCategory}
-              onMenuGridReorder={({ oldIndex, newIndex, ids, category }) => {
+              onMenuGridReorder={({ ids, category }) => {
                 if (!category) return;
                 const cat = categories.find(c => c.name === category);
                 if (!cat) return;
-                const current = Array.isArray(ids) ? ids.slice() : [];
-                if (oldIndex < 0 || newIndex < 0 || oldIndex >= current.length || newIndex >= current.length) return;
-                const [moved] = current.splice(oldIndex, 1);
-                current.splice(newIndex, 0, moved);
                 const map = { ...(layoutSettings as any).menuItemOrderByCategory };
-                (map as any)[cat.category_id] = current;
+                (map as any)[cat.category_id] = Array.isArray(ids) ? ids : [];
                 updateLayoutSetting('menuItemOrderByCategory' as keyof LayoutSettings, map as any);
               }}
               soldOutItems={soldOutItems}
               soldOutCategories={soldOutCategories}
               soldOutTimes={soldOutTimes}
-              lockLayout={false}
+              lockLayout={layoutLockReady}
               showEmptySlots={showEmptySlots}
+              emptySlotMode={emptySlotMode}
               showAllCategoriesGrouped={showAllCategoriesGrouped}
               allCategories={categories.map(c => ({ category_id: String(c.category_id), name: c.name }))}
             />

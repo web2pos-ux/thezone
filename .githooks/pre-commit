@@ -1,0 +1,9 @@
+#!/bin/sh
+#
+# Repo-tracked git hook (optional).
+# To enable: git config core.hooksPath .githooks
+#
+# Blocks commits that modify protected files unless an explicit ALLOW_* env is set.
+
+node tools/protect-split-files.js
+

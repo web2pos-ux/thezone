@@ -29,7 +29,7 @@ module.exports = (db) => {
   router.get('/', async (req, res) => {
     try {
       const { type } = req.query;
-      let sql = 'SELECT modifier_id as id, name, price_delta, price_delta2, type, sort_order FROM modifiers WHERE is_deleted = 0';
+      let sql = 'SELECT modifier_id as id, name, price_delta, price_delta2, type, sort_order, button_color FROM modifiers WHERE is_deleted = 0';
       const params = [];
 
       if (type) {
@@ -54,10 +54,8 @@ module.exports = (db) => {
   // POST /api/modifiers - Create a new modifier
   router.post('/', async (req, res) => {
     const { name, price_delta, price_delta2, type, sort_order } = req.body;
-
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      return res.status(400).json({ error: 'Modifier name is required.' });
-    }
+    // Allow blank modifier name ("") per requirements.
+    const safeName = (typeof name === 'string') ? name.trim() : '';
 
     if (typeof price_delta !== 'number') {
       return res.status(400).json({ error: 'Price delta must be a number.' });
@@ -70,11 +68,11 @@ module.exports = (db) => {
       const priceDelta2 = price_delta2 || 0;
 
       await dbRun('INSERT INTO modifiers (modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)', 
-        [newModifierId, name.trim(), price_delta, priceDelta2, modifierType, sortOrder]);
+        [newModifierId, safeName, price_delta, priceDelta2, modifierType, sortOrder]);
 
       res.status(201).json({
         id: newModifierId,
-        name: name.trim(),
+        name: safeName,
         price_delta: price_delta,
         price_delta2: priceDelta2,
         type: modifierType,
@@ -90,10 +88,8 @@ module.exports = (db) => {
   router.put('/:id', async (req, res) => {
     const { id: modifierId } = req.params;
     const { name, price_delta, price_delta2, type, sort_order } = req.body;
-
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      return res.status(400).json({ error: 'Modifier name is required.' });
-    }
+    // Allow blank modifier name ("") per requirements.
+    const safeName = (typeof name === 'string') ? name.trim() : '';
 
     if (typeof price_delta !== 'number') {
       return res.status(400).json({ error: 'Price delta must be a number.' });
@@ -105,11 +101,11 @@ module.exports = (db) => {
       const priceDelta2 = price_delta2 || 0;
 
       await dbRun('UPDATE modifiers SET name = ?, price_delta = ?, price_delta2 = ?, type = ?, sort_order = ? WHERE modifier_id = ? AND is_deleted = 0', 
-        [name.trim(), price_delta, priceDelta2, modifierType, sortOrder, modifierId]);
+        [safeName, price_delta, priceDelta2, modifierType, sortOrder, modifierId]);
 
       res.json({
         id: parseInt(modifierId),
-        name: name.trim(),
+        name: safeName,
         price_delta: price_delta,
         price_delta2: priceDelta2,
         type: modifierType,

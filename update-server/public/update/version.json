@@ -1,0 +1,8 @@
+{
+  "version": "1.0.1",
+  "releaseDate": "2026-02-04",
+  "releaseNotes": "v1.0.1 Update\n- Category modifier auto-load\n- E.Total shows item price only\n- Order History date fix\n- Modifier Show Prices setting\n- Kitchen ticket margin fix",
+  "downloadUrl": "/update/build.zip",
+  "mandatory": false,
+  "minVersion": "1.0.0"
+}

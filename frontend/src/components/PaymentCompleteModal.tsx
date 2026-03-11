@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 interface PaymentCompleteModalProps {
   isOpen: boolean;
   onClose: (receiptCount: number) => void;
+  mode?: 'full' | 'receiptOnly';
+  onAddTips?: (receiptCount: number) => void;
   change: number;
   total: number;
   tip: number;
@@ -23,6 +25,8 @@ interface PaymentCompleteModalProps {
 const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
   isOpen,
   onClose,
+  mode = 'full',
+  onAddTips,
   change,
   total,
   tip,
@@ -38,6 +42,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
   onAddCashTip,
 }) => {
   const [selectedReceipt, setSelectedReceipt] = useState<number | null>(null);
+  const [isSubmittingReceipt, setIsSubmittingReceipt] = useState(false);
   const [cashTipInput, setCashTipInput] = useState('');
   const [cashTipAdded, setCashTipAdded] = useState(false);
   const [addedCashTip, setAddedCashTip] = useState(0);
@@ -58,6 +63,76 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
 
   const formatMoney = (n: number) =>
     new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+  if (mode === 'receiptOnly') {
+    const handleReceiptSelect = async (count: number) => {
+      if (isSubmittingReceipt) return;
+      setIsSubmittingReceipt(true);
+      try {
+        if (count > 0) {
+          try {
+            if (typeof onPrintReceipt === 'function') {
+              await Promise.resolve(onPrintReceipt(count));
+            }
+          } catch {}
+        }
+        await Promise.resolve(onClose(count));
+      } finally {
+        setIsSubmittingReceipt(false);
+      }
+    };
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+        <div className="relative bg-white rounded-2xl shadow-2xl w-[504px] overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="bg-gradient-to-r from-green-500 to-green-600 px-8 py-6 text-center">
+            <div className="text-6xl mb-2">✓</div>
+            <h2 className="text-3xl font-bold text-white">Payment Complete</h2>
+          </div>
+          <div className="p-8">
+            {change > 0 && (
+              <div className="text-center mb-6 py-4 bg-red-50 rounded-xl border-2 border-red-200">
+                <div className="text-lg font-semibold text-gray-600">Change</div>
+                <div className="text-4xl font-bold text-red-600">${formatMoney(change)}</div>
+              </div>
+            )}
+            <div className="text-center mb-4">
+              <span className="text-base font-semibold text-gray-500 uppercase tracking-wide">Select Receipt Option</span>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <button
+                onClick={() => handleReceiptSelect(0)}
+                disabled={isSubmittingReceipt}
+                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
+                  'bg-gray-600 hover:bg-gray-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
+              >
+                No Receipt
+              </button>
+              <button
+                onClick={() => handleReceiptSelect(1)}
+                disabled={isSubmittingReceipt}
+                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
+                  'bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
+              >
+                1 Receipt
+              </button>
+              <button
+                onClick={() => handleReceiptSelect(2)}
+                disabled={isSubmittingReceipt}
+                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
+                  'bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
+              >
+                2 Receipts
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const displayTip = tip + addedCashTip + (changeAsTipApplied ? change : 0);
   const displayChange = changeAsTipApplied ? 0 : change;
@@ -216,9 +291,37 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
   // ═══════════════════════════════════════════════════
   // Partial payment mode (split bill - guest completed)
   // ═══════════════════════════════════════════════════
-  const handlePartialReceiptClick = (count: number) => {
-    setSelectedReceipt(count);
-    if (onPrintReceipt) onPrintReceipt(count);
+  const handlePartialReceiptClick = async (count: number) => {
+    if (isSubmittingReceipt) return;
+    setIsSubmittingReceipt(true);
+    try {
+      setSelectedReceipt(count);
+      if (count > 0) {
+        try {
+          if (onPrintReceipt) await Promise.resolve(onPrintReceipt(count));
+        } catch {}
+      }
+
+      // Auto-advance:
+      // - If there are unpaid guests remaining, jump to the next unpaid guest.
+      // - If this was the last guest, finalize (onClose) so parent can close order and go back to table map.
+      const unpaid = allGuests.filter(g => !paidGuests.includes(g));
+      if (unpaid.length > 0 && typeof onSelectGuest === 'function') {
+        const current = typeof currentGuestNumber === 'number' ? currentGuestNumber : null;
+        const sortedUnpaid = [...unpaid].sort((a, b) => a - b);
+        const next = (current != null)
+          ? (sortedUnpaid.find(g => g > current) ?? sortedUnpaid[0])
+          : sortedUnpaid[0];
+        if (typeof next === 'number') {
+          onSelectGuest(next);
+          return;
+        }
+      }
+
+      await Promise.resolve(onClose(count));
+    } finally {
+      setIsSubmittingReceipt(false);
+    }
   };
 
   const handleGuestClick = (guestNumber: number) => {

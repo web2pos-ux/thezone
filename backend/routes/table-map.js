@@ -105,23 +105,25 @@ router.get('/elements', (req, res) => {
   
   const query = `
     SELECT 
-      element_id,
-      floor,
-      type,
-      x_pos,
-      y_pos,
-      width,
-      height,
-      rotation,
-      name,
-      fontSize,
-      color,
-      status,
-      current_order_id,
-      created_at
-    FROM table_map_elements 
-    WHERE floor = ?
-    ORDER BY element_id
+      t.element_id,
+      t.floor,
+      t.type,
+      t.x_pos,
+      t.y_pos,
+      t.width,
+      t.height,
+      t.rotation,
+      t.name,
+      t.fontSize,
+      t.color,
+      t.status,
+      t.current_order_id,
+      t.created_at,
+      o.status AS order_status
+    FROM table_map_elements t
+    LEFT JOIN orders o ON t.current_order_id = o.id
+    WHERE t.floor = ?
+    ORDER BY t.element_id
   `;
   
   db.all(query, [floor], (err, rows) => {
@@ -132,6 +134,43 @@ router.get('/elements', (req, res) => {
       return res.status(500).json({ error: '데이터베이스 오류' });
     }
     
+    // Normalize: never keep Occupied-like status without a valid linked order.
+    // If current_order_id is null OR the linked order is missing/closed, force status to Available.
+    try {
+      (rows || []).forEach((row) => {
+        const st = String(row?.status || 'Available');
+        const isOccupiedLike = st === 'Occupied' || st === 'Payment Pending';
+        const hasOrderId = row?.current_order_id != null && String(row.current_order_id) !== '';
+        const orderStatus = String(row?.order_status || '');
+        const isClosedOrder = orderStatus && (orderStatus.toUpperCase() === 'PAID' || orderStatus.toUpperCase() === 'VOIDED');
+        const isMissingOrder = hasOrderId && !orderStatus; // current_order_id points to non-existing order
+
+        if (isOccupiedLike && (!hasOrderId || isClosedOrder || isMissingOrder)) {
+          row.status = 'Available';
+          row.current_order_id = null;
+          try {
+            db.run(
+              `UPDATE table_map_elements SET status = 'Available', current_order_id = NULL WHERE element_id = ?`,
+              [row.element_id],
+              () => {}
+            );
+          } catch {}
+        }
+        // Remove legacy 'Preparing' status entirely.
+        if (String(row?.status || '') === 'Preparing') {
+          row.status = 'Available';
+          row.current_order_id = null;
+          try {
+            db.run(
+              `UPDATE table_map_elements SET status = 'Available', current_order_id = NULL WHERE element_id = ?`,
+              [row.element_id],
+              () => {}
+            );
+          } catch {}
+        }
+      });
+    } catch {}
+
     // 데이터 변환: 데이터베이스 컬럼명을 프론트엔드 형식으로
     const elements = rows.map(row => ({
       id: row.element_id,
@@ -167,6 +206,7 @@ router.patch('/elements/:id/status', (req, res) => {
   }
 
   const db = getDatabase();
+  const statusToSave = String(status) === 'Preparing' ? 'Available' : status;
   
   // Payment Pending 상태 유지를 위한 로직:
   // 클라이언트가 'Occupied'로 변경을 요청할 때, 현재 상태가 'Payment Pending'이면 변경을 무시하거나 Payment Pending으로 유지해야 하는 경우를 체크할 수도 있지만,
@@ -183,7 +223,7 @@ router.patch('/elements/:id/status', (req, res) => {
   // Let's rely on the Frontend sending the correct status.
 
   const query = 'UPDATE table_map_elements SET status = ? WHERE element_id = ?';
-  db.run(query, [status, id], function(err) {
+  db.run(query, [statusToSave, id], function(err) {
     // db.close(); // Shared DB 연결은 닫으면 안 됨
     if (err) {
       console.error('요소 상태 업데이트 오류:', err);
@@ -192,7 +232,7 @@ router.patch('/elements/:id/status', (req, res) => {
     if (this.changes === 0) {
       return res.status(404).json({ error: '해당 요소를 찾을 수 없습니다' });
     }
-    res.json({ message: '요소 상태 업데이트 성공', elementId: Number(id), status });
+    res.json({ message: '요소 상태 업데이트 성공', elementId: Number(id), status: statusToSave });
   });
 });
 
@@ -311,6 +351,7 @@ router.post('/elements', async (req, res) => {
         
         // 3. 새 요소 삽입 (하나씩)
         for (const element of elements) {
+          const statusToSave = String(element.status || 'Available') === 'Preparing' ? 'Available' : (element.status || 'Available');
           await dbRun(`
             INSERT INTO table_map_elements (
               element_id, floor, type, x_pos, y_pos, width, height, rotation, 
@@ -328,7 +369,7 @@ router.post('/elements', async (req, res) => {
             element.text || '',
             element.fontSize || 20,
             element.color || '#3B82F6',
-            element.status || 'Available',
+            statusToSave,
             element.current_order_id || null
           ]);
         }

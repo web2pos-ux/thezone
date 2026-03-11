@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WEB2POS - Download</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container { max-width: 520px; width: 100%; padding: 24px; }
+    .card {
+      background: #1e293b;
+      border-radius: 16px;
+      padding: 40px 32px;
+      box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    .logo { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #f8fafc; }
+    .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 32px; }
+
+    #login-section { display: block; }
+    #download-section { display: none; }
+    #user-info { display: none; margin-bottom: 24px; }
+    #user-info .user-card {
+      display: flex; align-items: center; gap: 12px;
+      background: #334155; border-radius: 8px; padding: 12px 16px;
+    }
+    #user-info img { width: 36px; height: 36px; border-radius: 50%; }
+    #user-info .user-name { font-size: 14px; font-weight: 500; }
+    #user-info .user-email { font-size: 12px; color: #94a3b8; }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+      width: 100%; padding: 14px 24px; border: none; border-radius: 10px;
+      font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-decoration: none;
+    }
+    .btn-google { background: #fff; color: #1f2937; }
+    .btn-google:hover { background: #f1f5f9; transform: translateY(-1px); }
+    .btn-google img { width: 20px; height: 20px; }
+    .btn-logout { background: transparent; color: #94a3b8; font-size: 13px; padding: 8px; margin-top: 12px; }
+    .btn-logout:hover { color: #e2e8f0; }
+
+    .downloads-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+    .dl-card {
+      background: #334155; border-radius: 12px; padding: 24px 16px; text-align: center;
+      transition: transform 0.2s, border-color 0.2s; border: 1px solid transparent;
+    }
+    .dl-card:hover { transform: translateY(-2px); border-color: rgba(59,130,246,0.4); }
+    .dl-icon { font-size: 40px; margin-bottom: 12px; }
+    .dl-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: #f8fafc; }
+    .dl-meta { font-size: 12px; color: #64748b; margin-bottom: 6px; }
+    .dl-size { font-size: 11px; color: #475569; margin-bottom: 12px; }
+    .dl-btn {
+      display: inline-block; padding: 10px 20px; border-radius: 8px;
+      font-size: 14px; font-weight: 600; text-decoration: none; transition: opacity 0.2s;
+    }
+    .dl-btn:hover { opacity: 0.85; }
+    .dl-btn-win { background: #3b82f6; color: #fff; }
+    .dl-btn-apk { background: #22c55e; color: #fff; }
+    .dl-btn-disabled { background: #475569; color: #94a3b8; cursor: not-allowed; pointer-events: none; }
+
+    /* Admin upload section */
+    #admin-section { display: none; margin-top: 24px; }
+    .admin-panel {
+      background: #334155; border-radius: 12px; padding: 20px; text-align: left;
+      border: 1px solid #475569;
+    }
+    .admin-panel h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: #f97316; }
+    .upload-row {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;
+    }
+    .upload-row label {
+      font-size: 13px; font-weight: 600; color: #e2e8f0; min-width: 70px;
+    }
+    .upload-row input[type="file"] { font-size: 12px; color: #94a3b8; flex: 1; min-width: 0; }
+    .upload-row input[type="file"]::file-selector-button {
+      background: #475569; color: #e2e8f0; border: none; padding: 6px 12px;
+      border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 8px;
+    }
+    .btn-upload {
+      background: linear-gradient(135deg, #f97316, #ef4444); color: #fff; border: none;
+      padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; width: 100%; margin-top: 8px; transition: opacity 0.2s;
+    }
+    .btn-upload:hover { opacity: 0.85; }
+    .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
+    .progress-bar {
+      width: 100%; height: 6px; background: #1e293b; border-radius: 3px;
+      margin-top: 12px; overflow: hidden; display: none;
+    }
+    .progress-bar .fill {
+      height: 100%; background: linear-gradient(90deg, #3b82f6, #22c55e);
+      border-radius: 3px; width: 0%; transition: width 0.3s;
+    }
+    .upload-status {
+      font-size: 12px; color: #94a3b8; margin-top: 8px; min-height: 16px;
+    }
+
+    .install-guide {
+      margin-top: 24px; text-align: left; background: #334155; border-radius: 8px; padding: 20px;
+    }
+    .install-guide h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #f8fafc; }
+    .install-guide ol { padding-left: 20px; font-size: 13px; color: #94a3b8; line-height: 1.8; }
+    .install-guide li { margin-bottom: 4px; }
+    .warning {
+      margin-top: 16px; padding: 12px; background: #422006; border: 1px solid #92400e;
+      border-radius: 8px; font-size: 12px; color: #fbbf24;
+    }
+    .footer { text-align: center; margin-top: 24px; font-size: 12px; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="logo">🍽️</div>
+      <h1>WEB2POS</h1>
+      <p class="subtitle">Point of Sale System for Restaurants</p>
+
+      <div id="login-section">
+        <p style="color:#94a3b8; font-size:14px; margin-bottom:20px;">
+          Download requires Google sign-in.
+        </p>
+        <button class="btn btn-google" onclick="signIn()">
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="G" />
+          Sign in with Google
+        </button>
+      </div>
+
+      <div id="download-section">
+        <div id="user-info">
+          <div class="user-card">
+            <img id="user-photo" src="" alt="" />
+            <div>
+              <div class="user-name" id="user-name"></div>
+              <div class="user-email" id="user-email"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="downloads-grid">
+          <div class="dl-card">
+            <div class="dl-icon">🖥️</div>
+            <div class="dl-title">Windows</div>
+            <div class="dl-meta">Windows 10/11</div>
+            <div class="dl-size" id="exe-size"></div>
+            <a class="dl-btn dl-btn-disabled" id="exe-download" href="#">No file</a>
+          </div>
+          <div class="dl-card">
+            <div class="dl-icon">📱</div>
+            <div class="dl-title">Android</div>
+            <div class="dl-meta">Android Tablet</div>
+            <div class="dl-size" id="apk-size"></div>
+            <a class="dl-btn dl-btn-disabled" id="apk-download" href="#">No file</a>
+          </div>
+        </div>
+
+        <button class="btn btn-logout" onclick="signOut()">Sign out</button>
+
+        <!-- Admin upload panel -->
+        <div id="admin-section">
+          <div class="admin-panel">
+            <h3>⬆ Admin: Upload Files</h3>
+            <div class="upload-row">
+              <label>EXE:</label>
+              <input type="file" id="exe-file" accept=".exe" />
+            </div>
+            <div class="upload-row">
+              <label>APK:</label>
+              <input type="file" id="apk-file" accept=".apk" />
+            </div>
+            <button class="btn-upload" id="upload-btn" onclick="uploadFiles()">Upload Selected Files</button>
+            <div class="progress-bar" id="progress-bar"><div class="fill" id="progress-fill"></div></div>
+            <div class="upload-status" id="upload-status"></div>
+          </div>
+        </div>
+
+        <div class="install-guide">
+          <h3>Installation Guide</h3>
+          <ol>
+            <li><b>Windows:</b> Run the .exe installer and follow the setup wizard</li>
+            <li><b>Android:</b> Enable "Install from unknown sources" in Settings</li>
+            <li>Open the downloaded file to install</li>
+            <li>Launch WEB2POS and log in with your account</li>
+          </ol>
+          <div class="warning">
+            ⚠ This app is for authorized users only. Do not distribute externally.
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="footer">© 2026 WEB2POS. All rights reserved.</div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyDoTjp1__dH9h5VhQaoxPCTEP_2Q7EI4d4",
+      authDomain: "ezorder-platform.firebaseapp.com",
+      projectId: "ezorder-platform",
+      storageBucket: "ezorder-platform.firebasestorage.app",
+      messagingSenderId: "717231696586",
+      appId: "1:717231696586:web:f2bee9f2fef8309456a233"
+    });
+
+    var storage = firebase.storage();
+    var db = firebase.firestore();
+    var provider = new firebase.auth.GoogleAuthProvider();
+
+    var ADMIN_EMAILS = [
+      'louisthezone@gmail.com'
+    ];
+
+    var STORAGE_PATH = 'downloads/web2pos/';
+
+    firebase.auth().onAuthStateChanged(function(user) {
+      if (user) { showDownload(user); loadFileLinks(); }
+      else { showLogin(); }
+    });
+
+    function signIn() {
+      firebase.auth().signInWithPopup(provider).catch(function(err) {
+        if (err.code === 'auth/popup-blocked') {
+          firebase.auth().signInWithRedirect(provider);
+        } else { alert('Sign-in failed: ' + err.message); }
+      });
+    }
+
+    function signOut() { firebase.auth().signOut(); }
+
+    function showDownload(user) {
+      document.getElementById('login-section').style.display = 'none';
+      document.getElementById('download-section').style.display = 'block';
+      document.getElementById('user-info').style.display = 'block';
+      document.getElementById('user-name').textContent = user.displayName || '';
+      document.getElementById('user-email').textContent = user.email || '';
+      document.getElementById('user-photo').src = user.photoURL || '';
+
+      var isAdmin = ADMIN_EMAILS.indexOf(user.email) !== -1;
+      document.getElementById('admin-section').style.display = isAdmin ? 'block' : 'none';
+    }
+
+    function showLogin() {
+      document.getElementById('login-section').style.display = 'block';
+      document.getElementById('download-section').style.display = 'none';
+      document.getElementById('user-info').style.display = 'none';
+      document.getElementById('admin-section').style.display = 'none';
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function loadFileLinks() {
+      loadOneFile('web2pos-setup.exe', 'exe-download', 'exe-size', 'dl-btn-win');
+      loadOneFile('web2pos.apk', 'apk-download', 'apk-size', 'dl-btn-apk');
+    }
+
+    function loadOneFile(filename, linkId, sizeId, btnClass) {
+      var ref = storage.ref(STORAGE_PATH + filename);
+      ref.getDownloadURL().then(function(url) {
+        var el = document.getElementById(linkId);
+        el.href = url;
+        el.className = 'dl-btn ' + btnClass;
+        el.textContent = '⬇ Download';
+        el.setAttribute('download', '');
+        return ref.getMetadata();
+      }).then(function(meta) {
+        document.getElementById(sizeId).textContent = formatSize(meta.size);
+      }).catch(function() {
+        var el = document.getElementById(linkId);
+        el.href = '#';
+        el.className = 'dl-btn dl-btn-disabled';
+        el.textContent = 'Not uploaded';
+        el.removeAttribute('download');
+        document.getElementById(sizeId).textContent = '';
+      });
+    }
+
+    function uploadFiles() {
+      var exeFile = document.getElementById('exe-file').files[0];
+      var apkFile = document.getElementById('apk-file').files[0];
+      if (!exeFile && !apkFile) { alert('Select at least one file'); return; }
+
+      var uploads = [];
+      if (exeFile) uploads.push({ file: exeFile, name: 'web2pos-setup.exe' });
+      if (apkFile) uploads.push({ file: apkFile, name: 'web2pos.apk' });
+
+      var btn = document.getElementById('upload-btn');
+      var bar = document.getElementById('progress-bar');
+      var fill = document.getElementById('progress-fill');
+      var status = document.getElementById('upload-status');
+
+      btn.disabled = true;
+      bar.style.display = 'block';
+      fill.style.width = '0%';
+      status.textContent = 'Uploading...';
+
+      var completed = 0;
+      var total = uploads.length;
+
+      uploads.forEach(function(item) {
+        var ref = storage.ref(STORAGE_PATH + item.name);
+        var task = ref.put(item.file);
+
+        task.on('state_changed',
+          function(snapshot) {
+            var pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+            var overall = Math.round((completed * 100 + pct) / total);
+            fill.style.width = overall + '%';
+            status.textContent = 'Uploading ' + item.name + '... ' + pct + '%';
+          },
+          function(err) {
+            status.textContent = 'Error: ' + err.message;
+            btn.disabled = false;
+          },
+          function() {
+            completed++;
+            if (completed === total) {
+              fill.style.width = '100%';
+              status.textContent = 'Upload complete!';
+              btn.disabled = false;
+              document.getElementById('exe-file').value = '';
+              document.getElementById('apk-file').value = '';
+              loadFileLinks();
+            }
+          }
+        );
+      });
+    }
+  </script>
+</body>
+</html>

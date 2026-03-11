@@ -62,7 +62,7 @@ router.get('/history', async (req, res) => {
     const firebaseService = require('../services/firebaseService');
     const firestore = firebaseService.getFirestore();
     
-    const restaurantId = remoteSyncService.restaurantId;
+    const restaurantId = remoteSyncService.getRestaurantId();
     if (!restaurantId) {
       return res.status(400).json({ error: 'Service not initialized' });
     }

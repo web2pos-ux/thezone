@@ -256,14 +256,14 @@ function buildKitchenTicketText(orderData) {
   output += CENTER;
   output += REVERSE_ON + BOLD_ON + DOUBLE_SIZE;
   
-  // 채널 + 주문번호 (예: "TOGO 1027", "FOR HERE 1027" 또는 "Table 5")
+  // 채널 + 주문번호 (예: "TOGO 1027", "EAT IN 1027" 또는 "Table 5")
   let headerText = '';
-  if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE') {
-    // FOR HERE는 공백 포함 형태로 표시
-    const displayChannel = (channel === 'FORHERE') ? 'FOR HERE' : channel;
+  if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
+    const displayChannel = (channel === 'FORHERE' || channel === 'FOR HERE') ? 'EAT IN' : channel;
     headerText = `${displayChannel} ${String(orderNumber).replace('#', '')}`;
   } else if (tableName) {
-    headerText = tableName;
+    const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
+    headerText = isDineInLike ? `DINE-IN / ${tableName}` : tableName;
   } else {
     headerText = `#${String(orderNumber).replace('#', '')}`;
   }
@@ -387,28 +387,27 @@ function formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF) {
   output += DOUBLE_SIZE + BOLD_ON;
   output += `${qty}x ${name}` + LF;
   
-  // 모디파이어 (">>" 접두사) - 아이템과 동일 크기, 이탤릭
+  // 모디파이어 (">>" 접두사) - 아이템과 동일 크기, 이탤릭, 동일 모디파이어 그룹핑
   if (item.modifiers && item.modifiers.length > 0) {
-    output += ITALIC_ON;  // 이탤릭 추가 (크기 유지)
+    output += ITALIC_ON;
+    const allMods = [];
     item.modifiers.forEach(mod => {
       if (typeof mod === 'string') {
-        output += `  >> ${mod}` + LF;
+        allMods.push(mod);
       } else if (mod.name) {
-        output += `  >> ${mod.name}` + LF;
+        allMods.push(mod.name);
       } else if (mod.modifierNames && mod.modifierNames.length > 0) {
-        mod.modifierNames.forEach(modName => {
-          output += `  >> ${modName}` + LF;
-        });
+        mod.modifierNames.forEach(n => allMods.push(n));
       } else if (mod.selectedEntries && mod.selectedEntries.length > 0) {
-        mod.selectedEntries.forEach(entry => {
-          if (entry.name) {
-            output += `  >> ${entry.name}` + LF;
-          }
-        });
+        mod.selectedEntries.forEach(entry => { if (entry.name) allMods.push(entry.name); });
       } else if (mod.groupName) {
-        output += `  >> ${mod.groupName}` + LF;
+        allMods.push(mod.groupName);
       }
     });
+    const modCounts = new Map();
+    const modOrder = [];
+    allMods.forEach(n => { const k = String(n).trim(); if (!k) return; if (!modCounts.has(k)) modOrder.push(k); modCounts.set(k, (modCounts.get(k) || 0) + 1); });
+    modOrder.forEach(n => { const c = modCounts.get(n) || 0; if (!c) return; output += (c > 1 ? `  >> ${c}x ${n}` : `  >> ${n}`) + LF; });
     output += ITALIC_OFF;
   }
   
@@ -456,24 +455,18 @@ function printKitchenItem(lines, item) {
  */
 function formatModifiers(modifiers, lines, prefix = '  >> ') {
   if (!modifiers || !modifiers.length) return;
-  
+  const allMods = [];
   modifiers.forEach(mod => {
-    if (typeof mod === 'string') {
-      lines.push(`${prefix}${mod}`);
-    } else if (mod.name) {
-      lines.push(`${prefix}${mod.name}`);
-    } else if (mod.modifierNames && mod.modifierNames.length > 0) {
-      mod.modifierNames.forEach(modName => {
-        lines.push(`${prefix}${modName}`);
-      });
-    } else if (mod.selectedEntries && mod.selectedEntries.length > 0) {
-      mod.selectedEntries.forEach(entry => {
-        if (entry.name) lines.push(`${prefix}${entry.name}`);
-      });
-    } else if (mod.groupName) {
-      lines.push(`${prefix}${mod.groupName}`);
-    }
+    if (typeof mod === 'string') { allMods.push(mod); }
+    else if (mod.name) { allMods.push(mod.name); }
+    else if (mod.modifierNames && mod.modifierNames.length > 0) { mod.modifierNames.forEach(n => allMods.push(n)); }
+    else if (mod.selectedEntries && mod.selectedEntries.length > 0) { mod.selectedEntries.forEach(e => { if (e.name) allMods.push(e.name); }); }
+    else if (mod.groupName) { allMods.push(mod.groupName); }
   });
+  const counts = new Map();
+  const order = [];
+  allMods.forEach(n => { const k = String(n).trim(); if (!k) return; if (!counts.has(k)) order.push(k); counts.set(k, (counts.get(k) || 0) + 1); });
+  order.forEach(n => { const c = counts.get(n) || 0; if (!c) return; lines.push(c > 1 ? `${prefix}${c}x ${n}` : `${prefix}${n}`); });
 }
 
 /**
@@ -535,10 +528,17 @@ function buildReceiptText(receiptData) {
   
   // === 주문 타입 (반전 헤더) ===
   let orderTypeText = channel || 'ORDER';
+  if (!channel || channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE') {
+    orderTypeText = 'Dine-In';
+  }
   if (tableName && !channel) orderTypeText = tableName;
+  const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
+  const headerLine = (isDineInLike && tableName)
+    ? `DINE-IN / ${tableName}`
+    : `${orderTypeText} #${String(orderNumber).replace('#', '')}`;
   
   output += REVERSE_ON + BOLD_ON + DOUBLE_WIDTH;
-  output += ' ' + orderTypeText + ' #' + String(orderNumber).replace('#', '') + ' ' + LF;
+  output += ' ' + headerLine + ' ' + LF;
   output += REVERSE_OFF + NORMAL_SIZE + BOLD_OFF;
   
   output += divider + LF;
@@ -660,6 +660,13 @@ function formatReceiptItem(item, width, LF, NORMAL_SIZE, DOUBLE_HEIGHT) {
   const price = Number(item.lineTotal || item.totalPrice || item.price || 0).toFixed(2);
   
   output += rightAlignText(`${qty}x ${name}`, `$${price}`, width) + LF;
+
+  // Dine-in item-level TOGO label (separate from orderType TOGO)
+  if (item.togoLabel || item.togo_label) {
+    output += NORMAL_SIZE;
+    output += `  <<TOGO>>` + LF;
+    output += DOUBLE_HEIGHT;
+  }
   
   // 원래 가격과 할인 표시
   if (item.originalTotal && item.discount) {
@@ -672,32 +679,30 @@ function formatReceiptItem(item, width, LF, NORMAL_SIZE, DOUBLE_HEIGHT) {
   // 모디파이어
   if (item.modifiers && item.modifiers.length > 0) {
     output += NORMAL_SIZE;
+    const allMods = [];
     item.modifiers.forEach(mod => {
       if (typeof mod === 'string') {
-        output += `  >> ${mod}` + LF;
+        allMods.push({ name: mod, price: 0 });
       } else if (mod.name) {
-        const modPrice = mod.price ? `$${Number(mod.price).toFixed(2)}` : '';
-        output += rightAlignText(`  >> ${mod.name}`, modPrice, width) + LF;
+        allMods.push({ name: mod.name, price: mod.price || 0 });
       } else if (mod.modifierNames && mod.modifierNames.length > 0) {
         mod.modifierNames.forEach((modName, idx) => {
-          let modPrice = '';
-          if (mod.selectedEntries && mod.selectedEntries[idx] && mod.selectedEntries[idx].price_delta > 0) {
-            modPrice = `$${Number(mod.selectedEntries[idx].price_delta).toFixed(2)}`;
-          }
-          output += rightAlignText(`  >> ${modName}`, modPrice, width) + LF;
+          let p = 0;
+          if (mod.selectedEntries && mod.selectedEntries[idx] && mod.selectedEntries[idx].price_delta > 0) p = mod.selectedEntries[idx].price_delta;
+          allMods.push({ name: modName, price: p });
         });
       } else if (mod.selectedEntries && mod.selectedEntries.length > 0) {
         mod.selectedEntries.forEach(entry => {
-          if (entry.name) {
-            const modPrice = entry.price_delta && entry.price_delta > 0 ? `$${Number(entry.price_delta).toFixed(2)}` : '';
-            output += rightAlignText(`  >> ${entry.name}`, modPrice, width) + LF;
-          }
+          if (entry.name) allMods.push({ name: entry.name, price: entry.price_delta > 0 ? entry.price_delta : 0 });
         });
       } else if (mod.groupName) {
-        const modPrice = mod.totalModifierPrice ? `$${Number(mod.totalModifierPrice).toFixed(2)}` : '';
-        output += rightAlignText(`  >> ${mod.groupName}`, modPrice, width) + LF;
+        allMods.push({ name: mod.groupName, price: mod.totalModifierPrice || 0 });
       }
     });
+    const modCounts = new Map();
+    const modOrder = [];
+    allMods.forEach(m => { const k = String(m.name).trim(); if (!k) return; if (!modCounts.has(k)) { modOrder.push(k); modCounts.set(k, { count: 0, unitPrice: m.price }); } const e = modCounts.get(k); e.count++; });
+    modOrder.forEach(n => { const e = modCounts.get(n); if (!e || !e.count) return; const label = e.count > 1 ? `  >> ${e.count}x ${n}` : `  >> ${n}`; const totalPrice = e.unitPrice * e.count; const priceStr = totalPrice > 0 ? `$${Number(totalPrice).toFixed(2)}` : ''; output += rightAlignText(label, priceStr, width) + LF; });
     output += DOUBLE_HEIGHT;
   }
   
@@ -1043,13 +1048,20 @@ function getElementValue(key, data) {
   const { orderInfo, orderData, header } = data;
   const oi = orderInfo || orderData || {};
   const h = header || {};
+  const channelUpper = String(h.channel || oi.channel || oi.orderType || 'DINE-IN').toUpperCase();
+  const table = h.tableName || oi.tableName || oi.table || '';
+  const isDineInLike = (channelUpper === 'DINE-IN' || channelUpper === 'POS' || channelUpper === 'TABLE' || channelUpper === 'HANDHELD' || channelUpper === 'SUBPOS');
   
   switch (key) {
     case 'orderType':
-      return (h.channel || oi.channel || oi.orderType || 'DINE-IN').toUpperCase();
+      // FSR 테이블 주문: 헤더는 반드시 DINE-IN/T4 형식
+      if (isDineInLike && table) return `DINE-IN / ${table}`;
+      return channelUpper;
     case 'tableNumber':
-      return h.tableName || oi.tableName || oi.table || '';
+      return table;
     case 'posOrderNumber':
+      // 테이블 주문은 주문번호 대신 테이블을 우선 표시(레이아웃 merged header에서 DINE-IN/주문번호 방지)
+      if (isDineInLike && table) return table;
       return h.orderNumber || oi.orderNumber || oi.orderId || '';
     case 'externalOrderNumber':
       return oi.deliveryOrderNumber || oi.externalOrderNumber || '';
@@ -1387,7 +1399,7 @@ function getReceiptElementValue(key, data, layout) {
       const channel = (header.channel || orderInfo.channel || orderInfo.orderType || 'POS').toUpperCase();
       const table = header.tableName || orderInfo.tableName || orderInfo.table || '';
       if (channel === 'DINE-IN' || channel === 'POS') {
-        return table ? `Dine-in / Table: ${table}` : 'Dine-in';
+        return table ? `DINE-IN / ${table}` : 'DINE-IN';
       }
       return channel;
     case 'serverName':
@@ -1410,6 +1422,18 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   const width = layout?.paperWidth === 58 ? 32 : 42;
   
   let output = ESC_POS.INIT;
+
+  // Top margin (mm) → feed blank lines.
+  // NOTE: Many printers reliably advance paper on LF.
+  try {
+    const tmRaw = receiptData?.topMargin ?? layout?.topMargin ?? 0;
+    const tm = Number(tmRaw);
+    if (Number.isFinite(tm) && tm > 0) {
+      const mmPerLine = 25.4 / 6; // common ESC/POS default line height (1/6 inch)
+      const lines = Math.max(0, Math.round(tm / mmPerLine));
+      if (lines > 0) output += (' ' + LF).repeat(lines); // print a blank char then LF (more reliable feed)
+    }
+  } catch {}
   
   // 데이터 구성
   const header = receiptData.header || {};
@@ -1421,7 +1445,8 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   const storeNameStyle = layout?.storeName || { fontSize: 16, fontWeight: 'bold', visible: true, text: '' };
   if (storeNameStyle.visible !== false && storeNameStyle.text) {
     output += ESC_POS.CENTER;
-    output += getStyleCommand({ ...storeNameStyle, textAlign: 'center' });
+    // Screenshot form uses inverse store name bar by default
+    output += getStyleCommand({ ...storeNameStyle, textAlign: 'center', inverse: storeNameStyle.inverse !== false });
     output += storeNameStyle.text + LF;
     output += getStyleResetCommand();
   }
@@ -1458,25 +1483,31 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   const channel = (header.channel || orderInfo.channel || orderInfo.orderType || 'POS').toUpperCase();
   const tableName = header.tableName || orderInfo.tableName || orderInfo.table || '';
   const serverName = header.serverName || orderInfo.serverName || '';
+  const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
   
-  // Order Number
-  const orderNumStyle = layout?.orderNumber || { fontSize: 12, visible: true };
-  if (orderNumStyle.visible !== false && orderNumber) {
-    output += getStyleCommand(orderNumStyle);
-    output += `Order#: ${orderNumber}` + LF;
-    output += getStyleResetCommand();
-  }
-  
-  // Channel / Table
-  const channelStyle = layout?.orderChannel || { fontSize: 12, visible: true };
-  if (channelStyle.visible !== false) {
-    let channelDisplay = channel;
-    if (channel === 'DINE-IN' || channel === 'POS') {
-      channelDisplay = tableName ? `Dine-in / Table: ${tableName}` : 'Dine-in';
+  // Header line like the screenshot: "DINE-IN / T4" (centered, large, not inverse)
+  {
+    const channelStyle = layout?.orderChannel || layout?.orderType || { fontSize: 18, fontWeight: 'bold', visible: true };
+    if (channelStyle.visible !== false) {
+      let headerLine = channel;
+      if (isDineInLike) headerLine = tableName ? `DINE-IN / ${tableName}` : 'DINE-IN';
+      else headerLine = `${channel} #${String(orderNumber).replace('#', '')}`;
+      output += ESC_POS.CENTER;
+      output += getStyleCommand({ ...channelStyle, textAlign: 'center', inverse: false, fontWeight: channelStyle.fontWeight || 'bold' });
+      output += headerLine + LF;
+      output += getStyleResetCommand();
+      output += ESC_POS.LEFT;
     }
-    output += getStyleCommand(channelStyle);
-    output += channelDisplay + LF;
-    output += getStyleResetCommand();
+  }
+
+  // Optional order number line (skip for dine-in to match screenshot)
+  {
+    const orderNumStyle = layout?.orderNumber || { fontSize: 12, visible: false };
+    if (!isDineInLike && orderNumStyle.visible !== false && orderNumber) {
+      output += getStyleCommand(orderNumStyle);
+      output += `Order#: ${orderNumber}` + LF;
+      output += getStyleResetCommand();
+    }
   }
   
   // Server
@@ -1491,7 +1522,7 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   const dateTimeStyle = layout?.dateTime || { fontSize: 12, visible: true };
   if (dateTimeStyle.visible !== false) {
     output += getStyleCommand(dateTimeStyle);
-    output += new Date().toLocaleString() + LF;
+    output += `Date: ${new Date().toLocaleString()}` + LF;
     output += getStyleResetCommand();
   }
   
@@ -1571,19 +1602,52 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   
   // Total
   if (totalStyle.visible !== false && receiptData.total != null) {
-    output += getStyleCommand(totalStyle);
-    output += rightAlignText('TOTAL:', `$${Number(receiptData.total).toFixed(2)}`, width) + LF;
+    output += ESC_POS.CENTER;
+    output += getStyleCommand({ ...totalStyle, textAlign: 'center', inverse: false, fontWeight: totalStyle.fontWeight || 'bold' });
+    output += `TOTAL: $${Number(receiptData.total).toFixed(2)}` + LF;
     output += getStyleResetCommand();
+    output += ESC_POS.LEFT;
   }
+
+  // Separator after TOTAL (matches screenshot)
+  output += getSeparatorLine('solid', width) + LF;
   
   // === Payment 영역 (Receipt only) ===
   if (type === 'receipt' && receiptData.payments && receiptData.payments.length > 0) {
     output += LF;
     const paymentMethodStyle = layout?.paymentMethod || { fontSize: 12, visible: true };
+    const paymentDetailsStyle = layout?.paymentDetails || paymentMethodStyle;
+
+    // Match graphic mode rules: Payment total (incl tip) + per-method food portion lines
+    const prettyMethod = (m) => {
+      const upper = String(m || 'OTHER').toUpperCase();
+      const map = { CASH: 'Cash', DEBIT: 'Debit', VISA: 'Visa', MC: 'MC', MASTERCARD: 'MC', OTHER_CARD: 'Other Card', OTHER: 'Other' };
+      return map[upper] || upper;
+    };
+    const dineOrTogoTag = isDineInLike ? 'Dine-in' : 'Togo';
+
+    const foodByMethod = {};
+    let grossPaidTotal = 0;
+    (receiptData.payments || []).forEach((p) => {
+      const method = String((p && p.method) || 'OTHER').toUpperCase();
+      const amount = Number((p && p.amount) || 0);
+      const tipField = Number((p && p.tip) || 0);
+      grossPaidTotal += amount;
+      const foodPortion = Math.max(0, Number((amount - tipField).toFixed(2)));
+      foodByMethod[method] = Number(((foodByMethod[method] || 0) + foodPortion).toFixed(2));
+    });
+
     if (paymentMethodStyle.visible !== false) {
       output += getStyleCommand(paymentMethodStyle);
-      receiptData.payments.forEach(p => {
-        output += rightAlignText(`Payment (${p.method}):`, `$${Number(p.amount).toFixed(2)}`, width) + LF;
+      output += rightAlignText('Payment', `$${Number(grossPaidTotal).toFixed(2)}`, width) + LF;
+      output += getStyleResetCommand();
+    }
+
+    if (paymentDetailsStyle?.visible !== false) {
+      output += getStyleCommand(paymentDetailsStyle);
+      Object.entries(foodByMethod).forEach(([method, totalAmount]) => {
+        if (Number(totalAmount || 0) <= 0) return;
+        output += rightAlignText(`  ${prettyMethod(method)}(${dineOrTogoTag})`, `$${Number(totalAmount).toFixed(2)}`, width) + LF;
       });
       output += getStyleResetCommand();
     }
@@ -1591,32 +1655,24 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
     // Change
     const changeStyle = layout?.changeAmount || { fontSize: 12, visible: true, inverse: false };
     if (changeStyle.visible !== false && receiptData.change && Number(receiptData.change) > 0) {
-      output += getStyleCommand(changeStyle);
-      output += rightAlignText('Change:', `$${Number(receiptData.change).toFixed(2)}`, width) + LF;
+      output += ESC_POS.CENTER;
+      output += getStyleCommand({ ...changeStyle, textAlign: 'center', inverse: true, fontWeight: changeStyle.fontWeight || 'bold' });
+      output += ` CHANGE: $${Number(receiptData.change).toFixed(2)} ` + LF;
       output += getStyleResetCommand();
+      output += ESC_POS.LEFT;
     }
   }
   
   // === Footer ===
   output += LF;
   output += ESC_POS.CENTER;
-  
-  // Greeting
-  const greetingStyle = layout?.greeting || { visible: true, text: 'Thank you for dining with us!' };
-  if (greetingStyle.visible !== false && greetingStyle.text) {
-    output += getStyleCommand(greetingStyle);
-    output += greetingStyle.text + LF;
+
+  const footerText = receiptData.footer?.message || layout?.greeting?.text || (type === 'bill' ? 'Thank you for dining with us!' : 'Thank you! Please come again!');
+  const greetingStyle = layout?.greeting || { visible: true, fontSize: 12, fontWeight: 'regular', textAlign: 'center' };
+  if (greetingStyle.visible !== false && footerText) {
+    output += getStyleCommand({ ...greetingStyle, textAlign: 'center', inverse: false, fontWeight: greetingStyle.fontWeight || 'regular' });
+    output += footerText + LF;
     output += getStyleResetCommand();
-  }
-  
-  // Thank You Message (Receipt only)
-  if (type === 'receipt') {
-    const thankYouStyle = layout?.thankYouMessage || { visible: false };
-    if (thankYouStyle.visible !== false && thankYouStyle.text) {
-      output += getStyleCommand(thankYouStyle);
-      output += thankYouStyle.text + LF;
-      output += getStyleResetCommand();
-    }
   }
   
   output += ESC_POS.LEFT;
@@ -1635,12 +1691,24 @@ function formatReceiptItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteS
   let output = '';
   const qty = item.quantity || item.qty || 1;
   const name = item.name || 'Unknown';
-  const price = Number(item.lineTotal || item.totalPrice || item.price || 0).toFixed(2);
+  const unitPriceRaw = Number(item.price || item.itemPrice || 0);
+  const unitPrice = Number.isFinite(unitPriceRaw) ? unitPriceRaw : 0;
+  const totalRaw = unitPrice > 0 ? (unitPrice * qty) : Number(item.lineTotal || item.totalPrice || item.price || 0);
+  const total = Number.isFinite(totalRaw) ? totalRaw : 0;
+  const unitLabel = (qty > 1 && unitPrice > 0) ? ` @$${unitPrice.toFixed(2)}` : '';
   
   // 아이템 라인 - 스타일 적용
   output += getStyleCommand(itemsStyle);
-  output += rightAlignText(`${qty}x ${name}`, `$${price}`, width) + LF;
+  output += rightAlignText(`${qty}x ${name}${unitLabel}`, `$${total.toFixed(2)}`, width) + LF;
   output += getStyleResetCommand();
+
+  // Dine-in item-level TOGO label (separate from orderType TOGO)
+  if (item.togoLabel || item.togo_label) {
+    const st = (modifiersStyle && typeof modifiersStyle === 'object') ? modifiersStyle : { fontSize: 10 };
+    output += getStyleCommand({ ...st, inverse: false, visible: true });
+    output += `  <<TOGO>>` + LF;
+    output += getStyleResetCommand();
+  }
   
   // 원래 가격과 할인 표시
   if (itemDiscountStyle.visible !== false && item.originalTotal && item.discount) {
@@ -1653,25 +1721,31 @@ function formatReceiptItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteS
   // 모디파이어
   if (modifiersStyle.visible !== false && item.modifiers && item.modifiers.length > 0) {
     output += getStyleCommand(modifiersStyle);
-    const prefix = modifiersStyle.prefix || '>>';
+    const prefix = '+';
     item.modifiers.forEach(mod => {
       if (typeof mod === 'string') {
         output += `  ${prefix} ${mod}` + LF;
       } else if (mod.name) {
-        const modPrice = mod.price ? `$${Number(mod.price).toFixed(2)}` : '';
+        const p = Number(mod.price || mod.price_delta || 0);
+        const modTotal = (qty > 1 && p > 0) ? (p * qty) : p;
+        const modPrice = modTotal > 0 ? `$${Number(modTotal).toFixed(2)}` : '';
         output += rightAlignText(`  ${prefix} ${mod.name}`, modPrice, width) + LF;
       } else if (mod.modifierNames && mod.modifierNames.length > 0) {
         mod.modifierNames.forEach((modName, idx) => {
           let modPrice = '';
           if (mod.selectedEntries && mod.selectedEntries[idx] && mod.selectedEntries[idx].price_delta > 0) {
-            modPrice = `$${Number(mod.selectedEntries[idx].price_delta).toFixed(2)}`;
+            const p = Number(mod.selectedEntries[idx].price_delta || 0);
+            const modTotal = (qty > 1 && p > 0) ? (p * qty) : p;
+            modPrice = `$${Number(modTotal).toFixed(2)}`;
           }
           output += rightAlignText(`  ${prefix} ${modName}`, modPrice, width) + LF;
         });
       } else if (mod.selectedEntries && mod.selectedEntries.length > 0) {
         mod.selectedEntries.forEach(entry => {
           if (entry.name) {
-            const modPrice = entry.price_delta && entry.price_delta > 0 ? `$${Number(entry.price_delta).toFixed(2)}` : '';
+            const p = Number(entry.price_delta || 0);
+            const modTotal = (qty > 1 && p > 0) ? (p * qty) : p;
+            const modPrice = modTotal > 0 ? `$${Number(modTotal).toFixed(2)}` : '';
             output += rightAlignText(`  ${prefix} ${entry.name}`, modPrice, width) + LF;
           }
         });
@@ -1683,7 +1757,7 @@ function formatReceiptItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteS
   // 아이템 메모
   if (itemNoteStyle.visible !== false && item.memo) {
     output += getStyleCommand(itemNoteStyle);
-    const prefix = itemNoteStyle.prefix || '->';
+    const prefix = '*';
     let memoText = typeof item.memo === 'string' ? item.memo : item.memo.text;
     if (memoText) {
       output += `  ${prefix} ${memoText}` + LF;

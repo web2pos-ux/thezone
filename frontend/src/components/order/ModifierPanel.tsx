@@ -1,8 +1,36 @@
 import React from 'react';
-import { DndContext, closestCenter, DragOverlay, defaultDropAnimationSideEffects } from '@dnd-kit/core';
+import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { getContrastingTextColor, isHexColor, getSelectedButtonColor } from '../../utils/colorUtils';
+import { getContrastingTextColor, isHexColor } from '../../utils/colorUtils';
+
+const tailwindBgToHex: Record<string, string> = {
+  'bg-slate-300':'#cbd5e1','bg-slate-400':'#94a3b8','bg-slate-500':'#64748b','bg-slate-600':'#475569','bg-slate-700':'#334155',
+  'bg-gray-200':'#e5e7eb','bg-gray-300':'#d1d5db','bg-gray-400':'#9ca3af','bg-gray-500':'#6b7280','bg-gray-600':'#4b5563','bg-gray-700':'#374151',
+  'bg-zinc-500':'#71717a','bg-zinc-600':'#52525b','bg-neutral-500':'#737373','bg-neutral-600':'#525252','bg-stone-500':'#78716c','bg-stone-600':'#57534e',
+  'bg-red-400':'#f87171','bg-red-500':'#ef4444','bg-red-600':'#dc2626','bg-red-700':'#b91c1c',
+  'bg-orange-400':'#fb923c','bg-orange-500':'#f97316','bg-orange-600':'#ea580c','bg-orange-700':'#c2410c',
+  'bg-amber-400':'#fbbf24','bg-amber-500':'#f59e0b','bg-amber-600':'#d97706','bg-amber-700':'#b45309',
+  'bg-yellow-400':'#facc15','bg-yellow-500':'#eab308','bg-yellow-600':'#ca8a04','bg-yellow-700':'#a16207',
+  'bg-lime-400':'#a3e635','bg-lime-500':'#84cc16','bg-lime-600':'#65a30d','bg-lime-700':'#4d7c0f',
+  'bg-green-400':'#4ade80','bg-green-500':'#22c55e','bg-green-600':'#16a34a','bg-green-700':'#15803d',
+  'bg-emerald-400':'#34d399','bg-emerald-500':'#10b981','bg-emerald-600':'#059669','bg-emerald-700':'#047857',
+  'bg-teal-400':'#2dd4bf','bg-teal-500':'#14b8a6','bg-teal-600':'#0d9488','bg-teal-700':'#0f766e',
+  'bg-cyan-400':'#22d3ee','bg-cyan-500':'#06b6d4','bg-cyan-600':'#0891b2','bg-cyan-700':'#0e7490',
+  'bg-sky-400':'#38bdf8','bg-sky-500':'#0ea5e9','bg-sky-600':'#0284c7','bg-sky-700':'#0369a1',
+  'bg-blue-400':'#60a5fa','bg-blue-500':'#3b82f6','bg-blue-600':'#2563eb','bg-blue-700':'#1d4ed8',
+  'bg-indigo-400':'#818cf8','bg-indigo-500':'#6366f1','bg-indigo-600':'#4f46e5','bg-indigo-700':'#4338ca',
+  'bg-violet-400':'#a78bfa','bg-violet-500':'#8b5cf6','bg-violet-600':'#7c3aed','bg-violet-700':'#6d28d9',
+  'bg-purple-400':'#c084fc','bg-purple-500':'#a855f7','bg-purple-600':'#9333ea','bg-purple-700':'#7e22ce',
+  'bg-fuchsia-400':'#e879f9','bg-fuchsia-500':'#d946ef','bg-fuchsia-600':'#c026d3','bg-fuchsia-700':'#a21caf',
+  'bg-pink-400':'#f472b6','bg-pink-500':'#ec4899','bg-pink-600':'#db2777','bg-pink-700':'#be185d',
+  'bg-rose-400':'#fb7185','bg-rose-500':'#f43f5e','bg-rose-600':'#e11d48','bg-rose-700':'#be123c',
+  'bg-black':'#000000','bg-white':'#ffffff',
+};
+
+const resolveColorToHex = (colorClass: string): string | null => {
+  if (isHexColor(colorClass)) return colorClass;
+  return tailwindBgToHex[colorClass] || null;
+};
 
 interface ModifierEntry {
   id: string;
@@ -24,57 +52,49 @@ interface ModifierPanelProps {
   setActiveModifierId: (id: string | null) => void;
   handleModifierSelection: (groupId: string, modifierId: string, selectionType: string) => void;
   handleModifierDragEnd: (event: any) => void;
+  onModifierReorder?: (reorderedIds: string[]) => void;
   setSelectedModifierIdForColor?: (id: string) => void;
   onAddAdhocModifier?: (payload: { name: string; price: number }) => void;
   canAddAdhoc?: boolean;
   extraButton1?: { enabled: boolean; name: string; price: number; colorClass?: string };
   extraButton2?: { enabled: boolean; name: string; price: number; colorClass?: string };
   showEmptySlots?: boolean;
+  emptySlotMode?: 'none' | 'configured' | 'fill';
   lockLayout?: boolean;
 }
 
-const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; price?: number; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, price, onSelect, layoutSettings, modifierColors, setSelectedModifierIdForColor, lockLayout }) => {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id, disabled: lockLayout });
-  const [isHover, setIsHover] = React.useState(false);
-  const baseTransform = CSS.Transform.toString(transform);
+const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; price?: number; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; itemHeightPx: number; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, price, onSelect, layoutSettings, modifierColors, itemHeightPx, setSelectedModifierIdForColor, lockLayout }) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !!lockLayout });
   const style: React.CSSProperties = {
-    transform: isSelected
-      ? `${baseTransform} translateY(1px)`
-      : (isHover ? `${baseTransform} translateY(-1px)` : baseTransform),
-    transition: isDragging ? undefined : 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)',
-    willChange: 'transform',
+    touchAction: lockLayout ? 'manipulation' : 'none',
+    transform: transform ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)` : undefined,
+    transition: isDragging ? 'none' : transition,
     opacity: isDragging ? 0.85 : 1,
-    touchAction: 'none',
-    height: `${layoutSettings.modifierItemHeight}px`,
+    zIndex: isDragging ? 999 : undefined,
+    cursor: isDragging ? 'grabbing' : (lockLayout ? undefined : 'grab'),
+    height: `${itemHeightPx}px`,
     fontSize: `${layoutSettings.modifierFontSize}px`,
-    backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))',
-    border: '1px solid rgba(255,255,255,0.18)',
-    boxShadow: isSelected
-      ? 'inset 0 3px 10px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.15) inset'
-      : (isHover ? '0 6px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' : '0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.3)'),
-    borderBottom: isSelected ? '2px solid rgba(0,0,0,0.25)' : '2px solid rgba(0,0,0,0.2)'
+    backgroundImage: 'none',
+    border: 'none',
+    boxShadow: isDragging
+      ? '0 8px 24px rgba(0,0,0,0.3)'
+      : isSelected
+        ? 'inset 3px 3px 6px rgba(0,0,0,0.2), inset -3px -3px 6px rgba(255,255,255,0.7)'
+        : '4px 4px 8px rgba(0,0,0,0.15), -4px -4px 8px rgba(255,255,255,0.8)',
+    borderBottom: 'none'
   };
   const bgClass = modifierColors[id] || layoutSettings.modifierDefaultColor;
-  // Debug: Log modifier color lookup
-  if (modifierColors[id]) {
-    console.log('🎨 [ModifierPanel] Found custom color for ID:', id, '→', modifierColors[id]);
-  }
-  const isHex = isHexColor(bgClass || layoutSettings.modifierDefaultColor);
   const selectedBg = '#1E3A8A';
-  const selectedIsHex = isHexColor(selectedBg);
-  // Apply background color same as menu selected color when selected
+  const resolvedBg = resolveColorToHex(bgClass) || bgClass;
+  const resolvedBgIsHex = isHexColor(resolvedBg);
   (style as any).backgroundColor = isSelected
-    ? (selectedIsHex ? selectedBg : undefined)
-    : (isHex ? bgClass : undefined);
+    ? selectedBg
+    : (resolvedBgIsHex ? resolvedBg : undefined);
   const textClass = getContrastingTextColor(
-    isSelected ? selectedBg : (bgClass || layoutSettings.modifierDefaultColor)
+    isSelected ? selectedBg : (resolvedBgIsHex ? resolvedBg : bgClass)
   );
   const className = `${
-    !isHex ? (
-      isSelected
-        ? `${selectedIsHex ? '' : ''}`
-        : (bgClass || layoutSettings.modifierDefaultColor)
-    ) : ''
+    !resolvedBgIsHex && !isSelected ? bgClass : ''
   } p-2 rounded-xl ${textClass} border ${
     isSelected ? 'border-gray-300' : 'border-gray-200'
   } flex items-center justify-center w-full h-full`;
@@ -83,9 +103,8 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
     <button
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
       onClick={(e) => {
+        if (isDragging) return;
         e.stopPropagation();
         onSelect(groupId, id, selectionType || 'SINGLE');
         if (setSelectedModifierIdForColor) setSelectedModifierIdForColor(id);
@@ -94,12 +113,12 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
         e.preventDefault();
         if (setSelectedModifierIdForColor) setSelectedModifierIdForColor(id);
       }}
-      onMouseEnter={() => setIsHover(true)}
-      onMouseLeave={() => setIsHover(false)}
       className={className}
       title={`Color: ${bgClass}`}
+      {...attributes}
+      {...listeners}
     >
-      <div className={`${layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
+      <div className={`${layoutSettings.modifierFontBold ? 'font-medium' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
         <span>{label}</span>
         {layoutSettings.modifierShowPrices && price !== undefined && price !== 0 && (
           <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">
@@ -111,13 +130,13 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
   );
 };
 
-const SortableEmptySlot: React.FC<{ id: string; layoutSettings: any }> = ({ id, layoutSettings }) => {
-  const { setNodeRef } = useSortable({ id, disabled: true });
+const SortableEmptySlot: React.FC<{ id: string; layoutSettings: any; itemHeightPx: number; lockLayout?: boolean; invisible?: boolean }> = ({ id, layoutSettings, itemHeightPx, lockLayout, invisible }) => {
+  const { setNodeRef } = useSortable({ id, disabled: !!lockLayout });
   return (
     <div
       ref={setNodeRef}
-      className="rounded-xl border border-dashed border-gray-300 w-full h-full"
-      style={{ fontSize: `${layoutSettings.modifierFontSize}px` }}
+      className={invisible ? 'w-full h-full' : 'rounded-xl border border-dashed border-gray-300 w-full h-full'}
+      style={{ height: `${itemHeightPx}px`, fontSize: `${layoutSettings.modifierFontSize}px` }}
     />
   );
 };
@@ -134,15 +153,19 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
   setActiveModifierId,
   handleModifierSelection,
   handleModifierDragEnd,
+  onModifierReorder,
   setSelectedModifierIdForColor,
   onAddAdhocModifier,
   canAddAdhoc,
   extraButton1,
   extraButton2,
   showEmptySlots = true,
+  emptySlotMode,
   lockLayout = false
 }) => {
-  const placeholdersEnabled = showEmptySlots !== false;
+  const effectiveEmptyMode: 'none' | 'configured' | 'fill' =
+    emptySlotMode || (showEmptySlots === false ? 'none' : 'fill');
+  const placeholdersEnabled = effectiveEmptyMode !== 'none';
   // 패널 높이 = 외부 padding(상하 16px) + 내부 padding(상하 8px) + (행수 * 버튼높이) + (행-1) * 행간격(4px)
   const rowCount = Math.max(1, Number(layoutSettings.modifierRows) || 1);
   const baseItemHeight = Math.max(24, Number(layoutSettings.modifierItemHeight) || 24);
@@ -172,8 +195,36 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
             <DndContext 
               sensors={sensors} 
               collisionDetection={closestCenter} 
-              onDragStart={({active}) => setActiveModifierId(String(active.id))}
-              onDragEnd={(e) => { handleModifierDragEnd(e); setActiveModifierId(null); }}
+              onDragStart={({active}) => {
+                setActiveModifierId(String(active.id));
+              }}
+              onDragEnd={(e) => {
+                const activeId = String(e?.active?.id || '');
+                const overId = e?.over ? String(e.over.id) : '';
+                if (overId && activeId !== overId && onModifierReorder) {
+                  const current = slotItemIds.map(String);
+                  const oldIdx = current.indexOf(activeId);
+                  const newIdx = current.indexOf(overId);
+                  if (oldIdx !== -1 && newIdx !== -1) {
+                    const next = current.slice();
+                    const emptyToken = `EMPTY:mod:${oldIdx}:${Date.now()}`;
+                    next[oldIdx] = emptyToken;
+                    const insertIdx = next.indexOf(overId);
+                    if (insertIdx !== -1) {
+                      next.splice(insertIdx, 0, activeId);
+                    }
+                    if (next.length > current.length && next[next.length - 1].startsWith('EMPTY:') && next[next.length - 1] !== emptyToken) {
+                      next.pop();
+                    }
+                    onModifierReorder(next);
+                  } else {
+                    handleModifierDragEnd(e);
+                  }
+                } else {
+                  handleModifierDragEnd(e);
+                }
+                setActiveModifierId(null);
+              }}
             >
               <SortableContext items={slotItemIds} strategy={rectSortingStrategy}>
                 <div 
@@ -226,7 +277,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                         const style: React.CSSProperties = {
                           height: '100%',
                           fontSize: `${layoutSettings.modifierFontSize}px`,
-                          fontWeight: layoutSettings.modifierFontBold ? '600' : '400',
+                          fontWeight: layoutSettings.modifierFontBold ? '500' : '400',
                           backgroundImage: isExtra1Active
                             ? 'linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.25))'
                             : 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))',
@@ -249,7 +300,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                             onClick={(e) => { e.stopPropagation(); if (disabled) return; onAddAdhocModifier!({ name: extraButton1.name || 'Extra 1', price: Number(extraButton1.price || 0) }); }}
                             title={extraButton1.name || 'Extra 1'}
                           >
-                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '600' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
+                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '500' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
                               {extraButton1.name || 'Extra 1'}
                             </div>
                           </button>
@@ -263,7 +314,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                         const style: React.CSSProperties = {
                           height: '100%',
                           fontSize: `${layoutSettings.modifierFontSize}px`,
-                          fontWeight: layoutSettings.modifierFontBold ? '600' : '400',
+                          fontWeight: layoutSettings.modifierFontBold ? '500' : '400',
                           backgroundImage: isExtra2Active
                             ? 'linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.25))'
                             : 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))',
@@ -286,7 +337,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                             onClick={(e) => { e.stopPropagation(); if (disabled) return; onAddAdhocModifier!({ name: extraButton2.name || 'Extra 2', price: Number(extraButton2.price || 0) }); }}
                             title={extraButton2.name || 'Extra 2'}
                           >
-                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '600' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
+                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '500' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
                               {extraButton2.name || 'Extra 2'}
                             </div>
                           </button>
@@ -294,12 +345,12 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                       }
                       if (typeof slotId === 'string' && slotId.startsWith('EMPTY:')) {
                         return placeholdersEnabled ? (
-                          <SortableEmptySlot key={`empty-${idx}`} id={slotId} layoutSettings={layoutSettings} />
+                          <SortableEmptySlot key={`empty-${idx}`} id={slotId} layoutSettings={layoutSettings} itemHeightPx={itemHeight} invisible={effectiveEmptyMode === 'configured'} />
                         ) : null;
                       }
                       const entry = entryMap.get(slotId);
                       if (!entry) {
-                        return <SortableEmptySlot key={`missing-${idx}`} id={`EMPTY:${idx}`} layoutSettings={layoutSettings} />
+                        return <SortableEmptySlot key={`missing-${idx}`} id={`EMPTY:${idx}`} layoutSettings={layoutSettings} itemHeightPx={itemHeight} />
                       }
                       const isSelected = selectedModifiers[entry.groupId]?.includes(slotId);
                       return (
@@ -314,6 +365,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                           onSelect={handleModifierSelection}
                           layoutSettings={layoutSettings}
                           modifierColors={modifierColors}
+                          itemHeightPx={itemHeight}
                           setSelectedModifierIdForColor={setSelectedModifierIdForColor}
                           lockLayout={lockLayout}
                         />
@@ -322,20 +374,6 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                   })()}
                 </div>
               </SortableContext>
-              <DragOverlay dropAnimation={{ duration: 220, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.5' } } }) }}>
-                {activeModifierId ? (() => {
-                  const entry = entryMap.get(activeModifierId);
-                  if (!entry) return null;
-                  return (
-                    <div className={`rounded-xl shadow border border-gray-200 flex items-center justify-center ${getContrastingTextColor(layoutSettings.modifierDefaultColor)}`}
-                         style={{ height: `${layoutSettings.modifierItemHeight}px`, backgroundColor: isHexColor(layoutSettings.modifierDefaultColor) ? layoutSettings.modifierDefaultColor : undefined, fontSize: `${layoutSettings.modifierFontSize}px` }}>
-                      <div className={`${layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words`}>
-                        {entry.label}
-                      </div>
-                    </div>
-                  );
-                })() : null}
-              </DragOverlay>
             </DndContext>
           </div>
         </div>

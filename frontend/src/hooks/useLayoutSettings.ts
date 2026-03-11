@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LayoutSettings } from '../pages/order/orderTypes';
 import { API_URL } from '../config/constants';
 
@@ -16,6 +16,12 @@ export interface UseLayoutSettingsResult {
     selectServerOnEntry?: boolean;
   }) => Promise<void>;
   resetLayoutSettings: () => void;
+  modifierColors: Record<string, string>;
+  setModifierColors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  modifierColorsLoaded: boolean;
+  modifierLayoutByItem: Record<string, string[]>;
+  setModifierLayoutByItem: React.Dispatch<React.SetStateAction<Record<string, string[]>>>;
+  modifierLayoutLoaded: boolean;
 }
 
 // 화면 크기에 맞는 해상도와 비율 자동 감지
@@ -53,6 +59,7 @@ const defaultSettings: LayoutSettings = {
   mergedGroups: [],
   categoryBarOrder: [],
   menuGridColumns: 8,
+  menuGridRows: 0,
   menuItemHeight: 80,
   menuFontSize: 12,
   menuFontBold: false,
@@ -60,6 +67,7 @@ const defaultSettings: LayoutSettings = {
   menuSelectedColor: '#BDB76B',
   showPrices: true,
   useShortName: false,
+  menuGridRowPattern: [4, 6, 3, 4],
   modifierRows: 3,
   modifierColumns: 4,
   modifierItemHeight: 60,
@@ -67,6 +75,7 @@ const defaultSettings: LayoutSettings = {
   modifierFontBold: false,
   modifierDefaultColor: 'bg-blue-600',
   modifierShowPrices: true,
+  modifierRowPattern: [],
   baseColor: '#3B82F6',
   categoryAreaBgColor: '#f3f4f6',
   menuAreaBgColor: '#f9fafb',
@@ -74,7 +83,7 @@ const defaultSettings: LayoutSettings = {
   extraButtonPositions: {},
   keyboardLanguages: ['EN-US'],
   selectServerOnEntry: false,
-  modifierLayoutByItem: {},
+  gratuityRate: 0,
   modExtra1Enabled: false,
   modExtra1Name: 'Modifier Extra 1',
   modExtra1Amount: 0,
@@ -92,10 +101,19 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     ...defaultSettings,
     ...(initial || {}),
   });
+  const [modifierColors, setModifierColors] = useState<Record<string, string>>({});
+  const [modifierColorsLoaded, setModifierColorsLoaded] = useState(false);
+  const [modifierLayoutByItem, setModifierLayoutByItem] = useState<Record<string, string[]>>({});
+  const [modifierLayoutLoaded, setModifierLayoutLoaded] = useState(false);
 
   const updateLayoutSetting = useCallback((key: keyof LayoutSettings, value: any) => {
     setLayoutSettings(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  const modifierColorsRef = useRef(modifierColors);
+  modifierColorsRef.current = modifierColors;
+  const modifierLayoutRef = useRef(modifierLayoutByItem);
+  modifierLayoutRef.current = modifierLayoutByItem;
 
   const saveLayoutSettings = useCallback(async (args?: {
     itemColors?: Record<string, string>;
@@ -105,9 +123,25 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     menuItemOrderByCategory?: Record<number, string[]>;
     selectServerOnEntry?: boolean;
   }) => {
+    let existing: Record<string, any> = {};
+    try {
+      const cur = await fetch(`${API_URL}/layout-settings`);
+      if (cur.ok) {
+        const r = await cur.json();
+        if (r?.success && r?.data) existing = r.data;
+      }
+    } catch {}
+    const currentModColors = modifierColorsRef.current;
+    const modColorsToSave = args?.modifierColors || (Object.keys(currentModColors).length > 0 ? currentModColors : existing.modifierColors);
+    const currentModLayout = modifierLayoutRef.current;
+    const modLayoutToSave = args?.modifierLayoutByItem || (Object.keys(currentModLayout).length > 0 ? currentModLayout : existing.modifierLayoutByItem);
+    const { modifierColors: _mc, modifierLayoutByItem: _ml, ...safeLayoutSettings } = layoutSettings as any;
     const payload = {
-      ...layoutSettings,
+      ...existing,
+      ...safeLayoutSettings,
       ...(args || {}),
+      ...(modColorsToSave ? { modifierColors: modColorsToSave } : {}),
+      ...(modLayoutToSave ? { modifierLayoutByItem: modLayoutToSave } : {}),
     };
     const response = await fetch(`${API_URL}/layout-settings`, {
       method: 'POST',
@@ -122,8 +156,16 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     if (!response.ok) throw new Error(`Failed to load layout settings: ${response.status}`);
     const result = await response.json();
     if (result?.success && result?.data) {
-      const { itemColors, modifierColors, modifierLayoutByItem, categoryOrder, menuItemOrderByCategory, ...layoutData } = result.data;
+      const { itemColors, modifierColors: loadedModColors, modifierLayoutByItem: loadedModLayout, categoryOrder, ...layoutData } = result.data;
       setLayoutSettings(prev => ({ ...prev, ...layoutData }));
+      if (loadedModColors && typeof loadedModColors === 'object' && Object.keys(loadedModColors).length > 0) {
+        setModifierColors(loadedModColors);
+      }
+      if (loadedModLayout && typeof loadedModLayout === 'object' && Object.keys(loadedModLayout).length > 0) {
+        setModifierLayoutByItem(loadedModLayout);
+      }
+      setModifierColorsLoaded(true);
+      setModifierLayoutLoaded(true);
     } else {
       // 저장된 설정이 없으면 자동 화면 감지 사용
       const detected = detectScreenSettings();
@@ -141,6 +183,8 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
       } catch (err) {
         console.warn('⚠️ [Auto-detect] Failed to save screen settings:', err);
       }
+      setModifierColorsLoaded(true);
+      setModifierLayoutLoaded(true);
     }
   }, []);
 
@@ -159,5 +203,11 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     loadLayoutSettings,
     saveLayoutSettings,
     resetLayoutSettings,
+    modifierColors,
+    setModifierColors,
+    modifierColorsLoaded,
+    modifierLayoutByItem,
+    setModifierLayoutByItem,
+    modifierLayoutLoaded,
   };
 } 

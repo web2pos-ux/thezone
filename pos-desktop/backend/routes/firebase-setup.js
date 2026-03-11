@@ -86,7 +86,7 @@ router.get('/status', (req, res) => {
     };
     
     if (fs.existsSync(SETUP_STATUS_PATH)) {
-      const savedStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+      const savedStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8').replace(/^\uFEFF/, ''));
       setupStatus = { ...setupStatus, ...savedStatus };
     }
     
@@ -266,7 +266,7 @@ router.get('/current', async (req, res) => {
       });
     }
     
-    const setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8'));
+    const setupStatus = JSON.parse(fs.readFileSync(SETUP_STATUS_PATH, 'utf8').replace(/^\uFEFF/, ''));
     
     if (!setupStatus.restaurantId) {
       return res.json({ 

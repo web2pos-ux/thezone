@@ -12,6 +12,7 @@ import { useMenuData } from '../hooks/useMenuData';
 import { useOrderManagement } from '../hooks/useOrderManagement';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import ManagerPinModal from '../components/ManagerPinModal';
+import PinInputModal from '../components/PinInputModal';
 import { API_URL } from '../config/constants';
 import BottomActionBar from '../components/order/BottomActionBar';
 import ModifierPanel from '../components/order/ModifierPanel';
@@ -24,6 +25,7 @@ import { Keyboard as KeyboardIcon, Coffee, ShoppingBag, Phone, Wifi, Car, User }
 import { CSS } from '@dnd-kit/utilities';
 import { usePromotion } from '../hooks/usePromotion';
 import { computePromotionAdjustment, buildPromotionReceiptLine } from '../utils/promotionCalculator';
+import { calculateOrderPricing, summarizePricingByGuest, applySubtotalAdjustments, computeDiscountAmount } from '../utils/orderPricing';
 import { getFirebasePromotions, FirebasePromotion, checkPromotionApplicable, calculatePromotionDiscount } from '../services/firebasePromotionsApi';
 import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
@@ -34,6 +36,8 @@ import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
+import TipEntryModal from '../components/TipEntryModal';
+import OrderDetailModal, { OrderData } from '../components/OrderDetailModal';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
@@ -228,6 +232,11 @@ const QsrOrderPage = () => {
   const [qsrTogoOrders, setQsrTogoOrders] = useState<any[]>([]);
   const [qsrTogoOrderMeta, setQsrTogoOrderMeta] = useState<Record<string, VirtualOrderMeta>>({});
   
+  // QSR Pickup Complete list (PAID but not yet PICKED_UP)
+  const [qsrPickupCompleteOrders, setQsrPickupCompleteOrders] = useState<OrderData[]>([]);
+  const [qsrPickupCompleteLoading, setQsrPickupCompleteLoading] = useState(false);
+  const [qsrPickupCompleteError, setQsrPickupCompleteError] = useState('');
+
   // FSR에서 복제한 헬퍼 함수들
   const normalizePhoneDigits = (value: string) => (value || '').replace(/\D/g, '');
   const getTogoPhoneDigits = (input: string) => normalizePhoneDigits(input).slice(0, 11);
@@ -398,6 +407,43 @@ const QsrOrderPage = () => {
     },
     [getOrderTimestamp, showQsrTogoModal]
   );
+
+  const loadQsrPickupCompleteOrders = useCallback(async () => {
+    setQsrPickupCompleteLoading(true);
+    setQsrPickupCompleteError('');
+    try {
+      const res = await fetch(`${API_URL}/orders?type=TOGO&status=PAID&limit=80`);
+      const data = await res.json();
+      const raw: any[] =
+        Array.isArray(data)
+          ? data
+          : Array.isArray((data as any)?.orders)
+            ? (data as any).orders
+            : Array.isArray((data as any)?.data)
+              ? (data as any).data
+              : [];
+
+      const filtered = raw.filter((o: any) => {
+        const s = String(o?.status ?? '').toUpperCase();
+        if (s === 'PICKED_UP' || s === 'CANCELLED' || s === 'MERGED') return false;
+        return true;
+      });
+
+      setQsrPickupCompleteOrders(filtered as OrderData[]);
+    } catch (e) {
+      console.error('[QSR] Failed to load pickup complete orders:', e);
+      setQsrPickupCompleteError('Failed to load pickup complete orders.');
+      setQsrPickupCompleteOrders([]);
+    } finally {
+      setQsrPickupCompleteLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showQsrTogoModal) return;
+    if (qsrPickupModalTab !== 'complete') return;
+    loadQsrPickupCompleteOrders();
+  }, [showQsrTogoModal, qsrPickupModalTab, loadQsrPickupCompleteOrders]);
   
   // 선택된 고객이 변경되면 히스토리 로드
   useEffect(() => {
@@ -607,10 +653,27 @@ const QsrOrderPage = () => {
   const [qsrDeliveryChannel, setQsrDeliveryChannel] = useState<'UberEats' | 'Doordash' | 'SkipTheDishes' | 'Fantuan' | ''>('');
   const [qsrDeliveryOrderNumber, setQsrDeliveryOrderNumber] = useState('');
   const [qsrDeliveryPrepTime, setQsrDeliveryPrepTime] = useState(15);
-  const qsrDeliveryOrderInputRef = useRef<HTMLInputElement>(null);
-  
-  // QSR Online Orders Panel (using FSR OnlineOrderPanel)
+  const qsrDeliveryOrderInputRef = useRef<HTMLInputElement>(null);// QSR Online Orders Panel (using FSR OnlineOrderPanel)
   const [showQsrOnlineOrdersModal, setShowQsrOnlineOrdersModal] = useState(false);
+  const [showOrderListModal, setShowOrderListModal] = useState(false); // Order History Modal
+  const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
+  const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
+  const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
+  const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [orderListLoading, setOrderListLoading] = useState(false);
+  // QSR Order History - Refund Flow
+  const [showOrderListRefundModal, setShowOrderListRefundModal] = useState(false);
+  const [orderListRefundLoading, setOrderListRefundLoading] = useState(false);
+  const [orderListRefundError, setOrderListRefundError] = useState('');
+  const [orderListRefundDetails, setOrderListRefundDetails] = useState<any | null>(null);
+  const [orderListRefundSelectedItems, setOrderListRefundSelectedItems] = useState<Record<number, number>>({});
+  const [orderListRefundReason, setOrderListRefundReason] = useState('');
+  const [orderListRefundTaxRate, setOrderListRefundTaxRate] = useState(0.05);
+  const [orderListRefundGiftCardNumber, setOrderListRefundGiftCardNumber] = useState('');
+  const [showOrderListRefundPinModal, setShowOrderListRefundPinModal] = useState(false);
+  const [orderListRefundPinLoading, setOrderListRefundPinLoading] = useState(false);
+  const [orderListRefundPinError, setOrderListRefundPinError] = useState('');
+  const [orderListRefundResult, setOrderListRefundResult] = useState<any | null>(null);
   const [onlineOrderRestaurantId, setOnlineOrderRestaurantId] = useState<string | null>(
     localStorage.getItem('firebaseRestaurantId')
   );
@@ -939,7 +1002,7 @@ const QsrOrderPage = () => {
   }, []);
   
   const layoutSnapshotSeed = useMemo(() => readLayoutSettingsSnapshotSeed(), []);
-  const { layoutSettings, setLayoutSettings, updateLayoutSetting, loadLayoutSettings, saveLayoutSettings, resetLayoutSettings } = useLayoutSettings(layoutSnapshotSeed.data || undefined);
+  const { layoutSettings, setLayoutSettings, updateLayoutSetting, loadLayoutSettings, saveLayoutSettings, resetLayoutSettings, modifierColors, setModifierColors, modifierColorsLoaded, modifierLayoutByItem: hookModifierLayout, setModifierLayoutByItem: hookSetModifierLayout, modifierLayoutLoaded } = useLayoutSettings(layoutSnapshotSeed.data || undefined);
   const mergedGroups = useMemo(() => layoutSettings.mergedGroups || [], [layoutSettings.mergedGroups]);
   const savedCategoryOrder = useMemo(() => layoutSettings.categoryBarOrder || [], [layoutSettings.categoryBarOrder]);
   const selectServerPromptEnabled = layoutSettings.selectServerOnEntry ?? false;
@@ -954,6 +1017,39 @@ const QsrOrderPage = () => {
     }
   }, []);
   const canEditLayoutTab = posUserRole === 'admin' || posUserRole === 'distributor';
+
+  // Back Office: auto-save layout settings (rows/cols/colors/heights, etc.)
+  const layoutAutoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLayoutAutoSavedRef = useRef<string | null>(null);
+  useEffect(() => {
+    // QSR mode hides layout panel; settings are managed in Back Office.
+    if (isSalesOrder) return;
+    if (isQsrMode) return;
+    if (!canEditLayoutTab) return;
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(layoutSettings);
+    } catch {
+      return;
+    }
+    if (lastLayoutAutoSavedRef.current === serialized) return;
+    if (layoutAutoSaveTimerRef.current) {
+      clearTimeout(layoutAutoSaveTimerRef.current);
+    }
+    layoutAutoSaveTimerRef.current = setTimeout(async () => {
+      try {
+        await saveLayoutSettings();
+        lastLayoutAutoSavedRef.current = serialized;
+      } catch (e) {
+        console.error('[QsrOrderPage] Failed to auto-save layout settings:', e);
+      }
+    }, 600);
+    return () => {
+      if (layoutAutoSaveTimerRef.current) {
+        clearTimeout(layoutAutoSaveTimerRef.current);
+      }
+    };
+  }, [isSalesOrder, isQsrMode, canEditLayoutTab, layoutSettings, saveLayoutSettings]);
 
   useEffect(() => {
     // 백그라운드에서 테이블 이름 로드 (화면 표시 후 300ms 지연)
@@ -1218,8 +1314,19 @@ const QsrOrderPage = () => {
     tip: number;
     payments: Array<{ method: string; amount: number }>;
     hasCashPayment: boolean;
-    isPartialPayment?: boolean;  // 부분 결제 (게스트별 결제 중 일부만 결제)
+    isPartialPayment?: boolean;
+    currentGuestNumber?: number;
+    discount?: {
+      percent: number;
+      amount: number;
+      originalSubtotal: number;
+      discountedSubtotal: number;
+      taxLines: Array<{ name: string; amount: number }>;
+      taxesTotal: number;
+    };
   } | null>(null);
+  const [showTipEntryModal, setShowTipEntryModal] = useState(false);
+  const [pendingReceiptCountForTip, setPendingReceiptCountForTip] = useState<number>(0);
   const [adhocSplitCount, setAdhocSplitCount] = useState<number>(0); // Even Split count
   const [showKitchenMemoModal, setShowKitchenMemoModal] = useState(false);
   const [kitchenMemo, setKitchenMemo] = useState<string>('');
@@ -1250,13 +1357,13 @@ const QsrOrderPage = () => {
   const [giftCardExistingBalance, setGiftCardExistingBalance] = useState<number | null>(null);
   const [showGiftCardNameKeyboard, setShowGiftCardNameKeyboard] = useState(false);
   
-  // Order History Modal States
-  const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
-  const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
-  const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
-  const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
-  const [orderListLoading, setOrderListLoading] = useState<boolean>(false);
+  // Order History Modal States - Removed duplicate declarations
+  // const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
+  // const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  // const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
+  // const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
+  // const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
+  // const [orderListLoading, setOrderListLoading] = useState<boolean>(false);
   const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
   const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
   
@@ -1904,6 +2011,7 @@ const handleVoidPinClear = useCallback(() => {
     };
   }, [orderItems, orderDiscount]);
   const savedOrderIdRef = React.useRef<number | null>(null);
+  const savedOrderNumberRef = React.useRef<string | null>(null);
   // Track original saved quantities: orderLineId -> original quantity
   const originalSavedQuantitiesRef = React.useRef<{ [orderLineId: string]: number }>({});
   const [guestPaymentMode, setGuestPaymentMode] = useState<'ALL' | number>('ALL');
@@ -2038,70 +2146,71 @@ const handleVoidPinClear = useCallback(() => {
     });
   }, [orderItems, guestCount, paymentsByGuest, persistedPaidGuests]);
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ✅ Single source of truth for all money calculations (same as OrderPage)
+  // ─────────────────────────────────────────────────────────────────────────────
+  const pricingAll = useMemo(() => {
+    return calculateOrderPricing(orderItems as any, {
+      itemTaxGroups,
+      categoryTaxGroups,
+      itemIdToCategoryId,
+      taxGroupIdToTaxes,
+    } as any);
+  }, [orderItems, itemTaxGroups, categoryTaxGroups, itemIdToCategoryId, taxGroupIdToTaxes]);
+
+  const pricingLineByLineId = useMemo(() => {
+    const m = new Map<string, any>();
+    (pricingAll.lines || []).forEach((l: any) => {
+      if (l && l.orderLineId) m.set(String(l.orderLineId), l);
+    });
+    return m;
+  }, [pricingAll]);
+
+  const getPricingLineForItem = useCallback((orderItem: any) => {
+    if (!orderItem || orderItem.type === 'separator') return null;
+    const lid = String(orderItem.orderLineId || '');
+    if (lid && pricingLineByLineId.has(lid)) return pricingLineByLineId.get(lid);
+    try {
+      const one = calculateOrderPricing([orderItem] as any, {
+        itemTaxGroups,
+        categoryTaxGroups,
+        itemIdToCategoryId,
+        taxGroupIdToTaxes,
+      } as any);
+      return (one.lines && one.lines[0]) ? one.lines[0] : null;
+    } catch {
+      return null;
+    }
+  }, [pricingLineByLineId, itemTaxGroups, categoryTaxGroups, itemIdToCategoryId, taxGroupIdToTaxes]);
+
+  const guestPricingMap = useMemo(() => summarizePricingByGuest(pricingAll as any), [pricingAll]);
+
   const computeItemLineBase = useCallback((orderItem: any): number => {
-    if (!orderItem || orderItem.type === 'separator') return 0;
-    const perUnit = Number(((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0));
-    const qty = Number(orderItem.quantity || 1);
-    return Number((perUnit * qty).toFixed(2));
-  }, []);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.lineGross || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeItemDiscountAmount = useCallback((orderItem: any): number => {
-    const base = computeItemLineBase(orderItem);
-    const d = (orderItem && (orderItem as any).discount) || null;
-    if (!d || typeof d.value !== 'number' || d.value <= 0) return 0;
-    let amt = 0;
-    if (d.mode === 'percent') {
-      amt = base * (Math.max(0, Math.min(100, d.value)) / 100);
-    } else {
-      amt = Math.max(0, d.value);
-    }
-    return Math.max(0, Math.min(base, Number(amt.toFixed(2))));
-  }, [computeItemLineBase]);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.itemDiscount || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeOrderItemNetTotal = useCallback((orderItem: any): number => {
-    if (!orderItem || orderItem.type === 'separator') return 0;
-    // Discount items have negative price - return as is
-    if (orderItem.type === 'discount') {
-      const price = Number((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0);
-      return Number((price * (orderItem.quantity || 1)).toFixed(2));
-    }
-    const memoPrice =
-      orderItem.memo && typeof orderItem.memo.price === 'number' ? Number(orderItem.memo.price) : 0;
-    const perUnit =
-      Number((orderItem.totalPrice != null ? orderItem.totalPrice : orderItem.price) || 0) + memoPrice;
-    const qty = Number(orderItem.quantity || 1);
-    const discount = computeItemDiscountAmount(orderItem);
-    const gross = perUnit * qty;
-    return Math.max(0, Number((gross - discount).toFixed(2)));
-  }, [computeItemDiscountAmount]);
+    const l = getPricingLineForItem(orderItem);
+    return l ? Number(l.lineTaxable || 0) : 0;
+  }, [getPricingLineForItem]);
 
   const computeGuestTotals = useCallback((mode: 'ALL' | number) => {
-    const items =
-      (orderItems || []).filter(
-        (it) => it.type !== 'separator' && (mode === 'ALL' ? true : (it.guestNumber || 1) === mode)
-      );
-    const subtotal = items.reduce((sum, orderItem: any) => sum + computeOrderItemNetTotal(orderItem), 0);
-    const taxAmountByName: { [taxName: string]: number } = {};
-    items.forEach((orderItem: any) => {
-      const itemKey = orderItem.id?.toString();
-      const itemSubtotal = computeOrderItemNetTotal(orderItem);
-      const itemGroupIds = itemKey && itemTaxGroups[itemKey] ? itemTaxGroups[itemKey] : [];
-      const catId = itemKey ? itemIdToCategoryId[itemKey] : undefined;
-      const catGroupIds = typeof catId === 'number' && categoryTaxGroups[catId] ? categoryTaxGroups[catId] : [];
-      const mergedGroupIds = Array.from(new Set<number>([...itemGroupIds, ...catGroupIds]));
-      mergedGroupIds.forEach((gid) => {
-        const taxes = taxGroupIdToTaxes[gid] || [];
-        taxes.forEach((t) => {
-          const delta = itemSubtotal * (t.rate / 100);
-          taxAmountByName[t.name] = (taxAmountByName[t.name] || 0) + delta;
-        });
-      });
-    });
-    const taxLines = Object.entries(taxAmountByName).map(([name, amount]) => ({ name, amount }));
-    const taxTotal = taxLines.reduce((s, t) => s + t.amount, 0);
-    const grand = subtotal + taxTotal;
-    return { subtotal, taxLines, grand };
-  }, [orderItems, itemTaxGroups, itemIdToCategoryId, categoryTaxGroups, taxGroupIdToTaxes, computeOrderItemNetTotal]);
+    if (mode === 'ALL') {
+      const subtotal = Number((pricingAll.totals?.subtotalAfterAllDiscounts || 0).toFixed(2));
+      const taxLines = (pricingAll.totals?.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+      const grand = Number((pricingAll.totals?.total || 0).toFixed(2));
+      return { subtotal, taxLines, grand };
+    }
+    const g = Number(mode || 1);
+    const res = guestPricingMap[g] || { subtotal: 0, taxLines: [], total: 0 };
+    return { subtotal: Number((res.subtotal || 0).toFixed(2)), taxLines: res.taxLines || [], grand: Number((res.total || 0).toFixed(2)) };
+  }, [pricingAll, guestPricingMap]);
 
   const guestStatusMap: Record<number, 'PAID' | 'PARTIAL' | 'UNPAID'> = useMemo(() => {
     const EPS = 0.05;
@@ -2198,10 +2307,32 @@ const handleVoidPinClear = useCallback(() => {
     const orderNumber = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${now.getTime()}`;
     // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
     const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
+    // Calculate totals before saving (shared adjustment rules)
+    const orderTotals = computeGuestTotals('ALL');
+    const baseSubtotal = Number((orderTotals.subtotal || 0).toFixed(2));
+    const baseTaxLines = (orderTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+    const isTogo = String(effectiveOrderType || '').toUpperCase() === 'TOGO';
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
+    }
+    const applied = applySubtotalAdjustments({ subtotal: baseSubtotal, taxLines: baseTaxLines }, adjustments);
+    const calcSubtotal = Number((applied.subtotal || 0).toFixed(2));
+    const calcTax = Number((applied.taxesTotal || 0).toFixed(2));
+    const calcTotal = Number((applied.total || 0).toFixed(2));
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0) })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
+    savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
     
     // Live Order 실시간 업데이트를 위한 이벤트 발생
     const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -2300,8 +2431,8 @@ const handleVoidPinClear = useCallback(() => {
       return { label: 'Pickup', bgColor: 'bg-blue-500', textColor: 'text-white' };
     }
     
-    // For Here (default - POS, Table Order, Dine-in, Forhere)
-    return { label: 'For Here', bgColor: 'bg-amber-500', textColor: 'text-white' };
+    // Eat In (default - POS, Table Order, Dine-in, Forhere)
+    return { label: 'Eat In', bgColor: 'bg-amber-500', textColor: 'text-white' };
   };
 
   const orderListGetTableOrCustomer = (order: any) => {
@@ -2313,48 +2444,499 @@ const handleVoidPinClear = useCallback(() => {
   };
 
   const orderListCalculateTotals = () => {
-    const subtotal = orderListSelectedItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
-    let itemDiscountTotal = 0;
+    const items = Array.isArray(orderListSelectedItems) ? orderListSelectedItems : [];
+    const subtotal = items.reduce((sum: number, item: any) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+
+    // Item discounts
     let hasItemDiscount = false;
-    orderListSelectedItems.forEach((item: any) => {
-      if (item.discount_json || item.discount) {
-        const discount = typeof item.discount_json === 'string' ? JSON.parse(item.discount_json) : (item.discount_json || item.discount);
-        if (discount && discount.value > 0) {
+    let itemDiscountTotal = 0;
+    items.forEach((item: any) => {
+      try {
+        const raw = item.discount_json || item.discount;
+        if (!raw) return;
+        const discount = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (discount && Number(discount.value || 0) > 0) {
           hasItemDiscount = true;
           const itemPrice = (item.price || 0) * (item.quantity || 1);
-          if (discount.mode === 'percent') {
-            itemDiscountTotal += itemPrice * (discount.value / 100);
+          if (String(discount.mode).toLowerCase() === 'percent') {
+            itemDiscountTotal += itemPrice * (Number(discount.value || 0) / 100);
           } else {
             itemDiscountTotal += Number(discount.value || 0);
           }
         }
+      } catch {
+        // ignore malformed discount json
       }
     });
     itemDiscountTotal = Number(itemDiscountTotal.toFixed(2));
-    
-    let adjustments = orderListSelectedOrder?.adjustments || [];
-    if (orderListSelectedOrder?.adjustments_json) {
+
+    // Order-level adjustments / promotions
+    let adjustments = (orderListSelectedOrder as any)?.adjustments || [];
+    if ((orderListSelectedOrder as any)?.adjustments_json) {
       try {
-        const parsed = typeof orderListSelectedOrder.adjustments_json === 'string' ? JSON.parse(orderListSelectedOrder.adjustments_json) : orderListSelectedOrder.adjustments_json;
+        const parsed =
+          typeof (orderListSelectedOrder as any).adjustments_json === 'string'
+            ? JSON.parse((orderListSelectedOrder as any).adjustments_json)
+            : (orderListSelectedOrder as any).adjustments_json;
         if (Array.isArray(parsed)) adjustments = [...adjustments, ...parsed];
-      } catch (e) { /* ignore */ }
+      } catch {
+        // ignore
+      }
     }
-    
-    const adjustmentDiscountTotal = adjustments
-      .filter((a: any) => ['DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT'].includes(String(a.kind).toUpperCase()))
-      .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || a.amountApplied || a.value || 0)), 0);
-    
-    const discountTotal = itemDiscountTotal + adjustmentDiscountTotal;
-    const subtotalAfterDiscount = subtotal - discountTotal;
-    const storedTotal = Number(orderListSelectedOrder?.total || 0);
-    const calculatedTax = storedTotal > 0 ? Math.max(0, storedTotal - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
-    const tax = calculatedTax;
-    const total = storedTotal || (subtotalAfterDiscount + tax);
-    const promotionLabel = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
+
+    const adjustmentDiscountTotal = (Array.isArray(adjustments) ? adjustments : [])
+      .filter((a: any) => ['DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT'].includes(String(a?.kind || '').toUpperCase()))
+      .reduce((sum: number, a: any) => sum + Math.abs(Number(a?.amount_applied || a?.amountApplied || a?.value || 0)), 0);
+
+    const discountTotal = Number((itemDiscountTotal + adjustmentDiscountTotal).toFixed(2));
+    const subtotalAfterDiscount = Math.max(0, Number((subtotal - discountTotal).toFixed(2)));
+
+    // Tax: 1) stored order tax (pro-rated by discount) → 2) item taxDetails → 3) default 5%
+    const storedOrderTax = Number((orderListSelectedOrder as any)?.tax || 0);
+    let tax = 0;
+    if (storedOrderTax > 0) {
+      const discountRatio = subtotal > 0 ? subtotalAfterDiscount / subtotal : 1;
+      tax = Number((storedOrderTax * discountRatio).toFixed(2));
+    } else {
+      let itemTaxTotal = 0;
+      items.forEach((item: any) => {
+        const itemTotal = (item.price || 0) * (item.quantity || 1);
+        const discountRatio = subtotal > 0 ? subtotalAfterDiscount / subtotal : 1;
+        const adjustedItemTotal = itemTotal * discountRatio;
+
+        let taxDetails: any[] = [];
+        if (Array.isArray(item.taxDetails) && item.taxDetails.length > 0) {
+          taxDetails = item.taxDetails;
+        } else if (item.tax_details) {
+          try {
+            taxDetails = typeof item.tax_details === 'string' ? JSON.parse(item.tax_details) : item.tax_details;
+          } catch {
+            taxDetails = [];
+          }
+        }
+
+        if (taxDetails.length > 0) {
+          taxDetails.forEach((td: any) => {
+            const rate = Number(td?.rate || 0);
+            itemTaxTotal += adjustedItemTotal * (rate / 100);
+          });
+        } else if (item.taxRate) {
+          itemTaxTotal += adjustedItemTotal * Number(item.taxRate || 0);
+        } else {
+          itemTaxTotal += adjustedItemTotal * 0.05; // default 5%
+        }
+      });
+      tax = Number(itemTaxTotal.toFixed(2));
+    }
+
+    const total = Number((subtotalAfterDiscount + tax).toFixed(2));
+    const promotionLabel = (Array.isArray(adjustments) ? adjustments : []).find(
+      (a: any) => String(a?.kind || '').toUpperCase() === 'PROMOTION',
+    )?.label || null;
     const discountLabel = hasItemDiscount ? 'Item Discount' : (promotionLabel || 'Discount');
-    
+
     return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName: discountLabel };
   };
+
+  // Add handleOrderListSelectOrder here if missing
+  const handleOrderListSelectOrder = async (order: any) => {
+    setOrderListSelectedOrder(order);
+    try {
+      const response = await fetch(`${API_URL}/orders/${order.id}`);
+      const data = await response.json();
+      if (data.items) {
+        setOrderListSelectedItems(data.items);
+      }
+    } catch (e) {
+      console.error('Failed to load order details:', e);
+    }
+  };
+  
+  // End of Order History Functions
+  const isOrderPaidForOrderList = (order: any): boolean => {
+    const status = (order?.status || '').toString().toLowerCase();
+    const paymentStatus = (order?.paymentStatus || '').toString().toLowerCase();
+    return (
+      status === 'paid' ||
+      status === 'closed' ||
+      status === 'completed' ||
+      status === 'refunded' ||
+      paymentStatus === 'paid' ||
+      paymentStatus === 'completed' ||
+      order?.paid === true
+    );
+  };
+
+  const fetchRefundTaxRateForOrderList = async () => {
+    try {
+      const taxResponse = await fetch(`${API_URL}/taxes`);
+      const taxes = await taxResponse.json();
+      if (Array.isArray(taxes) && taxes.length > 0) {
+        const activeTaxes = taxes.filter((t: any) => !t.is_deleted);
+        if (activeTaxes.length > 0) {
+          const firstTax = activeTaxes[0];
+          const rate = parseFloat(firstTax.rate) || 0;
+          const finalRate = rate > 1 ? rate / 100 : rate;
+          setOrderListRefundTaxRate(finalRate || 0.05);
+          return;
+        }
+      }
+      setOrderListRefundTaxRate(0.05);
+    } catch (e) {
+      console.error('Failed to fetch tax rate (refund):', e);
+      setOrderListRefundTaxRate(0.05);
+    }
+  };
+
+  const verifyRefundPinForOrderList = async (pin: string): Promise<{ valid: boolean; employeeName?: string }> => {
+    try {
+      const response = await fetch(`${API_URL}/work-schedule/employees`);
+      const data = await response.json();
+      const employees = data?.success ? data.employees : (Array.isArray(data) ? data : []);
+
+      if (Array.isArray(employees)) {
+        const employee = employees.find((emp: any) => {
+          const empPin = String(emp?.pin || '');
+          const inputPin = String(pin || '');
+          const empStatus = (emp?.status || '').toString().toLowerCase();
+          return empPin === inputPin && empStatus === 'active';
+        });
+
+        if (employee) {
+          const role = (employee?.role || '').toString().toLowerCase();
+          const isAuthorized = role.includes('manager') || role.includes('owner') || role.includes('admin');
+          if (isAuthorized) {
+            const employeeName =
+              employee.name ||
+              `${employee.firstName || employee.first_name || ''} ${employee.lastName || employee.last_name || ''}`.trim();
+            return { valid: true, employeeName };
+          }
+        }
+      }
+      return { valid: false };
+    } catch (error) {
+      console.error('Refund PIN verification failed:', error);
+      return { valid: false };
+    }
+  };
+
+  const openRefundForOrderList = async (order: any) => {
+    if (!order) return;
+    const isPaid = isOrderPaidForOrderList(order);
+    if (!isPaid) {
+      console.warn('[Order History Refund] Only paid orders can be refunded.');
+      return;
+    }
+
+    setOrderListRefundError('');
+    setOrderListRefundResult(null);
+    setOrderListRefundReason('');
+    setOrderListRefundGiftCardNumber('');
+    setOrderListRefundSelectedItems({});
+    setOrderListRefundDetails(null);
+    setShowOrderListRefundModal(true);
+    setOrderListRefundLoading(true);
+
+    await fetchRefundTaxRateForOrderList();
+
+    try {
+      const response = await fetch(`${API_URL}/refunds/order/${encodeURIComponent(order.id)}`);
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to load refund details');
+      }
+
+      setOrderListRefundDetails(data);
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      const allItems: Record<number, number> = {};
+      items.forEach((item: any) => {
+        const unitPrice = Number(item.unit_price ?? item.price ?? 0);
+        const maxQty = Number(item.refundable_quantity ?? 0);
+        if (unitPrice > 0 && maxQty > 0) {
+          allItems[Number(item.id)] = maxQty;
+        }
+      });
+      setOrderListRefundSelectedItems(allItems);
+
+      const payments = Array.isArray(data.payments) ? data.payments : [];
+      const firstPaymentMethod = (payments[0]?.method || '').toString().toUpperCase();
+      const isGift = firstPaymentMethod.includes('GIFT');
+      if (isGift) {
+        const giftRef = payments.find((p: any) => (p?.method || '').toString().toUpperCase().includes('GIFT'))?.ref;
+        if (giftRef) setOrderListRefundGiftCardNumber(String(giftRef));
+      }
+    } catch (e: any) {
+      console.error('Failed to open refund (order list):', e);
+      setOrderListRefundError(e?.message || 'Failed to open refund');
+    } finally {
+      setOrderListRefundLoading(false);
+    }
+  };
+
+  const closeRefundForOrderList = () => {
+    setShowOrderListRefundModal(false);
+    setShowOrderListRefundPinModal(false);
+    setOrderListRefundPinLoading(false);
+    setOrderListRefundPinError('');
+  };
+
+  const openPaymentModalForOrderId = async (orderId: number, afterOpen?: () => void) => {
+    try {
+      const res = await fetch(`${API_URL}/orders/${encodeURIComponent(orderId)}`);
+      if (!res.ok) throw new Error('Failed to load order');
+      const json = await res.json();
+      const items = Array.isArray(json.items) ? json.items : [];
+
+      setOrderItems(
+        items.map((it: any) => ({
+          id: it.item_id?.toString() || it.id?.toString() || Math.random().toString(),
+          name: it.name,
+          quantity: it.quantity || 1,
+          price: it.price || 0,
+          totalPrice: it.price || 0,
+          type: Number(it.price || 0) < 0 ? 'discount' : 'item',
+          guestNumber: typeof it.guest_number === 'number' && it.guest_number > 0 ? it.guest_number : 1,
+          modifiers: (() => {
+            try {
+              return JSON.parse(it.modifiers_json || '[]');
+            } catch {
+              return [];
+            }
+          })(),
+          memo: (() => {
+            try {
+              return it.memo_json ? JSON.parse(it.memo_json) : undefined;
+            } catch {
+              return undefined;
+            }
+          })(),
+          discount: (() => {
+            try {
+              return it.discount_json ? JSON.parse(it.discount_json) : undefined;
+            } catch {
+              return undefined;
+            }
+          })(),
+          splitDenominator: typeof it.split_denominator === 'number' && it.split_denominator > 0 ? it.split_denominator : undefined,
+          orderLineId: it.order_line_id || undefined,
+        })),
+      );
+
+      savedOrderIdRef.current = orderId;
+      if (afterOpen) afterOpen();
+      setShowPaymentModal(true);
+    } catch (e) {
+      console.error('Failed to load order for payment:', e);
+      alert('Failed to load order. Please try again.');
+    }
+  };
+
+  const toggleOrderListRefundItem = (itemId: number, maxQty: number) => {
+    setOrderListRefundSelectedItems(prev => {
+      const next = { ...prev };
+      if (next[itemId]) delete next[itemId];
+      else next[itemId] = maxQty;
+      return next;
+    });
+  };
+
+  const updateOrderListRefundItemQty = (itemId: number, qty: number) => {
+    setOrderListRefundSelectedItems(prev => {
+      const next = { ...prev };
+      if (qty <= 0) delete next[itemId];
+      else next[itemId] = qty;
+      return next;
+    });
+  };
+
+  const calculateOrderListRefundTotals = () => {
+    const details = orderListRefundDetails;
+    const itemsSrc = Array.isArray(details?.items) ? details.items : [];
+    const refundableAmount = Number(details?.refundableAmount ?? details?.refundable_amount ?? 0);
+
+    let selectedSubtotal = 0;
+    const items: any[] = [];
+    itemsSrc.forEach((item: any) => {
+      const selectedQty = Number(orderListRefundSelectedItems[Number(item.id)] || 0);
+      if (selectedQty <= 0) return;
+      const unitPrice = Number(item.unit_price ?? item.price ?? 0);
+      if (unitPrice <= 0) return;
+      const lineTotal = unitPrice * selectedQty;
+      selectedSubtotal += lineTotal;
+      items.push({
+        orderItemId: Number(item.id),
+        itemName: item.name || item.item_name || 'Item',
+        quantity: selectedQty,
+        unitPrice,
+        totalPrice: lineTotal,
+        tax: 0,
+      });
+    });
+
+    const totalItemsSubtotal = itemsSrc.reduce((sum: number, item: any) => {
+      const unitPrice = Number(item.unit_price ?? item.price ?? 0);
+      const qty = Number(item.quantity ?? 1);
+      return sum + (unitPrice > 0 ? unitPrice * qty : 0);
+    }, 0);
+
+    const proportionalRefund = totalItemsSubtotal > 0 ? (selectedSubtotal / totalItemsSubtotal) * refundableAmount : 0;
+    const taxRate = Number(orderListRefundTaxRate || 0.05);
+    const subtotal = proportionalRefund / (1 + taxRate);
+    const tax = proportionalRefund - subtotal;
+    const total = proportionalRefund;
+
+    if (selectedSubtotal > 0) {
+      items.forEach((it: any) => {
+        it.tax = (it.totalPrice / selectedSubtotal) * tax;
+      });
+    }
+
+    return {
+      subtotal: Number(subtotal.toFixed(2)),
+      tax: Number(tax.toFixed(2)),
+      total: Number(total.toFixed(2)),
+      items,
+      refundableAmount: Number(refundableAmount.toFixed(2)),
+    };
+  };
+
+  const printRefundReceiptForOrderList = async (refundData: any, items: any[], refundedBy: string) => {
+    try {
+      const receiptLines = [
+        '========================================',
+        '            REFUND RECEIPT',
+        '========================================',
+        '',
+        `Date: ${new Date().toLocaleString()}`,
+        `Original Order: #${refundData.original_order_number || refundData.originalOrderNumber || ''}`,
+        `Refund ID: #${refundData.id || ''}`,
+        `Processed by: ${refundedBy || refundData.refunded_by || refundData.refundedBy || ''}`,
+        '',
+        '----------------------------------------',
+        'REFUNDED ITEMS:',
+        '----------------------------------------',
+      ];
+
+      if (Array.isArray(items) && items.length > 0) {
+        items.forEach((item: any) => {
+          receiptLines.push(`${item.itemName || item.item_name || ''}`);
+          receiptLines.push(`  ${item.quantity} x $${Number(item.unitPrice || item.unit_price || 0).toFixed(2)} = $${Number(item.totalPrice || item.total_price || 0).toFixed(2)}`);
+        });
+      }
+
+      receiptLines.push('----------------------------------------');
+      receiptLines.push(`Subtotal:        $${Number(refundData.subtotal || 0).toFixed(2)}`);
+      receiptLines.push(`Tax Refund:      $${Number(refundData.tax || 0).toFixed(2)}`);
+      receiptLines.push('========================================');
+      receiptLines.push(`TOTAL REFUND:    $${Number(refundData.total || 0).toFixed(2)}`);
+      receiptLines.push('========================================');
+      receiptLines.push(`Payment Method: ${refundData.payment_method || refundData.paymentMethod || ''}`);
+      if (refundData.reason) receiptLines.push(`Reason: ${refundData.reason}`);
+      receiptLines.push('');
+      receiptLines.push('========================================');
+
+      await fetch(`${API_URL}/printers/print-receipt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lines: receiptLines }),
+      });
+    } catch (e) {
+      console.error('Failed to print refund receipt:', e);
+    }
+  };
+
+  const submitRefundWithPinForOrderList = async (pin: string) => {
+    setOrderListRefundPinLoading(true);
+    setOrderListRefundPinError('');
+
+    try {
+      const pinResult = await verifyRefundPinForOrderList(pin);
+      if (!pinResult.valid) {
+        setOrderListRefundPinError('Invalid PIN');
+        return;
+      }
+
+      const details = orderListRefundDetails;
+      if (!details?.order) {
+        setOrderListRefundPinError('Refund data not loaded');
+        return;
+      }
+
+      const payments = Array.isArray(details.payments) ? details.payments : [];
+      const paymentMethod = payments.length > 0 ? payments[0].method : 'CASH';
+      const normalizedMethod = (paymentMethod || '').toString().toUpperCase();
+      const isGift = normalizedMethod.includes('GIFT');
+      if (isGift && (!orderListRefundGiftCardNumber || orderListRefundGiftCardNumber.length < 4)) {
+        setOrderListRefundPinError('Gift card number required');
+        return;
+      }
+
+      const { subtotal, tax, total, items, refundableAmount } = calculateOrderListRefundTotals();
+      if (total <= 0) {
+        setOrderListRefundPinError('Please select items to refund');
+        return;
+      }
+      if (refundableAmount > 0 && total > refundableAmount + 0.01) {
+        setOrderListRefundPinError('Refund exceeds refundable amount');
+        return;
+      }
+
+      const refundableItemIds = (Array.isArray(details.items) ? details.items : [])
+        .filter((it: any) => Number(it.refundable_quantity || 0) > 0 && Number(it.unit_price ?? it.price ?? 0) > 0)
+        .map((it: any) => Number(it.id));
+      const selectedCount = Object.keys(orderListRefundSelectedItems).filter(k => Number(orderListRefundSelectedItems[Number(k)]) > 0).length;
+      const refundType = selectedCount === refundableItemIds.length ? 'FULL' : 'PARTIAL';
+
+      const payload = {
+        orderId: Number(details.order.id),
+        refundType,
+        items,
+        subtotal,
+        tax,
+        total,
+        paymentMethod,
+        refundedBy: pinResult.employeeName || 'Manager',
+        refundedByPin: pin,
+        reason: orderListRefundReason || '',
+        giftCardNumber: isGift ? orderListRefundGiftCardNumber : null,
+      };
+
+      const response = await fetch(`${API_URL}/refunds`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!data?.success) {
+        setOrderListRefundPinError(data?.error || 'Refund failed');
+        return;
+      }
+
+      setOrderListRefundResult(data.refund);
+      setShowOrderListRefundPinModal(false);
+      setShowOrderListRefundModal(false);
+
+      await printRefundReceiptForOrderList(
+        { ...data.refund, reason: payload.reason, payment_method: payload.paymentMethod },
+        items,
+        payload.refundedBy,
+      );
+
+      // Refresh order history list and selected order details
+      try {
+        await fetchOrderList(orderListDate);
+        await fetchOrderDetails(Number(details.order.id));
+      } catch {}
+    } catch (e: any) {
+      console.error('Refund failed:', e);
+      setOrderListRefundPinError(e?.message || 'Refund failed');
+    } finally {
+      setOrderListRefundPinLoading(false);
+    }
+  };
+  
+  // Open Price Mode logic
 
   const orderListGetDaysInMonth = (date: Date) => {
     const year = date.getFullYear();
@@ -2408,13 +2990,25 @@ const handleVoidPinClear = useCallback(() => {
       const taxesTotal = subtotal * taxRate;
       const total = subtotal + taxesTotal;
 
+      const billChannelRaw = String(orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const billChannel = billChannelRaw === 'POS' ? 'DINE-IN' : billChannelRaw;
+      const billTableName =
+        (orderListSelectedOrder as any)?.table_name ||
+        (orderListSelectedOrder as any)?.tableName ||
+        '';
+
       await fetch(`${API_URL}/printers/print-bill`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
           billData: {
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: new Date().toISOString(), orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id },
-            orderInfo: { channel: orderListSelectedOrder.order_type || 'POS', table: orderListSelectedOrder.table_id || undefined },
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: new Date().toISOString(), orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : orderListSelectedOrder.id },
+            orderInfo: {
+              channel: billChannel,
+              table: billTableName || undefined,
+              tableName: billTableName || undefined,
+              tableId: (orderListSelectedOrder as any)?.table_id || undefined
+            },
             guestSections: Object.keys(byGuest).sort((a, b) => Number(a) - Number(b)).map(k => ({ guestNumber: Number(k), items: byGuest[Number(k)] })),
             subtotal, adjustments: [], taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxesTotal }], taxesTotal, total,
             footer: { message: 'Thank you!' }
@@ -2425,54 +3019,177 @@ const handleVoidPinClear = useCallback(() => {
       console.log('Bill printed successfully');
     } catch (error: any) {
       console.error('Print bill error:', error);
-      alert(`Print failed: ${error.message}`);
+      console.error('[Order History Bill] Print failed:', error?.message || error);
     }
   };
 
   const handleOrderListPrintKitchen = async () => {
-    if (!orderListSelectedOrder || orderListSelectedItems.length === 0) return;
     try {
-      const printItems = orderListSelectedItems.map((item: any) => {
-        let modifiers: any[] = [];
-        if (item.modifiers_json) {
+      if (!orderListSelectedOrder) return;
+
+      // If user clicks Reprint before details load, fetch items on-demand.
+      let itemsForPrint: any[] = Array.isArray(orderListSelectedItems) ? orderListSelectedItems : [];
+      const hasAnyPrinterRouting = (arr: any[]) => {
+        try {
+          return (arr || []).some((it: any) => {
+            if (Array.isArray(it?.printerGroupIds) && it.printerGroupIds.length > 0) return true;
+            if (Array.isArray(it?.printer_groups) && it.printer_groups.length > 0) return true;
+            if (it?.printerGroupId != null) return true;
+            if (it?.printer_group_id != null) return true;
+            return false;
+          });
+        } catch {
+          return false;
+        }
+      };
+
+      // If we have no items OR items exist but have no routing info, refetch full order details.
+      if (itemsForPrint.length === 0 || !hasAnyPrinterRouting(itemsForPrint)) {
+        try {
+          const response = await fetch(`${API_URL}/orders/${orderListSelectedOrder.id}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data?.success) {
+              itemsForPrint = Array.isArray(data?.items) ? data.items : [];
+              // Sync UI state (best effort)
+              try {
+                setOrderListSelectedOrder({ ...(data.order || orderListSelectedOrder), adjustments: data.adjustments || [] });
+                setOrderListSelectedItems(itemsForPrint);
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      if (!itemsForPrint || itemsForPrint.length === 0) {
+        console.warn('[Order History Reprint] No items found to reprint.');
+        return;
+      }
+
+      const printableItems = (itemsForPrint || []).filter((it: any) => {
+        if (it?.type && it.type !== 'item') return false;
+        return true;
+      });
+
+      const printItems = printableItems.map((item: any) => {
+        let modifiers: any[] = Array.isArray(item.modifiers) ? item.modifiers : [];
+        if (modifiers.length === 0 && item.modifiers_json) {
           try {
             const parsed = typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json;
             if (Array.isArray(parsed)) modifiers = parsed;
           } catch {}
         }
+
         let memo: string | null = null;
         if (item.memo_json) {
           try {
             const parsed = typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json;
             memo = parsed?.text || (typeof parsed === 'string' ? parsed : null);
           } catch {}
+        } else if (item.memo && typeof item.memo === 'object') {
+          memo = item.memo?.text || null;
+        } else if (typeof item.memo === 'string') {
+          memo = item.memo;
         }
-        return { id: item.item_id || 0, name: item.name || 'Unknown Item', qty: item.quantity || 1, guestNumber: item.guest_number || 1, modifiers, memo };
+
+        const printerGroupIds =
+          Array.isArray(item.printerGroupIds) ? item.printerGroupIds :
+          Array.isArray(item.printer_groups) ? item.printer_groups :
+          (item.printerGroupId || item.printer_group_id) ? [item.printerGroupId || item.printer_group_id] : [];
+
+        const menuItemId = item.item_id || item.itemId || item.menu_item_id || item.menuItemId || item.id || 0;
+
+        return {
+          id: menuItemId,
+          name: item.short_name || item.name || 'Unknown',
+          qty: item.quantity || item.qty || 1,
+          guestNumber: item.guestNumber || item.guest_number || 1,
+          modifiers,
+          memo,
+          printerGroupIds,
+          togoLabel: !!(item.togoLabel || item.togo_label),
+        };
       });
 
-      const rawOrderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const rawOrderType = String(orderListSelectedOrder.order_type || '').toUpperCase();
+      const orderTypeDisplay =
+        (rawOrderType === 'TOGO' || rawOrderType === 'TAKEOUT' || rawOrderType === 'TO GO' || rawOrderType === 'TO-GO') ? 'TOGO' :
+        rawOrderType === 'ONLINE' ? 'ONLINE' :
+        rawOrderType === 'DELIVERY' ? 'DELIVERY' :
+        rawOrderType === 'PICKUP' ? 'PICKUP' :
+        'DINE-IN';
+
+      const tableNameForPrint =
+        (orderListSelectedOrder as any)?.table_name ||
+        (orderListSelectedOrder as any)?.tableName ||
+        '';
+      const tableIdForPrint =
+        (orderListSelectedOrder as any)?.table_id ||
+        (orderListSelectedOrder as any)?.tableId ||
+        '';
+
+      // pickup time (order history용 best-effort)
+      let pickupTimeStr = '';
+      let pickupMinutes = orderListSelectedOrder.pickup_minutes || 0;
+      try {
+        if (orderListSelectedOrder.ready_time) {
+          const readyDate = new Date(orderListSelectedOrder.ready_time);
+          pickupTimeStr = readyDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        } else if (pickupMinutes > 0 && orderListSelectedOrder.created_at) {
+          const createdAt = new Date(orderListSelectedOrder.created_at);
+          const pickupDate = new Date(createdAt.getTime() + pickupMinutes * 60000);
+          pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        }
+      } catch {}
       const response = await fetch(`${API_URL}/printers/print-order`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
           items: printItems,
           orderInfo: {
-            orderNumber: `#${orderListSelectedOrder.id}`,
-            table: orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '',
-            orderType: rawOrderType,
-            server: orderListSelectedOrder.server_name || ''
+            orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : `#${orderListSelectedOrder.id}`,
+            table: tableNameForPrint || '',
+            tableName: tableNameForPrint || '',
+            tableId: tableIdForPrint || '',
+            server: orderListSelectedOrder.server_name || '',
+            orderType: orderTypeDisplay,
+            channel: orderTypeDisplay,
+            pickupTime: pickupTimeStr || '',
+            pickupMinutes: pickupMinutes,
+            kitchenNote: orderListSelectedOrder.kitchen_note || '',
+            deliveryCompany: (orderListSelectedOrder as any).deliveryCompany || (orderListSelectedOrder as any).delivery_company || '',
+            deliveryOrderNumber: (orderListSelectedOrder as any).deliveryOrderNumber || (orderListSelectedOrder as any).delivery_order_number || '',
+            customerName: orderListSelectedOrder.customer_name || '',
+            customerPhone: orderListSelectedOrder.customer_phone || ''
           },
+          printMode: 'graphic',
           isReprint: true,
+          isAdditionalOrder: false,
           isPaid: orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'PAID'
         }) 
       });
-      const result = await response.json();
-      if (!result.success) {
-        alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
+      let result: any = null;
+      try { result = await response.json(); } catch {}
+      if (!response.ok || !result || result.success !== true) {
+        const msg = (result && (result.error || result.message)) || `HTTP ${response.status}`;
+        console.error('[Order History Reprint] Print failed:', msg);
+        return;
       }
+
+      const results = Array.isArray(result.results) ? result.results : [];
+      if (results.length === 0) {
+        console.warn('[Order History Reprint] No printer was dispatched. Check Printer settings (Kitchen/Groups).');
+        return;
+      }
+
+      const printerNames = results
+        .map((r: any) => r.printerName || r.printer)
+        .filter(Boolean)
+        .join(', ');
+      console.log(`[Order History Reprint] Sent: ${printerNames}`);
     } catch (error: any) {
       console.error('Print kitchen error:', error);
-      alert(`Print failed: ${error.message}`);
+      console.error('[Order History Reprint] Print failed:', error?.message || error);
     }
   };
 
@@ -2857,7 +3574,7 @@ const handleVoidPinClear = useCallback(() => {
     });
   };
 
-  const handleAddPayment = async ({ method, amount, tip }:{ method:string; amount:number; tip:number }) => {
+  const handleAddPayment = async ({ method, amount, tip, change: changeVal = 0 }:{ method:string; amount:number; tip:number; change?: number }) => {
     try {
       // 저장된 주문 id가 없으므로, 우선 OK에서 저장되는 흐름과 달리 Payment에서는 주문 저장 선행 필요할 수 있음
       // 간단히 임시 order 저장 후 id 회수
@@ -2867,10 +3584,16 @@ const handleVoidPinClear = useCallback(() => {
       // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
       const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
       if (!savedOrderIdRef.current) {
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: orderSubtotal, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
+        // Calculate tax before saving
+        const payTotals = computeGuestTotals('ALL');
+        const paySubtotal = Number((payTotals.subtotal || 0).toFixed(2));
+        const payTax = Number(((payTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        const payTotal = Number((paySubtotal + payTax).toFixed(2));
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0) })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
+        savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
         
         // Live Order 실시간 업데이트를 위한 이벤트 발생
         const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -2879,7 +3602,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null, changeAmount: changeVal }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
@@ -2909,7 +3632,7 @@ const handleVoidPinClear = useCallback(() => {
         return;
       } else {
         // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), changeAmount: changeVal }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
@@ -2954,7 +3677,7 @@ const handleVoidPinClear = useCallback(() => {
               const guestReceiptData = {
                 header: {
                   title: '*** RECEIPT ***',  // 명시적으로 RECEIPT 타이틀 추가
-                  orderNumber: savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`,
+                  orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : `ORD-${Date.now()}`),
                   channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
                   tableName: (location.state as any)?.tableName || resolvedTableName || '',
                   serverName: selectedServer?.name || '',
@@ -3103,11 +3826,11 @@ const handleVoidPinClear = useCallback(() => {
         return;
       }
 
-      // 모든 게스트 결제가 완료된 경우에만 테이블 상태를 Preparing으로 변경
+      // 모든 게스트 결제가 완료된 경우: 테이블 상태를 Available로 변경 (Preparing 제거)
       try {
         if (tableIdForMap) {
-          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Preparing' }) });
-          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() })); } catch {}
+          await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' }) });
+          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
         }
       } catch {}
 
@@ -3205,9 +3928,25 @@ const handleVoidPinClear = useCallback(() => {
           }
         }
         
+        // PaymentModal discount (결제 시 적용된 할인)
+        const pmDiscountQsr = paymentCompleteData?.discount;
+        let qsrFinalTaxLines = totals.taxLines || [];
+        let qsrFinalTaxTotal = taxTotal;
+        let qsrFinalTotal = expectedGrand;
+
+        if (pmDiscountQsr && pmDiscountQsr.percent > 0) {
+          receiptAdjustments.push({
+            label: `Discount (${pmDiscountQsr.percent}%)`,
+            amount: -Number(pmDiscountQsr.amount.toFixed(2))
+          });
+          qsrFinalTaxLines = pmDiscountQsr.taxLines.map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+          qsrFinalTaxTotal = Number(pmDiscountQsr.taxesTotal.toFixed(2));
+          qsrFinalTotal = Number((pmDiscountQsr.discountedSubtotal + pmDiscountQsr.taxesTotal).toFixed(2));
+        }
+
         const receiptData = {
           header: {
-            orderNumber: orderId || '',
+            orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (orderId || ''),
             channel: orderType || 'Dine-in',
             tableName: resolvedTableName || '',
             serverName: selectedServer?.name || ''
@@ -3243,9 +3982,9 @@ const handleVoidPinClear = useCallback(() => {
           guestSections,
           subtotal: baseSubtotal,
           adjustments: receiptAdjustments,
-          taxLines: totals.taxLines || [],
-          taxesTotal: taxTotal,
-          total: expectedGrand,
+          taxLines: qsrFinalTaxLines,
+          taxesTotal: qsrFinalTaxTotal,
+          total: qsrFinalTotal,
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
             amount: p.amount || 0
@@ -3280,135 +4019,34 @@ const handleVoidPinClear = useCallback(() => {
     if (isQsrMode) {
       const qsrType = (qsrOrderType || 'forhere').toLowerCase();
       
-      // 중복 출력 방지 체크
-      if (receiptPrintedRef.current) {
-        console.log('⚠️ QSR: Print already completed, skipping all prints');
-      } else {
-        receiptPrintedRef.current = true; // 출력 시작 전에 플래그 설정
-      
       if (qsrType === 'pickup') {
-        // Pickup: Kitchen Ticket 1장 (UNPAID) + Bill 1장
-        try {
-          console.log('🍳 QSR Pickup: Printing Kitchen Ticket (UNPAID)...');
-          await printKitchenOrders(false, false); // isPaid: false for UNPAID
-          console.log('✅ QSR Pickup: Kitchen Ticket printed (1 copy)');
-        } catch (err) {
-          console.error('Kitchen ticket print failed:', err);
-        }
-        
-        try {
-          console.log('🧾 QSR Pickup: Printing Bill...');
-          const billData = buildBillDataForPrint({
-            orderNumber: String(savedOrderIdRef.current || ''),
-            channel: 'PICKUP',
-            tableName: qsrCustomerName || 'PICKUP',
-            serverName: selectedServer?.name || ''
-          });
-          
-          await fetch(`${API_URL}/printers/print-bill`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ billData, copies: 1 })
-          });
-          console.log('✅ QSR Pickup: Bill printed (1 copy)');
-        } catch (billErr) {
-          console.error('QSR Pickup Bill print failed:', billErr);
-        }
-      } else {
-        // For Here/Togo: Kitchen Ticket 1장 + Receipt 2장 + Cash Drawer 열기
-        
-        // 1. Kitchen Ticket 1장 출력
-        try {
-          console.log('🍳 QSR: Printing Kitchen Ticket (1 copy)...');
-          await printKitchenOrders(false, true);
-          console.log('✅ QSR: Kitchen Ticket printed (1 copy)');
-        } catch (err) {
-          console.error('Kitchen ticket print failed:', err);
-        }
-        
-        // 2. Receipt 출력 (사용자 선택에 따라)
-        if (receiptCount > 0) {
+        if (!receiptPrintedRef.current) {
+          receiptPrintedRef.current = true;
           try {
-            console.log(`🧾 QSR: Printing Receipt (${receiptCount} copies)...`);
-            const qsrItems = (orderItems || []).filter(it => it.type === 'item');
-            const qsrSubtotal = qsrItems.reduce((sum, it) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
-            const qsrTaxLines = computeGuestTotals('ALL').taxLines || [];
-            const qsrTaxTotal = qsrTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-            const qsrTotal = qsrSubtotal + qsrTaxTotal;
-            
-            const qsrReceiptData = {
-              storeName: '',
-              orderNumber: savedOrderIdRef.current || '',
-              orderType: qsrOrderType?.toUpperCase() || 'FOR HERE',
-              channel: qsrOrderType?.toUpperCase() || 'FOR HERE',
-              tableName: qsrCustomerName || '',
-              customerName: orderCustomerInfo?.name || qsrCustomerName || '',
-              customerPhone: orderCustomerInfo?.phone || '',
-              pickupTime: orderPickupInfo?.readyTimeLabel || '',
-              serverName: selectedServer?.name || '',
-              items: qsrItems.map(item => ({
-                name: item.name,
-                quantity: item.quantity || 1,
-                price: item.price || 0,
-                totalPrice: (item.price || 0) * (item.quantity || 1),
-                modifiers: item.modifiers || [],
-                memo: item.memo
-              })),
-              guestSections: [{
-                guestNumber: 1,
-                items: qsrItems.map(item => ({
-                  name: item.name,
-                  quantity: item.quantity || 1,
-                  price: item.price || 0,
-                  totalPrice: (item.price || 0) * (item.quantity || 1),
-                  modifiers: item.modifiers || [],
-                  memo: item.memo
-                }))
-              }],
-              subtotal: qsrSubtotal,
-              taxLines: qsrTaxLines,
-              total: qsrTotal,
-              adjustments: [],
-              payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
-              change: 0,
-              footer: { message: 'Thank you!' }
-            };
-            
-            await fetch(`${API_URL}/printers/print-receipt`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ receiptData: qsrReceiptData, copies: receiptCount })
-            });
-            console.log(`✅ QSR: Receipt printed (${receiptCount} copies)`);
-          } catch (receiptErr) {
-            console.error('QSR Receipt print failed:', receiptErr);
+            console.log('🍳 QSR Pickup: Printing Kitchen Ticket (UNPAID)...');
+            await printKitchenOrders(false, false);
+            console.log('✅ QSR Pickup: Kitchen Ticket printed (1 copy)');
+          } catch (err) {
+            console.error('Kitchen ticket print failed:', err);
           }
-        } else {
-          console.log('🧾 QSR: No receipt requested by user');
         }
-        
-        // 3. Cash Drawer 열기 (Windows Raw Printing API 사용)
-        try {
-          console.log('💰 QSR: Opening cash drawer...');
-          await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
-          console.log('✅ QSR: Cash drawer opened');
-        } catch (drawerErr) {
-          console.error('QSR Cash drawer open failed:', drawerErr);
-        }
+        setShowPaymentModal(false);
+        setOrderItems([]);
+        setSessionPayments([]);
+        setPaymentsByGuest({});
+        setQsrCustomerName('');
+        setQsrOrderType('forhere');
+        setQsrDeliveryChannel('');
+        setQsrDeliveryOrderNumber('');
+        savedOrderIdRef.current = null;
+        receiptPrintedRef.current = false;
+        console.log('✅ QSR Pickup: Payment completed, ready for new order');
+        return;
       }
-      } // End of duplicate print guard
-      
-      setShowPaymentModal(false);
-      setOrderItems([]);
-      setSessionPayments([]);
-      setPaymentsByGuest({});
-      setQsrCustomerName('');
-      setQsrOrderType('forhere');
-      setQsrDeliveryChannel('');
-      setQsrDeliveryOrderNumber('');
-      savedOrderIdRef.current = null;
-      receiptPrintedRef.current = false;
-      console.log('✅ QSR: Payment completed, ready for new order');
+      // Eat In / Togo / Delivery / Online:
+      // Kitchen Ticket은 여기서 출력, Receipt과 상태 초기화는 handlePaymentCompleteClose에서 처리
+      // (handlePaymentCompleteClose 시점에 orderItems가 필요하므로 여기서 초기화하면 안 됨)
+      console.log(`🍳 QSR ${qsrType}: handleCompletePayment done, waiting for PaymentCompleteModal`);
       return;
     }
     
@@ -3420,7 +4058,7 @@ const handleVoidPinClear = useCallback(() => {
   };
 
   // Payment Complete Modal에서 Receipt 버튼 클릭 시 처리
-  const handlePaymentCompleteClose = async (receiptCount: number) => {
+  const handlePaymentCompleteClose = async (receiptCount: number, tipOverride?: number) => {
     try {
       console.log(`💳 Payment Complete: Receipt count = ${receiptCount}`);
       
@@ -3437,11 +4075,18 @@ const handleVoidPinClear = useCallback(() => {
         console.warn('Cash drawer open failed (ignored):', drawerErr);
       }
       
-      // 2. Kitchen Ticket 1장 출력 (항상 - No Receipt 선택해도)
+      // 2. Kitchen Ticket 출력
       try {
-        console.log('🍳 Printing Kitchen Ticket (1 copy)...');
-        await printKitchenOrders(false, true);  // isPaid: true (결제 완료)
-        console.log('✅ Kitchen Ticket printed (1 copy)');
+        if (isQsrMode) {
+          console.log('🍳 QSR: Printing Kitchen Ticket (PAID)...');
+          const kitchenSnapshot = (orderItems || []).map(it => ({ ...it, orderLineId: undefined }));
+          await printKitchenOrders(false, true, kitchenSnapshot);
+          console.log('✅ QSR: Kitchen Ticket printed');
+        } else {
+          console.log('🍳 Printing Kitchen Ticket (1 copy)...');
+          await printKitchenOrders(false, true);
+          console.log('✅ Kitchen Ticket printed (1 copy)');
+        }
       } catch (kitchenErr) {
         console.warn('Kitchen ticket print failed (ignored):', kitchenErr);
       }
@@ -3457,11 +4102,27 @@ const handleVoidPinClear = useCallback(() => {
           const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
           const grandTotal = Number((baseSubtotal + taxTotal).toFixed(2));
           
+          const pmDiscQsr2 = paymentCompleteData?.discount;
+          const qsr2Adjustments: Array<{ label: string; amount: number }> = [];
+          let qsr2TaxLines = totals.taxLines || [];
+          let qsr2TaxTotal = taxTotal;
+          let qsr2Total = grandTotal;
+
+          if (pmDiscQsr2 && pmDiscQsr2.percent > 0) {
+            qsr2Adjustments.push({
+              label: `Discount (${pmDiscQsr2.percent}%)`,
+              amount: -Number(pmDiscQsr2.amount.toFixed(2))
+            });
+            qsr2TaxLines = pmDiscQsr2.taxLines.map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+            qsr2TaxTotal = Number(pmDiscQsr2.taxesTotal.toFixed(2));
+            qsr2Total = Number((pmDiscQsr2.discountedSubtotal + pmDiscQsr2.taxesTotal).toFixed(2));
+          }
+
           const receiptData = {
             storeName: '',
-            orderNumber: orderId || '',
-            orderType: isQsrMode ? (qsrOrderType?.toUpperCase() || 'FOR HERE') : (orderType || 'Dine-in'),
-            channel: isQsrMode ? (qsrOrderType?.toUpperCase() || 'FOR HERE') : (orderType || 'Dine-in'),
+            orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (orderId || ''),
+            orderType: isQsrMode ? (qsrOrderType?.toUpperCase() || 'EAT IN') : (orderType || 'Dine-in'),
+            channel: isQsrMode ? (qsrOrderType?.toUpperCase() || 'EAT IN') : (orderType || 'Dine-in'),
             tableName: isQsrMode ? (qsrCustomerName || '') : (resolvedTableName || ''),
             customerName: orderCustomerInfo?.name || qsrCustomerName || '',
             customerPhone: orderCustomerInfo?.phone || '',
@@ -3487,10 +4148,17 @@ const handleVoidPinClear = useCallback(() => {
               }))
             }],
             subtotal: baseSubtotal,
-            taxLines: totals.taxLines || [],
-            total: grandTotal,
-            adjustments: [],
-            payments: sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
+            taxLines: qsr2TaxLines,
+            total: qsr2Total,
+            adjustments: qsr2Adjustments,
+            payments: (() => {
+              const base = sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+              if (typeof tipOverride === 'number' && tipOverride > 0 && !base.some(p => p.tip > 0)) {
+                base.push({ method: 'CASH', amount: tipOverride, tip: tipOverride });
+              }
+              return base;
+            })(),
+            tip: (typeof tipOverride === 'number' && tipOverride > 0) ? tipOverride : sessionPayments.reduce((sum, p) => sum + (p.tip || 0), 0),
             change: paymentCompleteData?.change || 0,
             footer: { message: 'Thank you!' }
           };
@@ -3508,15 +4176,15 @@ const handleVoidPinClear = useCallback(() => {
         console.log('🧾 No receipt requested');
       }
       
-      // 4. 테이블 상태 업데이트 (FSR만)
-      if (!isQsrMode && tableIdForMap) {
+      // 4. 테이블 상태 업데이트 (테이블 주문이면 QSR/FSR 무관)
+      if (tableIdForMap) {
         try {
           await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { 
             method: 'PATCH', 
             headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ status: 'Preparing' }) 
+            body: JSON.stringify({ status: 'Available' }) 
           });
-          localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() }));
+          localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() }));
         } catch {}
       }
       
@@ -3552,7 +4220,10 @@ const handleVoidPinClear = useCallback(() => {
       setSelectedServer(null);
       
       // 9. QSR vs FSR 분기 처리
-      if (isQsrMode) {
+      // 테이블이 연결된 주문이면(테이블 주문) 항상 테이블맵으로 이동
+      if (tableIdForMap) {
+        navigate('/sales');
+      } else if (isQsrMode) {
         // QSR: 상태 리셋하여 새 주문 준비 (주문 페이지에 머무름)
         setOrderItems([]);
         setSessionPayments([]);
@@ -3742,59 +4413,46 @@ useEffect(() => {
     } catch {}
   })();
 }, []);
-  const [modifierColors, setModifierColors] = useState<{ [key: string]: string }>({});
-  const [modifierColorsLoaded, setModifierColorsLoaded] = useState(false);
   const modifierColorsSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const modifierColorsRef = useRef(modifierColors);
+  modifierColorsRef.current = modifierColors;
   
-  // 서버에서 modifierColors 로드
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/layout-settings`);
-        if (res.ok) {
-          const result = await res.json();
-          if (result?.success && result?.data?.modifierColors) {
-            setModifierColors(result.data.modifierColors);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load modifierColors:', err);
-      } finally {
-        setModifierColorsLoaded(true);
+  const saveModifierColorsDirect = useCallback(async (colors: Record<string, string>) => {
+    try {
+      const res = await fetch(`${API_URL}/layout-settings`);
+      if (!res.ok) return;
+      const result = await res.json();
+      const existing = result?.data || {};
+      const payload = { ...existing, modifierColors: colors };
+      const saveRes = await fetch(`${API_URL}/layout-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!saveRes.ok) {
+        console.error('🎨 [Modifier Color] Save failed:', saveRes.status);
       }
-    })();
+    } catch (err) {
+      console.error('Failed to save modifierColors:', err);
+    }
   }, []);
-  
-  // modifierColors 변경 시 서버에 저장 (debounce 적용)
+
   useEffect(() => {
     if (!modifierColorsLoaded) return;
+    if (Object.keys(modifierColors).length === 0) return;
     if (modifierColorsSaveTimeoutRef.current) {
       clearTimeout(modifierColorsSaveTimeoutRef.current);
     }
-    modifierColorsSaveTimeoutRef.current = setTimeout(async () => {
-      try {
-        // 현재 설정을 가져와서 modifierColors만 업데이트
-        const currentRes = await fetch(`${API_URL}/layout-settings`);
-        if (currentRes.ok) {
-          const currentResult = await currentRes.json();
-          const currentSettings = currentResult?.data || {};
-          await fetch(`${API_URL}/layout-settings`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...currentSettings, modifierColors }),
-          });
-        }
-      } catch (err) {
-        console.error('Failed to save modifierColors:', err);
-      }
-    }, 500); // 500ms debounce
+    modifierColorsSaveTimeoutRef.current = setTimeout(() => {
+      saveModifierColorsDirect(modifierColorsRef.current);
+    }, 500);
     return () => {
       if (modifierColorsSaveTimeoutRef.current) {
         clearTimeout(modifierColorsSaveTimeoutRef.current);
       }
     };
-  }, [modifierColors, modifierColorsLoaded]);
-  
+  }, [modifierColors, modifierColorsLoaded, saveModifierColorsDirect]);
+
   const [selectedModifierIdForColor, setSelectedModifierIdForColor] = useState<string | null>(null);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
@@ -4018,8 +4676,50 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
 
   // 선택된 메뉴 아이템 상태
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<string | null>(null);
+  // 주문목록에서 선택한 라인(중간 아이템) 모디파이어 편집 타겟
+  const [modifierEditTargetLineId, setModifierEditTargetLineId] = useState<string | null>(null);
+  const [modifierEditTargetRowIndex, setModifierEditTargetRowIndex] = useState<number | null>(null);
+  const pendingModifierJumpRef = useRef<null | { itemId: string; categoryName: string; selected: { [key: string]: string[] } }>(null);
   // 모디파이어 커스텀 배치: itemId -> 배열(슬롯에 배치된 modifierId들), 빈 슬롯은 'EMPTY:idx'
-  const [modifierLayoutByItem, setModifierLayoutByItem] = useState<{ [itemId: string]: string[] }>({});
+  // DB(layoutSettings)에서 초기값을 로드하고, localStorage는 fallback
+  const modifierLayoutByItem = hookModifierLayout;
+  const setModifierLayoutByItem = hookSetModifierLayout;
+
+  // modifierLayoutByItem 변경 시 서버에 저장 (debounce)
+  const modLayoutSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const modLayoutAutoSaveRef = useRef(modifierLayoutByItem);
+  modLayoutAutoSaveRef.current = modifierLayoutByItem;
+
+  const saveModifierLayoutDirect = useCallback(async (layout: Record<string, string[]>) => {
+    try {
+      const res = await fetch(`${API_URL}/layout-settings`);
+      if (!res.ok) return;
+      const result = await res.json();
+      const existing = result?.data || {};
+      const payload = { ...existing, modifierLayoutByItem: layout };
+      await fetch(`${API_URL}/layout-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!modifierLayoutLoaded) return;
+    if (Object.keys(modifierLayoutByItem).length === 0) return;
+    if (modLayoutSaveTimeoutRef.current) {
+      clearTimeout(modLayoutSaveTimeoutRef.current);
+    }
+    modLayoutSaveTimeoutRef.current = setTimeout(() => {
+      saveModifierLayoutDirect(modLayoutAutoSaveRef.current);
+    }, 800);
+    return () => {
+      if (modLayoutSaveTimeoutRef.current) {
+        clearTimeout(modLayoutSaveTimeoutRef.current);
+      }
+    };
+  }, [modifierLayoutByItem, modifierLayoutLoaded, saveModifierLayoutDirect]);
 
   // 레이아웃 매니저 탭 접기/펼침 상태
   const [panelWidthExpanded, setPanelWidthExpanded] = useState(true);
@@ -4510,12 +5210,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (modifierGroup && modifierGroup.max_selections === 1) {
         newSelectedModifiers[groupId] = [modifierId];
       } else {
-        const index = newSelectedModifiers[groupId].indexOf(modifierId);
-        if (index > -1) {
-          newSelectedModifiers[groupId].splice(index, 1);
+        const cur = Array.isArray(newSelectedModifiers[groupId]) ? [...newSelectedModifiers[groupId]] : [];
+        const maxSel = Number((modifierGroup as any)?.max_selections ?? (modifierGroup as any)?.max_selection ?? 0);
+        const distinctCount = new Set(cur).size;
+        const alreadySelected = cur.includes(modifierId);
+        // Multi-select: clicking again increases count (duplicates mean 2x/3x...)
+        // If max selections is set, enforce it by distinct options (but still allow increasing an already selected modifier).
+        if (!alreadySelected && Number.isFinite(maxSel) && maxSel > 0 && distinctCount >= maxSel) {
+          // ignore
         } else {
-          newSelectedModifiers[groupId].push(modifierId);
+          cur.push(modifierId);
         }
+        newSelectedModifiers[groupId] = cur;
       }
     }
     
@@ -4812,12 +5518,31 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     console.log('📂 [Category Change] Category selected:', selectedCategory, '→ ID:', category.category_id);
     
-    // 현재 선택된 메뉴 아이템 초기화
-    setSelectedMenuItemId(null);
-    setSelectedModifiers({});
-    
-    // 카테고리 모디파이어 로드
-    fetchCategoryModifiers(category.category_id);
+    const pending = pendingModifierJumpRef.current;
+    const hasPending = !!(pending && pending.categoryName === selectedCategory);
+
+    // 일반 카테고리 이동일 때만 초기화 (주문목록 클릭 점프는 유지)
+    if (!hasPending) {
+      setSelectedMenuItemId(null);
+      setSelectedModifiers({});
+      setModifierEditTargetLineId(null);
+      setModifierEditTargetRowIndex(null);
+    }
+
+    (async () => {
+      await fetchCategoryModifiers(category.category_id);
+      const pendingAfter = pendingModifierJumpRef.current;
+      if (pendingAfter && pendingAfter.categoryName === selectedCategory) {
+        pendingModifierJumpRef.current = null;
+        try {
+          setSelectedMenuItemId(pendingAfter.itemId);
+          setSelectedMenuItemIds([pendingAfter.itemId]);
+          setModifierTabExpanded(true);
+          await fetchItemModifiers(pendingAfter.itemId);
+          setSelectedModifiers(pendingAfter.selected || {});
+        } catch {}
+      }
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCategory, categories]);
 
@@ -4947,6 +5672,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       handleMenuItemClickForSoldOut(item);
       return;
     }
+
+    // 주문목록 아이템(중간 라인) 편집 모드 해제: 오른쪽 메뉴를 눌러 추가 주문으로 들어가면 기존 동작 유지
+    setModifierEditTargetLineId(null);
+    setModifierEditTargetRowIndex(null);
+    pendingModifierJumpRef.current = null;
     
     // Bag Fee pseudo item handling
     if (item.id === BAG_FEE_ITEM_ID) {
@@ -5153,13 +5883,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       console.log(baseMsg);
     }
 
-    // 메뉴 아이템을 바로 주문에 추가 (기본 가격으로)
-    // Block adding when active guest is locked (PAID)
+    // 메뉴 아이템을 바로 주문에 추가 (항상 새 행, 수량 합산 없음)
     if (isGuestLocked(activeGuestNumber)) {
       try { alert('Cannot add to a guest that has already paid.'); } catch {}
       return;
     }
-    addToOrder(item);
+    const orderLineId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newOrderItem: OrderItem = {
+      id: item.id,
+      name: item.name,
+      short_name: (item as any).short_name,
+      quantity: 1,
+      price: item.price,
+      modifiers: [],
+      totalPrice: item.price,
+      type: 'item' as const,
+      guestNumber: activeGuestNumber || 1,
+      orderLineId,
+      togoLabel: !!(item as any).togoLabel,
+      ...(Array.isArray((item as any).printer_groups) && (item as any).printer_groups.length > 0
+        ? { printer_groups: (item as any).printer_groups }
+        : {}),
+    };
+    setOrderItems(prev => [...prev, newOrderItem]);
   };
 
   const toggleSelectMenuItem = (itemId: string) => {
@@ -5232,10 +5978,51 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     setSelectedOrderLineId(orderLineId || null);
     setSelectedOrderGuestNumber(typeof guestNum === 'number' ? guestNum : null);
     setSelectedRowIndex(Number.isFinite(rowIndex) ? rowIndex : null);
+    setModifierEditTargetLineId(orderLineId || null);
+    setModifierEditTargetRowIndex(Number.isFinite(rowIndex) ? rowIndex : null);
     // Ensure subsequent menu additions go to the clicked guest
     if (typeof guestNum === 'number') {
       setActiveGuestNumber(guestNum);
     }
+
+    // 주문목록 아이템 클릭 → 오른쪽 카테고리 이동 + 해당 아이템 모디파이어 편집 진입
+    try {
+      const clickedRow: any = (orderItems as any[])[rowIndex];
+      if (!clickedRow || clickedRow.type === 'separator') return;
+      const menuItem = menuItems.find(mi => String(mi.id) === String(itemId));
+      if (!menuItem) return;
+      const categoryName = String((menuItem as any).category || '');
+      if (!categoryName) return;
+
+      const restoreSelected: { [key: string]: string[] } = {};
+      const mods = Array.isArray(clickedRow.modifiers) ? clickedRow.modifiers : [];
+      mods.forEach((m: any) => {
+        const gid = String(m.groupId ?? m.modifier_group_id ?? '');
+        if (!gid || gid.startsWith('__')) return;
+        const ids = Array.isArray(m.modifierIds) ? m.modifierIds : (Array.isArray(m.modifier_ids) ? m.modifier_ids : []);
+        if (!ids || ids.length === 0) return;
+        restoreSelected[gid] = ids.map((x: any) => String(x));
+      });
+
+      const doApply = async () => {
+        try {
+          pendingModifierJumpRef.current = null;
+          setSelectedMenuItemId(String(menuItem.id));
+          setSelectedMenuItemIds([String(menuItem.id)]);
+          setModifierTabExpanded(true);
+          await fetchItemModifiers(String(menuItem.id));
+          setSelectedModifiers(restoreSelected);
+        } catch {}
+      };
+
+      if (selectedCategory === categoryName) {
+        void doApply();
+      } else {
+        pendingModifierJumpRef.current = { itemId: String(menuItem.id), categoryName, selected: restoreSelected };
+        try { setActiveCategoryId(menuItem.category_id ? String(menuItem.category_id) : null); } catch {}
+        setSelectedCategory(categoryName);
+      }
+    } catch {}
   };
 
   const handleEditPriceClick = () => {
@@ -5449,41 +6236,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
 
 
-  // 주문 총액 계산
-  const subtotal = orderItems.reduce((sum, item) => sum + computeOrderItemNetTotal(item), 0);
-  const grossSubtotal = orderItems.reduce((sum, item) => {
-    if (item.type === 'separator') return sum;
-    const memoPrice =
-      item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
-    const perUnit =
-      Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
-    return sum + perUnit * (item.quantity || 1);
-  }, 0);
-  const discountTotal = Math.max(0, Number((grossSubtotal - subtotal).toFixed(2)));
-  // 아이템별 모든 세금 그룹을 적용하여 세금 합산 (옵션2)
-  const taxAmountByName: { [taxName: string]: number } = {};
-  orderItems.forEach((orderItem) => {
-    if (orderItem.type === 'separator') return;
-    const itemKey = orderItem.id?.toString();
-    const itemSubtotal = computeOrderItemNetTotal(orderItem);
-    const itemGroupIds = itemKey && itemTaxGroups[itemKey] ? itemTaxGroups[itemKey] : [];
-    const catId = itemKey ? itemIdToCategoryId[itemKey] : undefined;
-    const catGroupIds = typeof catId === 'number' && categoryTaxGroups[catId] ? categoryTaxGroups[catId] : [];
-    // 아이템 + 카테고리 + 주문행 지정 세금 그룹 통합(중복 제거)
-    const overrideGroupIds = typeof (orderItem as any).taxGroupId === 'number' ? [(orderItem as any).taxGroupId as number] : [];
-    const mergedGroupIds = Array.from(new Set<number>([...itemGroupIds, ...catGroupIds, ...overrideGroupIds]));
-    mergedGroupIds.forEach((gid) => {
-      const taxes = taxGroupIdToTaxes[gid] || [];
-      taxes.forEach((t) => {
-        const delta = itemSubtotal * (t.rate / 100);
-        taxAmountByName[t.name] = (taxAmountByName[t.name] || 0) + delta;
-      });
-    });
-  });
+  // 주문 총액 계산 (단일 계산 모듈 결과를 그대로 사용)
+  const baseSubtotal = Number((pricingAll.totals?.subtotalAfterAllDiscounts || 0).toFixed(2));
+  const grossSubtotal = Number((pricingAll.totals?.grossSubtotal || 0).toFixed(2));
+  const baseTaxLines: { name: string; amount: number }[] = (pricingAll.totals?.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+  const baseTaxesTotal = Number((pricingAll.totals?.taxesTotal || 0).toFixed(2));
+  const baseTotal = Number((pricingAll.totals?.total || 0).toFixed(2));
 
-  const taxLines: { name: string; amount: number }[] = Object.entries(taxAmountByName).map(([name, amount]) => ({ name, amount }));
-  const taxesTotal = taxLines.reduce((sum, t) => sum + t.amount, 0);
-  const total = subtotal + taxesTotal;
+  const togoAdjustments: any[] = [];
+  let togoDiscountAmt = 0;
+  if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+    const dv = Number(togoSettings.discountValue || 0);
+    togoDiscountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+    if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
+  }
+  if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+    const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+    if (feeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+  }
+  const appliedTotals = (togoAdjustments.length > 0)
+    ? applySubtotalAdjustments({ subtotal: baseSubtotal, taxLines: baseTaxLines }, togoAdjustments)
+    : { subtotal: baseSubtotal, taxLines: baseTaxLines, taxesTotal: baseTaxesTotal, total: baseTotal, discountTotal: 0, feeTotal: 0 } as any;
+
+  const subtotal = Number((appliedTotals.subtotal || 0).toFixed(2));
+  const taxLines: { name: string; amount: number }[] = (appliedTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+  const taxesTotal = Number((appliedTotals.taxesTotal || 0).toFixed(2));
+  const total = Number((appliedTotals.total || 0).toFixed(2));
+  const discountTotal = Number(((pricingAll.totals?.itemDiscountTotal || 0) + (pricingAll.totals?.orderDiscountTotal || 0) + (togoDiscountAmt || 0)).toFixed(2));
 
   // HEX 색상의 밝기를 계산하는 함수
   const getHexLuminance = (hex: string): number => {
@@ -5498,11 +6277,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // 선택된 메뉴 아이템의 주문을 모디파이어 정보와 함께 업데이트
   const updateOrderItemWithModifiers = (item: MenuItem) => {
     setOrderItems(prev => {
-      // Guest 별 독립처리: 현재 활성 게스트의 해당 메뉴 아이템만 찾기
-      const existingItemIndex = prev.findIndex(orderItem => 
-        orderItem.id === item.id && 
-        orderItem.guestNumber === activeGuestNumber
-      );
+      // Guest 별 독립처리: 현재 활성 게스트의 해당 메뉴 아이템 중 마지막(가장 최근 추가) 항목 찾기
+      let existingItemIndex = -1;
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].id === item.id && prev[i].guestNumber === activeGuestNumber) {
+          existingItemIndex = i;
+          break;
+        }
+      }
       
       if (existingItemIndex !== -1) {
         // 기존 아이템이 있으면 모디파이어 정보만 업데이트
@@ -5615,11 +6397,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         });
       });
 
-      // Guest 별: 같은 메뉴 라인을 찾음 (시그니처 비교 없이)
-      const existingItemIndex = prev.findIndex(orderItem => 
-        orderItem.id === item.id && 
-        orderItem.guestNumber === activeGuestNumber
-      );
+      // 주문목록 클릭 편집 모드면 해당 라인(중간 아이템)을 우선 업데이트
+      let existingItemIndex = -1;
+      if (modifierEditTargetLineId) {
+        existingItemIndex = prev.findIndex(it => String((it as any).orderLineId || '') === String(modifierEditTargetLineId));
+      }
+      if (existingItemIndex === -1 && modifierEditTargetRowIndex != null) {
+        const idx = Number(modifierEditTargetRowIndex);
+        if (Number.isFinite(idx) && idx >= 0 && idx < prev.length && prev[idx]?.type !== 'separator') {
+          existingItemIndex = idx;
+        }
+      }
+      // 기본 동작: Guest 별 같은 메뉴의 마지막(가장 최근 추가) 라인
+      if (existingItemIndex === -1) {
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].id === item.id && prev[i].guestNumber === activeGuestNumber) {
+            existingItemIndex = i;
+            break;
+          }
+        }
+      }
 
       if (existingItemIndex !== -1) {
         // 기존 아이템 업데이트
@@ -5696,6 +6493,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   useEffect(() => {
     loadLayoutSettings();
   }, [loadLayoutSettings]);
+
+  // Fallback: modifierColors가 로드되지 않았으면 직접 로드
+  useEffect(() => {
+    if (modifierColorsLoaded && Object.keys(modifierColors).length === 0) {
+      (async () => {
+        try {
+          const res = await fetch(`${API_URL}/layout-settings`);
+          if (res.ok) {
+            const result = await res.json();
+            if (result?.success && result?.data?.modifierColors && Object.keys(result.data.modifierColors).length > 0) {
+              setModifierColors(result.data.modifierColors);
+            }
+          }
+        } catch {}
+      })();
+    }
+  }, [modifierColorsLoaded, modifierColors, setModifierColors]);
 
   // resetLayoutSettings is provided by useLayoutSettings hook
 
@@ -5821,11 +6635,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
   const computeDefaultLayout = (entries: Array<{id:string}>, capacity: number) => {
     const ids = entries.map(e => e.id).slice(0, capacity);
-    if (!shouldShowButtonPlaceholders) {
-      return ids;
-    }
-    while (ids.length < capacity) {
-      ids.push(`EMPTY:${ids.length}`);
+    if (shouldShowButtonPlaceholders) {
+      while (ids.length < capacity) {
+        ids.push(`EMPTY:${ids.length}`);
+      }
     }
     return ids;
   };
@@ -5836,20 +6649,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     if (existing && Array.isArray(existing)) {
       for (const val of existing) {
         if (val.startsWith('EMPTY:')) {
-          if (shouldShowButtonPlaceholders) {
-            result.push(val);
-          }
+          result.push(val);
         } else if (availableIds.has(val)) {
           result.push(val);
         }
       }
-      // append any new ids that were not in existing
       Array.from(availableIds).forEach((id) => {
         if (!result.includes(id) && result.length < capacity) {
           result.push(id);
         }
       });
-      // trim or pad to capacity
       if (result.length > capacity) {
         result.length = capacity;
       }
@@ -5858,7 +6667,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           result.push(`EMPTY:${result.length}`);
         }
       }
-      return shouldShowButtonPlaceholders ? result : result.slice(0, capacity);
+      return result.slice(0, capacity);
     }
     return computeDefaultLayout(entries, capacity);
   };
@@ -5869,23 +6678,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   let combinedEntries = getCombinedModifierEntries();
   // Bag Fee is no longer injected into the modifier panel
   const entryMap = new Map(combinedEntries.map(e => [e.id, e]));
-  const currentItemLayout = selectedMenuItemId ? modifierLayoutByItem[selectedMenuItemId] : undefined;
+  const modLayoutKey = selectedMenuItemId || (() => {
+    const cat = categories.find(c => c.name === selectedCategory);
+    return cat ? `__cat_${cat.category_id}` : undefined;
+  })();
+  const currentItemLayout = modLayoutKey ? modifierLayoutByItem[modLayoutKey] : undefined;
   let slotItemIds = sanitizeExistingLayout(currentItemLayout, combinedEntries, capacity);
 
-  // persist layout when dependencies change
+  // persist layout when dependencies change (only after DB load completes)
   useEffect(() => {
     if (!selectedMenuItemId) return;
+    if (!modifierLayoutLoaded) return;
     const sanitized = sanitizeExistingLayout(modifierLayoutByItem[selectedMenuItemId], combinedEntries, capacity);
     if (!modifierLayoutByItem[selectedMenuItemId] || sanitized.join('|') !== (modifierLayoutByItem[selectedMenuItemId] || []).join('|')) {
       setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: sanitized }));
       try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(sanitized)); } catch {}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMenuItemId, layoutSettings.modifierColumns, layoutSettings.modifierRows, selectedItemModifiers]);
+  }, [selectedMenuItemId, modifierLayoutLoaded, layoutSettings.modifierColumns, layoutSettings.modifierRows, selectedItemModifiers]);
 
-  // initialize from localStorage on item change
+  // initialize modifier layout on item change: prefer hook state (from DB), fallback to localStorage
   useEffect(() => {
     if (!selectedMenuItemId) return;
+    if (modifierLayoutByItem[selectedMenuItemId]) return;
     try {
       const raw = localStorage.getItem(getLayoutKey(selectedMenuItemId));
       if (raw) {
@@ -5895,25 +6710,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         }
       }
     } catch {}
-  }, [selectedMenuItemId]);
+  }, [selectedMenuItemId, modifierLayoutByItem]);
 
   const handleModifierDragEnd = (event: any) => {
     const { active, over } = event;
-    if (!selectedMenuItemId || !over || active.id === over.id) return;
-    const current = modifierLayoutByItem[selectedMenuItemId] || slotItemIds;
-    const oldIndex = current.indexOf(active.id);
-    const newIndex = current.indexOf(over.id);
+    const itemId = modDragItemIdRef.current || selectedMenuItemId;
+    if (!itemId || !over || active.id === over.id) return;
+    const current = (modifierLayoutByItem[itemId] || slotItemIds).map(String);
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    const oldIndex = current.indexOf(activeId);
+    const newIndex = current.indexOf(overId);
     if (oldIndex === -1 || newIndex === -1) return;
     const reordered = arrayMove(current, oldIndex, newIndex);
 
     // Persist Bag Fee global position
-    if (active.id === BAG_FEE_ID || over.id === BAG_FEE_ID) {
+    if (activeId === BAG_FEE_ID || overId === BAG_FEE_ID) {
       const newPos = reordered.indexOf(BAG_FEE_ID);
       if (newPos >= 0) setBagFeeSlotIndex(newPos);
     }
 
-    setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: reordered }));
-    try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(reordered)); } catch {}
+    setModifierLayoutByItem(prev => ({ ...prev, [itemId]: reordered }));
+    try { localStorage.setItem(getLayoutKey(itemId), JSON.stringify(reordered)); } catch {}
+    modDragItemIdRef.current = null;
   };
 
   // Drag end handlers
@@ -6004,6 +6823,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeModifierId, setActiveModifierId] = useState<string | null>(null);
+  const modDragItemIdRef = useRef<string | null>(null);
 
 
 
@@ -6624,9 +7444,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
   };
 
-  const saveOrderToBackend = async () => {
+  const saveOrderToBackend = async (orderItemsOverride?: any[]) => {
+    const source = Array.isArray(orderItemsOverride) ? orderItemsOverride : (orderItems || []);
     // Include discount items so they are saved with guest numbers
-    const items = (orderItems || []).filter(it => it.type === 'item' || it.type === 'discount');
+    const items = (source || []).filter((it: any) => it && (it.type === 'item' || it.type === 'discount'));
     if (items.length === 0) return false;
 
     const now = new Date();
@@ -6841,7 +7662,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
             kitchenNote: savedKitchenMemo || null,
-            orderMode: isQsrMode ? 'QSR' : 'FSR'
+            orderMode: isQsrMode ? 'QSR' : 'FSR',
+            orderSource: (location.state as any)?.deliveryCompany || qsrDeliveryChannel || null
           })
         });
         if (!saveRes.ok) throw new Error('Failed to save order');
@@ -6900,7 +7722,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
-            kitchenNote: savedKitchenMemo || null
+            kitchenNote: savedKitchenMemo || null,
+            orderSource: (location.state as any)?.deliveryCompany || qsrDeliveryChannel || null
           })
         });
         if (!putRes.ok) throw new Error('Failed to update order');
@@ -6967,17 +7790,42 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     return true;
   };
 
-  const printKitchenOrders = async (wasUpdateMode: boolean, isPaidOrder: boolean = false) => {
-      const items = (orderItems || []).filter(it => it.type === 'item');
+  const printKitchenOrders = async (wasUpdateMode: boolean, isPaidOrder: boolean = false, orderItemsOverride?: any[]) => {
+      const source = Array.isArray(orderItemsOverride) ? orderItemsOverride : (orderItems || []);
+      const items = (source || []).filter((it: any) => it && it.type === 'item');
       const printItems: any[] = [];
       
       items.forEach((it:any) => {
         const hasOrderLineId = !!it.orderLineId;
-        const quantityDelta = Number(it.quantityDelta || 0);
+        const orderLineId = hasOrderLineId ? String(it.orderLineId) : '';
+        const currentQty = Number(it.quantity || 0);
+        const originalSavedQtyRaw =
+          (wasUpdateMode && orderLineId)
+            ? (originalSavedQuantitiesRef.current[orderLineId] as any)
+            : undefined;
+        // In update mode, a line that is NOT in originalSavedQuantitiesRef is a newly added line.
+        const isNewLineInUpdate = !!(wasUpdateMode && orderLineId && (originalSavedQtyRaw == null));
         
-        // 새 주문이거나 추가 주문(quantityDelta > 0)인 경우만 출력
-        if (!wasUpdateMode || !hasOrderLineId || quantityDelta > 0) {
-          const printQty = (wasUpdateMode && hasOrderLineId && quantityDelta > 0) ? quantityDelta : it.quantity;
+        // Print policy:
+        // - New order OR no orderLineId: print full quantity
+        // - Update mode:
+        //   - New line (not in baseline): print full quantity
+        //   - Existing line: print (currentQty - originalSavedQty), do NOT rely on quantityDelta (can be missing in prod builds)
+        let printQty = 0;
+        if (!wasUpdateMode || !hasOrderLineId) {
+          printQty = currentQty;
+        } else if (isNewLineInUpdate) {
+          printQty = currentQty;
+        } else {
+          const originalSavedQtyNum = Number(originalSavedQtyRaw ?? 0);
+          if (Number.isFinite(originalSavedQtyNum)) {
+            printQty = currentQty - originalSavedQtyNum;
+          } else {
+            // Fallback: if baseline is invalid, treat as full quantity (better than silently skipping)
+            printQty = currentQty;
+          }
+        }
+        if (!printQty || Number(printQty) <= 0) return;
           
           // 프린터 그룹 ID들 수집
           const printerGroupIds = Array.isArray(it.printerGroupIds) ? it.printerGroupIds : 
@@ -6986,14 +7834,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           
           printItems.push({
             id: it.id,
+            orderLineId: it.orderLineId || null,
             name: it.short_name || it.name || 'Unknown',
             qty: printQty,
+            lineQuantityAfter: it.quantity,
             guestNumber: it.guestNumber || 1,
             modifiers: (it as any).modifiers || [],
             memo: (it as any).memo?.text || null,
             printerGroupIds: printerGroupIds
           });
-        }
       });
       
       // Kitchen Note는 orderInfo.kitchenNote로 전달됨 (Body 하단에 고정 출력)
@@ -7003,11 +7852,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (isQsrMode) {
         // QSR 모드: qsrOrderType에 따라 헤더 결정
         const qsrType = (qsrOrderType || 'forhere').toLowerCase();
-        orderTypeDisplay = qsrType === 'forhere' ? 'FOR HERE' :
+        orderTypeDisplay = qsrType === 'forhere' ? 'EAT IN' :
                           qsrType === 'togo' ? 'TOGO' :
                           qsrType === 'pickup' ? 'PICKUP' :
                           qsrType === 'online' ? 'ONLINE' :
-                          qsrType === 'delivery' ? 'DELIVERY' : 'FOR HERE';
+                          qsrType === 'delivery' ? 'DELIVERY' : 'EAT IN';
       } else {
         // FSR 모드: orderType에 따라 헤더 결정
         const currentOrderType = (orderType || 'dine-in').toUpperCase();
@@ -7020,7 +7869,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const isDeliveryOrder = orderTypeDisplay === 'DELIVERY';
       
       // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
-      // QSR 모드에서는 테이블 이름을 빈 문자열로 설정 (FOR HERE TABLE → FOR HERE)
+      // QSR 모드에서는 테이블 이름을 빈 문자열로 설정 (EAT IN TABLE → EAT IN)
       const printTableName = isQsrMode ? '' : (resolvedTableName || tableNameFromState || '');
       const printServerName = selectedServer?.name || '';
       const printOrderNumber = savedOrderIdRef.current || `ORD-${Date.now()}`;
@@ -7066,7 +7915,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               qsrOrderType: qsrOrderType  // forhere, togo, pickup, online, delivery
             },
             isAdditionalOrder: wasUpdateMode,
-            isPaid: isPaidOrder,
+            // Delivery 주문은 항상 PAID로 출력
+            isPaid: isPaidOrder || isDeliveryOrder,
             // QSR Pickup: show UNPAID, others: hide PAID/UNPAID
             hidePaidStatus: isQsrMode && (qsrOrderType || 'forhere').toLowerCase() !== 'pickup'
           }) 
@@ -7076,167 +7926,198 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         if (result.success) {
           console.log(`🖨️ Kitchen print complete: ${result.message}`);
+          // Mark printed lines as "saved baseline" so future additional prints don't reprint them.
+          // For existing lines, this advances the baseline to the current quantity.
+          // For newly added lines, this records their initial saved quantity.
+          try {
+            if (wasUpdateMode && Array.isArray(printItems)) {
+              for (const pi of printItems) {
+                const lid = pi?.orderLineId ? String(pi.orderLineId) : '';
+                if (!lid) continue;
+                const qAfter = Number(pi?.lineQuantityAfter);
+                if (Number.isFinite(qAfter) && qAfter > 0) {
+                  originalSavedQuantitiesRef.current[lid] = qAfter;
+                }
+              }
+            }
+          } catch {}
         } else {
           console.error('❌ Print-order failed:', result.error);
         }
 
-        // TOGO, ONLINE 주문일 경우 Receipt Printer에 Bill도 함께 출력 (QSR 모드에서는 Bill 출력 안함)
-        if ((orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'ONLINE') && !wasUpdateMode && !isQsrMode) {
-          try {
-            console.log(`🧾 ${orderTypeDisplay} order - printing Bill to receipt printer`);
-            
-            // 공통 Bill 데이터 빌드 함수 사용 (Print Bill과 동일한 로직)
-            const billData = buildBillDataForPrint({
-              orderNumber: String(printOrderNumber),
-              channel: orderTypeDisplay,
-              tableName: printTableName || orderTypeDisplay,
-              serverName: printServerName
-            });
-
-            console.log(`🧾 [TOGO/ONLINE Bill] Using buildBillDataForPrint - adjustments:`, billData.adjustments);
-            
-            await fetch(`${API_URL}/printers/print-bill`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ billData, copies: 1 })
-            });
-            console.log(`🧾 ${orderTypeDisplay} Bill printed successfully (1 copy)`);
-          } catch (billErr) {
-            console.warn(`🧾 ${orderTypeDisplay} Bill print failed (ignored):`, billErr);
-          }
-        }
+        // TOGO/ONLINE/DELIVERY 주문 완료 시: Kitchen Ticket만 출력 (Bill/Receipt 자동 출력 제거)
       } catch (err) {
         console.error('❌ Print-order error:', err);
       }
-        
-        // DELIVERY 주문일 경우: Receipt 1장 추가 출력 (이미 결제 완료된 주문)
-        // Kitchen Ticket과 Bill은 출력하지 않음
-        if (orderTypeDisplay === 'DELIVERY' && !wasUpdateMode) {
-          // Receipt 1장 출력 (이미 결제 완료된 주문이므로 Receipt만)
-          try {
-            console.log(`🧾 DELIVERY order - printing Receipt only (1 copy)`);
-            
-            // Receipt 데이터 구성 (실제 아이템 세금 계산)
-            const deliveryItems = (orderItems || []).filter(it => it.type === 'item');
-            let calculatedSubtotal = 0;
-            let totalTax = 0;
-            const taxBreakdown: { [key: string]: { rate: number; amount: number } } = {};
-            
-            const receiptItems = deliveryItems.map((item: any) => {
-              const basePrice = Number(item.price || 0);
-              let modifierTotal = 0;
-              
-              // 모디파이어 금액 계산
-              ((item as any).modifiers || []).forEach((mod: any) => {
-                if (mod.totalModifierPrice !== undefined && mod.totalModifierPrice !== null) {
-                  modifierTotal += Number(mod.totalModifierPrice || 0);
-                } else if (mod.selectedEntries && Array.isArray(mod.selectedEntries)) {
-                  mod.selectedEntries.forEach((entry: any) => {
-                    modifierTotal += Number(entry.price_delta || entry.priceDelta || entry.price || 0);
-                  });
-                } else if (mod.price_delta || mod.priceDelta || mod.price) {
-                  modifierTotal += Number(mod.price_delta || mod.priceDelta || mod.price || 0);
-                }
-              });
-              
-              const itemTotal = (basePrice + modifierTotal) * (item.quantity || 1);
-              calculatedSubtotal += itemTotal;
-              
-              // 아이템별 세금 계산
-              const itemTaxDetails = item.taxDetails || [{ name: 'GST', rate: 5 }];
-              
-              itemTaxDetails.forEach((taxDetail: any) => {
-                const taxName = taxDetail.name || 'Tax';
-                const taxRate = (taxDetail.rate || 0) / 100;
-                const taxAmount = itemTotal * taxRate;
-                
-                if (!taxBreakdown[taxName]) {
-                  taxBreakdown[taxName] = { rate: taxDetail.rate || 0, amount: 0 };
-                }
-                taxBreakdown[taxName].amount += taxAmount;
-                totalTax += taxAmount;
-              });
-              
-              return {
-                name: item.name,
-                quantity: item.quantity || 1,
-                price: basePrice + modifierTotal,
-                totalPrice: itemTotal,
-                modifiers: (item as any).modifiers || [],
-                memo: (item as any).memo
-              };
-            });
-            
-            // 세금 라인 배열로 변환
-            const taxLines = Object.entries(taxBreakdown).map(([name, data]) => ({
-              label: `${name} (${data.rate}%)`,
-              rate: data.rate,
-              amount: Math.round(data.amount * 100) / 100
-            }));
-            
-            const subtotal = Math.round(calculatedSubtotal * 100) / 100;
-            const tax = Math.round(totalTax * 100) / 100;
-            const total = Math.round((subtotal + tax) * 100) / 100;
-
-            // 채널명 약어 변환
-            const channelMap: { [key: string]: string } = {
-              'UBEREATS': 'UBER', 'UBER EATS': 'UBER',
-              'DOORDASH': 'D DASH', 'DOOR DASH': 'D DASH',
-              'SKIPTHEDISHES': 'SKIP', 'SKIP THE DISHES': 'SKIP', 'SKIP': 'SKIP',
-              'FANTUAN': 'F TUAN', 'FAN TUAN': 'F TUAN'
-            };
-            const shortChannel = channelMap[(deliveryCompany || '').toUpperCase()] || deliveryCompany || 'DELIVERY';
-            
-            const receiptData = {
-              storeName: '',
-              // 헤더에 채널 + 외부주문번호 표시 (예: D DASH #UYT236)
-              orderNumber: String(printOrderNumber),
-              orderType: 'DELIVERY',
-              channel: shortChannel,
-              tableName: '',
-              customerName: orderCustomerInfo?.name || qsrCustomerName || '',
-              customerPhone: orderCustomerInfo?.phone || qsrCustomerPhone || '',
-              pickupTime: orderPickupInfo.readyTimeLabel || '',
-              serverName: printServerName,
-              // Delivery 헤더 정보 (채널 + 외부주문번호)
-              deliveryCompany: shortChannel,
-              deliveryOrderNumber: deliveryOrderNumber,
-              // 헤더에 "채널 #주문번호" 형식으로 표시
-              header: {
-                title: `${shortChannel} #${deliveryOrderNumber}`,
-                deliveryCompany: shortChannel,
-                deliveryOrderNumber: deliveryOrderNumber
-              },
-              items: receiptItems,
-              guestSections: [{
-                guestNumber: 1,
-                items: receiptItems
-              }],
-              subtotal: subtotal,
-              taxLines: taxLines,
-              total: total,
-              adjustments: [],
-              payments: [{ method: 'Paid', amount: total }],  // Payment: Paid 표시
-              change: 0,
-              footer: { message: 'Thank you!' },
-              bottomMargin: 5  // 하단 여백 5mm
-            };
-
-            await fetch(`${API_URL}/printers/print-receipt`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ receiptData, copies: 1, bottomMargin: 5 })  // 하단 여백 5mm
-            });
-            console.log(`🧾 DELIVERY Receipt printed successfully (1 copy)`);
-          } catch (receiptErr) {
-            console.warn(`🧾 DELIVERY Receipt print failed (ignored):`, receiptErr);
-          }
-        }
 
       setOrderItems(prev => prev.map(it => {
         if ((it as any).quantityDelta) return { ...it, quantityDelta: 0 } as any;
         return it;
       }));
+  };
+
+  // Wrapper for QSR specific print bill (using history order if available)
+  const handleQsrPrintBill = async () => {
+    if (orderListSelectedOrder) {
+      try {
+        console.log(`🖨️ Printing Receipt for history order ${orderListSelectedOrder.id}...`);
+        const storeResponse = await fetch(`${API_URL}/admin-settings/business-profile`);
+        const storeData = await storeResponse.json();
+        const store = {
+          name: storeData?.business_name || 'Restaurant',
+          address: [storeData?.address_line1, storeData?.address_line2, storeData?.city, storeData?.state, storeData?.zip].filter(Boolean).join(', ') || '',
+          phone: storeData?.phone || ''
+        };
+        const taxResponse = await fetch(`${API_URL}/taxes`);
+        const taxes = await taxResponse.json();
+        const activeTaxes = Array.isArray(taxes) ? taxes.filter((t: any) => !t.is_deleted) : [];
+        const taxRate = activeTaxes.length > 0 ? (parseFloat(activeTaxes[0].rate) > 1 ? parseFloat(activeTaxes[0].rate) / 100 : parseFloat(activeTaxes[0].rate)) : 0.05;
+
+        const orderId = orderListSelectedOrder.id;
+        let payments: Array<{ method: string; amount: number; tip?: number; change_amount?: number }> = [];
+        try {
+          const payRes = await fetch(`${API_URL}/payments/order/${orderId}`);
+          const payData = await payRes.json();
+          if (payData.success && Array.isArray(payData.payments)) {
+            payments = payData.payments
+              .filter((p: any) => (p.status || '').toUpperCase() !== 'VOIDED')
+              .map((p: any) => ({ method: p.payment_method || p.method || 'Unknown', amount: Number(p.amount || 0), tip: Number(p.tip || 0), change_amount: Number(p.change_amount || 0) }));
+          }
+        } catch {}
+
+        const byGuest: { [guestNumber: number]: any[] } = {};
+        orderListSelectedItems.forEach((item: any) => {
+          const guestNum = item.guest_number || 1;
+          if (!byGuest[guestNum]) byGuest[guestNum] = [];
+          byGuest[guestNum].push({
+            name: item.name || 'Unknown Item',
+            quantity: item.quantity || 1,
+            unitPrice: item.price || 0,
+            price: item.price || 0,
+            totalPrice: (item.price || 0) * (item.quantity || 1),
+            total: (item.price || 0) * (item.quantity || 1),
+            modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
+          });
+        });
+
+        const totals = orderListCalculateTotals();
+        const subtotal = totals.subtotal;
+        const taxTotal = totals.tax;
+        const total = totals.total;
+        const adjustments: Array<{ label: string; amount: number }> = [];
+        if (totals.discountTotal > 0 && totals.promotionName) {
+          adjustments.push({ label: totals.promotionName, amount: -totals.discountTotal });
+        }
+
+        const channelRaw = String(orderListSelectedOrder.order_type || 'EAT IN').toUpperCase();
+        const channel = channelRaw === 'POS' ? 'EAT IN' : channelRaw;
+        const tableName = (orderListSelectedOrder as any)?.table_name || (orderListSelectedOrder as any)?.tableName || '';
+        const change = payments.reduce((s, p) => s + (p.change_amount || 0), 0);
+
+        const tipTotal = payments.reduce((s, p) => s + (p.tip || 0), 0);
+        const parseMemo = (item: any) => {
+          if (item.memo) return item.memo;
+          if (!item.memo_json) return null;
+          try { return typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json; } catch { return null; }
+        };
+        const parseDiscount = (item: any) => {
+          if (item.discount) return item.discount;
+          if (!item.discount_json) return null;
+          try { return typeof item.discount_json === 'string' ? JSON.parse(item.discount_json) : item.discount_json; } catch { return null; }
+        };
+        const parseMods = (item: any) => {
+          if (item.modifiers && Array.isArray(item.modifiers)) return item.modifiers;
+          if (!item.modifiers_json) return [];
+          try { return typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json; } catch { return []; }
+        };
+
+        const mapItem = (item: any) => {
+          const mods = parseMods(item);
+          const memo = parseMemo(item);
+          const disc = parseDiscount(item);
+          const memoPrice = memo && typeof memo.price === 'number' ? Number(memo.price) : 0;
+          const basePrice = Number(item.totalPrice ?? item.price ?? 0);
+          const perUnit = basePrice + memoPrice;
+          const gross = perUnit * (item.quantity || 1);
+          const discAmount = disc ? Number(disc.amount || 0) : 0;
+          const lineTotal = Math.max(0, gross - discAmount);
+          return {
+            name: item.name || 'Unknown',
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            totalPrice: basePrice,
+            lineTotal,
+            originalTotal: discAmount > 0 ? gross : undefined,
+            discount: discAmount > 0 ? { type: disc.type || 'Item Discount', value: disc.value || 0, amount: discAmount } : undefined,
+            modifiers: mods,
+            memo,
+          };
+        };
+
+        const receiptItems = orderListSelectedItems.map(mapItem);
+
+        const guestSectionsForReceipt: { [g: number]: any[] } = {};
+        orderListSelectedItems.forEach((item: any) => {
+          const g = item.guest_number || 1;
+          if (!guestSectionsForReceipt[g]) guestSectionsForReceipt[g] = [];
+          guestSectionsForReceipt[g].push(mapItem(item));
+        });
+
+        await fetch(`${API_URL}/printers/print-receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receiptData: {
+              header: {
+                orderNumber: orderListSelectedOrder.order_number || orderId,
+                channel,
+                tableName,
+                serverName: (orderListSelectedOrder as any)?.server_name || '',
+              },
+              orderInfo: {
+                orderNumber: orderListSelectedOrder.order_number || orderId,
+                orderType: channel,
+                channel,
+                tableName,
+                customerName: (orderListSelectedOrder as any)?.customer_name || '',
+                customerPhone: (orderListSelectedOrder as any)?.customer_phone || '',
+                serverName: (orderListSelectedOrder as any)?.server_name || '',
+              },
+              storeName: store.name,
+              storeAddress: store.address,
+              storePhone: store.phone,
+              orderNumber: orderListSelectedOrder.order_number || orderId,
+              orderType: channel,
+              channel,
+              tableName,
+              customerName: (orderListSelectedOrder as any)?.customer_name || '',
+              customerPhone: (orderListSelectedOrder as any)?.customer_phone || '',
+              serverName: (orderListSelectedOrder as any)?.server_name || '',
+              items: receiptItems,
+              guestSections: Object.keys(guestSectionsForReceipt).sort((a, b) => Number(a) - Number(b)).map(k => ({
+                guestNumber: Number(k),
+                items: guestSectionsForReceipt[Number(k)]
+              })),
+              subtotal,
+              adjustments,
+              taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxTotal }],
+              taxesTotal: taxTotal,
+              total,
+              payments: payments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
+              tip: tipTotal,
+              change: Math.max(0, Number(change.toFixed(2))),
+              footer: { message: 'Thank you!' }
+            },
+            copies: 1
+          })
+        });
+        console.log('✅ Receipt printed (1 copy)');
+      } catch (e: any) {
+        console.error('Receipt print failed:', e);
+      }
+    } else {
+      handlePrintBill();
+    }
   };
 
   const handlePrintBill = async () => {
@@ -7277,7 +8158,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
       const floor = (location.state && (location.state as any).floor) || null;
       
-      // QSR For Here/Togo: Save order and open Payment Modal (no kitchen print yet)
+      // QSR Eat In/Togo: Save order and open Payment Modal (no kitchen print yet)
       if (isQsrMode && (qsrOrderType === 'forhere' || qsrOrderType === 'togo')) {
         if (items.length === 0) {
           alert('Please add items to the order.');
@@ -7311,48 +8192,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           console.error('Kitchen ticket print failed:', err);
         }
         
-        // 3. Print Bill (1 copy)
-        try {
-          console.log('📃 QSR Pickup: Printing Bill...');
-          const pickupItems = items.map((it: any) => ({
-            name: it.name || it.itemName || 'Item',
-            quantity: it.quantity || 1,
-            price: it.price || 0,
-            modifiers: it.modifiers || []
-          }));
-          const pickupSubtotal = pickupItems.reduce((sum: number, it: any) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
-          const pickupTaxLines = computeGuestTotals('ALL').taxLines || [];
-          const pickupTaxTotal = pickupTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
-          const pickupTotal = pickupSubtotal + pickupTaxTotal;
-          
-          const billData = {
-            storeName: '',
-            orderNumber: orderId || '',
-            orderType: 'PICKUP',
-            channel: 'PICKUP',
-            tableName: qsrCustomerName || 'PICKUP',
-            customerName: orderCustomerInfo?.name || qsrCustomerName || '',
-            customerPhone: orderCustomerInfo?.phone || qsrCustomerPhone || '',
-            pickupTime: orderPickupInfo?.readyTimeLabel || '',
-            items: pickupItems,
-            subtotal: pickupSubtotal,
-            taxLines: pickupTaxLines,
-            tax: pickupTaxTotal,
-            total: pickupTotal,
-            footer: { message: 'Thank you! Please pay when picking up.' }
-          };
-          
-          await fetch(`${API_URL}/printers/print-bill`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ billData, copies: 1 })
-          });
-          console.log('✅ QSR Pickup: Bill printed (1 copy)');
-        } catch (billErr) {
-          console.error('QSR Pickup Bill print failed:', billErr);
-        }
-        
-        // 4. Reset for new order (NO payment modal)
+        // 3. Reset for new order (NO payment modal, NO Bill auto-print)
         setOrderItems([]);
         setSessionPayments([]);
         setPaymentsByGuest({});
@@ -7382,10 +8222,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         try {
           if (tableIdForMap) {
             // If no items at all: Don't change status (keep Available if it was)
-            // If all guests paid: Set to Preparing
+            // If all guests paid: Set to Available (Preparing 제거)
             if (allGuestsPaid && items.length > 0) {
-              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Preparing' }) });
-              try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Preparing', ts: Date.now() })); } catch {}
+              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tableIdForMap)}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' }) });
+              try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: tableIdForMap, floor, status: 'Available', ts: Date.now() })); } catch {}
             }
             // If items.length === 0: Don't update status at all (leave it as is)
             
@@ -7404,8 +8244,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const wasUpdateMode = !!savedOrderIdRef.current;
       const hasNewItems = items.some((it:any) => !it.orderLineId);
 
+      // 추가주문(update mode)에서는 "증가분 기준"이 꼬여서 0으로 계산되는 것을 피하기 위해:
+      // - 먼저 현재 스냅샷 기준으로 출력(증가분만)
+      // - 그 다음 저장
+      // 신규 주문은 기존대로 저장 후 출력
+      const stamp = Date.now();
+      let seq = 0;
+      const orderItemsSnapshot = (orderItems || []).map((it: any) => {
+        if (!it || (it.type !== 'item' && it.type !== 'discount')) return it;
+        if (it.orderLineId) return it;
+        seq += 1;
+        return { ...it, orderLineId: `${it.id}-${stamp}-${seq}` };
+      });
+
+      if (wasUpdateMode) {
+        try {
+          await printKitchenOrders(true, false, orderItemsSnapshot);
+        } catch {}
+      }
+
       // 1. DB 저장
-      const saved = await saveOrderToBackend();
+      const saved = await saveOrderToBackend(orderItemsSnapshot);
       
       // 1.5. Delivery 주문이면 delivery_orders 테이블에 order_id 연결
       const isDeliveryOrder = (orderType || '').toUpperCase() === 'DELIVERY';
@@ -7425,7 +8284,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       
       // 2. 주방 프린트
       if (saved) {
-         await printKitchenOrders(wasUpdateMode);
+         if (!wasUpdateMode) {
+           await printKitchenOrders(false, false, orderItemsSnapshot);
+         }
       }
 
       // 3. 게스트 상태 저장 - 제거됨 (OK 시점에 불완전한 상태를 저장하면 재진입시 PAID로 잠기는 문제 발생)
@@ -7606,37 +8467,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // Precompute ALL-scope totals for PaymentModal (used for Pay in Full)
   const { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll } = useMemo(() => {
     const base = computeGuestTotals('ALL');
-    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
     const baseTaxLines = base.taxLines || [];
-    
-    if ((orderType || '').toLowerCase() === 'togo') {
-      const discountActive = togoSettings.discountEnabled && togoSettings.discountValue > 0;
-      const bagActive = togoSettings.bagFeeEnabled && togoSettings.bagFeeValue > 0;
-      const dv = Number(togoSettings.discountValue || 0);
-      const bv = Number(togoSettings.bagFeeValue || 0);
-      const discountAmtBase = discountActive ? (togoSettings.discountMode === 'percent' ? (base.subtotal * dv / 100) : dv) : 0;
-      const bagFeeAmt = bagActive ? bv : 0;
-      const discountAmt = Number(discountAmtBase.toFixed(2));
-      const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-      // Adjust tax proportionally based on discount
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfter <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grandFixed = Number((subtotalAfter + (bagFeeAmt || 0) + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
-    } else {
-      const subtotalAfter = Math.max(0, Number((base.subtotal).toFixed(2)));
-      // If subtotal is 0 (100% discount), tax should also be 0
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfter <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grandFixed = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand: grandFixed } as any;
+
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
     }
+
+    const applied = applySubtotalAdjustments({ subtotal: base.subtotal, taxLines: baseTaxLines }, adjustments);
+    return { subtotal: applied.subtotal, taxLines: applied.taxLines, grand: applied.total } as any;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderItems, orderType, taxLines, computeGuestTotals, togoSettings]);
 
@@ -7645,53 +8493,37 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       return { subtotal: paySubtotalAll, taxLines: payTaxLinesAll, grand: payGrandAll };
     }
     const base = computeGuestTotals(guestPaymentMode);
-    // Use tax lines from computeGuestTotals (already reflects item-level discounts)
     const baseTaxLines = base.taxLines || [];
-
-    if ((orderType || '').toLowerCase() === 'togo') {
-      const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-      const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
-      const discountValue = Number(togoSettings.discountValue || 0);
-      const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
-      const discountAmtBase = discountActive
-        ? (togoSettings.discountMode === 'percent'
-            ? (base.subtotal * discountValue) / 100
-            : discountValue)
-        : 0;
-      const discountAmt = Number(discountAmtBase.toFixed(2));
-      const subtotalAfterDiscount = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-      const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
-      // If subtotal is 0 (100% discount), tax should also be 0
-      const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-      const taxAfterDiscount = subtotalAfterDiscount <= 0 ? 0 : baseTaxTotal;
-      const adjustedTaxLines = subtotalAfterDiscount <= 0 
-        ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-        : baseTaxLines;
-      const grand = Number((subtotalAfterDiscount + bagFeeAmt + taxAfterDiscount).toFixed(2));
-      return { subtotal: subtotalAfterDiscount, taxLines: adjustedTaxLines, grand };
+    const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const adjustments: any[] = [];
+    if (isTogo) {
+      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+        const dv = Number(togoSettings.discountValue || 0);
+        const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
+        if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
+      }
+      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
+      }
+    } else {
+      const items = (orderItems || []).filter(it =>
+        it.type !== 'separator' && (it.guestNumber || 1) === guestPaymentMode
+      );
+      const promoAdj = computePromotionAdjustment(items as any, {
+        enabled: promotionEnabled,
+        type: promotionType as any,
+        value: (typeof promotionValue === 'number' ? promotionValue : 0),
+        eligibleItemIds: promotionEligibleItemIds,
+        codeInput: '',
+        rules: promotionRules,
+      });
+      const discountAmt = promoAdj ? promoAdj.amountApplied : 0;
+      if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'Promotion', amount: Number(discountAmt.toFixed(2)) });
     }
 
-    const items = (orderItems || []).filter(it =>
-      it.type !== 'separator' && (it.guestNumber || 1) === guestPaymentMode
-    );
-    const promoAdj = computePromotionAdjustment(items as any, {
-      enabled: promotionEnabled,
-      type: promotionType as any,
-      value: (typeof promotionValue === 'number' ? promotionValue : 0),
-      eligibleItemIds: promotionEligibleItemIds,
-      codeInput: '',
-      rules: promotionRules,
-    });
-    const discountAmt = promoAdj ? promoAdj.amountApplied : 0;
-    const subtotalAfter = Math.max(0, Number((base.subtotal - discountAmt).toFixed(2)));
-    // If subtotal is 0 (100% discount), tax should also be 0
-    const baseTaxTotal = baseTaxLines.reduce((s, t) => s + t.amount, 0);
-    const taxAfterDiscount = subtotalAfter <= 0 ? 0 : baseTaxTotal;
-    const adjustedTaxLines = subtotalAfter <= 0 
-      ? baseTaxLines.map(t => ({ ...t, amount: 0 }))
-      : baseTaxLines;
-    const grand = Number((subtotalAfter + taxAfterDiscount).toFixed(2));
-    return { subtotal: subtotalAfter, taxLines: adjustedTaxLines, grand };
+    const applied = applySubtotalAdjustments({ subtotal: base.subtotal, taxLines: baseTaxLines }, adjustments);
+    return { subtotal: applied.subtotal, taxLines: applied.taxLines, grand: applied.total };
   }, [
     guestPaymentMode,
     computeGuestTotals,
@@ -8705,7 +9537,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // }
 
   return (
-    <div className={`orderpage-scope h-screen flex ${isQsrMode ? 'bg-black overflow-hidden' : 'bg-gray-100'}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+    <div
+      className={`orderpage-scope h-screen flex ${isQsrMode ? 'overflow-hidden' : 'bg-gray-100'}`}
+      style={{
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+        ...(isQsrMode
+          ? {
+              backgroundColor: '#0b0b0d',
+              backgroundImage: "url('/images/logo.svg')",
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'center',
+              backgroundSize: 'min(60vw, 520px)',
+              backgroundBlendMode: 'soft-light',
+            }
+          : {}),
+      }}
+    >
       {/* Background overlay to close FloatingActionBar on outside click */}
       {((selectedOrderItemId != null) || (selectedOrderLineId != null)) && (
         <div
@@ -9362,7 +10210,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <input
                       type="range"
                       min="1"
-                      max="6"
+                      max="10"
                       value={layoutSettings.modifierRows}
                       onChange={(e) => updateLayoutSetting('modifierRows', parseInt(e.target.value))}
                       className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
@@ -9374,7 +10222,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <input
                       type="range"
                       min="2"
-                      max="8"
+                      max="10"
                       value={layoutSettings.modifierColumns}
                       onChange={(e) => updateLayoutSetting('modifierColumns', parseInt(e.target.value))}
                       className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
@@ -9876,7 +10724,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     }`}
                   >
                     <Coffee className="w-5 h-5" />
-                    For Here
+                    Eat In
                   </button>
                   <button
                     onClick={() => setQsrOrderType('togo')}
@@ -9970,9 +10818,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       };
                       const serverName = formatServerName(serverNameRaw);
                       return (
-                        <div>
-                          <span className="text-sm text-gray-600">Server: </span>
-                          <span className="font-medium">{serverName || ''}</span>
+                        <div data-pos-lock="order-server-block">
+                          <span className="text-gray-600" data-pos-lock="order-server-label" style={{ fontSize: 'var(--order-label-font)' }}>Server: </span>
+                          <span className="font-medium" data-pos-lock="order-server-value" style={{ fontSize: 'var(--order-value-font)' }}>{serverName || ''}</span>
                         </div>
                       );
                     })()}
@@ -10038,9 +10886,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       }
 
                       return (
-                        <div>
-                          <span className="text-sm text-gray-600">Channel: </span>
-                          <span className="font-medium">{right}</span>
+                        <div data-pos-lock="order-channel-block">
+                          <span className="text-gray-600" data-pos-lock="order-channel-label" style={{ fontSize: 'var(--order-label-font)' }}>Channel: </span>
+                          <span className="font-medium" data-pos-lock="order-channel-value" style={{ fontSize: 'var(--order-value-font)' }}>{right}</span>
                         </div>
                       );
                     })()}
@@ -10052,7 +10900,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <div className="flex-1 overflow-hidden p-1 bg-gray-100 flex flex-col">
                 {/* (Removed top banner; using centered banner within the list) */}
                 <div className="mb-1">
-                  <div className="grid grid-cols-12 gap-1 text-sm font-medium text-gray-700 bg-blue-200 py-1">
+                  <div className="grid grid-cols-12 gap-1 font-medium text-gray-700 bg-blue-200 py-1" data-pos-lock="order-items-header" style={{ fontSize: 'var(--order-header-font)' }}>
                     <div className="col-span-6">Item Name</div>
                     <div className="col-span-3 text-center">Qty</div>
                     <div className="col-span-3 text-right">E.Total</div>
@@ -10122,7 +10970,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                 <div className={`grid grid-cols-12 gap-1 items-center py-0 px-1 ${item.type === 'discount' ? 'bg-yellow-100 border-l-4 border-yellow-500' : (((item as any).type === 'void') ? 'bg-red-50 border-l-4 border-red-500' : (index % 2 === 0 ? 'bg-blue-100' : 'bg-blue-50'))}`}>
                                   {/* 메뉴 아이템 이름 (고정 위치) */}
                                   <div className="col-span-6">
-                                    <div className={`font-medium text-sm ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`}>
+                                    <div className={`font-medium ${item.type === 'discount' ? 'text-red-600' : (((item as any).type === 'void') ? 'text-gray-500 line-through' : 'text-gray-800')} flex items-center gap-1`} data-pos-lock="order-item-name" style={{ fontSize: 'var(--order-item-font)', lineHeight: '1.2' }}>
                                       {(item as any).item_source === 'TABLE_ORDER' && (
                                         <span className="text-[10px] px-1 py-0.5 bg-emerald-500 text-white rounded font-bold whitespace-nowrap">TBL</span>
                                       )}
@@ -10157,24 +11005,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     ) : (
                                       <>
                 {(() => {
-                  const hasOrderLineId = !!(item as any).orderLineId;
                   const orderSaved = !!savedOrderIdRef.current;
-                  const isStoredItem = hasOrderLineId && orderSaved;
-                  
-                  // Check if current quantity is greater than original saved quantity
+                  const orderLineIdRaw = (item as any).orderLineId;
+                  const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
+                  const hasOrderLineId = !!orderLineId;
+
+                  const hasOriginal =
+                    hasOrderLineId &&
+                    Object.prototype.hasOwnProperty.call(originalSavedQuantitiesRef.current || {}, orderLineId);
+                  const isExistingSavedLine = orderSaved && hasOrderLineId && hasOriginal;
+
                   const currentQty = item.quantity || 1;
-                  const originalQty = hasOrderLineId ? (originalSavedQuantitiesRef.current[(item as any).orderLineId] || currentQty) : currentQty;
+                  const originalQty = hasOriginal ? (originalSavedQuantitiesRef.current[orderLineId] || currentQty) : currentQty;
                   const canDecrement = currentQty > originalQty;
-                  
-                  console.log(`🔍 ${item.name}: orderLineId=${(item as any).orderLineId}, savedOrderId=${savedOrderIdRef.current}, isStoredItem=${isStoredItem}, hasOrderLineId=${hasOrderLineId}, orderSaved=${orderSaved}, currentQty=${currentQty}, originalQty=${originalQty}, canDecrement=${canDecrement}`);
-                  return isStoredItem;
+
+                  console.log(`🔍 ${item.name}: orderLineId=${orderLineId}, savedOrderId=${savedOrderIdRef.current}, isExistingSavedLine=${isExistingSavedLine}, hasOrderLineId=${hasOrderLineId}, hasOriginal=${hasOriginal}, currentQty=${currentQty}, originalQty=${originalQty}, canDecrement=${canDecrement}`);
+                  return isExistingSavedLine;
                 })() ? (
                   // 저장된 메뉴: 현재 수량 > 원래 수량일 때만 - 버튼 활성화
                   <>
                     {(() => {
-                      const hasOrderLineId = !!(item as any).orderLineId;
+                      const orderLineIdRaw = (item as any).orderLineId;
+                      const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
                       const currentQty = item.quantity || 1;
-                      const originalQty = hasOrderLineId ? (originalSavedQuantitiesRef.current[(item as any).orderLineId] || currentQty) : currentQty;
+                      const hasOriginal =
+                        !!orderLineId &&
+                        Object.prototype.hasOwnProperty.call(originalSavedQuantitiesRef.current || {}, orderLineId);
+                      const originalQty = hasOriginal ? (originalSavedQuantitiesRef.current[orderLineId] || currentQty) : currentQty;
                       const canDecrement = currentQty > originalQty;
                       
                       return (
@@ -10182,7 +11039,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           disabled={!canDecrement}
                           onClick={() => { 
                             if (isGuestLocked(item.guestNumber) || !canDecrement) return; 
-                            preserveOrderListScroll(() => updateQuantityByLineId((item as any).orderLineId, -1)); 
+                            preserveOrderListScroll(() => updateQuantityByLineId(orderLineId, -1)); 
                           }}
                           className={`text-white rounded-md transition-colors flex items-center justify-center text-lg font-bold ${canDecrement ? 'hover:bg-red-600' : 'opacity-30 cursor-not-allowed'}`}
                           style={{ 
@@ -10201,7 +11058,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <button
                       onClick={() => { 
                         if (isGuestLocked(item.guestNumber)) return; 
-                        preserveOrderListScroll(() => updateQuantityByLineId((item as any).orderLineId, 1)); 
+                        const orderLineIdRaw = (item as any).orderLineId;
+                        const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
+                        if (!orderLineId) return;
+                        preserveOrderListScroll(() => updateQuantityByLineId(orderLineId, 1)); 
                       }}
                       className="text-white rounded-md hover:bg-green-600 transition-colors flex items-center justify-center text-lg font-bold"
                       style={{ 
@@ -10283,15 +11143,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                   {/* 총 가격 (고정 위치) - 아이템 원가만 표시 (모디파이어 제외) */}
                                   <div className="col-span-3 text-right">
                                     {item.type === 'discount' ? (
-                                      <div className="font-medium text-red-600 text-sm">
+                                      <div className="font-medium text-red-600 text-base">
                                         ${item.totalPrice.toFixed(2)}
                                       </div>
                                     ) : ((item as any).type === 'void') ? (
-                                      <div className="font-medium text-gray-500 text-sm line-through">$0.00</div>
+                                      <div className="font-medium text-gray-500 text-base line-through">$0.00</div>
                                     ) : (() => {
-                                      // 아이템 원가만 사용 (모디파이어 가격 제외)
-                                      const itemBasePrice = Number(item.price || 0) * Number(item.quantity || 1);
-                                      const disc = computeItemDiscountAmount(item as any);
+                                      const line = getPricingLineForItem(item as any);
+                                      const itemBasePrice = line ? Number(line.lineGross || 0) : (Number(item.price || 0) * Number(item.quantity || 1));
+                                      const disc = line ? Number(line.itemDiscount || 0) : computeItemDiscountAmount(item as any);
                                       if (disc > 0) {
                                         const after = Math.max(0, Number((itemBasePrice - disc).toFixed(2)));
                                         const d = (item as any).discount || {};
@@ -10336,27 +11196,49 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                         {/* 모든 모디파이어 동일하게 표시 (확장 + 일반) */}
                                         {item.modifiers.flatMap((mod: any, modIndex: number) => (
                                           (mod.selectedEntries && mod.selectedEntries.length > 0
-                                            ? mod.selectedEntries.map((entry: any, entryIdx: number) => (
-                                                <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
-                                                  <div className="flex items-center">
-                                                    <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                    <span className="ml-0.5 font-medium italic">{entry.name}</span>
-                                                  </div>
-                                                  <span className={`${(entry.price_delta || 0) > 0 ? 'text-red-600' : (entry.price_delta || 0) < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
-                                                    {(entry.price_delta || 0) > 0 ? '+' : ''}${(entry.price_delta || 0).toFixed(2)}
-                                                  </span>
-                                                </div>
-                                              ))
-                                            : (Array.isArray((mod as any).modifierNames)
-                                                ? (mod as any).modifierNames.map((name: string, entryIdx: number) => (
-                                                    <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                            ? (() => {
+                                                const grouped = new Map<string, { name: string; priceDelta: number; count: number }>();
+                                                (mod.selectedEntries || []).forEach((entry: any) => {
+                                                  const name = String(entry?.name || '');
+                                                  const priceDelta = Number(entry?.price_delta || 0);
+                                                  const key = `${name}@@${priceDelta}`;
+                                                  const cur = grouped.get(key) || { name, priceDelta, count: 0 };
+                                                  cur.count += 1;
+                                                  grouped.set(key, cur);
+                                                });
+                                                return Array.from(grouped.values()).map((g, entryIdx: number) => {
+                                                  const label = `${g.count}x ${g.name}`;
+                                                  const totalDelta = Number((g.priceDelta * g.count).toFixed(2));
+                                                  return (
+                                                    <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                                       <div className="flex items-center">
                                                         <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                        <span className="ml-0.5 font-medium italic">{name}</span>
+                                                        <span className="ml-0.5 font-medium italic">{label}</span>
                                                       </div>
-                                                      <span className="text-gray-500 font-medium italic">$0.00</span>
+                                                      <span className={`${totalDelta > 0 ? 'text-red-600' : totalDelta < 0 ? 'text-green-600' : 'text-gray-500'} font-medium italic`}>
+                                                        {totalDelta > 0 ? '+' : ''}${Math.abs(totalDelta).toFixed(2)}
+                                                      </span>
                                                     </div>
-                                                  ))
+                                                  );
+                                                });
+                                              })()
+                                            : (Array.isArray((mod as any).modifierNames)
+                                                ? (() => {
+                                                    const counts = new Map<string, number>();
+                                                    (mod as any).modifierNames.forEach((n: string) => {
+                                                      const key = String(n || '');
+                                                      counts.set(key, (counts.get(key) || 0) + 1);
+                                                    });
+                                                    return Array.from(counts.entries()).map(([name, count], entryIdx: number) => (
+                                                      <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
+                                                        <div className="flex items-center">
+                                                          <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
+                                                          <span className="ml-0.5 font-medium italic">{`${count}x ${name}`}</span>
+                                                        </div>
+                                                        <span className="text-gray-500 font-medium italic">$0.00</span>
+                                                      </div>
+                                                    ));
+                                                  })()
                                                 : []
                                               )
                                           )
@@ -10366,7 +11248,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     
                                     {/* 메모 정보 */}
                                     {(item as any).memo && (item as any).memo.text && (
-                                      <div className="flex items-center justify-between text-sm text-gray-600 leading-none">
+                                      <div className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-memoline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                         <div className="flex items-center">
                                            <span className="text-blue-600 font-medium mr-2">{'-->'}</span>
                                           <span className="ml-0.5 font-medium italic">{(item as any).memo.text}</span>
@@ -10413,7 +11295,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                              const amount = Math.abs(Number((item.totalPrice != null ? item.totalPrice : item.price) || 0));
                              
                              return (
-                               <div key={`disc-${item.id}-${index}`} className="px-2 py-2 bg-yellow-50 border-l-4 border-yellow-400 mb-1 flex items-center justify-between">
+                               <div key={`disc-${item.id}-${index}`} className="px-2 py-2 bg-yellow-50 border-l-4 border-yellow-400 mb-1 flex items-center justify-between" data-pos-lock="order-discount-row" style={{ fontSize: 'var(--order-mod-font)' }}>
                                    <div className="font-medium text-sm text-red-600">
                                        {displayName}{percentText}
                                    </div>
@@ -10469,8 +11351,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
                 
                 {/* Summary Section */}
-                <div className="p-2 bg-blue-200 border-t border-blue-300 flex-shrink-0">
-                    <div className="space-y-1 text-sm">
+                <div className="p-2 bg-blue-200 border-t border-blue-300 flex-shrink-0" data-pos-lock="order-summary" style={{ fontSize: 'var(--order-summary-font)' }}>
+                    <div className="space-y-1">
                     {(() => {
                       // Use unpaid-only totals when split is active
                       const splitActive = (guestCount > 1) || ((orderItems||[]).some(it=>it.type==='separator'));
@@ -10563,7 +11445,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               </div>
                             );
                           })}
-                          <div className="flex justify-between text-base font-bold">
+                          <div className="flex justify-between font-bold" data-pos-lock="order-summary-total" style={{ fontSize: 'var(--order-total-font)' }}>
                             <span>Total:</span>
                             <span>${fmt(payGrandAll)}</span>
                           </div>
@@ -10673,17 +11555,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   {/* QSR Mode: Single OK button only */}
                   {isQsrMode ? (
                     <div className="grid gap-1" style={{ gridTemplateColumns: '1fr' }}>
-                      <button className="bg-green-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-green-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={handleOkClick}>
+                      <button className="bg-green-500 text-white px-3 py-[0.75rem] flex items-center justify-center rounded-lg font-bold hover:bg-green-600 transition-colors shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))' }} onClick={handleOkClick}>
                         OK
                       </button>
                     </div>
                   ) : (
                     /* FSR Mode: Print Bill, Payment, OK buttons */
                     <div className="grid gap-1" style={{ gridTemplateColumns: '3fr 3fr 4fr' }}>
-                      <button className="bg-gray-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={handlePrintBill}>
+                      <button className="bg-gray-500 text-white px-3 py-[0.75rem] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))' }} onClick={handlePrintBill}>
                         Print Bill
                       </button>
-                      <button className="bg-gray-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={() => { 
+                      <button className="bg-gray-500 text-white px-3 py-[0.75rem] flex items-center justify-center rounded-lg font-bold hover:bg-gray-600 transition-colors shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))' }} onClick={() => { 
                         // reset any previous prefill intents; show keypad display as 0
                         try { setPrefillUseTotalOnceNonce(0); setPrefillDueNonce(n=>n+0); } catch {}
                         if ((guestCount||0) > 1 || (orderItems||[]).some(it => it.type === 'separator')) { 
@@ -10695,7 +11577,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       }}>
                         Payment
                       </button>
-                      <button className="bg-green-500 text-white px-3 py-[0.75rem] h-[56px] flex items-center justify-center rounded-lg font-bold hover:bg-green-600 transition-colors text-base shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" onClick={handleOkClick}>
+                      <button className="bg-green-500 text-white px-3 py-[0.75rem] flex items-center justify-center rounded-lg font-bold hover:bg-green-600 transition-colors shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))' }} onClick={handleOkClick}>
                         OK
                       </button>
                     </div>
@@ -10718,11 +11600,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       allModeStickyRef.current = false;
                       receiptPrintedRef.current = false; // Reset receipt print flag for next payment
                     },
-                    onCreateAdhocGuests: (n: number) => {
-                      setAdhocSplitCount(n);
-                      setGuestPaymentMode(1); // Guest 1 자동 선택
-                      setActiveGuestNumber(1);
-                    },
+                    paidGuests: Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [],
+                    serviceMode: 'QSR' as const,
                     subtotal: (() => {
                       if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
                         const n = adhocSplitCount;
@@ -10783,11 +11662,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
-                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
+                    onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } }) => {
                       // 결제 완료 시 Payment Complete 모달 표시
-                      // Cash drawer 오픈
+                      const currentGuest = (typeof guestPaymentMode === 'number') ? guestPaymentMode : undefined;
+                      const hasSplitBill =
+                        ((guestIds || []).length > 1) ||
+                        (orderItems || []).some(it => it.type === 'separator') ||
+                        (adhocSplitCount > 1);
+
+                      // 부분 결제 여부: 스플릿 결제에서 아직 미결제 게스트가 남아있는 경우
+                      let isActuallyPartial = false;
+                      if (hasSplitBill && currentGuest) {
+                        const newPaidGuests = Array.from(new Set([...(persistedPaidGuests || []), currentGuest]));
+                        const unpaidGuests = (guestIds || []).filter(g => !newPaidGuests.includes(g));
+                        isActuallyPartial = unpaidGuests.length > 0;
+                      }
+
+                      // Cash drawer 오픈 (결제 완료 시 즉시)
                       try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
-                      setPaymentCompleteData(data);
+                      setPaymentCompleteData({
+                        ...data,
+                        isPartialPayment: isActuallyPartial,
+                        currentGuestNumber: currentGuest,
+                      });
                       setShowPaymentModal(false);  // 결제 모달 닫기
                       setShowPaymentCompleteModal(true);  // 완료 모달 표시
                     },
@@ -10843,6 +11740,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     payments: sessionPayments,
                     onVoidPayment: handleVoidPayment,
                     onClearAllPayments: handleClearAllPayments,
+                    onClearScopedPayments: async (paymentIds: number[]) => {
+                      try {
+                        const idSet = new Set((paymentIds || []).filter((id) => typeof id === 'number' && Number.isFinite(id)));
+                        if (idSet.size === 0) return;
+                        const toVoid = sessionPayments.filter(p => idSet.has(p.paymentId));
+                        for (const p of toVoid) {
+                          try {
+                            const res = await fetch(`${API_URL}/payments/${p.paymentId}/void`, { method: 'POST' });
+                            if (!res.ok) throw new Error('Payment cancellation failed');
+                          } catch (e) {
+                            console.warn('Some payment cancellation failed:', p.paymentId, e);
+                          }
+                        }
+                        setSessionPayments(prev => prev.filter(p => !idSet.has(p.paymentId)));
+                        setPaymentsByGuest(prev => {
+                          const next = { ...prev } as Record<string, number>;
+                          toVoid.forEach((p) => {
+                            const g = p.guestNumber;
+                            if (typeof g === 'number') {
+                              const key = String(g);
+                              next[key] = Math.max(0, Number(((next[key] || 0) - (p.amount || 0)).toFixed(2)));
+                            }
+                          });
+                          return next;
+                        });
+                      } catch (e) {
+                        console.error('Clear scoped payments failed:', e);
+                      }
+                    },
                     prefillDueNonce,
                     prefillUseTotalOnceNonce,
                   }}
@@ -10903,7 +11829,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   activeCategoryId={activeCategoryId}
                   setActiveCategoryId={setActiveCategoryId}
                   handleCategoryDragEnd={handleCategoryDragEnd}
-                  layoutLockReady={layoutLockReady}
+                  layoutLockReady={isSalesOrder}
                   showBackgroundMenuLoading={showBackgroundMenuLoading}
                   filteredMenuItems={filteredMenuItems}
                   itemColors={itemColors}
@@ -10924,7 +11850,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   soldOutTimes={soldOutTimes}
                   updateLayoutSetting={updateLayoutSetting}
                   catalogSnapshot={catalogSnapshot}
-                  showEmptySlots={shouldShowButtonPlaceholders}
+                  showEmptySlots={true}
+                  emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
                   showAllCategoriesGrouped={layoutSettings.showAllCategoriesGrouped}
                 />
 
@@ -10938,9 +11865,34 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   modifierColors={modifierColors}
                   isLoading={isLoadingModifiers}
                   activeModifierId={activeModifierId}
-                  setActiveModifierId={setActiveModifierId}
+                  setActiveModifierId={(id: string | null) => {
+                    setActiveModifierId(id);
+                    if (id !== null) {
+                      if (selectedMenuItemId) {
+                        modDragItemIdRef.current = selectedMenuItemId;
+                      } else {
+                        const cat = categories.find(c => c.name === selectedCategory);
+                        modDragItemIdRef.current = cat ? `__cat_${cat.category_id}` : null;
+                      }
+                    }
+                  }}
                   handleModifierSelection={handleModifierSelection}
                   handleModifierDragEnd={handleModifierDragEnd}
+                  onModifierReorder={(reordered: string[]) => {
+                    const itemId = modDragItemIdRef.current || selectedMenuItemId;
+                    if (!itemId) {
+                      const cat = categories.find(c => c.name === selectedCategory);
+                      const fallbackId = cat ? `__cat_${cat.category_id}` : null;
+                      if (!fallbackId) return;
+                      setModifierLayoutByItem(prev => ({ ...prev, [fallbackId]: reordered }));
+                      try { localStorage.setItem(getLayoutKey(fallbackId), JSON.stringify(reordered)); } catch {}
+                      modDragItemIdRef.current = null;
+                      return;
+                    }
+                    setModifierLayoutByItem(prev => ({ ...prev, [itemId]: reordered }));
+                    try { localStorage.setItem(getLayoutKey(itemId), JSON.stringify(reordered)); } catch {}
+                    modDragItemIdRef.current = null;
+                  }}
                   setSelectedModifierIdForColor={(id: string) => setSelectedModifierIdForColor(id)}
                   canAddAdhoc={!!selectedMenuItemId}
                   onAddAdhocModifier={({ name, price }) => {
@@ -10984,16 +11936,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   }}
                   extraButton1={{ enabled: modExtra1Enabled, name: modExtra1Name, price: modExtra1Amount, colorClass: modExtra1Color }}
                   extraButton2={{ enabled: modExtra2Enabled, name: modExtra2Name, price: modExtra2Amount, colorClass: modExtra2Color }}
-                  showEmptySlots={shouldShowButtonPlaceholders}
-                  lockLayout={layoutLockReady}
+                  showEmptySlots={true}
+                  emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
+                  lockLayout={isSalesOrder}
                 />
 
                 {/* QSR Function Buttons */}
                 <div className="pl-2 pr-0 py-0">
-                  <div className="bottom-action-bar border-t-0 pl-2 pr-1 py-0.5 flex-shrink-0">
+                  <div className="bottom-action-bar border-t-0 pl-2 pr-1 py-0.5 flex-shrink-0 bg-[#e0e5ec] rounded-2xl">
                     <div className="grid grid-cols-9 gap-0.5 w-full">
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={async () => {
                           try {
                             console.log('💰 Opening cash drawer...');
@@ -11017,62 +11970,96 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         Open Till
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={() => { handleOpenVoid(); }}
                       >
                         Void
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={() => { setOpenPriceName(''); setOpenPriceAmount(''); setOpenPriceNote(''); setSelectedTaxGroupId(null); setSelectedPrinterGroupId(null); setShowOpenPriceModal(true); }}
                       >
                         Open Price
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={handleOpenDiscount}
                       >
                         D/C
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={handleOpenSoldOut}
                       >
                         Sold Out
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={handleOpenKitchenMemo}
                       >
                         Kitchen Note
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={() => { setShowSearchModal(true); }}
                       >
                         Search
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                         onClick={() => { setShowOrderListModal(true); fetchOrderList(orderListDate); }}
                       >
                         Order History
                       </button>
                       <div className="relative">
                         <button
-                          className="w-full h-[50px] rounded-lg bg-white/10 backdrop-blur-sm border border-white/20 text-gray-700 text-[13px] font-semibold flex items-center justify-center text-center leading-tight hover:bg-white/20 transition-all duration-200 shadow-lg"
+                          className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                           onClick={() => setShowQsrMoreMenu(!showQsrMoreMenu)}
                         >
                           More ▾
                         </button>
                         {showQsrMoreMenu && (
-                          <div className="absolute bottom-full right-0 mb-1 w-40 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
-                            <button onClick={() => { setShowQsrMoreMenu(false); alert('Wait List feature coming soon'); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Wait List</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); resetGiftCardForm(); setGiftCardMode('sell'); setShowGiftCardModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Gift Card</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); setOnlineModalTab('preptime'); setShowPrepTimeModal(true); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Online</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">{isDayClosed ? 'Opening' : 'Closing'}</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); handleBackOfficeAccess(); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Back Office</button>
-                            <button onClick={() => { setShowQsrMoreMenu(false); window.close(); }} className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100">Goto Windows</button>
+                          <div className="absolute bottom-full right-0 mb-2 w-48 bg-[#e0e5ec] rounded-2xl p-2 z-50 shadow-[10px_10px_20px_#b8bec7,_-10px_-10px_20px_#ffffff]">
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }}
+                              className="w-full px-3 py-2 mb-2 rounded-xl text-left text-[13px] font-bold transition-all duration-150 select-none bg-gradient-to-b from-amber-100 to-[#e0e5ec] text-amber-900 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:scale-[0.99]"
+                            >
+                              {isDayClosed ? 'Opening' : 'Closing'}
+                            </button>
+
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); setShowQsrTogoModal(true); }}
+                              className="w-full px-3 py-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                            >
+                              Wait List
+                            </button>
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); resetGiftCardForm(); setGiftCardMode('sell'); setShowGiftCardModal(true); }}
+                              className="w-full px-3 py-2 mt-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                            >
+                              Gift Card
+                            </button>
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); setOnlineModalTab('preptime'); setShowPrepTimeModal(true); }}
+                              className="w-full px-3 py-2 mt-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                            >
+                              Online
+                            </button>
+
+                            <div className="my-2 h-px bg-gray-400/40" />
+
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); handleBackOfficeAccess(); }}
+                              className="w-full px-3 py-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                            >
+                              Back Office
+                            </button>
+                            <button
+                              onClick={() => { setShowQsrMoreMenu(false); window.close(); }}
+                              className="w-full px-3 py-2 mt-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                            >
+                              Goto Windows
+                            </button>
                           </div>
                         )}
                       </div>
@@ -11104,7 +12091,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 const item = (menuItems || []).find(m => String(m.id) === String(it.id));
                 if (item) {
                   if (isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
-                  addToOrder(item);
+                  const orderLineId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                  setOrderItems(prev => [...prev, {
+                    id: item.id, name: item.name, short_name: (item as any).short_name,
+                    quantity: 1, price: item.price, modifiers: [], totalPrice: item.price,
+                    type: 'item' as const, guestNumber: activeGuestNumber || 1, orderLineId,
+                    togoLabel: !!(item as any).togoLabel,
+                    ...(Array.isArray((item as any).printer_groups) && (item as any).printer_groups.length > 0 ? { printer_groups: (item as any).printer_groups } : {}),
+                  }]);
                   setShowSearchModal(false);
                   setSoftKbTarget(null);
                 }
@@ -11407,7 +12401,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       <div ref={voidModalRef as any} className="bg-white rounded-xl shadow-2xl w-full max-w-[720px] p-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-2">
           <div className="text-lg font-bold text-gray-900">Void Items</div>
-          <button className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-11 h-11 flex items-center justify-center rounded hover:bg-gray-100 active:bg-gray-200" onClick={()=>setShowVoidModal(false)} title="Close">×</button>
+          <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700" style={{ background: 'rgba(156,163,175,0.25)' }} onClick={()=>setShowVoidModal(false)} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
         <div className="flex flex-col lg:flex-row gap-4">
           <div className="w-full lg:max-w-[400px] lg:flex-none space-y-3">
@@ -11648,10 +12642,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {/* Open Price Modal */}
       {showOpenPriceModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-4 w-[400px] max-w-[95vw] shadow-2xl">
+          <div className="bg-white rounded-xl p-4 w-[400px] max-w-[95vw] shadow-2xl relative" style={{ marginBottom: '185px' }}>
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-lg font-bold text-gray-900">Open Price</h3>
-              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="text-gray-600 hover:text-gray-800 text-2xl font-bold" title="Close">×</button>
+              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             </div>
 
             {openPriceError && (
@@ -11985,7 +12979,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             {/* Reset to Default Button */}
             <div className="mb-6">
               <button
-                onClick={() => {
+                onClick={async () => {
                   setItemColors(prev => {
                     const newColors = { ...prev };
                     if (selectedItemForColor) {
@@ -11993,6 +12987,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     }
                     return newColors;
                   });
+                  try {
+                    if (selectedItemForColor) {
+                      await fetch(`${API_URL}/menu-item-colors`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [selectedItemForColor.id]: null }),
+                      });
+                    }
+                  } catch {}
                   setShowItemColorModal(false);
                 }}
                 className="w-full bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors font-medium"
@@ -12154,13 +13157,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             {selectedColors.length > 0 && selectedItemForColor && (
               <div className="mb-6">
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     // Apply the first selected color to the selected menu item
                     const colorToApply = selectedColors[0];
                     setItemColors(prev => ({
                       ...prev,
                       [selectedItemForColor.id]: colorToApply
                     }));
+                    try {
+                      await fetch(`${API_URL}/menu-item-colors`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [selectedItemForColor.id]: colorToApply }),
+                      });
+                    } catch {}
                     setSelectedColors([]);
                     setShowCustomColorModal(false);
                   }}
@@ -13623,18 +14633,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden relative" style={{ transform: 'translateY(-70px)' }}>
+              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={handleCancelDiscount} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
               {/* Header */}
               <div className="bg-gradient-to-r from-purple-600 to-purple-700 px-3 py-2 flex justify-between items-center">
                 <h3 className="text-base font-bold text-white">Order Discount</h3>
-                <button onClick={handleCancelDiscount} className="text-white hover:text-gray-200 text-xl font-bold leading-none">&times;</button>
               </div>
               
               {/* Order Subtotal Info */}
-              <div className="bg-gray-50 px-3 py-1.5 border-b border-gray-200">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-medium text-gray-700">Order Subtotal</span>
-                  <span className="text-sm font-bold text-gray-900">${orderSubtotal.toFixed(2)}</span>
+              <div className="bg-gray-50 px-3 py-3 border-b border-gray-200">
+                <div className="flex justify-center items-center gap-3">
+                  <span className="text-lg font-medium text-gray-700">Order Subtotal</span>
+                  <span className="text-xl font-bold text-gray-900">${orderSubtotal.toFixed(2)}</span>
                 </div>
               </div>
 
@@ -13904,7 +14914,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-[798px] max-h-[80vh] overflow-y-auto">
+            <div className="bg-white rounded-lg p-6 w-[798px] max-h-[80vh] overflow-y-auto relative">
+              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
               <div className="flex justify-between items-center mb-4">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-800">Sold Out Options</h3>
@@ -13914,12 +14925,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                   )}
                 </div>
-                <button 
-                  onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} 
-                  className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-10 h-10 flex items-center justify-center"
-                >
-                  ×
-                </button>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 {/* Left column: actions */}
@@ -14009,9 +15014,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div 
-              className="bg-gray-200 rounded-xl shadow-2xl w-full max-w-[1000px] h-full max-h-[740px] min-h-[400px] flex flex-col"
+              className="bg-gray-200 rounded-xl shadow-2xl w-full max-w-[1000px] h-full max-h-[740px] min-h-[400px] flex flex-col relative"
               onClick={(e) => e.stopPropagation()}
             >
+              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0">
                 <h2 className="text-lg font-bold text-white">Order History</h2>
@@ -14082,17 +15088,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={() => {
-                    setShowOrderListModal(false);
-                    setShowOrderListCalendar(false);
-                    setOrderListSelectedOrder(null);
-                    setOrderListSelectedItems([]);
-                  }}
-                  className="px-4 sm:px-6 py-2 sm:py-3 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-lg text-base sm:text-lg font-bold"
-                >
-                  ✕ Close
-                </button>
+                <div />
               </div>
 
               {/* Content */}
@@ -14129,12 +15125,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               {badge.label}
                             </span>
                             <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
-                              <span className="font-bold text-gray-700">#{order.id}</span>
-                              {order.order_number && (
-                                <span className="text-[10px] font-normal text-gray-400 ml-0.5">
-                                  {order.order_number.length > 12 ? order.order_number.slice(0, 12) + '...' : order.order_number}
-                                </span>
-                              )}
+                              <span className="font-bold text-gray-700">{order.order_number ? `#${order.order_number}` : `#${order.id}`}</span>
                             </span>
                             <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
                             <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
@@ -14163,64 +15154,57 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           const isPaid = status === 'paid' || status === 'closed' || status === 'completed' || 
                                         paymentStatus === 'paid' || paymentStatus === 'completed' ||
                                         orderListSelectedOrder.paid === true;
-                          if (!isPaid) {
-                            return (
-                              <button
-                                onClick={async () => {
-                                  // Load order items and open payment modal directly
-                                  const orderId = orderListSelectedOrder.id;
-                                  try {
-                                    const res = await fetch(`${API_URL}/orders/${encodeURIComponent(orderId)}`);
-                                    if (!res.ok) throw new Error('Failed to load order');
-                                    const json = await res.json();
-                                    const items = Array.isArray(json.items) ? json.items : [];
-                                    
-                                    // Set order items
-                                    setOrderItems(items.map((it: any) => ({
-                                      id: it.item_id?.toString() || it.id?.toString() || Math.random().toString(),
-                                      name: it.name,
-                                      quantity: it.quantity || 1,
-                                      price: it.price || 0,
-                                      totalPrice: it.price || 0,
-                                      type: (Number(it.price || 0) < 0) ? 'discount' : 'item',
-                                      guestNumber: (typeof it.guest_number === 'number' && it.guest_number > 0) ? it.guest_number : 1,
-                                      modifiers: (() => { try { return JSON.parse(it.modifiers_json || '[]'); } catch { return []; } })(),
-                                      memo: (() => { try { return it.memo_json ? JSON.parse(it.memo_json) : undefined; } catch { return undefined; } })(),
-                                      discount: (() => { try { return it.discount_json ? JSON.parse(it.discount_json) : undefined; } catch { return undefined; } })(),
-                                      splitDenominator: (typeof it.split_denominator === 'number' && it.split_denominator > 0) ? it.split_denominator : undefined,
-                                      orderLineId: it.order_line_id || undefined
-                                    })));
-                                    
-                                    // Set order ID
-                                    savedOrderIdRef.current = orderId;
-                                    
-                                    // Close order list modal and open payment modal
-                                    setShowOrderListModal(false);
-                                    setShowPaymentModal(true);
-                                  } catch (e) {
-                                    console.error('Failed to load order for payment:', e);
-                                    alert('Failed to load order. Please try again.');
-                                  }
-                                }}
-                                style={{ flex: 3 }}
-                                className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-base font-bold"
-                              >
-                                💳 Pay
-                              </button>
-                            );
-                          }
-                          return null;
+                          return (
+                            <button
+                              onClick={async () => {
+                                if (isPaid) return;
+                                const orderId = orderListSelectedOrder.id;
+                                await openPaymentModalForOrderId(orderId, () => {
+                                  setShowOrderListModal(false);
+                                });
+                              }}
+                              disabled={isPaid}
+                              style={{ flex: 1 }}
+                              className={`py-4 rounded-lg text-base font-bold ${
+                                isPaid
+                                  ? 'bg-emerald-200 text-emerald-800 cursor-not-allowed opacity-80'
+                                  : 'bg-green-600 hover:bg-green-700 active:bg-green-800 text-white'
+                              }`}
+                            >
+                              {isPaid ? 'PAID' : '💳 Pay'}
+                            </button>
+                          );
+                        })()}
+                        {(() => {
+                          const isPaid = isOrderPaidForOrderList(orderListSelectedOrder);
+                          if (!isPaid) return null;
+                          return (
+                            <button
+                              onClick={async () => {
+                                await openRefundForOrderList(orderListSelectedOrder);
+                              }}
+                              style={{ flex: 1 }}
+                              className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-base font-bold"
+                            >
+                              Refund
+                            </button>
+                          );
+                        })()}
+                        {(() => {
+                          const orderPaid = isOrderPaidForOrderList(orderListSelectedOrder);
+                          return (
+                            <button
+                              onClick={orderPaid ? handleQsrPrintBill : handleOrderListPrintBill}
+                              style={{ flex: 1 }}
+                              className={`py-4 rounded-lg text-base font-bold ${orderPaid ? 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'} text-white`}
+                            >
+                              {orderPaid ? 'Print Receipt' : 'Print Bill'}
+                            </button>
+                          );
                         })()}
                         <button
-                          onClick={handleOrderListPrintBill}
-                          style={{ flex: 5 }}
-                          className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-base font-bold"
-                        >
-                          Print Bill
-                        </button>
-                        <button
                           onClick={handleOrderListPrintKitchen}
-                          style={{ flex: 5 }}
+                          style={{ flex: 1 }}
                           className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
                         >
                           Reprint
@@ -14364,19 +15348,254 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         );
       })()}
 
+      {/* QSR Order History - Refund Modal */}
+      {showOrderListRefundModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-[900px] max-h-[85vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-red-600 text-white px-5 py-3 flex justify-between items-center">
+              <h3 className="text-lg font-bold">Refund</h3>
+              <button
+                onClick={closeRefundForOrderList}
+                className="text-white hover:text-gray-200 text-4xl font-bold w-12 h-12 flex items-center justify-center rounded-lg hover:bg-red-700 transition-colors"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              {orderListRefundLoading ? (
+                <div className="text-center py-10 text-gray-500">Loading...</div>
+              ) : orderListRefundError ? (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 font-semibold">
+                  {orderListRefundError}
+                </div>
+              ) : !orderListRefundDetails?.order ? (
+                <div className="text-center py-10 text-gray-500">No refund data</div>
+              ) : (
+                (() => {
+                  const details = orderListRefundDetails;
+                  const order = details.order || {};
+                  const items = Array.isArray(details.items) ? details.items : [];
+                  const payments = Array.isArray(details.payments) ? details.payments : [];
+                  const paymentMethod = payments.length > 0 ? payments.map((p: any) => p.method).filter(Boolean).join(', ') : 'CASH';
+                  const normalizedMethod = (payments[0]?.method || '').toString().toUpperCase();
+                  const isGift = normalizedMethod.includes('GIFT');
+                  const totals = calculateOrderListRefundTotals();
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Order info */}
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                        <div className="flex flex-wrap gap-2 items-center justify-between">
+                          <div className="font-bold text-gray-800">
+                            Order #{order.order_number || order.id}
+                            <span className="ml-2 text-sm font-semibold text-gray-500">
+                              {order.created_at ? `${orderListFormatDate(order.created_at)} ${orderListFormatTime(order.created_at)}` : ''}
+                            </span>
+                          </div>
+                          <div className="text-sm font-bold text-gray-700">
+                            Paid: <span className="text-green-700">${Number(details.totalPaid || 0).toFixed(2)}</span>
+                            <span className="ml-2 text-gray-500">Refundable: </span>
+                            <span className="text-red-700">${Number(details.refundableAmount || 0).toFixed(2)}</span>
+                          </div>
+                        </div>
+                        <div className="mt-1 text-sm text-gray-600">
+                          Method: <span className="font-semibold text-gray-800">{paymentMethod || 'N/A'}</span>
+                        </div>
+                      </div>
+
+                      {/* Items */}
+                      <div className="border rounded-lg overflow-hidden">
+                        <div className="bg-gray-50 px-3 py-2 font-bold text-sm border-b flex">
+                          <div className="w-10">Sel</div>
+                          <div className="flex-1">Item</div>
+                          <div className="w-24 text-center">Qty</div>
+                          <div className="w-24 text-right">Price</div>
+                        </div>
+                        <div className="max-h-[320px] overflow-y-auto">
+                          {items
+                            .filter((it: any) => Number(it.unit_price ?? it.price ?? 0) > 0)
+                            .map((it: any) => {
+                              const id = Number(it.id);
+                              const maxQty = Number(it.refundable_quantity ?? 0);
+                              const unitPrice = Number(it.unit_price ?? it.price ?? 0);
+                              const selectedQty = Number(orderListRefundSelectedItems[id] || 0);
+                              const isSelected = selectedQty > 0;
+
+                              return (
+                                <div
+                                  key={id}
+                                  className={`px-3 py-2 border-b flex items-center text-sm ${
+                                    maxQty <= 0 ? 'bg-gray-100 opacity-60' : isSelected ? 'bg-red-50' : 'bg-white'
+                                  }`}
+                                >
+                                  <div className="w-10">
+                                    {maxQty > 0 && (
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => toggleOrderListRefundItem(id, maxQty)}
+                                        className="w-6 h-6 cursor-pointer"
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="font-semibold text-gray-800">{it.name || it.item_name}</div>
+                                    {Number(it.refunded_quantity || 0) > 0 && (
+                                      <div className="text-xs text-red-600">Refunded: {Number(it.refunded_quantity || 0)}</div>
+                                    )}
+                                  </div>
+                                  <div className="w-24 text-center">
+                                    {isSelected && maxQty > 1 ? (
+                                      <div className="flex items-center justify-center gap-1">
+                                        <button
+                                          onClick={() => updateOrderListRefundItemQty(id, selectedQty - 1)}
+                                          className="w-7 h-7 bg-gray-200 rounded font-bold"
+                                        >
+                                          -
+                                        </button>
+                                        <span className="w-8 text-center font-bold">{selectedQty}</span>
+                                        <button
+                                          onClick={() => updateOrderListRefundItemQty(id, Math.min(selectedQty + 1, maxQty))}
+                                          className="w-7 h-7 bg-gray-200 rounded font-bold"
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <span className="font-bold text-gray-700">{maxQty > 0 ? (isSelected ? selectedQty : maxQty) : '-'}</span>
+                                    )}
+                                  </div>
+                                  <div className="w-24 text-right font-semibold">${unitPrice.toFixed(2)}</div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+
+                      {/* Gift card number (if needed) */}
+                      {isGift && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                          <div className="text-sm font-bold text-amber-800 mb-2">Gift Card Reload Number *</div>
+                          <input
+                            type="text"
+                            value={orderListRefundGiftCardNumber}
+                            onChange={(e) => setOrderListRefundGiftCardNumber(e.target.value)}
+                            className="w-full px-3 py-2 border-2 border-amber-300 rounded-lg font-mono text-lg"
+                            placeholder="Gift card number"
+                          />
+                        </div>
+                      )}
+
+                      {/* Reason */}
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div className="text-sm font-bold text-blue-900 mb-2">Reason</div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            'Food Quality',
+                            'Wrong Order',
+                            'Cooking Delay',
+                            'Delivery Damage',
+                            'Duplicate Charge',
+                            'Incorrect Amount',
+                          ].map((reason) => (
+                            <button
+                              key={reason}
+                              onClick={() => setOrderListRefundReason(reason)}
+                              className={`px-2 py-3 text-xs rounded-lg border-2 font-bold whitespace-nowrap ${
+                                orderListRefundReason === reason
+                                  ? 'bg-red-600 text-white border-red-600'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                              }`}
+                            >
+                              {reason}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Totals */}
+                      <div className="bg-red-50 border-2 border-red-200 rounded-lg p-3">
+                        <div className="flex justify-between text-sm">
+                          <span>Subtotal:</span>
+                          <span>${totals.subtotal.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span>Tax Refund:</span>
+                          <span>${totals.tax.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-lg font-bold text-red-600 border-t pt-2 mt-2">
+                          <span>Total Refund:</span>
+                          <span>${totals.total.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      {orderListRefundResult && (
+                        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 font-bold">
+                          Refund completed. Refund ID: #{orderListRefundResult.id}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              )}
+            </div>
+
+            <div className="p-4 border-t flex gap-3 justify-end">
+              <button
+                onClick={closeRefundForOrderList}
+                className="px-5 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 font-bold text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setOrderListRefundPinError('');
+                  setShowOrderListRefundPinModal(true);
+                }}
+                disabled={
+                  orderListRefundLoading ||
+                  !orderListRefundDetails?.order ||
+                  calculateOrderListRefundTotals().total <= 0 ||
+                  Number(orderListRefundDetails?.refundableAmount ?? 0) <= 0 ||
+                  ((orderListRefundDetails?.payments?.[0]?.method || '').toString().toUpperCase().includes('GIFT') &&
+                    (!orderListRefundGiftCardNumber || orderListRefundGiftCardNumber.length < 4))
+                }
+                className="px-6 py-3 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Authorize Refund
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QSR Order History - Refund PIN Modal */}
+      <PinInputModal
+        isOpen={showOrderListRefundPinModal}
+        onClose={() => {
+          setShowOrderListRefundPinModal(false);
+          setOrderListRefundPinLoading(false);
+          setOrderListRefundPinError('');
+        }}
+        onSubmit={(pin) => submitRefundWithPinForOrderList(pin)}
+        title="Refund Authorization"
+        message="Manager/Owner PIN (4 digits)"
+        isLoading={orderListRefundPinLoading}
+        error={orderListRefundPinError}
+      />
+
       {/* Gift Card Modal - FSR style */}
       {showGiftCardModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden relative" style={{ transform: 'translateY(-70px)' }}>
+            <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setShowGiftCardModal(false); resetGiftCardForm(); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             {/* Header */}
             <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3 flex justify-between items-center">
               <h3 className="text-lg font-bold text-white">Gift Card</h3>
-              <button 
-                onClick={() => { setShowGiftCardModal(false); resetGiftCardForm(); }} 
-                className="text-white hover:text-gray-200 text-2xl font-bold leading-none"
-              >
-                &times;
-              </button>
             </div>
 
             <div className="p-3 space-y-2">
@@ -14704,9 +15923,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   setQsrCustomerZip('');
                   setQsrTogoNote('');
                 }}
-                className="w-12 h-12 flex items-center justify-center rounded-full bg-red-500 hover:bg-red-600 text-white text-2xl font-bold transition-colors shadow-lg"
+                className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700"
+                style={{ background: 'rgba(156,163,175,0.25)' }}
               >
-                ✕
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
 
@@ -14774,6 +15994,49 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   className="px-4 py-2 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-700 font-semibold hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {qsrReorderLoading ? 'Reordering...' : 'Reorder'}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const order = qsrHistoryOrderDetail?.order;
+                    if (!order?.id) {
+                      alert('No order selected.');
+                      return;
+                    }
+                    const isPaid = isOrderPaidForOrderList(order);
+                    if (isPaid) {
+                      alert('This order is already PAID.');
+                      return;
+                    }
+                    await openPaymentModalForOrderId(Number(order.id), () => {
+                      setShowQsrTogoModal(false);
+                    });
+                  }}
+                  disabled={!qsrHistoryOrderDetail?.order?.id || isOrderPaidForOrderList(qsrHistoryOrderDetail?.order)}
+                  className="px-4 py-2 rounded-lg bg-blue-50 border border-blue-300 text-blue-700 font-semibold hover:bg-blue-100 transition-colors ml-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Pay
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const order = qsrHistoryOrderDetail?.order;
+                    if (!order?.id) {
+                      alert('No order selected.');
+                      return;
+                    }
+                    const isPaid = isOrderPaidForOrderList(order);
+                    if (!isPaid) {
+                      alert('Only paid orders can be refunded.');
+                      return;
+                    }
+                    await openRefundForOrderList(order);
+                    setShowQsrTogoModal(false);
+                  }}
+                  disabled={!qsrHistoryOrderDetail?.order?.id || !isOrderPaidForOrderList(qsrHistoryOrderDetail?.order)}
+                  className="px-4 py-2 rounded-lg bg-red-50 border border-red-300 text-red-700 font-semibold hover:bg-red-100 transition-colors ml-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Refund
                 </button>
                 {/* OK Button - Save customer info and return to order page */}
                 <button
@@ -15114,9 +16377,85 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             {/* Pickup Complete Tab */}
             {qsrPickupModalTab === 'complete' && (
               <div className="flex flex-col flex-1 min-h-0">
-                {/* Content - Placeholder for next implementation */}
-                <div className="flex-1 flex items-center justify-center text-slate-400 text-sm border border-dashed border-slate-300 rounded-lg">
-                  Pickup Complete content will be implemented in the next step.
+                <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-800">Pickup Complete</h3>
+                    <p className="text-xs text-slate-500">Paid pickup orders waiting to be marked as picked up.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={loadQsrPickupCompleteOrders}
+                    disabled={qsrPickupCompleteLoading}
+                    className="px-4 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 font-semibold hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {qsrPickupCompleteLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {qsrPickupCompleteError && (
+                  <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    {qsrPickupCompleteError}
+                  </div>
+                )}
+
+                <div className="flex-1 min-h-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
+                  {qsrPickupCompleteLoading ? (
+                    <div className="h-full flex items-center justify-center text-slate-400 text-sm">
+                      Loading...
+                    </div>
+                  ) : qsrPickupCompleteOrders.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-slate-400 text-sm">
+                      No paid pickup orders.
+                    </div>
+                  ) : (
+                    <OrderDetailModal
+                      isOpen={true}
+                      embedded={true}
+                      showTabs={false}
+                      defaultTab="togo"
+                      onlineOrders={[]}
+                      deliveryOrders={[]}
+                      togoOrders={qsrPickupCompleteOrders}
+                      initialOrderType="togo"
+                      initialSelectedOrder={qsrPickupCompleteOrders[0] || null}
+                      onClose={() => {}}
+                      onOrdersRefresh={loadQsrPickupCompleteOrders}
+                      onPayment={async (order) => {
+                        const rawId: any = (order as any)?.order_id ?? order?.id;
+                        const id = Number(rawId);
+                        if (!Number.isFinite(id) || id <= 0) {
+                          alert('Invalid order.');
+                          return;
+                        }
+                        await openPaymentModalForOrderId(id, () => {
+                          setShowQsrTogoModal(false);
+                        });
+                      }}
+                      onPickupComplete={async (order) => {
+                        const orderId: any = (order as any)?.order_id ?? order?.id;
+                        if (!orderId) return;
+                        try {
+                          await fetch(`${API_URL}/orders/${orderId}/status`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'PICKED_UP' }),
+                          });
+                        } catch (e) {
+                          console.error('[QSR] Pickup complete error:', e);
+                        } finally {
+                          const removeA = String(order?.id ?? '');
+                          const removeB = String(orderId ?? '');
+                          setQsrPickupCompleteOrders((prev) =>
+                            prev.filter((o) => {
+                              const id = String((o as any)?.id ?? '');
+                              return id !== removeA && id !== removeB;
+                            })
+                          );
+                          loadQsrPickupCompleteOrders();
+                        }
+                      }}
+                    />
+                  )}
                 </div>
               </div>
             )}
@@ -15127,7 +16466,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {/* QSR Delivery Modal (copied from FSR) */}
       {showQsrDeliveryModal && (
         <div className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-2">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[950px] flex flex-col overflow-hidden" style={{ height: 'min(90vh, 560px)' }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[950px] flex flex-col overflow-hidden relative" style={{ height: 'min(90vh, 560px)' }}>
+            <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => setShowQsrDeliveryModal(false)} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             {/* 상단: 좌-채널(35%), 중-프렙타임(50%), 우-버튼(15%) */}
             <div className="flex-shrink-0 border-b border-gray-300">
               <div className="flex items-stretch">
@@ -15301,10 +16641,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {/* Online Settings Modal (Prep Time, Pause, Day Off, Menu Hide) */}
       {showPrepTimeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[644px]" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl shadow-2xl w-[644px] relative" onClick={(e) => e.stopPropagation()}>
+            <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => setShowPrepTimeModal(false)} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             {/* Header */}
-            <div className="flex items-center justify-center px-5 py-3 bg-slate-700 rounded-t-xl">
+            <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
+              <div className="w-8" />
               <h2 className="text-lg font-bold text-white">Online Settings</h2>
+              <div className="w-8" />
             </div>
             {/* Tabs */}
             <div className="flex gap-2 p-3 bg-gray-100">
@@ -15563,11 +16906,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       <PaymentCompleteModal
         isOpen={showPaymentCompleteModal}
         onClose={handlePaymentCompleteClose}
+        mode={paymentCompleteData?.isPartialPayment ? 'full' : 'receiptOnly'}
+        onAddTips={(receiptCount) => {
+          setPendingReceiptCountForTip(receiptCount);
+          setShowPaymentCompleteModal(false);
+          setShowTipEntryModal(true);
+        }}
         change={paymentCompleteData?.change || 0}
         total={paymentCompleteData?.total || 0}
         tip={paymentCompleteData?.tip || 0}
         payments={paymentCompleteData?.payments || []}
         hasCashPayment={paymentCompleteData?.hasCashPayment || false}
+        isPartialPayment={paymentCompleteData?.isPartialPayment}
+        currentGuestNumber={paymentCompleteData?.currentGuestNumber}
+        allGuests={Array.from(guestIds)}
+        paidGuests={Array.from(new Set([...(persistedPaidGuests || []), ...(paymentCompleteData?.currentGuestNumber ? [paymentCompleteData.currentGuestNumber] : [])]))}
+        onSelectGuest={(guestNumber: number) => {
+          setShowPaymentCompleteModal(false);
+          setPaymentCompleteData(null);
+          allModeStickyRef.current = false;
+          payInFullFromSplitRef.current = false;
+          receiptPrintedRef.current = false;
+          setGuestPaymentMode(guestNumber as any);
+          if (typeof guestNumber === 'number') setActiveGuestNumber(guestNumber);
+          setPrefillDueNonce(n => n + 1);
+          setTimeout(() => {
+            setShowPaymentModal(true);
+          }, 0);
+        }}
+        onBackToOrder={() => { setShowPaymentCompleteModal(false); setPaymentCompleteData(null); }}
         onAddCashTip={async (tipAmount: number) => {
           const orderId = savedOrderIdRef.current;
           if (!orderId || tipAmount <= 0) return;
@@ -15583,6 +16950,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               console.log(`💰 QSR Cash tip $${tipAmount} saved`);
             }
           } catch (e) { console.error('QSR cash tip save failed:', e); }
+        }}
+      />
+
+      <TipEntryModal
+        isOpen={showTipEntryModal}
+        onClose={() => {
+          setShowTipEntryModal(false);
+          setShowPaymentCompleteModal(true);
+        }}
+        onSave={async (tipAmount) => {
+          const orderId = savedOrderIdRef.current;
+          if (!orderId || tipAmount <= 0) return;
+          try {
+            const payRes = await fetch(`${API_URL}/payments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: null })
+            });
+            if (payRes.ok) {
+              const payData = await payRes.json();
+              setSessionPayments(prev => ([...prev, { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: undefined }]));
+            }
+          } catch (e) {
+            console.error('QSR cash tip save failed:', e);
+          }
+          setShowTipEntryModal(false);
+          await handlePaymentCompleteClose(pendingReceiptCountForTip, tipAmount);
         }}
       />
         </>

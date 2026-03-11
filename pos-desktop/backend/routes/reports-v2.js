@@ -12,6 +12,11 @@ const { db } = require('../db');
 // 데이터베이스 연결 (레거시 호환)
 const getDatabase = () => db;
 
+// "Paid-like" statuses used across the app.
+// Historically some reports used only COMPLETED; in POS runtime we also use PAID/CLOSED/PICKED_UP.
+const PAID_STATUSES_SQL = "UPPER(status) IN ('PAID','COMPLETED','CLOSED','PICKED_UP')";
+const PAID_STATUSES_SQL_O = "UPPER(o.status) IN ('PAID','COMPLETED','CLOSED','PICKED_UP')";
+
 // Firebase Firestore
 const getFirestore = () => {
   try {
@@ -575,12 +580,15 @@ function getHourlySales(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        CAST(strftime('%H', created_at) AS INTEGER) as hour,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue,
-        COALESCE(AVG(total), 0) as avgCheck
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        CAST(strftime('%H', o.created_at) AS INTEGER) as hour,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avgCheck
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY hour ORDER BY hour
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -616,7 +624,7 @@ function getHourlyDistribution(db, startDate, endDate) {
         CAST(strftime('%H', created_at) AS INTEGER) as hour,
         COUNT(*) as count
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL}
       GROUP BY hour ORDER BY hour
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -643,12 +651,15 @@ function getPeakHoursAnalysis(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        CAST(strftime('%w', created_at) AS INTEGER) as dayOfWeek,
-        CAST(strftime('%H', created_at) AS INTEGER) as hour,
-        COUNT(*) as count,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        CAST(strftime('%w', o.created_at) AS INTEGER) as dayOfWeek,
+        CAST(strftime('%H', o.created_at) AS INTEGER) as hour,
+        COUNT(DISTINCT o.id) as count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY dayOfWeek, hour
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -702,7 +713,7 @@ function getCategoryBreakdown(db, startDate, endDate) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN items i ON oi.item_id = i.item_id
       LEFT JOIN categories c ON i.category_id = c.category_id
-      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
       GROUP BY c.category_id ORDER BY revenue DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -737,7 +748,7 @@ function getMenuPerformance(db, startDate, endDate) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN items i ON oi.item_id = i.item_id
       LEFT JOIN categories c ON i.category_id = c.category_id
-      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
       GROUP BY oi.item_id, oi.name
       ORDER BY revenue DESC LIMIT 30
     `, [startDate, endDate], (err, rows) => {
@@ -765,7 +776,7 @@ function getModifierSales(db, startDate, endDate) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN modifiers m ON oim.modifier_id = m.modifier_id
       LEFT JOIN modifier_groups mg ON m.modifier_group_id = mg.modifier_group_id
-      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
       GROUP BY m.modifier_id
       ORDER BY usageCount DESC LIMIT 20
     `, [startDate, endDate], (err, rows) => {
@@ -787,12 +798,15 @@ function getOrderSourceAnalysis(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        COALESCE(order_type, 'DINE_IN') as source,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY order_type ORDER BY revenue DESC
+        COALESCE(o.order_type, 'DINE_IN') as source,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY o.order_type ORDER BY revenue DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       
@@ -830,7 +844,7 @@ function getGuestCountTrend(db, startDate, endDate) {
         COALESCE(SUM(guests), 0) as guests,
         COUNT(*) as orders
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL}
       GROUP BY DATE(created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -855,7 +869,7 @@ function getAverageCheckSize(db, startDate, endDate) {
         COALESCE(MIN(total), 0) as minCheck,
         COALESCE(MAX(total), 0) as maxCheck
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED' AND total > 0
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL} AND total > 0
       GROUP BY DATE(created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -877,13 +891,16 @@ function getRevenuePerSeat(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COALESCE(SUM(total), 0) as revenue,
-        COALESCE(SUM(guests), 0) as guests,
-        CASE WHEN SUM(guests) > 0 THEN SUM(total) / SUM(guests) ELSE 0 END as revenuePerSeat
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY DATE(created_at) ORDER BY date
+        DATE(o.created_at) as date,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(o.guests), 0) as guests,
+        CASE WHEN SUM(o.guests) > 0 THEN SUM(p.amount - COALESCE(p.tip, 0)) / SUM(o.guests) ELSE 0 END as revenuePerSeat
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY DATE(o.created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       
@@ -908,13 +925,16 @@ function getTableTurnover(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        table_id,
-        COUNT(*) as orderCount,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? 
-        AND status = 'COMPLETED' 
-        AND table_id IS NOT NULL
+        o.table_id,
+        COUNT(DISTINCT o.id) as orderCount,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? 
+        AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        AND o.table_id IS NOT NULL
       GROUP BY table_id ORDER BY orderCount DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -933,14 +953,17 @@ function getSalesByTable(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        table_id as tableName,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue,
-        COALESCE(AVG(total), 0) as avgCheck
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? 
-        AND status = 'COMPLETED' 
-        AND table_id IS NOT NULL
+        o.table_id as tableName,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avgCheck
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? 
+        AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        AND o.table_id IS NOT NULL
       GROUP BY table_id ORDER BY revenue DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -969,7 +992,7 @@ function getDwellTimeAnalysis(db, startDate, endDate) {
         COUNT(*) as orders
       FROM orders
       WHERE DATE(created_at) BETWEEN ? AND ? 
-        AND status = 'COMPLETED' 
+        AND ${PAID_STATUSES_SQL} 
         AND table_id IS NOT NULL
       GROUP BY table_id
       HAVING avgDwellMinutes > 0
@@ -1003,7 +1026,7 @@ function getTopSellingItems(db, startDate, endDate, limit = 20) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN items i ON oi.item_id = i.item_id
       LEFT JOIN categories c ON i.category_id = c.category_id
-      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
       GROUP BY oi.item_id, oi.name
       ORDER BY quantity DESC LIMIT ?
     `, [startDate, endDate, limit], (err, rows) => {
@@ -1032,7 +1055,7 @@ function getSlowMovingItems(db, startDate, endDate, limit = 20) {
       LEFT JOIN order_items oi ON i.item_id = oi.item_id
       LEFT JOIN orders o ON oi.order_id = o.order_id 
         AND DATE(o.created_at) BETWEEN ? AND ?
-        AND o.status = 'COMPLETED'
+        AND ${PAID_STATUSES_SQL_O}
       WHERE i.is_active = 1
       GROUP BY i.item_id
       ORDER BY quantity ASC LIMIT ?
@@ -1149,7 +1172,7 @@ function getServiceCharges(db, startDate, endDate) {
         COALESCE(SUM(service_charge), 0) as serviceCharges,
         COUNT(*) as orderCount
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL}
       GROUP BY DATE(created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1169,14 +1192,17 @@ function getGrossNetRevenue(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COALESCE(SUM(subtotal), 0) as grossRevenue,
-        COALESCE(SUM(discount_amount), 0) as discounts,
-        COALESCE(SUM(total), 0) as netRevenue,
-        COALESCE(SUM(tax), 0) as taxes
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY DATE(created_at) ORDER BY date
+        DATE(o.created_at) as date,
+        COALESCE(SUM(o.subtotal), 0) as grossRevenue,
+        COALESCE(SUM(o.discount_amount), 0) as discounts,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as netRevenue,
+        COALESCE(SUM(o.tax), 0) as taxes
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY DATE(o.created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       
@@ -1206,7 +1232,7 @@ function getProfitMarginAnalysis(db, startDate, endDate) {
         COALESCE(SUM(discount_amount), 0) as discounts,
         COALESCE(SUM(total - subtotal + discount_amount), 0) as adjustments
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL}
       GROUP BY DATE(created_at) ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1273,12 +1299,15 @@ function getMonthlySalesComparison(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        strftime('%Y-%m', created_at) as month,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue,
-        COALESCE(AVG(total), 0) as avgCheck
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        strftime('%Y-%m', o.created_at) as month,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avgCheck
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY month ORDER BY month
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1292,12 +1321,15 @@ function getYearlySalesAnalysis(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        strftime('%Y', created_at) as year,
-        strftime('%m', created_at) as month,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        strftime('%Y', o.created_at) as year,
+        strftime('%m', o.created_at) as month,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY year, month ORDER BY year, month
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1335,7 +1367,7 @@ function getDiscountPromotionAnalysis(db, startDate, endDate) {
         COALESCE(SUM(discount_amount), 0) as totalDiscount,
         COALESCE(AVG(discount_amount), 0) as avgDiscount
       FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED' AND discount_amount > 0
+      WHERE DATE(created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL} AND discount_amount > 0
       GROUP BY date ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1349,13 +1381,16 @@ function getOnlineOrderPerformance(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? 
-        AND status = 'COMPLETED'
-        AND order_type IN ('ONLINE', 'TABLE_QR', 'KIOSK')
+        DATE(o.created_at) as date,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? 
+        AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        AND o.order_type IN ('ONLINE', 'TABLE_QR', 'KIOSK')
       GROUP BY date ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1369,13 +1404,16 @@ function getChannelPerformance(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        COALESCE(order_type, 'DINE_IN') as channel,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue,
-        COALESCE(AVG(total), 0) as avgCheck
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY order_type ORDER BY revenue DESC
+        COALESCE(o.order_type, 'DINE_IN') as channel,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avgCheck
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY o.order_type ORDER BY revenue DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       resolve({ title: 'Channel Performance', chartType: 'bar', data: rows || [] });
@@ -1388,12 +1426,15 @@ function getChannelRevenueComparison(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COALESCE(order_type, 'DINE_IN') as channel,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY date, order_type ORDER BY date, revenue DESC
+        DATE(o.created_at) as date,
+        COALESCE(o.order_type, 'DINE_IN') as channel,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY date, o.order_type ORDER BY date, revenue DESC
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       resolve({ title: 'Channel Revenue Comparison', chartType: 'grouped-bar', data: rows || [] });
@@ -1406,13 +1447,16 @@ function getChannelGrowthAnalysis(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        strftime('%Y-%m', created_at) as month,
-        COALESCE(order_type, 'DINE_IN') as channel,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
-      GROUP BY month, order_type ORDER BY month
+        strftime('%Y-%m', o.created_at) as month,
+        COALESCE(o.order_type, 'DINE_IN') as channel,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY month, o.order_type ORDER BY month
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
       resolve({ title: 'Channel Growth Analysis', chartType: 'line', data: rows || [] });
@@ -1425,14 +1469,17 @@ function getDeliveryPlatformRevenue(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COALESCE(delivery_platform, order_type) as platform,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? 
-        AND status = 'COMPLETED'
-        AND order_type IN ('DELIVERY', 'UBEREATS', 'DOORDASH', 'SKIP')
+        DATE(o.created_at) as date,
+        COALESCE(o.delivery_platform, o.order_type) as platform,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? 
+        AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        AND o.order_type IN ('DELIVERY', 'UBEREATS', 'DOORDASH', 'SKIP')
       GROUP BY date, platform ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1482,13 +1529,16 @@ function getTaxSummaryReport(db, startDate, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as orders,
-        COALESCE(SUM(tax), 0) as totalTax,
-        COALESCE(SUM(subtotal), 0) as subtotal,
-        COALESCE(SUM(total), 0) as total
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        DATE(o.created_at) as date,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(o.tax), 0) as totalTax,
+        COALESCE(SUM(o.subtotal), 0) as subtotal,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY date ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1523,11 +1573,14 @@ function getRevenuePerLaborHour(db, startDate, endDate) {
     db.all(`
       SELECT 
         DATE(o.created_at) as date,
-        COALESCE(SUM(o.total), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
         COUNT(DISTINCT e.id) as employeeCount
-      FROM orders o
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
       LEFT JOIN employees e ON 1=1
-      WHERE DATE(o.created_at) BETWEEN ? AND ? AND o.status = 'COMPLETED'
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY date ORDER BY date
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1540,14 +1593,17 @@ function getWeeklySalesTrend(db, endDate) {
   return new Promise((resolve, reject) => {
     db.all(`
       SELECT 
-        DATE(created_at) as date,
-        strftime('%w', created_at) as dayOfWeek,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN DATE(?, '-6 days') AND DATE(?)
-        AND status = 'COMPLETED'
-      GROUP BY DATE(created_at) ORDER BY date
+        DATE(o.created_at) as date,
+        strftime('%w', o.created_at) as dayOfWeek,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN DATE(?, '-6 days') AND DATE(?)
+        AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY DATE(o.created_at) ORDER BY date
     `, [endDate, endDate], (err, rows) => {
       if (err) return reject(err);
       
@@ -1570,11 +1626,14 @@ function getDayOfWeekPerformance(db, startDate, endDate) {
     
     db.all(`
       SELECT 
-        CAST(strftime('%w', created_at) AS INTEGER) as dayOfWeek,
-        COUNT(*) as orders,
-        COALESCE(SUM(total), 0) as revenue
-      FROM orders
-      WHERE DATE(created_at) BETWEEN ? AND ? AND status = 'COMPLETED'
+        CAST(strftime('%w', o.created_at) AS INTEGER) as dayOfWeek,
+        COUNT(DISTINCT o.id) as orders,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY dayOfWeek ORDER BY dayOfWeek
     `, [startDate, endDate], (err, rows) => {
       if (err) return reject(err);
@@ -1635,11 +1694,14 @@ async function generatePrintText(db, reportId, date, shiftId, width) {
       const totals = await new Promise((resolve) => {
         db.get(`
           SELECT 
-            COUNT(*) as orderCount,
-            COALESCE(SUM(total), 0) as totalSales,
-            COALESCE(SUM(tax), 0) as totalTax
-          FROM orders
-          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+            COUNT(DISTINCT o.id) as orderCount,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as totalSales,
+            COALESCE(SUM(o.tax), 0) as totalTax
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         `, [date], (err, row) => resolve(row || { orderCount: 0, totalSales: 0, totalTax: 0 }));
       });
       
@@ -1676,42 +1738,50 @@ async function generatePrintText(db, reportId, date, shiftId, width) {
     }
     
     case 'daily-summary-report': {
-      // Get comprehensive daily data
       const summary = await new Promise((resolve) => {
         db.get(`
           SELECT 
-            COUNT(*) as orderCount,
-            COALESCE(SUM(subtotal), 0) as subtotal,
-            COALESCE(SUM(tax), 0) as tax,
-            COALESCE(SUM(discount_amount), 0) as discounts,
-            COALESCE(SUM(total), 0) as total,
-            COALESCE(SUM(guests), 0) as guests,
-            COALESCE(AVG(total), 0) as avgCheck
-          FROM orders
-          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+            COUNT(DISTINCT o.id) as orderCount,
+            COALESCE(SUM(o.subtotal), 0) as subtotal,
+            COALESCE(SUM(o.tax), 0) as tax,
+            COALESCE(SUM(o.discount_amount), 0) as discounts,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total,
+            COALESCE(SUM(o.guests), 0) as guests,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avgCheck
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         `, [date], (err, row) => resolve(row || {}));
       });
       
       const byChannel = await new Promise((resolve) => {
         db.all(`
           SELECT 
-            COALESCE(order_type, 'DINE_IN') as channel,
-            COUNT(*) as orders,
-            COALESCE(SUM(total), 0) as revenue
-          FROM orders
-          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
-          GROUP BY order_type ORDER BY revenue DESC
+            COALESCE(o.order_type, 'DINE_IN') as channel,
+            COUNT(DISTINCT o.id) as orders,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          GROUP BY o.order_type ORDER BY revenue DESC
         `, [date], (err, rows) => resolve(rows || []));
       });
       
       const byHour = await new Promise((resolve) => {
         db.all(`
           SELECT 
-            CAST(strftime('%H', created_at) AS INTEGER) as hour,
-            COUNT(*) as orders,
-            COALESCE(SUM(total), 0) as revenue
-          FROM orders
-          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+            CAST(strftime('%H', o.created_at) AS INTEGER) as hour,
+            COUNT(DISTINCT o.id) as orders,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
           GROUP BY hour ORDER BY hour
         `, [date], (err, rows) => resolve(rows || []));
       });
@@ -1752,15 +1822,17 @@ async function generatePrintText(db, reportId, date, shiftId, width) {
     }
     
     case 'shift-close-report': {
-      // Get shift data
       const shiftData = await new Promise((resolve) => {
         db.get(`
           SELECT 
-            COUNT(*) as orderCount,
-            COALESCE(SUM(total), 0) as total,
-            COALESCE(SUM(tax), 0) as tax
-          FROM orders
-          WHERE DATE(created_at) = ? AND status = 'COMPLETED'
+            COUNT(DISTINCT o.id) as orderCount,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total,
+            COALESCE(SUM(o.tax), 0) as tax
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         `, [date], (err, row) => resolve(row || {}));
       });
       
@@ -1873,6 +1945,455 @@ function generateCSV(reportDef, data) {
   
   return csv;
 }
+
+// ==================== OPERATIONAL REPORTS API ====================
+
+function dbAllPromise(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    const database = getDatabase();
+    database.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+}
+
+// Daily Operations Dashboard
+router.get('/operational/daily', async (req, res) => {
+  try {
+    const { date } = req.query;
+    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
+
+    const hourlySales = await dbAllPromise(`
+      SELECT strftime('%H', o.created_at) as hour,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY strftime('%H', o.created_at)
+      ORDER BY hour
+    `, [targetDate]);
+
+    const yesterdayHourly = await dbAllPromise(`
+      SELECT strftime('%H', o.created_at) as hour,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY strftime('%H', o.created_at)
+      ORDER BY hour
+    `, [yesterday]);
+
+    const paymentBreakdown = await dbAllPromise(`
+      SELECT p.payment_method,
+        COUNT(*) as count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as net_amount,
+        COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) = ? AND p.status = 'APPROVED' AND ${PAID_STATUSES_SQL_O}
+      GROUP BY p.payment_method
+    `, [targetDate]);
+
+    const tableTurnover = await dbAllPromise(`
+      SELECT table_name,
+        COUNT(*) as order_count,
+        MIN(created_at) as first_order,
+        MAX(closed_at) as last_close,
+        COALESCE(AVG(
+          CASE WHEN closed_at IS NOT NULL AND created_at IS NOT NULL
+          THEN (julianday(closed_at) - julianday(created_at)) * 24 * 60
+          END
+        ), 0) as avg_duration_min
+      FROM orders
+      WHERE DATE(created_at) = ? AND ${PAID_STATUSES_SQL}
+        AND table_name IS NOT NULL AND table_name != ''
+      GROUP BY table_name
+      ORDER BY order_count DESC
+    `, [targetDate]);
+
+    const todaySummary = await dbAllPromise(`
+      SELECT COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales,
+        0 as subtotal,
+        0 as tax_total,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check,
+        COALESCE(SUM(o.guest_count), 0) as guest_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+    `, [targetDate]);
+
+    const yesterdaySummary = await dbAllPromise(`
+      SELECT COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+    `, [yesterday]);
+
+    const refundsVoids = await dbAllPromise(`
+      SELECT 'refund' as type, COUNT(*) as count, COALESCE(SUM(total), 0) as total
+      FROM refunds WHERE DATE(created_at) = ?
+      UNION ALL
+      SELECT 'void' as type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
+      FROM voids WHERE DATE(created_at) = ?
+    `, [targetDate, targetDate]);
+
+    res.json({
+      success: true,
+      data: {
+        date: targetDate,
+        summary: todaySummary[0] || {},
+        yesterdaySummary: yesterdaySummary[0] || {},
+        hourlySales,
+        yesterdayHourly,
+        paymentBreakdown,
+        tableTurnover,
+        refundsVoids
+      }
+    });
+  } catch (e) {
+    console.error('[Operational Reports] Daily error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Weekly Performance Report
+router.get('/operational/weekly', async (req, res) => {
+  try {
+    const { endDate } = req.query;
+    const end = endDate || new Date().toISOString().slice(0, 10);
+    const start = new Date(new Date(end).getTime() - 6 * 86400000).toISOString().slice(0, 10);
+    const prevStart = new Date(new Date(start).getTime() - 7 * 86400000).toISOString().slice(0, 10);
+    const prevEnd = new Date(new Date(start).getTime() - 86400000).toISOString().slice(0, 10);
+
+    const dailySales = await dbAllPromise(`
+      SELECT DATE(o.created_at) as date,
+        strftime('%w', o.created_at) as day_of_week,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check,
+        0 as guest_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY DATE(o.created_at)
+      ORDER BY date
+    `, [start, end]);
+
+    const prevWeekSales = await dbAllPromise(`
+      SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COUNT(DISTINCT o.id) as order_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+    `, [prevStart, prevEnd]);
+
+    const topItems = await dbAllPromise(`
+      SELECT oi.name, SUM(oi.quantity) as qty, COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND COALESCE(oi.is_voided, 0) = 0
+      GROUP BY oi.name
+      ORDER BY qty DESC
+      LIMIT 10
+    `, [start, end]);
+
+    const worstItems = await dbAllPromise(`
+      SELECT oi.name, SUM(oi.quantity) as qty, COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND COALESCE(oi.is_voided, 0) = 0
+      GROUP BY oi.name
+      ORDER BY qty ASC
+      LIMIT 10
+    `, [start, end]);
+
+    const employeeSales = await dbAllPromise(`
+      SELECT COALESCE(o.server_name, o.employee_id, 'Unknown') as employee,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE DATE(o.created_at) BETWEEN ? AND ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY COALESCE(o.server_name, o.employee_id, 'Unknown')
+      ORDER BY revenue DESC
+    `, [start, end]);
+
+    const thisWeekTotal = dailySales.reduce((s, d) => s + d.revenue, 0);
+    const prevWeekTotal = prevWeekSales[0]?.revenue || 0;
+    const growthRate = prevWeekTotal > 0 ? ((thisWeekTotal - prevWeekTotal) / prevWeekTotal * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        period: { start, end },
+        dailySales,
+        totalRevenue: thisWeekTotal,
+        totalOrders: dailySales.reduce((s, d) => s + d.order_count, 0),
+        avgCheck: thisWeekTotal / Math.max(dailySales.reduce((s, d) => s + d.order_count, 0), 1),
+        prevWeekRevenue: prevWeekTotal,
+        growthRate: Math.round(growthRate * 10) / 10,
+        topItems,
+        worstItems,
+        employeeSales
+      }
+    });
+  } catch (e) {
+    console.error('[Operational Reports] Weekly error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Monthly Management Report
+router.get('/operational/monthly', async (req, res) => {
+  try {
+    const { month } = req.query;
+    const targetMonth = month || new Date().toISOString().slice(0, 7);
+    const [year, mon] = targetMonth.split('-').map(Number);
+    const prevMonth = mon === 1 ? `${year - 1}-12` : `${year}-${String(mon - 1).padStart(2, '0')}`;
+    const prevYearMonth = `${year - 1}-${String(mon).padStart(2, '0')}`;
+
+    const dailySales = await dbAllPromise(`
+      SELECT DATE(o.created_at) as date,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY DATE(o.created_at)
+      ORDER BY date
+    `, [targetMonth]);
+
+    const prevMonthSummary = await dbAllPromise(`
+      SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+    `, [prevMonth]);
+
+    const prevYearSummary = await dbAllPromise(`
+      SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COUNT(DISTINCT o.id) as order_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+    `, [prevYearMonth]);
+
+    const categorySales = await dbAllPromise(`
+      SELECT COALESCE(c.name, 'Uncategorized') as category,
+        SUM(oi.quantity) as qty,
+        COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
+      LEFT JOIN menu_categories c ON mi.category_id = c.category_id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND COALESCE(oi.is_voided, 0) = 0
+      GROUP BY c.category_id
+      ORDER BY revenue DESC
+    `, [targetMonth]);
+
+    const hourlySales = await dbAllPromise(`
+      SELECT strftime('%H', o.created_at) as hour,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY strftime('%H', o.created_at)
+      ORDER BY hour
+    `, [targetMonth]);
+
+    const discountSummary = await dbAllPromise(`
+      SELECT COALESCE(oa.label, oa.kind, 'Discount') as discount_type,
+        COUNT(*) as count,
+        COALESCE(SUM(oa.amount_applied), 0) as total_amount
+      FROM order_adjustments oa
+      JOIN orders o ON oa.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND COALESCE(oa.amount_applied, 0) > 0
+        AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT','PROMOTION','CHANNEL_DISCOUNT','COUPON')
+      GROUP BY COALESCE(oa.label, oa.kind, 'Discount')
+      ORDER BY total_amount DESC
+    `, [targetMonth]);
+
+    const channelSales = await dbAllPromise(`
+      SELECT COALESCE(o.order_type, 'DINE_IN') as channel,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE strftime('%Y-%m', o.created_at) = ? AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY o.order_type
+      ORDER BY revenue DESC
+    `, [targetMonth]);
+
+    const thisMonthTotal = dailySales.reduce((s, d) => s + d.revenue, 0);
+    const thisMonthOrders = dailySales.reduce((s, d) => s + d.order_count, 0);
+    const prevMTotal = prevMonthSummary[0]?.revenue || 0;
+    const prevYTotal = prevYearSummary[0]?.revenue || 0;
+
+    res.json({
+      success: true,
+      data: {
+        month: targetMonth,
+        totalRevenue: thisMonthTotal,
+        totalOrders: thisMonthOrders,
+        avgCheck: thisMonthTotal / Math.max(thisMonthOrders, 1),
+        prevMonthRevenue: prevMTotal,
+        prevMonthGrowth: prevMTotal > 0 ? Math.round((thisMonthTotal - prevMTotal) / prevMTotal * 1000) / 10 : 0,
+        prevYearRevenue: prevYTotal,
+        yoyGrowth: prevYTotal > 0 ? Math.round((thisMonthTotal - prevYTotal) / prevYTotal * 1000) / 10 : 0,
+        dailySales,
+        categorySales,
+        hourlySales,
+        discountSummary,
+        channelSales
+      }
+    });
+  } catch (e) {
+    console.error('[Operational Reports] Monthly error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Quarterly/Annual Trend Report
+router.get('/operational/trend', async (req, res) => {
+  try {
+    const { months } = req.query;
+    const numMonths = Math.min(parseInt(months) || 12, 24);
+    const now = new Date();
+
+    const monthlySales = await dbAllPromise(`
+      SELECT strftime('%Y-%m', o.created_at) as month,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check,
+        0 as guest_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE o.created_at >= date('now', '-${numMonths} months') AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY strftime('%Y-%m', o.created_at)
+      ORDER BY month
+    `);
+
+    const topItemsTrend = await dbAllPromise(`
+      SELECT strftime('%Y-%m', o.created_at) as month,
+        oi.name,
+        SUM(oi.quantity) as qty,
+        COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      WHERE o.created_at >= date('now', '-${numMonths} months') AND ${PAID_STATUSES_SQL_O}
+        AND COALESCE(oi.is_voided, 0) = 0
+      GROUP BY strftime('%Y-%m', o.created_at), oi.name
+      ORDER BY month, revenue DESC
+    `);
+
+    const channelTrend = await dbAllPromise(`
+      SELECT strftime('%Y-%m', o.created_at) as month,
+        COALESCE(o.order_type, 'DINE_IN') as channel,
+        COUNT(DISTINCT o.id) as order_count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE o.created_at >= date('now', '-${numMonths} months') AND ${PAID_STATUSES_SQL_O}
+        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+      GROUP BY strftime('%Y-%m', o.created_at), o.order_type
+      ORDER BY month
+    `);
+
+    // YoY growth
+    const yoyData = [];
+    for (const ms of monthlySales) {
+      const [y, m] = ms.month.split('-').map(Number);
+      const prevYearMonth = `${y - 1}-${String(m).padStart(2, '0')}`;
+      const prev = monthlySales.find(x => x.month === prevYearMonth);
+      yoyData.push({
+        month: ms.month,
+        revenue: ms.revenue,
+        prevYearRevenue: prev?.revenue || 0,
+        growth: prev?.revenue > 0 ? Math.round((ms.revenue - prev.revenue) / prev.revenue * 1000) / 10 : null
+      });
+    }
+
+    // Simple trend line (linear regression for forecast)
+    const revenueArr = monthlySales.map(m => m.revenue);
+    let forecast = [];
+    if (revenueArr.length >= 3) {
+      const n = revenueArr.length;
+      const sumX = n * (n - 1) / 2;
+      const sumY = revenueArr.reduce((a, b) => a + b, 0);
+      const sumXY = revenueArr.reduce((a, y, i) => a + i * y, 0);
+      const sumX2 = Array.from({ length: n }, (_, i) => i * i).reduce((a, b) => a + b, 0);
+      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+      const intercept = (sumY - slope * sumX) / n;
+
+      for (let i = 0; i < 3; i++) {
+        const idx = n + i;
+        const forecastMonth = new Date(now.getFullYear(), now.getMonth() + i + 1, 1);
+        forecast.push({
+          month: forecastMonth.toISOString().slice(0, 7),
+          predicted: Math.max(0, Math.round(intercept + slope * idx))
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        months: numMonths,
+        monthlySales,
+        yoyData,
+        channelTrend,
+        topItemsTrend,
+        forecast
+      }
+    });
+  } catch (e) {
+    console.error('[Operational Reports] Trend error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 module.exports = router;
 

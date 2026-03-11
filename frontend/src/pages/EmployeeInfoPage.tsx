@@ -85,6 +85,14 @@ const getRoleLevelDisplay = (role: string): string => {
   }
 };
 
+const DAY_CLOSE_MIN_LEVEL_KEY = 'perm_reports_day_close_level';
+const PERMISSION_LEVELS_KEY = 'employee_permission_levels_v1';
+const clampLevel = (n: any, fallback: number) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(5, Math.max(1, Math.round(v)));
+};
+
 const EmployeeInfoPage = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [deletedEmployees, setDeletedEmployees] = useState<Employee[]>([]);
@@ -102,6 +110,7 @@ const EmployeeInfoPage = () => {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [tempPermissions, setTempPermissions] = useState<{ [key: string]: number }>({});
+  const [permissionOverrides, setPermissionOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingPin, setEditingPin] = useState(false);
   const [newEmployeeId, setNewEmployeeId] = useState<string>(generateEmployeeId());
   const [formData, setFormData] = useState<Partial<Employee>>({
@@ -265,6 +274,42 @@ const EmployeeInfoPage = () => {
     loadEmployees();
   }, []);
 
+  // Load saved permission levels (local persistence)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PERMISSION_LEVELS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      const next: Record<string, Record<string, number>> = {};
+      Object.entries(parsed).forEach(([cat, perms]) => {
+        if (!cat || typeof perms !== 'object' || perms == null) return;
+        const bucket: Record<string, number> = {};
+        Object.entries(perms as any).forEach(([permName, lvl]) => {
+          if (!permName) return;
+          bucket[String(permName)] = clampLevel(lvl, 0);
+        });
+        next[String(cat)] = bucket;
+      });
+      setPermissionOverrides(next);
+    } catch (e) {
+      console.warn('Failed to load saved permissions:', e);
+    }
+  }, []);
+
+  const getEffectivePermissionLevel = (categoryName: string, permName: string, defaultLevel: number) => {
+    try {
+      const saved = permissionOverrides?.[categoryName]?.[permName];
+      if (typeof saved === 'number' && Number.isFinite(saved) && saved >= 1 && saved <= 5) return saved;
+      // Backward-compat: Day Close min level key
+      if (categoryName === 'Reports' && permName === 'Day Close') {
+        const legacy = clampLevel(localStorage.getItem(DAY_CLOSE_MIN_LEVEL_KEY), defaultLevel);
+        return legacy;
+      }
+    } catch {}
+    return defaultLevel;
+  };
+
   useEffect(() => {
     if (showAddModal) {
       setTimeout(() => {
@@ -283,7 +328,7 @@ const EmployeeInfoPage = () => {
 
   const loadEmployees = async () => {
     try {
-      const response = await fetch('${API_URL}/work-schedule/employees');
+      const response = await fetch(`${API_URL}/work-schedule/employees`);
       if (!response.ok) throw new Error('Failed to load employees');
       const data = await response.json();
       
@@ -352,7 +397,7 @@ const EmployeeInfoPage = () => {
         return;
       }
 
-      const response = await fetch('${API_URL}/work-schedule/employees', {
+      const response = await fetch(`${API_URL}/work-schedule/employees`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(employeeData)
@@ -631,7 +676,7 @@ const EmployeeInfoPage = () => {
     if (category) {
       const temp: { [key: string]: number } = {};
       category.permissions.forEach(perm => {
-        temp[perm.name] = perm.level;
+        temp[perm.name] = getEffectivePermissionLevel(categoryName, perm.name, perm.level);
       });
       setTempPermissions(temp);
     }
@@ -652,8 +697,43 @@ const EmployeeInfoPage = () => {
   };
 
   const savePermissions = () => {
-    console.log('Saving permissions:', selectedCategory, tempPermissions);
-    alert(`Permissions for ${selectedCategory} have been saved!\n${JSON.stringify(tempPermissions, null, 2)}`);
+    try {
+      if (!selectedCategory) return;
+
+      const sanitized: Record<string, number> = {};
+      Object.entries(tempPermissions || {}).forEach(([permName, lvl]) => {
+        sanitized[String(permName)] = clampLevel(lvl, 0);
+      });
+
+      const nextAll: Record<string, Record<string, number>> = {
+        ...(permissionOverrides || {}),
+        [selectedCategory]: sanitized,
+      };
+
+      localStorage.setItem(PERMISSION_LEVELS_KEY, JSON.stringify(nextAll));
+      setPermissionOverrides(nextAll);
+
+      // Keep legacy key in sync for POS Day Close gate
+      if (selectedCategory === 'Reports') {
+        const v = clampLevel(sanitized['Day Close'], 4);
+        localStorage.setItem(DAY_CLOSE_MIN_LEVEL_KEY, String(v));
+      }
+
+      // Sync to backend so permission levels are enforced server-side (e.g., Void authorization).
+      // Best-effort: local persistence is still the primary UX storage.
+      try {
+        fetch(`${API_URL}/voids/settings/permission-levels`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ levels: nextAll }),
+        }).catch(() => {});
+      } catch {}
+
+      showNotification('success', `Saved: ${selectedCategory} permissions`);
+    } catch (e) {
+      console.error('Save permissions failed:', e);
+      showNotification('error', 'Failed to save permissions.');
+    }
     closePermissionModal();
   };
 
@@ -968,7 +1048,7 @@ const EmployeeInfoPage = () => {
                     <div key={pidx} className="flex justify-between items-center text-sm">
                       <span className="text-gray-700">{perm.name}</span>
                       <span className="px-2 py-1 bg-indigo-100 text-indigo-800 rounded text-xs font-semibold">
-                        Level {perm.level}+
+                        Level {getEffectivePermissionLevel(category.category, perm.name, perm.level)}+
                       </span>
                     </div>
                   ))}
@@ -1494,7 +1574,7 @@ const EmployeeInfoPage = () => {
                 {permissionCategories
                   .find(cat => cat.category === selectedCategory)
                   ?.permissions.map((perm, idx) => {
-                    const currentLevel = tempPermissions[perm.name] ?? perm.level;
+                    const currentLevel = tempPermissions[perm.name] ?? getEffectivePermissionLevel(selectedCategory, perm.name, perm.level);
                     return (
                       <div key={idx} className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded border border-gray-200">
                         <div className="font-medium text-gray-800 text-sm flex-shrink-0 w-40">{perm.name}</div>

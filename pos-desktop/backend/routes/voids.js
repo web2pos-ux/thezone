@@ -4,6 +4,23 @@ const router = express.Router();
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
 
+const PERMISSION_LEVELS_KEY = 'employee_permission_levels_v1';
+
+// Firebase 서비스 (선택적 - 없으면 무시)
+let firebaseService = null;
+try { firebaseService = require('../services/firebaseService'); } catch (e) { /* Firebase 없이도 동작 */ }
+
+// Restaurant ID 조회 헬퍼
+let cachedRestaurantId = null;
+async function getRestaurantId() {
+  if (cachedRestaurantId) return cachedRestaurantId;
+  try {
+    const setting = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
+    if (setting && setting.value) { cachedRestaurantId = setting.value; return cachedRestaurantId; }
+  } catch (e) { /* 테이블 없을 수 있음 */ }
+  return null;
+}
+
 // 테이블 생성
 db.serialize(() => {
   db.run(`
@@ -76,6 +93,89 @@ db.serialize(() => {
   db.run(`INSERT OR IGNORE INTO void_policy (id, approval_threshold) VALUES (1, 0)`);
 });
 
+function clampLevel(n, fallback) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(5, Math.max(1, Math.round(v)));
+}
+
+function roleToLevel(roleRaw) {
+  const role = String(roleRaw || '').toLowerCase().trim();
+  if (!role) return 2;
+  // Support both legacy roles (admin/owner/manager/supervisor/server/kitchen)
+  // and UI roles (Owner, Manager, Supervisor, Server, Kitchen)
+  if (role.includes('owner') || role.includes('admin')) return 5;
+  if (role.includes('manager')) return 4;
+  if (role.includes('supervisor')) return 3;
+  if (role.includes('server') || role.includes('cashier')) return 2;
+  if (role.includes('kitchen') || role.includes('bar')) return 1;
+  return 2;
+}
+
+async function getPermissionOverridesFromDb() {
+  try {
+    const row = await dbGet(`SELECT value FROM admin_settings WHERE key = ?`, [PERMISSION_LEVELS_KEY]);
+    const raw = row?.value ? String(row.value) : '';
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+async function getVoidMinRoleLevel() {
+  // Mirrors Employee Manager defaults:
+  // Category: "Order" / Permission: "Void Order" (default: 3 = Supervisor)
+  const DEFAULT_LEVEL = 3;
+  try {
+    const overrides = await getPermissionOverridesFromDb();
+    const saved = overrides?.Order?.['Void Order'];
+    const n = Number(saved);
+    if (Number.isFinite(n) && n >= 1 && n <= 5) return clampLevel(n, DEFAULT_LEVEL);
+    return DEFAULT_LEVEL;
+  } catch {
+    return DEFAULT_LEVEL;
+  }
+}
+
+async function resolveAuthorizedEmployeeByPin(pinStr, minLevel) {
+  const employeesTable = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
+  if (!employeesTable) return { ok: false, error: 'Employee table missing' };
+
+  const rows = await dbAll(
+    `SELECT id, name, role, status FROM employees WHERE pin = ?`,
+    [pinStr]
+  );
+  const list = Array.isArray(rows) ? rows : [];
+  if (list.length === 0) return { ok: false, error: 'Invalid PIN - no employee found with this PIN' };
+
+  const active = list.filter((r) => {
+    const st = String(r?.status || 'active').toLowerCase();
+    return st === 'active';
+  });
+  if (active.length === 0) return { ok: false, error: 'Employee is not active' };
+
+  // In case multiple employees share same PIN, pick the highest role level.
+  let best = null;
+  for (const r of active) {
+    const lvl = roleToLevel(r?.role);
+    if (!best || lvl > best.level) best = { row: r, level: lvl };
+  }
+  if (!best) return { ok: false, error: 'Invalid PIN' };
+
+  if (best.level < minLevel) {
+    return {
+      ok: false,
+      error: `Insufficient role: ${best.row?.role}. Level ${minLevel}+ required.`,
+    };
+  }
+
+  const approvedBy = best.row?.name || `employee#${best.row?.id}`;
+  return { ok: true, approvedBy, role: best.row?.role, level: best.level };
+}
+
 // 정책 조회
 router.get('/settings/void-policy', async (req, res) => {
   try {
@@ -94,6 +194,52 @@ router.put('/settings/void-policy', async (req, res) => {
     res.json({ ok: true, approval_threshold });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Permission levels (saved from Employee Manager UI)
+router.get('/settings/permission-levels', async (req, res) => {
+  try {
+    const row = await dbGet(`SELECT value FROM admin_settings WHERE key = ?`, [PERMISSION_LEVELS_KEY]);
+    const raw = row?.value ? String(row.value) : '';
+    let parsed = {};
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      parsed = {};
+    }
+    res.json({ success: true, levels: parsed || {} });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+router.put('/settings/permission-levels', async (req, res) => {
+  try {
+    const incoming = req.body?.levels ?? req.body ?? {};
+    const levels = incoming && typeof incoming === 'object' ? incoming : {};
+
+    // Light sanitize: ensure numeric levels are 1..5 (keep shape flexible)
+    const sanitized = {};
+    for (const [cat, perms] of Object.entries(levels)) {
+      if (!cat || !perms || typeof perms !== 'object') continue;
+      const bucket = {};
+      for (const [permName, lvl] of Object.entries(perms)) {
+        if (!permName) continue;
+        bucket[String(permName)] = clampLevel(lvl, 0);
+      }
+      sanitized[String(cat)] = bucket;
+    }
+
+    await dbRun(
+      `INSERT INTO admin_settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [PERMISSION_LEVELS_KEY, JSON.stringify(sanitized)]
+    );
+
+    res.json({ success: true, levels: sanitized });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -120,28 +266,42 @@ router.post('/orders/:orderId/void', async (req, res) => {
 
     const policy = await dbGet('SELECT approval_threshold FROM void_policy WHERE id=1');
     const threshold = Number(policy?.approval_threshold || 0);
-    const needsApproval = threshold > 0 && grand_total >= threshold;
+    const isEntireVoid = String(source || '').toLowerCase() === 'entire';
+    // Entire order void must ALWAYS require manager+ PIN (per POS policy)
+    const needsApproval = isEntireVoid || (threshold > 0 && grand_total >= threshold);
 
-    // 승인 필요 시 PIN 검증(선택): employees 테이블이 있으면 검증, 없으면 거절
-    let approvedBy = null;
+    // Always enforce "Void Order" minimum permission level (configured in Employee Manager).
+    // The same PIN can serve as: (1) authorization, (2) approval when approval is needed.
+    const minLevel = await getVoidMinRoleLevel();
+    const pinStr = String(manager_pin || '').trim();
+    if (!pinStr) {
+      return res.status(403).json({ error: `Authorization PIN required (Void Level ${minLevel}+)` });
+    }
+    const auth = await resolveAuthorizedEmployeeByPin(pinStr, minLevel);
+    if (!auth.ok) return res.status(403).json({ error: auth.error || 'Forbidden' });
+
+    const approvedBy = auth.approvedBy;
     if (needsApproval) {
-      const employeesTable = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
-      if (!manager_pin) return res.status(403).json({ error: 'Manager approval required' });
-      if (employeesTable) {
-        const mgr = await dbGet('SELECT id, name, role FROM employees WHERE pin = ? AND role IN ("manager","owner","admin")', [String(manager_pin)]);
-        if (!mgr) return res.status(403).json({ error: 'Invalid PIN or insufficient role' });
-        approvedBy = mgr.name || `employee#${mgr.id}`;
-      } else {
-        // 직원 테이블이 없으면 보수적으로 차단
-        return res.status(403).json({ error: 'Manager approval table missing' });
-      }
+      console.log(`[VOID] Approved by ${approvedBy} (role: ${auth.role}, level: ${auth.level})`);
     }
 
     // void 헤더 생성
     const vRes = await dbRun(
       `INSERT INTO voids (order_id, subtotal, tax_total, grand_total, reason, note, source, needs_approval, approved_by, approved_at, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [orderId, subtotal, tax_total, grand_total, reason, note, source, needsApproval ? 1 : 0, approvedBy, approvedBy ? new Date().toISOString() : null, created_by]
+      [
+        orderId,
+        subtotal,
+        tax_total,
+        grand_total,
+        reason,
+        note,
+        source,
+        needsApproval ? 1 : 0,
+        approvedBy,
+        approvedBy ? new Date().toISOString() : null,
+        created_by || approvedBy,
+      ]
     );
     const voidId = vRes.lastID;
 
@@ -178,7 +338,31 @@ router.post('/orders/:orderId/void', async (req, res) => {
       await dbRun(`DELETE FROM order_items WHERE order_id = ? AND (quantity IS NULL OR quantity <= 0)`, [orderId]);
       // 주문 합계 재계산 (단순 합계: 수량*단가)
       const sumRow = await dbGet(`SELECT COALESCE(SUM(quantity * price), 0) AS total FROM order_items WHERE order_id = ?`, [orderId]);
-      await dbRun(`UPDATE orders SET total = ? WHERE id = ?`, [Number(sumRow?.total || 0), orderId]);
+      const newTotal = Number(sumRow?.total || 0);
+      await dbRun(`UPDATE orders SET total = ? WHERE id = ?`, [newTotal, orderId]);
+
+      // If voiding results in an empty table (no remaining items), mark the table as Preparing.
+      // This is safe even when the order has no table: the UPDATE simply affects 0 rows.
+      if (newTotal <= 0) {
+        await dbRun(
+          `UPDATE table_map_elements
+           SET current_order_id = NULL, status = 'Available'
+           WHERE current_order_id = ?`,
+          [orderId]
+        );
+      }
+
+      // Entire void: mark order as VOIDED and release linked table so Day Closing can proceed
+      if (isEntireVoid) {
+        const closedAt = new Date().toISOString();
+        await dbRun(`UPDATE orders SET status = 'VOIDED', closed_at = ?, subtotal = 0, tax = 0, total = 0 WHERE id = ?`, [closedAt, orderId]);
+        await dbRun(
+          `UPDATE table_map_elements
+           SET current_order_id = NULL, status = 'Available'
+           WHERE current_order_id = ?`,
+          [orderId]
+        );
+      }
       await dbRun('COMMIT');
     } catch (adjErr) {
       try { await dbRun('ROLLBACK'); } catch {}
@@ -192,17 +376,202 @@ router.post('/orders/:orderId/void', async (req, res) => {
       [ 'void', String(voidId), 'create', JSON.stringify({ orderId, lines, reason, note, source, totals: { subtotal, tax_total, grand_total } }), created_by || null ]
     );
 
-    // 프린터 통지(간이): 스테이션별 페이로드 로그
+    // 프린터 통지: 스테이션별 페이로드 (주문번호/테이블명 포함)
+    let orderNumber = '';
+    let tableName = '';
+    try {
+      const orderRow = await dbGet('SELECT order_number, table_id FROM orders WHERE id = ?', [orderId]);
+      if (orderRow) {
+        orderNumber = orderRow.order_number || '';
+        if (orderRow.table_id) {
+          const tableRow = await dbGet('SELECT name FROM table_map_elements WHERE element_id = ?', [orderRow.table_id]);
+          tableName = tableRow?.name || '';
+        }
+      }
+    } catch (e) { /* 주문 정보 조회 실패 무시 */ }
+
+    // Build station payloads.
+    // If client didn't provide printer_group_id (common for "void unpaid order" flows),
+    // resolve it from menu/category printer links so VOID prints to the correct group.
     const byStation = {};
-    lines.forEach(l => {
-      const key = String(l.printer_group_id ?? 'default');
-      byStation[key] = byStation[key] || [];
-      byStation[key].push({ name: l.name, qty: l.qty, amount: l.amount });
-    });
+    for (const l of lines) {
+      let stationIds = [];
+
+      const explicit = l?.printer_group_id;
+      if (explicit !== undefined && explicit !== null && String(explicit).trim() !== '') {
+        stationIds = [String(explicit)];
+      }
+
+      if (!stationIds.length) {
+        const menuId = l?.menu_id ?? l?.menuId ?? null;
+        if (menuId !== null && menuId !== undefined && String(menuId).trim() !== '') {
+          // 1) menu-level printer links
+          try {
+            const links = await dbAll(
+              'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
+              [menuId]
+            );
+            stationIds = (links || []).map(r => String(r.printer_group_id)).filter(Boolean);
+          } catch {}
+
+          // 2) category-level printer links fallback
+          if (!stationIds.length) {
+            try {
+              const mi = await dbGet('SELECT category_id FROM menu_items WHERE item_id = ?', [menuId]);
+              const catId = mi?.category_id;
+              if (catId !== undefined && catId !== null && String(catId).trim() !== '') {
+                const catLinks = await dbAll(
+                  'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
+                  [catId]
+                );
+                stationIds = (catLinks || []).map(r => String(r.printer_group_id)).filter(Boolean);
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (!stationIds.length) stationIds = ['default'];
+
+      for (const sid of stationIds) {
+        const key = String(sid || 'default');
+        byStation[key] = byStation[key] || [];
+        byStation[key].push({ name: l.name, qty: l.qty, amount: l.amount });
+      }
+    }
     // 실제 프린터 연동 지점: 큐에 등록
-    for (const [station, items] of Object.entries(byStation)) {
-      const job = { orderId, voidId, station, items, reason, note };
-      await dbRun('INSERT INTO printer_jobs (type, station, payload_json) VALUES (?, ?, ?)', [ 'VOID_TICKET', String(station), JSON.stringify(job) ]);
+    const createdJobIds = [];
+    for (const [station, stationItems] of Object.entries(byStation)) {
+      const job = { orderId, voidId, station, items: stationItems, reason, note, orderNumber, tableName };
+      const ins = await dbRun('INSERT INTO printer_jobs (type, station, payload_json) VALUES (?, ?, ?)', [ 'VOID_TICKET', String(station), JSON.stringify(job) ]);
+      if (ins && ins.lastID) createdJobIds.push(ins.lastID);
+    }
+
+    // Best-effort immediate dispatch so VOID prints reliably (even if background dispatcher isn't running).
+    // Non-blocking: printing failure should not fail the VOID API response.
+    void (async () => {
+      try {
+        const { sendRawToPrinter } = require('../utils/printerUtils');
+        const { buildGraphicVoidTicket } = require('../utils/graphicPrinterUtils');
+
+        // ESC/POS beep: 3 beeps, 200ms
+        const BEEP_CMD = Buffer.from([0x1B, 0x42, 0x03, 0x02]);
+
+        for (const jobId of createdJobIds) {
+          try {
+            const jobRow = await dbGet('SELECT id, station, payload_json, status FROM printer_jobs WHERE id = ?', [jobId]);
+            if (!jobRow || String(jobRow.status || '') !== 'queued') continue;
+            const payload = JSON.parse(jobRow.payload_json || '{}');
+
+            // Find target printer(s) from printer_group_links.
+            // This ensures VOID prints to the configured printer group, even when the payload only has a group id.
+            const station = jobRow.station || payload.station;
+            let printerLabel = null;
+            let targets = []; // [{ printer: string, copies: number }]
+
+            if (station && station !== 'default') {
+              try {
+                const groupRow = await dbGet(
+                  "SELECT name FROM printer_groups WHERE printer_group_id = ? AND is_active = 1",
+                  [station]
+                );
+                if (groupRow?.name) printerLabel = groupRow.name;
+              } catch {}
+
+              try {
+                const links = await dbAll(
+                  `SELECT p.selected_printer as selected_printer, COALESCE(pgl.copies, 1) as copies
+                   FROM printer_group_links pgl
+                   JOIN printers p ON pgl.printer_id = p.printer_id AND p.is_active = 1
+                   JOIN printer_groups pg ON pgl.printer_group_id = pg.printer_group_id AND pg.is_active = 1
+                   WHERE pgl.printer_group_id = ? AND p.selected_printer IS NOT NULL`,
+                  [station]
+                );
+                targets = (links || [])
+                  .map(r => ({ printer: r.selected_printer, copies: Number(r.copies || 1) }))
+                  .filter(t => t.printer);
+              } catch {}
+            }
+
+            // Fallback to a kitchen printer
+            if (!targets.length) {
+              const kitchenPrinter = await dbGet(
+                "SELECT selected_printer FROM printers WHERE (type = 'kitchen' OR name LIKE '%Kitchen%') AND is_active = 1 AND selected_printer IS NOT NULL LIMIT 1"
+              );
+              if (kitchenPrinter?.selected_printer) {
+                targets = [{ printer: kitchenPrinter.selected_printer, copies: 1 }];
+              }
+            }
+
+            if (!targets.length) {
+              await dbRun("UPDATE printer_jobs SET status = 'error', error = 'No printer found' WHERE id = ?", [jobId]);
+              continue;
+            }
+
+            // Top margin from layout settings
+            let topMargin = 5;
+            try {
+              const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+              if (layoutRow?.settings) {
+                const ls = JSON.parse(layoutRow.settings);
+                topMargin = ls?.kitchenTopMargin || ls?.topMargin || 5;
+              }
+            } catch {}
+
+            const voidTicketData = {
+              items: payload.items || [],
+              reason: payload.reason || '',
+              note: payload.note || '',
+              orderNumber: payload.orderNumber || '',
+              tableName: payload.tableName || '',
+              printerLabel,
+              topMargin
+            };
+
+            const ticketBuffer = buildGraphicVoidTicket(voidTicketData, true);
+            const bufferWithBeep = Buffer.concat([BEEP_CMD, ticketBuffer]);
+
+            for (const t of targets) {
+              const copies = Number.isFinite(t.copies) && t.copies > 0 ? t.copies : 1;
+              for (let i = 0; i < copies; i++) {
+                await sendRawToPrinter(t.printer, bufferWithBeep);
+              }
+            }
+
+            await dbRun("UPDATE printer_jobs SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?", [jobId]);
+          } catch (jobErr) {
+            try {
+              await dbRun("UPDATE printer_jobs SET status = 'error', error = ? WHERE id = ?", [String(jobErr?.message || jobErr), jobId]);
+            } catch {}
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+
+    // Firebase 동기화 (비차단)
+    try {
+      const restaurantId = await getRestaurantId();
+      if (restaurantId && firebaseService && firebaseService.saveVoidToFirebase) {
+        await firebaseService.saveVoidToFirebase(restaurantId, {
+          voidId,
+          orderId: Number(orderId),
+          orderNumber,
+          tableName,
+          subtotal,
+          tax_total,
+          grand_total,
+          reason,
+          note,
+          source,
+          lines: lines.map(l => ({ name: l.name, qty: l.qty, amount: l.amount })),
+          created_by: created_by || null,
+          created_at: new Date().toISOString()
+        });
+      }
+    } catch (fbErr) {
+      console.warn('Firebase void sync failed (non-blocking):', fbErr?.message);
     }
 
     res.json({
@@ -239,9 +608,39 @@ router.post('/voids/:voidId/approve', async (req, res) => {
     if (!manager_pin) return res.status(400).json({ error: 'PIN required' });
     const employeesTable = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
     if (!employeesTable) return res.status(403).json({ error: 'Manager approval table missing' });
-    const mgr = await dbGet('SELECT id, name, role FROM employees WHERE pin = ? AND role IN ("manager","owner","admin")', [String(manager_pin)]);
-    if (!mgr) return res.status(403).json({ error: 'Invalid PIN or insufficient role' });
-    await dbRun('UPDATE voids SET needs_approval=0, approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE id=?', [mgr.name || `employee#${mgr.id}`, voidId]);
+    
+    // Supervisor 이상 등급에서 VOID 승인 가능
+    const pinStr = String(manager_pin).trim();
+    
+    // 먼저 PIN이 존재하는지 확인
+    const empByPin = await dbGet(
+      `SELECT id, name, role, status FROM employees WHERE pin = ?`,
+      [pinStr]
+    );
+    
+    if (!empByPin) {
+      console.log(`[VOID APPROVE] PIN not found: ${pinStr}`);
+      return res.status(403).json({ error: 'Invalid PIN - no employee found with this PIN' });
+    }
+    
+    // status 확인
+    if (empByPin.status && empByPin.status.toLowerCase() !== 'active') {
+      console.log(`[VOID APPROVE] Employee ${empByPin.name} is not active (status: ${empByPin.status})`);
+      return res.status(403).json({ error: 'Employee is not active' });
+    }
+    
+    // role 확인 (supervisor, manager, owner, admin 허용)
+    const roleNorm = (empByPin.role || '').toLowerCase().trim();
+    const allowedRoles = ['supervisor', 'manager', 'owner', 'admin'];
+    if (!allowedRoles.includes(roleNorm)) {
+      console.log(`[VOID APPROVE] Employee ${empByPin.name} has insufficient role: ${empByPin.role} (normalized: ${roleNorm})`);
+      return res.status(403).json({ error: `Insufficient role: ${empByPin.role}. Supervisor, Manager, Owner, or Admin required.` });
+    }
+    
+    const approvedBy = empByPin.name || `employee#${empByPin.id}`;
+    console.log(`[VOID APPROVE] Approved by ${approvedBy} (role: ${empByPin.role})`);
+    
+    await dbRun('UPDATE voids SET needs_approval=0, approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE id=?', [approvedBy, voidId]);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

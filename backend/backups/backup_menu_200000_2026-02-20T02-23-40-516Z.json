@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-02-20T02:23:40.516Z",
+  "menuId": "200000",
+  "categories": [
+    {
+      "category_id": 205000,
+      "name": "Menu",
+      "menu_id": 200000,
+      "sort_order": 0,
+      "image_url": null,
+      "firebase_id": null,
+      "description": null
+    }
+  ],
+  "items": [
+    {
+      "item_id": 225000,
+      "name": "Item1",
+      "short_name": null,
+      "price": 1,
+      "price2": 0,
+      "description": "",
+      "category_id": 205000,
+      "menu_id": 200000,
+      "is_open_price": 0,
+      "image_url": null,
+      "sort_order": 0,
+      "online_visible": 1,
+      "delivery_visible": 1,
+      "online_hide_type": "visible",
+      "online_available_until": null,
+      "delivery_hide_type": "visible",
+      "delivery_available_until": null,
+      "firebase_id": null
+    },
+    {
+      "item_id": 225001,
+      "name": "Item 2",
+      "short_name": null,
+      "price": 2,
+      "price2": 0,
+      "description": "",
+      "category_id": 205000,
+      "menu_id": 200000,
+      "is_open_price": 0,
+      "image_url": null,
+      "sort_order": 0,
+      "online_visible": 1,
+      "delivery_visible": 1,
+      "online_hide_type": "visible",
+      "online_available_until": null,
+      "delivery_hide_type": "visible",
+      "delivery_available_until": null,
+      "firebase_id": null
+    }
+  ],
+  "backupType": "pre_import"
+}

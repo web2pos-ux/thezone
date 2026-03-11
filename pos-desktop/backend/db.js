@@ -3,14 +3,36 @@
 
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 
 // DB 경로: 환경 변수 우선, 없으면 기본 경로 사용 (Electron 앱 호환)
 const dbPath = process.env.DB_PATH || path.resolve(__dirname, '..', 'db', 'web2pos.db');
 console.log('[db.js] Using database:', dbPath);
 
+// DB 파일이 있는 디렉토리 존재 확인 및 생성
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+  console.log('[db.js] Created database directory:', dbDir);
+}
+
+// DB 디렉토리 쓰기 권한 확인
+try {
+  fs.accessSync(dbDir, fs.constants.W_OK);
+  console.log('[db.js] Database directory is writable:', dbDir);
+} catch (err) {
+  console.error('[db.js] ⚠️ WARNING: Database directory is NOT writable:', dbDir);
+  console.error('[db.js] ⚠️ This will cause all save operations to fail!');
+  console.error('[db.js] ⚠️ Please check file permissions or install location.');
+}
+
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
-    console.error('Error opening database from db.js:', err.message);
+    console.error('[db.js] ❌ Error opening database:', err.message);
+    console.error('[db.js] ❌ DB path:', dbPath);
+    console.error('[db.js] ❌ All database operations will fail.');
+  } else {
+    console.log('[db.js] ✅ Database opened successfully:', dbPath);
   }
 });
 

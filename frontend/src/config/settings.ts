@@ -7,6 +7,8 @@
 let settingsCache: Record<string, string> | null = null;
 let settingsPromise: Promise<Record<string, string>> | null = null;
 
+const SETTINGS_FETCH_TIMEOUT_MS = 6000;
+
 /**
  * 설정을 API에서 로드합니다.
  * 첫 호출 시에만 API를 호출하고, 이후에는 캐시를 사용합니다.
@@ -23,10 +25,25 @@ export async function loadSettings(): Promise<Record<string, string>> {
   }
 
   // API 호출
-  const defaultApiUrl = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
-  const apiBase = defaultApiUrl.replace(/\/api$/, '') || 'http://localhost:3177';
+  const inferDefaultApiUrl = (): string => {
+    if (typeof window !== 'undefined') {
+      const port = window.location.port || '';
+      const isDevFrontendPort = port === '3000' || port === '3088' || port === '5173';
+      if (!isDevFrontendPort) {
+        return `${window.location.origin}/api`;
+      }
+    }
+    return process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
+  };
+  const defaultApiUrl = inferDefaultApiUrl();
+  const apiBase = defaultApiUrl.replace(/\/api$/, '') || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3177');
 
-  settingsPromise = fetch(`${apiBase}/api/app-settings`)
+  const controller = new AbortController();
+  const timeout = typeof window !== 'undefined'
+    ? window.setTimeout(() => controller.abort(), SETTINGS_FETCH_TIMEOUT_MS)
+    : (setTimeout(() => controller.abort(), SETTINGS_FETCH_TIMEOUT_MS) as unknown as number);
+
+  settingsPromise = fetch(`${apiBase}/api/app-settings`, { signal: controller.signal, cache: 'no-store' as any })
     .then(async (res) => {
       if (res.ok) {
         const settings = await res.json();
@@ -51,6 +68,13 @@ export async function loadSettings(): Promise<Record<string, string>> {
       };
     })
     .finally(() => {
+      try {
+        if (typeof window !== 'undefined') {
+          window.clearTimeout(timeout);
+        } else {
+          clearTimeout(timeout as any);
+        }
+      } catch {}
       settingsPromise = null;
     });
 

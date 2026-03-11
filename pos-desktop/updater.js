@@ -14,8 +14,8 @@ const { exec } = require('child_process');
 // 현재 앱 버전 (package.json에서 가져옴)
 const APP_VERSION = require('./package.json').version;
 
-// 업데이트 서버 URL (Firebase Hosting)
-const UPDATE_SERVER = 'https://ezorder-platform.web.app';
+// 업데이트 서버 URL (Firebase Hosting - /update 하위 경로)
+const UPDATE_SERVER = 'https://ezorder-platform.web.app/update';
 
 /**
  * 업데이트 확인

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DndContext, DragEndEvent, useDraggable, useDroppable } from '@dnd-kit/core';
+import { DndContext, DragEndEvent, useDraggable, useDroppable, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import '../styles/scrollbar.css';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
@@ -236,6 +236,7 @@ const ManagerPanel: React.FC = () => {
 
 const TableMapManagerPage = () => {
   const navigate = useNavigate();
+  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const [mapLocked, setMapLocked] = useState<boolean>(() => {
     try { return (localStorage.getItem('table_map_locked') || '0') === '1'; } catch { return false; }
   });
@@ -1072,6 +1073,50 @@ const TableMapManagerPage = () => {
   const [screenWidth, setScreenWidth] = useState(savedSize.width);
   const [screenHeight, setScreenHeight] = useState(savedSize.height);
   const [canvasStyle, setCanvasStyle] = useState<{ width?: string; height?: string; maxWidth?: string; maxHeight?: string }>({});
+  // Canvas zoom (responsive fit like SalesPage)
+  const canvasViewportRef = useRef<HTMLDivElement | null>(null);
+  const [zoomMode, setZoomMode] = useState<'fit' | 'custom'>('fit');
+  const [customZoom, setCustomZoom] = useState<number>(1);
+  const [fitZoom, setFitZoom] = useState<number>(1);
+  const canvasWidthPx = useMemo(() => parseInt(canvasStyle.width?.replace('px', '') || '800'), [canvasStyle.width]);
+  const canvasHeightPx = useMemo(() => parseInt(canvasStyle.height?.replace('px', '') || '600'), [canvasStyle.height]);
+  const editorScale = useMemo(() => {
+    const z = zoomMode === 'fit' ? fitZoom : customZoom;
+    const safe = Number.isFinite(z) && z > 0 ? z : 1;
+    return Math.max(0.1, Math.min(2, safe));
+  }, [zoomMode, fitZoom, customZoom]);
+
+  useEffect(() => {
+    if (zoomMode !== 'fit') return;
+    const el = canvasViewportRef.current;
+    if (!el) return;
+
+    const computeFit = () => {
+      const rect = el.getBoundingClientRect();
+      const vw = rect.width;
+      const vh = rect.height;
+      const cw = canvasWidthPx || 800;
+      const ch = canvasHeightPx || 600;
+      if (vw <= 0 || vh <= 0 || cw <= 0 || ch <= 0) return;
+
+      const padding = 24; // keep small breathing room
+      const scale = Math.min(1, (vw - padding) / cw, (vh - padding) / ch);
+      if (Number.isFinite(scale) && scale > 0) setFitZoom(scale);
+    };
+
+    computeFit();
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => computeFit());
+      ro.observe(el);
+    }
+    window.addEventListener('resize', computeFit);
+    return () => {
+      try { ro?.disconnect(); } catch {}
+      window.removeEventListener('resize', computeFit);
+    };
+  }, [zoomMode, canvasWidthPx, canvasHeightPx]);
   const [tableElements, setTableElements] = useState<TableElement[]>([]);
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -1982,7 +2027,7 @@ const TableMapManagerPage = () => {
 
   // 테이블 요소인지 확인하는 함수
   const isTableElement = (element: TableElement) => {
-    return ['circle', 'rounded-rectangle'].includes(element.type);
+    return ['circle', 'rounded-rectangle', 'bar', 'room'].includes(element.type);
   };
 
   // 테이블 요소들만 필터링하는 함수
@@ -2004,8 +2049,8 @@ const TableMapManagerPage = () => {
     
     const count = elementTypeCounts[elementType] || 0;
     
-    // Circle과 Square는 특별 처리
-    if (['circle', 'rounded-rectangle'].includes(elementType)) {
+    // 주문 가능한 요소(테이블/바/룸)는 특별 처리
+    if (['circle', 'rounded-rectangle', 'bar', 'room'].includes(elementType)) {
       return count > 0; // 첫 번째 이후부터 비활성화
     }
     
@@ -2022,8 +2067,8 @@ const TableMapManagerPage = () => {
     
     const elementType = selectedTableType;
     
-    // Circle과 Square인 경우 Available 상태의 색상 반환
-    if (['circle', 'rounded-rectangle'].includes(elementType)) {
+    // 주문 가능한 요소(테이블/바/룸)는 Available 상태의 색상 반환
+    if (['circle', 'rounded-rectangle', 'bar', 'room'].includes(elementType)) {
       // Available 상태의 색상을 반환
       const statusKey = `table_Available`; // 'table_' 접두사로 통합 관리
       return firstElementColors[statusKey] || selectedColor;
@@ -2040,13 +2085,17 @@ const TableMapManagerPage = () => {
     let elementColor = selectedColor;
     let elementStatus = 'Available'; // 항상 Available로 고정
     
-    // Circle과 Square 특별 처리
-    if (['circle', 'rounded-rectangle'].includes(selectedTableType)) {
+    // 주문 가능한 요소(테이블/바/룸) 특별 처리
+    if (['circle', 'rounded-rectangle', 'bar', 'room'].includes(selectedTableType)) {
       // 항상 Available 상태로 고정
       elementStatus = 'Available';
       
-      // 테이블 요소들의 총 개수 확인 (Circle + Square)
-      const totalTableCount = (elementTypeCounts['circle'] || 0) + (elementTypeCounts['rounded-rectangle'] || 0);
+      // 주문 가능한 요소들의 총 개수 확인 (Circle + Square + Bar + Room)
+      const totalTableCount =
+        (elementTypeCounts['circle'] || 0) +
+        (elementTypeCounts['rounded-rectangle'] || 0) +
+        (elementTypeCounts['bar'] || 0) +
+        (elementTypeCounts['room'] || 0);
       const isFirstTableElement = totalTableCount === 0;
       
       if (isFirstTableElement) {
@@ -2071,21 +2120,33 @@ const TableMapManagerPage = () => {
 
     const newId = await generateElementNumber(selectedTableType);
     
-    // 테이블 표시 번호 계산 (T1, T2... 형식) - Square와 Circle에만 적용
+    // 주문 가능한 요소 표시 번호 계산 (T/B/R1,2...) - Table/Bar/Room에 적용
     let displayText = '';
     if (selectedTableType === 'rounded-rectangle' || selectedTableType === 'circle') {
-      // 현재 테이블 요소들 중 가장 큰 테이블 번호 찾기
-      const tableElements_ = tableElements.filter(el => 
-        el.type === 'rounded-rectangle' || el.type === 'circle'
-      );
+      const tableElements_ = tableElements.filter(el => el.type === 'rounded-rectangle' || el.type === 'circle');
       const existingNumbers = tableElements_.map(el => {
         const match = el.text?.match(/^T(\d+)$/);
-        return match ? parseInt(match[1]) : 0;
+        return match ? parseInt(match[1], 10) : 0;
       });
       const maxNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
       displayText = `T${maxNumber + 1}`;
+    } else if (selectedTableType === 'bar') {
+      const barElements_ = tableElements.filter(el => el.type === 'bar');
+      const existingNumbers = barElements_.map(el => {
+        const match = el.text?.match(/^B(\d+)$/);
+        return match ? parseInt(match[1], 10) : 0;
+      });
+      const maxNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
+      displayText = `B${maxNumber + 1}`;
+    } else if (selectedTableType === 'room') {
+      const roomElements_ = tableElements.filter(el => el.type === 'room');
+      const existingNumbers = roomElements_.map(el => {
+        const match = el.text?.match(/^R(\d+)$/);
+        return match ? parseInt(match[1], 10) : 0;
+      });
+      const maxNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) : 0;
+      displayText = `R${maxNumber + 1}`;
     }
-    // 나머지 요소는 displayText를 빈 문자열로 유지 (이름 표시 안함)
     
     const newElement: TableElement = {
       id: newId,
@@ -2117,6 +2178,9 @@ const TableMapManagerPage = () => {
         return { width: 80, height: 60 };
       case 'circle':
         return { width: 60, height: 60 };
+      case 'bar':
+      case 'room':
+        return { width: 80, height: 60 };
       case 'entrance':
         return { width: 100, height: 40 };
       case 'counter':
@@ -2166,6 +2230,10 @@ const TableMapManagerPage = () => {
       case 'circle':
         shapeClass = 'rounded-full';
         break;
+      case 'bar':
+      case 'room':
+        shapeClass = 'rounded-2xl';
+        break;
       case 'entrance':
       case 'wall':
       case 'cook-area':
@@ -2208,7 +2276,7 @@ const TableMapManagerPage = () => {
     });
 
     // 편집 가능한 요소 타입들
-    const editableTypes = ['rounded-rectangle', 'circle', 'entrance', 'cook-area', 'other'];
+    const editableTypes = ['rounded-rectangle', 'circle', 'bar', 'room', 'entrance', 'cook-area', 'other'];
     const isEditable = editableTypes.includes(element.type);
 
     // 선택 상태 확인
@@ -2272,13 +2340,16 @@ const TableMapManagerPage = () => {
           hasMoved = true;
           isDragging = true;
           
-          // 드래그 중 실시간 위치 업데이트 (20픽셀 단위로 그룹화)
+          // 드래그 중 실시간 위치 업데이트 (10픽셀 단위로 스냅)
           const rawDeltaX = moveEvent.clientX - startX;
           const rawDeltaY = moveEvent.clientY - startY;
           
-          // 20픽셀 단위로 그룹화 (내림 처리)
-          const groupedDeltaX = Math.floor(rawDeltaX / 20) * 20;
-          const groupedDeltaY = Math.floor(rawDeltaY / 20) * 20;
+          // 10픽셀 단위로 그룹화 (내림 처리)
+          const scaledDeltaX = rawDeltaX / editorScale;
+          const scaledDeltaY = rawDeltaY / editorScale;
+          const moveSnap = 10;
+          const groupedDeltaX = Math.floor(scaledDeltaX / moveSnap) * moveSnap;
+          const groupedDeltaY = Math.floor(scaledDeltaY / moveSnap) * moveSnap;
           
           const newX = startPosX + groupedDeltaX;
           const newY = startPosY + groupedDeltaY;
@@ -2496,12 +2567,13 @@ const TableMapManagerPage = () => {
         // 마우스 움직임 계산
         const currentX = moveEvent.clientX;
         const currentY = moveEvent.clientY;
-        const deltaX = currentX - startX;
-        const deltaY = currentY - startY;
+        const deltaX = (currentX - startX) / editorScale;
+        const deltaY = (currentY - startY) / editorScale;
         
-        // 20픽셀 단위로 그룹화 (내림 처리하여 20픽셀 이상 움직여야 반응)
-        const groupedDeltaX = Math.floor(deltaX / 20) * 20;
-        const groupedDeltaY = Math.floor(deltaY / 20) * 20;
+        // 5픽셀 단위로 그룹화 (내림 처리하여 5픽셀 이상 움직여야 반응)
+        const resizeSnap = 5;
+        const groupedDeltaX = Math.floor(deltaX / resizeSnap) * resizeSnap;
+        const groupedDeltaY = Math.floor(deltaY / resizeSnap) * resizeSnap;
         
         // 절대적으로 좌측 상단 모서리 고정 - 위치는 절대 변경되지 않음
         let newWidth = startWidth;
@@ -2532,13 +2604,13 @@ const TableMapManagerPage = () => {
         
         // 원형인 경우 항상 정사각형 유지
         if (element.type === 'circle') {
-          // 마우스 움직임 중 더 큰 방향을 기준으로 정사각형 유지 (10픽셀 단위)
+          // 마우스 움직임 중 더 큰 방향을 기준으로 정사각형 유지 (5픽셀 단위)
           const maxDelta = Math.max(groupedDeltaX, groupedDeltaY);
           const newSize = Math.max(minSize, startWidth + maxDelta);
           newWidth = newSize;
           newHeight = newSize;
         } else {
-          // 사각형인 경우 마우스 움직임을 10픽셀 단위로 그룹화
+          // 사각형인 경우 마우스 움직임을 5픽셀 단위로 그룹화
           newWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + groupedDeltaX));
           newHeight = Math.max(minHeight, Math.min(maxHeight, startHeight + groupedDeltaY));
         }
@@ -2825,8 +2897,10 @@ const TableMapManagerPage = () => {
       
               if (element) {
           // delta 값을 직접 사용하여 정확한 위치 계산
-          const newX = element.position.x + delta.x;
-          const newY = element.position.y + delta.y;
+          const scaledDx = delta.x / editorScale;
+          const scaledDy = delta.y / editorScale;
+          const newX = element.position.x + scaledDx;
+          const newY = element.position.y + scaledDy;
           
           // 캔버스 경계 내에서만 이동 가능하도록 제한
           const canvasWidth = parseInt(canvasStyle.width?.replace('px', '') || '800');
@@ -2845,7 +2919,7 @@ const TableMapManagerPage = () => {
           saveToHistory(updatedElements);
           
           console.log(`Moved table ${elementId} to position (${Math.round(clampedX)}, ${Math.round(clampedY)})`);
-          console.log(`Delta: (${delta.x}, ${delta.y})`);
+          console.log(`Delta: (${delta.x}, ${delta.y}) scale=${editorScale.toFixed(3)} -> (${scaledDx.toFixed(2)}, ${scaledDy.toFixed(2)})`);
         }
     }
   };
@@ -2896,8 +2970,12 @@ const TableMapManagerPage = () => {
     switch (element.type) {
       case 'rounded-rectangle':
       case 'circle':
-        // Circle과 Square에만 번호 부여 - text 필드 우선 사용 (T1, T2 형식)
-        let displayName = element.text || `T${element.id}`;
+      case 'bar':
+      case 'room': {
+        // 주문 가능한 요소(Table/Bar/Room): text 우선 사용 (T1/B1/R1 형식)
+        const raw = (element.text && String(element.text).trim()) ? String(element.text).trim() : '';
+        const prefix = element.type === 'bar' ? 'B' : (element.type === 'room' ? 'R' : 'T');
+        let displayName = raw || `${prefix}${element.id}`;
         
         // Occupied 상태인 경우 시간 표시
         if (element.status === 'Occupied' && tableOccupiedTimes[String(element.id)]) {
@@ -2913,6 +2991,7 @@ const TableMapManagerPage = () => {
         }
         
         return displayName;
+      }
       // 나머지 요소들은 이름 표시 안함
       case 'entrance':
       case 'counter':
@@ -3115,7 +3194,7 @@ const TableMapManagerPage = () => {
     if (!showColorModal) return null;
 
     // Circle과 Square인 경우 현재 상태 표시
-    const isTableElement = ['circle', 'rounded-rectangle'].includes(selectedTableType);
+    const isTableElement = ['circle', 'rounded-rectangle', 'bar', 'room'].includes(selectedTableType);
     const statusOrder = ['Available', 'Occupied', 'Payment Pending', 'Preparing', 'Reserved'];
     const currentStatus = statusOrder[tableStatusIndex];
     
@@ -3335,6 +3414,41 @@ const TableMapManagerPage = () => {
             </div>
           </div>
 
+          {/* Canvas Zoom (Fit / Custom) */}
+          <div className="flex items-center space-x-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
+            <label className="text-sm font-medium text-gray-700">View:</label>
+            <button
+              onClick={() => setZoomMode('fit')}
+              className={`px-2 py-1 text-xs rounded transition-colors ${zoomMode === 'fit' ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
+              title="Fit to window"
+            >
+              Fit
+            </button>
+            <button
+              onClick={() => { setZoomMode('custom'); setCustomZoom(1); }}
+              className={`px-2 py-1 text-xs rounded transition-colors ${zoomMode === 'custom' && Math.abs(customZoom - 1) < 0.0001 ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
+              title="100%"
+            >
+              100%
+            </button>
+            <input
+              type="range"
+              min={25}
+              max={150}
+              value={Math.round((zoomMode === 'fit' ? fitZoom : customZoom) * 100)}
+              onChange={(e) => {
+                const next = Math.max(0.25, Math.min(1.5, parseInt(e.target.value, 10) / 100));
+                setZoomMode('custom');
+                setCustomZoom(next);
+              }}
+              className="w-28"
+              title="Zoom"
+            />
+            <span className="px-2 py-1 text-xs bg-white border border-slate-200 rounded text-slate-700 tabular-nums">
+              {Math.round(editorScale * 100)}%
+            </span>
+          </div>
+
           {/* Floor Section */}
           <div className="flex items-center space-x-1 bg-green-50 p-1 rounded-lg border border-green-200">
             <label className="text-sm font-medium text-gray-700">Floor:</label>
@@ -3357,6 +3471,8 @@ const TableMapManagerPage = () => {
             >
               <option value="rounded-rectangle">Square</option>
               <option value="circle">Circle</option>
+              <option value="bar">Bar</option>
+              <option value="room">Room</option>
               <option value="entrance">Entrance</option>
               <option value="counter">Counter</option>
               <option value="restroom">Restroom</option>
@@ -3575,24 +3691,24 @@ const TableMapManagerPage = () => {
 
       {/* 하단 90% - 테이블맵 요소들을 배열하는 화면 */}
       <div className="h-[90%] bg-gray-50 p-6">
-        <div className="bg-white rounded-lg shadow-lg h-full relative overflow-auto flex items-start justify-start" onClick={handleCanvasClick}>
+        <div ref={canvasViewportRef} className="bg-white rounded-lg shadow-lg h-full relative overflow-auto flex items-start justify-start" onClick={handleCanvasClick}>
           {/* POS에 보여지는 메인 테이블맵 영역 (Fixed Resolution Canvas) */}
-          <DndContext onDragEnd={(e) => { if (mapLocked) return; handleDragEnd(e); }}>
-            <div 
-              className="bg-gray-100 relative border-2 border-gray-300 transition-all duration-300 flex flex-col mx-auto"
-              style={{
-                ...canvasStyle,
-                // Fixed Resolution일 때 중앙 정렬
-                marginLeft: 'auto',
-                marginRight: 'auto'
-              }}
-            >
+          <DndContext sensors={dndSensors} onDragEnd={(e) => { if (mapLocked) return; handleDragEnd(e); }}>
+            <div className="relative mx-auto" style={{ width: `${canvasWidthPx * editorScale}px`, height: `${canvasHeightPx * editorScale}px` }}>
+              <div 
+                className="bg-gray-100 relative border-2 border-gray-300 transition-all duration-300 flex flex-col"
+                style={{
+                  ...canvasStyle,
+                  transform: `scale(${editorScale})`,
+                  transformOrigin: 'top left'
+                }}
+              >
               {/* 캔바스 내부 알람들 */}
               <CallNotificationCanvasComponent />
               <OrderNotificationCanvasComponent />
               
-              {/* 1. 상단 7% - 주문채널 탭 영역 */}
-              <div className="h-[7%] bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg flex items-center justify-center">
+              {/* 1. 상단 헤더 - SalesPage와 동일한 56px 고정 */}
+              <div className="bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg flex items-center justify-center" style={{ height: '56px', flexShrink: 0 }}>
                 <div className="flex space-x-2 h-3/4">
                   {/* Floor 탭들 */}
                   {floorList.map((floor) => (
@@ -3963,6 +4079,7 @@ const TableMapManagerPage = () => {
                     </button>
                   ))}
                 </div>
+              </div>
               </div>
             </div>
           </DndContext>

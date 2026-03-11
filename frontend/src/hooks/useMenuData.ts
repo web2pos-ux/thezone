@@ -163,6 +163,9 @@ export function useMenuData(menuId?: number, orderType: string = 'pos', priceTyp
       const selectedPrice = priceType === 'price2' && row.price2 != null 
         ? Number(row.price2 || 0) 
         : Number(row.price || 0);
+      const printerGroups = Array.isArray(row.printer_groups) && row.printer_groups.length > 0
+        ? row.printer_groups.map((n: any) => Number(n)).filter((n: number) => !Number.isNaN(n))
+        : undefined;
       normalizedItems.push({
         id,
         name: row.name || '',
@@ -174,6 +177,7 @@ export function useMenuData(menuId?: number, orderType: string = 'pos', priceTyp
         sort_order: row.sort_order || 0,
         color: row.color || '',
         short_name: row.short_name,
+        ...(printerGroups ? { printer_groups: printerGroups } : {}),
       });
       if (Array.isArray(row.tax_groups) && row.tax_groups.length > 0) {
         itemTaxMap[id] = row.tax_groups.map((n: any) => Number(n)).filter((n: number) => !Number.isNaN(n));

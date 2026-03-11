@@ -1,0 +1,39 @@
+---
+description: CRITICAL - Excel Import/Export code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: backend/routes/menu.js,pos-desktop/backend/routes/menu.js,pos-desktop/routes/menu.js,frontend/src/pages/MenuEditPage.tsx
+alwaysApply: true
+---
+
+# EXCEL IMPORT/EXPORT CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Scope
+Excel Export/Import 관련 코드만 보호 대상. 아래 함수/라우트/UI가 보호 범위:
+
+### Backend (backend/routes/menu.js, pos-desktop/backend/routes/menu.js, pos-desktop/routes/menu.js)
+- `GET /:menuId/export-excel` 라우트 전체 (Excel 워크북 생성, 시트 구성, 데이터 조회, 응답)
+- `POST /:menuId/import-excel` 라우트 전체 (파일 업로드, 시트 파싱, DB 트랜잭션, 카테고리/아이템/그룹 생성 및 연결)
+- `EXCEL_COLUMNS` 상수 정의
+- `getExcelValue()` 헬퍼 함수
+- `LEGACY_COLUMNS` 레거시 컬럼 매핑
+- multer 업로드 설정 (Excel Import용)
+- Import 시 실행 순서: 그룹 생성 → name→id 맵 구축 → 카테고리/아이템 연결 (이 순서 절대 변경 금지)
+
+### Frontend (frontend/src/pages/MenuEditPage.tsx)
+- `handleExcelExport()` 함수
+- `handleExcelImport()` 함수
+- Excel Export/Import 버튼 UI
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 범위의 코드를 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: Import/Export에 영향을 주는 DB 스키마 변경, 컬럼명 변경, ID 생성 로직 변경도 승인 없이는 금지.
+5. **실행 순서 변경 금지**: Import 시 그룹 생성 → 맵 구축 → 연결의 순서를 절대 변경하지 마라.
+6. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - Explain WHAT you want to change (specific lines/functions)
+   - Explain WHY the change is necessary
+   - Explain the IMPACT on existing Export/Import functionality
+   - Ask for explicit approval: "Excel Import/Export의 [기능명]을 수정해도 될까요?"
+7. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 **파일을 편집하지 말고**, 변경을 시도하지 마라.
+8. 다른 작업의 "부수 효과로 Excel 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.

@@ -50,7 +50,7 @@ const TimeOffRequestsPage = () => {
 
   const loadEmployees = async () => {
     try {
-      const response = await fetch('${API_URL}/work-schedule/employees');
+      const response = await fetch(`${API_URL}/work-schedule/employees`);
       if (!response.ok) throw new Error('Failed to load employees');
       const data = await response.json();
       setEmployees(data.map((emp: any) => ({ id: emp.id, name: emp.name })));
@@ -61,7 +61,7 @@ const TimeOffRequestsPage = () => {
 
   const loadTimeOffRequests = async () => {
     try {
-      const response = await fetch('${API_URL}/work-schedule/time-off');
+      const response = await fetch(`${API_URL}/work-schedule/time-off`);
       if (!response.ok) throw new Error('Failed to load time off requests');
       const data = await response.json();
       setTimeOffRequests(data);
@@ -94,7 +94,7 @@ const TimeOffRequestsPage = () => {
         partialEndTime: formData.partialEndTime || null
       };
 
-      const response = await fetch('${API_URL}/work-schedule/time-off', {
+      const response = await fetch(`${API_URL}/work-schedule/time-off`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestData)

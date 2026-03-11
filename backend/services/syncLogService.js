@@ -6,11 +6,53 @@ const { v4: uuidv4 } = require('uuid');
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
 const sharedDb = require('../db');
 
-// 레거시 호환을 위한 래퍼 함수들
+// 래퍼 함수들 - 공유 DB 사용 (절대 close하면 안 됨)
 const dbRun = (db, sql, params = []) => sharedDb.dbRun(sql, params);
 const dbGet = (db, sql, params = []) => sharedDb.dbGet(sql, params);
 const dbAll = (db, sql, params = []) => sharedDb.dbAll(sql, params);
-const getDb = () => sharedDb.db;
+
+// 테이블 자동 생성 (없으면 생성)
+let tablesEnsured = false;
+async function ensureTables() {
+  if (tablesEnsured) return;
+  try {
+    await sharedDb.dbRun(`CREATE TABLE IF NOT EXISTS sync_logs (
+      sync_id TEXT PRIMARY KEY,
+      sync_type TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      status TEXT DEFAULT 'running',
+      total_items INTEGER DEFAULT 0,
+      created_count INTEGER DEFAULT 0,
+      updated_count INTEGER DEFAULT 0,
+      deleted_count INTEGER DEFAULT 0,
+      error_count INTEGER DEFAULT 0,
+      errors TEXT,
+      initiated_by TEXT,
+      employee_id TEXT,
+      device_id TEXT
+    )`);
+    await sharedDb.dbRun(`CREATE TABLE IF NOT EXISTS sync_log_details (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL,
+      entity_type TEXT,
+      local_id TEXT,
+      firebase_id TEXT,
+      action TEXT,
+      status TEXT,
+      old_data TEXT,
+      new_data TEXT,
+      error_message TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (sync_id) REFERENCES sync_logs(sync_id)
+    )`);
+    tablesEnsured = true;
+  } catch (e) {
+    console.error('[SyncLogService] Failed to ensure tables:', e.message);
+  }
+}
 
 /**
  * 동기화 상태 상수
@@ -60,22 +102,18 @@ class SyncLogService {
       deviceId = null
     } = options;
     
-    const db = getDb();
+    await ensureTables();
     const syncId = uuidv4();
     
-    try {
-      await dbRun(db,
-        `INSERT INTO sync_logs 
-         (sync_id, sync_type, direction, entity_type, started_at, status, initiated_by, employee_id, device_id)
-         VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`,
-        [syncId, syncType, direction, entityType, SYNC_STATUS.RUNNING, initiatedBy, employeeId, deviceId]
-      );
-      
-      console.log(`🔄 동기화 시작: ${syncId.substring(0, 8)}... (${direction} ${entityType})`);
-      return syncId;
-    } finally {
-      db.close();
-    }
+    await dbRun(null,
+      `INSERT INTO sync_logs 
+       (sync_id, sync_type, direction, entity_type, started_at, status, initiated_by, employee_id, device_id)
+       VALUES (?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)`,
+      [syncId, syncType, direction, entityType, SYNC_STATUS.RUNNING, initiatedBy, employeeId, deviceId]
+    );
+    
+    console.log(`🔄 동기화 시작: ${syncId.substring(0, 8)}... (${direction} ${entityType})`);
+    return syncId;
   }
   
   /**
@@ -94,27 +132,23 @@ class SyncLogService {
       errors = null
     } = results;
     
-    const db = getDb();
-    try {
-      await dbRun(db,
-        `UPDATE sync_logs SET
-         completed_at = datetime('now'),
-         status = ?,
-         total_items = ?,
-         created_count = ?,
-         updated_count = ?,
-         deleted_count = ?,
-         error_count = ?,
-         errors = ?
-         WHERE sync_id = ?`,
-        [status, totalItems, createdCount, updatedCount, deletedCount, errorCount, 
-         errors ? JSON.stringify(errors) : null, syncId]
-      );
-      
-      console.log(`✅ 동기화 완료: ${syncId.substring(0, 8)}... (${status})`);
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    await dbRun(null,
+      `UPDATE sync_logs SET
+       completed_at = datetime('now'),
+       status = ?,
+       total_items = ?,
+       created_count = ?,
+       updated_count = ?,
+       deleted_count = ?,
+       error_count = ?,
+       errors = ?
+       WHERE sync_id = ?`,
+      [status, totalItems, createdCount, updatedCount, deletedCount, errorCount, 
+       errors ? JSON.stringify(errors) : null, syncId]
+    );
+    
+    console.log(`✅ 동기화 완료: ${syncId.substring(0, 8)}... (${status})`);
   }
   
   /**
@@ -123,23 +157,19 @@ class SyncLogService {
    * @param {Error|string} error - 에러 정보
    */
   static async failSync(syncId, error) {
-    const db = getDb();
-    try {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      await dbRun(db,
-        `UPDATE sync_logs SET
-         completed_at = datetime('now'),
-         status = ?,
-         errors = ?
-         WHERE sync_id = ?`,
-        [SYNC_STATUS.FAILED, JSON.stringify([{ message: errorMessage }]), syncId]
-      );
-      
-      console.log(`❌ 동기화 실패: ${syncId.substring(0, 8)}... - ${errorMessage}`);
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    await dbRun(null,
+      `UPDATE sync_logs SET
+       completed_at = datetime('now'),
+       status = ?,
+       errors = ?
+       WHERE sync_id = ?`,
+      [SYNC_STATUS.FAILED, JSON.stringify([{ message: errorMessage }]), syncId]
+    );
+    
+    console.log(`❌ 동기화 실패: ${syncId.substring(0, 8)}... - ${errorMessage}`);
   }
   
   /**
@@ -159,20 +189,16 @@ class SyncLogService {
       errorMessage = null
     } = detail;
     
-    const db = getDb();
-    try {
-      await dbRun(db,
-        `INSERT INTO sync_log_details
-         (sync_id, entity_type, local_id, firebase_id, action, status, old_data, new_data, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [syncId, entityType, localId, firebaseId, action, status,
-         oldData ? JSON.stringify(oldData) : null,
-         newData ? JSON.stringify(newData) : null,
-         errorMessage]
-      );
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    await dbRun(null,
+      `INSERT INTO sync_log_details
+       (sync_id, entity_type, local_id, firebase_id, action, status, old_data, new_data, error_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [syncId, entityType, localId, firebaseId, action, status,
+       oldData ? JSON.stringify(oldData) : null,
+       newData ? JSON.stringify(newData) : null,
+       errorMessage]
+    );
   }
   
   /**
@@ -180,20 +206,16 @@ class SyncLogService {
    * @param {number} limit - 조회 개수
    */
   static async getRecentLogs(limit = 10) {
-    const db = getDb();
-    try {
-      const logs = await dbAll(db,
-        `SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT ?`,
-        [limit]
-      );
-      
-      return logs.map(log => ({
-        ...log,
-        errors: log.errors ? JSON.parse(log.errors) : null
-      }));
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    const logs = await dbAll(null,
+      `SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT ?`,
+      [limit]
+    );
+    
+    return logs.map(log => ({
+      ...log,
+      errors: log.errors ? JSON.parse(log.errors) : null
+    }));
   }
   
   /**
@@ -201,65 +223,57 @@ class SyncLogService {
    * @param {string} syncId - 동기화 ID
    */
   static async getSyncDetails(syncId) {
-    const db = getDb();
-    try {
-      const log = await dbGet(db,
-        'SELECT * FROM sync_logs WHERE sync_id = ?',
-        [syncId]
-      );
-      
-      if (!log) return null;
-      
-      const details = await dbAll(db,
-        'SELECT * FROM sync_log_details WHERE sync_id = ? ORDER BY created_at',
-        [syncId]
-      );
-      
-      return {
-        ...log,
-        errors: log.errors ? JSON.parse(log.errors) : null,
-        details: details.map(d => ({
-          ...d,
-          oldData: d.old_data ? JSON.parse(d.old_data) : null,
-          newData: d.new_data ? JSON.parse(d.new_data) : null
-        }))
-      };
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    const log = await dbGet(null,
+      'SELECT * FROM sync_logs WHERE sync_id = ?',
+      [syncId]
+    );
+    
+    if (!log) return null;
+    
+    const details = await dbAll(null,
+      'SELECT * FROM sync_log_details WHERE sync_id = ? ORDER BY created_at',
+      [syncId]
+    );
+    
+    return {
+      ...log,
+      errors: log.errors ? JSON.parse(log.errors) : null,
+      details: details.map(d => ({
+        ...d,
+        oldData: d.old_data ? JSON.parse(d.old_data) : null,
+        newData: d.new_data ? JSON.parse(d.new_data) : null
+      }))
+    };
   }
   
   /**
    * 동기화 통계 조회
    */
   static async getStats() {
-    const db = getDb();
-    try {
-      const stats = await dbGet(db, `
-        SELECT
-          COUNT(*) as total_syncs,
-          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful,
-          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-          SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) as partial,
-          SUM(created_count) as total_created,
-          SUM(updated_count) as total_updated,
-          SUM(deleted_count) as total_deleted,
-          SUM(error_count) as total_errors
-        FROM sync_logs
-      `);
-      
-      const recentByType = await dbAll(db, `
-        SELECT entity_type, direction, COUNT(*) as count,
-               MAX(started_at) as last_sync
-        FROM sync_logs
-        GROUP BY entity_type, direction
-        ORDER BY last_sync DESC
-      `);
-      
-      return { stats, recentByType };
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    const stats = await dbGet(null, `
+      SELECT
+        COUNT(*) as total_syncs,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) as partial,
+        SUM(created_count) as total_created,
+        SUM(updated_count) as total_updated,
+        SUM(deleted_count) as total_deleted,
+        SUM(error_count) as total_errors
+      FROM sync_logs
+    `);
+    
+    const recentByType = await dbAll(null, `
+      SELECT entity_type, direction, COUNT(*) as count,
+             MAX(started_at) as last_sync
+      FROM sync_logs
+      GROUP BY entity_type, direction
+      ORDER BY last_sync DESC
+    `);
+    
+    return { stats, recentByType };
   }
   
   /**
@@ -267,29 +281,25 @@ class SyncLogService {
    * @param {number} daysToKeep - 보관 일수
    */
   static async cleanup(daysToKeep = 30) {
-    const db = getDb();
-    try {
-      // 먼저 상세 로그 삭제
-      await dbRun(db,
-        `DELETE FROM sync_log_details 
-         WHERE sync_id IN (
-           SELECT sync_id FROM sync_logs 
-           WHERE started_at < datetime('now', '-' || ? || ' days')
-         )`,
-        [daysToKeep]
-      );
-      
-      // 그 다음 메인 로그 삭제
-      const result = await dbRun(db,
-        `DELETE FROM sync_logs WHERE started_at < datetime('now', '-' || ? || ' days')`,
-        [daysToKeep]
-      );
-      
-      console.log(`🧹 ${result.changes || 0}개의 오래된 로그 정리됨`);
-      return result.changes || 0;
-    } finally {
-      db.close();
-    }
+    await ensureTables();
+    // 먼저 상세 로그 삭제
+    await dbRun(null,
+      `DELETE FROM sync_log_details 
+       WHERE sync_id IN (
+         SELECT sync_id FROM sync_logs 
+         WHERE started_at < datetime('now', '-' || ? || ' days')
+       )`,
+      [daysToKeep]
+    );
+    
+    // 그 다음 메인 로그 삭제
+    const result = await dbRun(null,
+      `DELETE FROM sync_logs WHERE started_at < datetime('now', '-' || ? || ' days')`,
+      [daysToKeep]
+    );
+    
+    console.log(`🧹 ${result.changes || 0}개의 오래된 로그 정리됨`);
+    return result.changes || 0;
   }
 }
 

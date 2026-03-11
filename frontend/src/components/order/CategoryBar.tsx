@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { DndContext, closestCenter, DragOverlay, defaultDropAnimationSideEffects } from '@dnd-kit/core';
+import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { getContrastingTextColor, isHexColor, getSelectedButtonColor } from '../../utils/colorUtils';
 const PRESSED_PURPLE = '#4a002b';
 
@@ -30,35 +29,35 @@ const SortableCategory: React.FC<{
   isActive: boolean;
   layoutSettings: any;
   onClick: () => void;
-  buttonWidth: number;
   lockLayout?: boolean;
-}> = ({ id, name, isActive, layoutSettings, onClick, buttonWidth, lockLayout }) => {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id, disabled: lockLayout });
-  const [isHover, setIsHover] = useState(false);
-  const baseTransform = CSS.Transform.toString(transform);
+}> = ({ id, name, isActive, layoutSettings, onClick, lockLayout }) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !!lockLayout });
   const baseNormalBackground = isHexColor(layoutSettings.categoryNormalColor)
     ? layoutSettings.categoryNormalColor
     : undefined;
 
   const style: React.CSSProperties = { 
-    transform: isActive
-      ? `${baseTransform} translateY(1px)`
-      : (isHover ? `${baseTransform} translateY(-1px)` : baseTransform), 
-    transition: isDragging ? undefined : 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)',
-    willChange: 'transform',
+    touchAction: lockLayout ? 'manipulation' : 'none',
+    transform: transform ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)` : undefined,
+    transition: isDragging ? 'none' : transition,
     opacity: isDragging ? 0.85 : 1,
+    zIndex: isDragging ? 999 : undefined,
+    position: 'relative' as const,
+    cursor: isDragging ? 'grabbing' : (lockLayout ? undefined : 'grab'),
+    boxShadow: isDragging
+      ? '0 8px 24px rgba(0,0,0,0.3)'
+      : isActive
+        ? 'inset 3px 3px 6px rgba(0,0,0,0.2), inset -3px -3px 6px rgba(255,255,255,0.7)'
+        : '4px 4px 8px rgba(0,0,0,0.15), -4px -4px 8px rgba(255,255,255,0.8)',
     height: `${layoutSettings.categoryHeight}px`,
-    width: `${buttonWidth}px`,
+    width: '100%',
     fontSize: `${layoutSettings.categoryFontSize}px`,
     backgroundColor: isActive
       ? PRESSED_PURPLE
       : baseNormalBackground
-    , backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))'
-    , border: '1px solid rgba(255,255,255,0.18)'
-    , boxShadow: isActive
-      ? 'inset 0 3px 10px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.15) inset'
-      : (isHover ? '0 6px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' : '0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.3)')
-    , borderBottom: isActive ? '2px solid rgba(0,0,0,0.25)' : '2px solid rgba(0,0,0,0.2)'
+    , backgroundImage: 'none'
+    , border: 'none'
+    , borderBottom: 'none'
     , borderRadius: undefined
   };
 
@@ -66,20 +65,18 @@ const SortableCategory: React.FC<{
     <button
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
-      onClick={onClick}
-      onMouseEnter={() => setIsHover(true)}
-      onMouseLeave={() => setIsHover(false)}
+      onClick={isDragging ? undefined : onClick}
       data-active-category={isActive ? 'true' : undefined}
-      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-all duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
+      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
         isActive
-          ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} transform scale-95 shadow-inner` : 'transform scale-95 shadow-inner')
+          ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} shadow-inner` : 'shadow-inner')
           : (!isHexColor(layoutSettings.categoryNormalColor) ? `${layoutSettings.categoryNormalColor} hover:bg-opacity-80` : 'hover:bg-opacity-80')
       } ${getContrastingTextColor(
         isActive ? PRESSED_PURPLE : layoutSettings.categoryNormalColor
       )}`}
       data-category-button="true"
+      {...attributes}
+      {...listeners}
     >
       <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
         {name}
@@ -93,49 +90,47 @@ const SortableMergedGroup: React.FC<{
   isActive: boolean; 
   onClick: () => void; 
   layoutSettings: any;
-  buttonWidth: number;
   lockLayout?: boolean;
-}> = ({ group, isActive, onClick, layoutSettings, buttonWidth, lockLayout }) => {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id: group.id, disabled: lockLayout });
-  const [isHover, setIsHover] = useState(false);
-  const baseTransform = CSS.Transform.toString(transform);
+}> = ({ group, isActive, onClick, layoutSettings, lockLayout }) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: group.id, disabled: !!lockLayout });
   const style: React.CSSProperties = { 
-    transform: isActive
-      ? `${baseTransform} translateY(1px)`
-      : (isHover ? `${baseTransform} translateY(-1px)` : baseTransform), 
-    transition: isDragging ? undefined : 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)',
-    willChange: 'transform',
+    touchAction: lockLayout ? 'manipulation' : 'none',
+    transform: transform ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)` : undefined,
+    transition: isDragging ? 'none' : transition,
     opacity: isDragging ? 0.85 : 1,
+    zIndex: isDragging ? 999 : undefined,
+    position: 'relative' as const,
+    cursor: isDragging ? 'grabbing' : (lockLayout ? undefined : 'grab'),
+    boxShadow: isDragging
+      ? '0 8px 24px rgba(0,0,0,0.3)'
+      : isActive
+        ? 'inset 3px 3px 6px rgba(0,0,0,0.2), inset -3px -3px 6px rgba(255,255,255,0.7)'
+        : '4px 4px 8px rgba(0,0,0,0.15), -4px -4px 8px rgba(255,255,255,0.8)',
     height: `${layoutSettings.categoryHeight}px`,
-    width: `${buttonWidth}px`,
+    width: '100%',
     fontSize: `${layoutSettings.categoryFontSize}px`,
     backgroundColor: isActive
       ? PRESSED_PURPLE
       : (isHexColor(layoutSettings.categoryNormalColor) ? layoutSettings.categoryNormalColor : undefined)
-    , backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))'
-    , border: '1px solid rgba(255,255,255,0.18)'
-    , boxShadow: isActive
-      ? 'inset 0 3px 10px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.15) inset'
-      : (isHover ? '0 6px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' : '0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.3)')
-    , borderBottom: isActive ? '2px solid rgba(0,0,0,0.25)' : '2px solid rgba(0,0,0,0.2)'
+    , backgroundImage: 'none'
+    , border: 'none'
+    , borderBottom: 'none'
   };
   return (
     <button
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
-      onClick={onClick}
-      onMouseEnter={() => setIsHover(true)}
-      onMouseLeave={() => setIsHover(false)}
-      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-all duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
+      onClick={isDragging ? undefined : onClick}
+      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
         isActive
-          ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} transform scale-95 shadow-inner` : 'transform scale-95 shadow-inner')
+          ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} shadow-inner` : 'shadow-inner')
           : (!isHexColor(layoutSettings.categoryNormalColor) ? `${layoutSettings.categoryNormalColor} hover:bg-opacity-80` : 'hover:bg-opacity-80')
       } ${getContrastingTextColor(
         isActive ? PRESSED_PURPLE : layoutSettings.categoryNormalColor
       )}`}
       title={`${group.name}: ${group.categoryNames.join(', ')}`}
+      {...attributes}
+      {...listeners}
     >
       <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
         {group.name}
@@ -179,7 +174,10 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
   const groupMap = new Map(mergedGroups.map(g => [g.id, g] as const));
   const catMap = new Map(categories.map(c => [c.category_id.toString(), c] as const));
   const containerRef = useRef<HTMLDivElement>(null);
-  const savedWidth = lockLayout ? readSavedNumber(CATEGORY_BAR_WIDTH_KEY) : null;
+  // Lock width per detected/saved screen resolution so switching between 1024x768 ↔ 1920x1080
+  // doesn't reuse an old width value and distort category button sizing.
+  const widthKey = `${CATEGORY_BAR_WIDTH_KEY}:${String((layoutSettings as any)?.screenResolution || 'unknown')}`;
+  const savedWidth = lockLayout ? readSavedNumber(widthKey) : null;
   const [containerWidth, setContainerWidth] = useState<number>(savedWidth ?? 0);
   const [lockedWidth, setLockedWidth] = useState<number | null>(savedWidth);
 
@@ -201,15 +199,15 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
       if (lockedWidth === null && containerWidth > 0) {
         const next = Math.max(0, Math.round(containerWidth));
         setLockedWidth(next);
-        try { sessionStorage.setItem(CATEGORY_BAR_WIDTH_KEY, String(next)); } catch {}
+        try { sessionStorage.setItem(widthKey, String(next)); } catch {}
       }
     } else {
       if (lockedWidth !== null) {
         setLockedWidth(null);
       }
-      try { sessionStorage.removeItem(CATEGORY_BAR_WIDTH_KEY); } catch {}
+      try { sessionStorage.removeItem(widthKey); } catch {}
     }
-  }, [lockLayout, containerWidth, lockedWidth]);
+  }, [lockLayout, containerWidth, lockedWidth, widthKey]);
 
   const effectiveWidth = lockLayout && lockedWidth !== null ? lockedWidth : containerWidth;
 
@@ -230,20 +228,18 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
 
   const rows = Math.max(1, Number(layoutSettings.categoryRows) || 1);
   const total = renderList.length;
-  const cols = Math.max(1, Number(layoutSettings.categoryColumns) || 1);
+  const configuredCols = Math.max(1, Number(layoutSettings.categoryColumns) || 1);
+
+  const effectiveCols = Math.max(1, configuredCols);
+
   let remaining = total;
   const rowCounts: number[] = [];
-  for (let idx = 0; idx < rows; idx++) {
+  for (let idx = 0; idx < rows; idx += 1) {
     if (remaining <= 0) break;
-    const take = Math.min(cols, remaining);
+    const take = Math.min(effectiveCols, remaining);
     rowCounts.push(take);
     remaining -= take;
   }
-  const gapPx = 4; // gap-1
-  const paddingPx = 8; // pl-2 (8px) + pr-0 (0px)
-  const usableWidth = Math.max(0, effectiveWidth - paddingPx);
-  const buttonWidth = Math.max(64, Math.floor((usableWidth - gapPx * (cols - 1)) / cols));
-
   let cursor = 0;
 
   return (
@@ -264,7 +260,11 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
             const slice = renderList.slice(cursor, cursor + cnt);
             cursor += cnt;
             return (
-              <div key={`row-${rowIdx}`} className="flex justify-start gap-1">
+              <div
+                key={`row-${rowIdx}`}
+                className="grid gap-1"
+                style={{ gridTemplateColumns: `repeat(${effectiveCols}, minmax(0, 1fr))` }}
+              >
                 {slice.map((it) => {
                   if (it.kind === 'group') {
                     const g = groupMap.get(it.id);
@@ -276,7 +276,6 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
                         isActive={mergyActive && currentMergyGroupId === g.id && selectedCategory === MERGY_CATEGORY_ID}
                         onClick={() => { setCurrentMergyGroupId(g.id); setMergyActive(true); setSelectedCategory(MERGY_CATEGORY_ID); }}
                         layoutSettings={layoutSettings}
-                        buttonWidth={buttonWidth}
                         lockLayout={lockLayout}
                       />
                     );
@@ -291,39 +290,21 @@ const CategoryBar: React.FC<CategoryBarProps> = ({
                         isActive={selectedCategory === c.name}
                         layoutSettings={layoutSettings}
                         onClick={() => setSelectedCategory(c.name)}
-                        buttonWidth={buttonWidth}
                         lockLayout={lockLayout}
                       />
                     );
                   }
                 })}
+                {cnt < effectiveCols &&
+                  Array.from({ length: effectiveCols - cnt }).map((_, idx) => (
+                    <div key={`spacer-${rowIdx}-${idx}`} aria-hidden="true" style={{ visibility: 'hidden' }}>
+                      spacer
+                    </div>
+                  ))}
               </div>
             );
           })}
          </SortableContext>
-        <DragOverlay dropAnimation={{ duration: 220, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.5' } } }) }}>
-          {activeCategoryId ? (() => {
-            if (activeCategoryId.startsWith('mergy_')) {
-              const group = mergedGroups.find(g => g.id === activeCategoryId);
-              if (!group) return null;
-              return (
-                <div className="p-2 rounded-xl bg-blue-500 text-white"
-                     style={{ height: `${layoutSettings.categoryHeight}px`, width: `${buttonWidth}px`, fontSize: `${layoutSettings.categoryFontSize}px`, backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))', border: '1px solid rgba(255,255,255,0.18)', boxShadow: '0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.3)', borderBottom: '2px solid rgba(0,0,0,0.2)' }}>
-                  <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>{group.name}</span>
-                </div>
-              );
-            }
-            const cat = categories.find(c => String(c.category_id) === activeCategoryId);
-            if (!cat) return null;
-            const isActive = selectedCategory === cat.name;
-            return (
-              <div className={`p-2 rounded-xl ${getContrastingTextColor(isActive ? PRESSED_PURPLE : layoutSettings.categoryNormalColor)}`}
-                   style={{ height: `${layoutSettings.categoryHeight}px`, width: `${buttonWidth}px`, fontSize: `${layoutSettings.categoryFontSize}px`, backgroundColor: isActive ? PRESSED_PURPLE : (isHexColor(layoutSettings.categoryNormalColor) ? layoutSettings.categoryNormalColor : undefined), backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))', border: '1px solid rgba(255,255,255,0.18)', boxShadow: (isActive ? 'inset 0 3px 10px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.15) inset' : '0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.3)'), borderBottom: (isActive ? '2px solid rgba(0,0,0,0.25)' : '2px solid rgba(0,0,0,0.2)') }}>
-                <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>{cat.name}</span>
-              </div>
-            );
-          })() : null}
-        </DragOverlay>
       </DndContext>
     </div>
   );

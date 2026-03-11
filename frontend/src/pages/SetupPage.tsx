@@ -9,6 +9,20 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+// Backend base URL (strip trailing /api if present)
+const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:3177').replace(/\/api\/?$/, '');
+const FETCH_TIMEOUT_MS = 6000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs: number = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 // PIN Screen Component (TheZonePOS Style)
 // onDealerAccess: Callback when entering dealer mode
 const PinScreen: React.FC<{ 
@@ -19,7 +33,7 @@ const PinScreen: React.FC<{
   const navigate = useNavigate();
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177';
+  const API_URL = API_BASE;
   
   // 🔐 Dealer Mode States
   const [showDealerModal, setShowDealerModal] = useState(false);
@@ -214,7 +228,7 @@ const PinScreen: React.FC<{
     <div 
       className="fixed inset-0 flex items-center justify-center"
       style={{
-        backgroundImage: 'url(/images/intro.jpg)',
+        backgroundImage: 'url(/images/intro.png)',
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
@@ -424,7 +438,7 @@ const PinScreen: React.FC<{
   );
 };
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177';
+const API_URL = API_BASE;
 
 interface RestaurantInfo {
   id: string;
@@ -436,7 +450,7 @@ interface RestaurantInfo {
 }
 
 type ServiceMode = 'QSR' | 'FSR';
-type DataOption = 'empty' | 'cloud';
+type DataOption = 'empty' | 'cloud' | 'existing';
 
 const SetupPage: React.FC = () => {
   const navigate = useNavigate();
@@ -604,8 +618,8 @@ const SetupPage: React.FC = () => {
   useEffect(() => {
     const checkSetupStatus = async () => {
       try {
-        const statusRes = await fetch(`${API_URL}/api/firebase-setup/status`);
-        const statusPayload = await statusRes.json();
+        const statusRes = await fetchWithTimeout(`${API_URL}/api/firebase-setup/status`, { cache: 'no-store' as any }, 5000);
+        const statusPayload = await statusRes.json().catch(() => ({} as any));
         
         if (!statusPayload.success || !statusPayload.data) {
           setStep('setup');
@@ -637,6 +651,7 @@ const SetupPage: React.FC = () => {
 
       } catch (err) {
         console.error('Setup check failed:', err);
+        setError('Backend is not responding. Please start backend server (port 3177) and refresh.');
         setStep('setup');
       }
     };
@@ -698,12 +713,22 @@ const SetupPage: React.FC = () => {
     setError('');
 
     try {
-      setSetupProgress({ status: 'Preparing database...', progress: 20 });
+      // Determine if restaurant ID changed (dealer mode only)
+      const isSameRestaurant = isDealerMode && connectedRestaurant?.id === restaurantId.trim();
       
-      await fetch(`${API_URL}/api/firebase-setup/clear-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
+      // Dealer mode + same restaurant (mode-only switch): skip clear-data to preserve settings
+      // Dealer mode + different restaurant: clear data (new restaurant needs fresh DB)
+      // Initial setup (non-dealer): always clear data
+      if (isSameRestaurant) {
+        setSetupProgress({ status: 'Switching service mode...', progress: 20 });
+      } else {
+        setSetupProgress({ status: 'Preparing database...', progress: 20 });
+        
+        await fetch(`${API_URL}/api/firebase-setup/clear-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       
       setSetupProgress({ status: 'Saving restaurant info...', progress: 40 });
 
@@ -735,11 +760,15 @@ const SetupPage: React.FC = () => {
         })
       });
 
-      if (dataOption === 'cloud') {
+      if (isSameRestaurant) {
+        // Same restaurant, mode switch only - no data sync needed
+        setSetupProgress({ status: 'Mode switched successfully!', progress: 90 });
+      } else if (isDealerMode) {
+        // Dealer mode, different restaurant - auto-download from cloud
         setSetupProgress({ status: 'Downloading menu from Cloud...', progress: 70 });
         
         try {
-          await fetch(`${API_URL}/api/menu-sync/sync-from-firebase`, {
+          await fetch(`${API_URL}/menu-sync/sync-from-firebase`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Role': 'ADMIN' },
             body: JSON.stringify({ restaurantId: restaurantId.trim() })
@@ -748,6 +777,21 @@ const SetupPage: React.FC = () => {
         } catch (syncErr) {
           console.error('Menu sync failed:', syncErr);
         }
+      } else if (dataOption === 'cloud') {
+        setSetupProgress({ status: 'Downloading menu from Cloud...', progress: 70 });
+        
+        try {
+          await fetch(`${API_URL}/menu-sync/sync-from-firebase`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Role': 'ADMIN' },
+            body: JSON.stringify({ restaurantId: restaurantId.trim() })
+          });
+          setSetupProgress({ status: 'Menu download complete!', progress: 90 });
+        } catch (syncErr) {
+          console.error('Menu sync failed:', syncErr);
+        }
+      } else if (dataOption === 'existing') {
+        setSetupProgress({ status: 'Using existing data...', progress: 90 });
       } else {
         setSetupProgress({ status: 'Starting with empty database...', progress: 90 });
       }
@@ -821,6 +865,7 @@ const SetupPage: React.FC = () => {
             <img src="/images/logo.png" alt="Logo" className="w-16 h-16 mx-auto mb-4 object-contain"/>
             <h1 className="text-2xl font-bold text-white mb-4">TheZonePOS</h1>
             <div className="w-10 h-10 border-4 border-white/30 border-t-white rounded-full animate-spin mx-auto"></div>
+            {error && <div className="mt-4 text-red-200 text-sm font-semibold">{error}</div>}
           </div>
         )}
 
@@ -935,7 +980,7 @@ const SetupPage: React.FC = () => {
                 <label className="block text-blue-100 mb-1.5 font-medium text-sm">
                   📦 Data Initialization
                 </label>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <button
                     onClick={() => setDataOption('empty')}
                     className={`p-3 rounded-xl border-2 transition-all ${
@@ -960,6 +1005,19 @@ const SetupPage: React.FC = () => {
                     <div className="text-2xl mb-1">☁️</div>
                     <div className="font-bold text-sm">Import from Cloud</div>
                     <div className="text-xs opacity-70">Download from Firebase</div>
+                  </button>
+                  
+                  <button
+                    onClick={() => setDataOption('existing')}
+                    className={`p-3 rounded-xl border-2 transition-all ${
+                      dataOption === 'existing'
+                        ? 'bg-yellow-500/20 border-yellow-400 text-white'
+                        : 'bg-white/5 border-white/20 text-blue-200 hover:bg-white/10'
+                    }`}
+                  >
+                    <div className="text-2xl mb-1">💾</div>
+                    <div className="font-bold text-sm">Use Existing Data</div>
+                    <div className="text-xs opacity-70">Keep current database</div>
                   </button>
                 </div>
               </div>

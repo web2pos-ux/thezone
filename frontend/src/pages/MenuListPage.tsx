@@ -22,6 +22,7 @@ import { Plus, Trash2, Settings, Save, X, Edit } from 'lucide-react';
 // Header removed - using BackOfficeLayout header instead
 import { Menu } from '../types';
 import { API_URL } from '../config/constants';
+import DangerousActionModal from '../components/DangerousActionModal';
 
 interface BackupFile {
   filename: string;
@@ -722,16 +723,26 @@ const TaxSettingsTab = () => {
 const ThezoneorderSyncTab = () => {
   const [profile, setProfile] = useState<any>({ firebase_restaurant_id: '' });
   const [syncing, setSyncing] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  // uploading state 제거됨 - Full Sync만 사용
   const [fullSyncing, setFullSyncing] = useState(false);
+  
+  // Dangerous action lock state
+  const [dangerousAction, setDangerousAction] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    warningItems: string[];
+    confirmPhrase: string;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: '', description: '', warningItems: [], confirmPhrase: '', onConfirm: () => {} });
   const [cloudConnected, setCloudConnected] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ linked: number; total: number } | null>(null);
   const [backups, setBackups] = useState<any[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(false);
   
-  // Menu selection for upload - 고정 메뉴 ID 사용
+  // Menu selection for upload - DB에서 동적으로 가져옴
   const [menus, setMenus] = useState<any[]>([]);
-  const selectedMenuId = '200005'; // 고정 메뉴
+  const selectedMenuId = menus.length > 0 ? String(menus[0].menu_id) : '';
   
   // Firebase menus list
   const [firebaseMenus, setFirebaseMenus] = useState<any[]>([]);
@@ -828,6 +839,22 @@ const ThezoneorderSyncTab = () => {
     }
     if (!window.confirm('⚠️ Download from Thezoneorder to POS?\n\nThis will download in order:\n1. Modifier Groups\n2. Tax Groups\n3. Printer Groups\n4. Menu\n\n⚠️ A backup will be created automatically before download.\nItems will be matched by name.')) return;
     
+    // Firebase에 이미지가 있는지 확인 → POS 이미지를 유지할지 물어봄
+    let skipImages = false;
+    try {
+      const checkRes = await fetch(`${API_URL}/menu-sync/firebase-menu/${profile.firebase_restaurant_id}`);
+      const checkData = await checkRes.json();
+      const hasImages = checkData.success && (
+        (checkData.categories || []).some((c: any) => c.imageUrl || c.image_url) ||
+        (checkData.items || []).some((i: any) => i.imageUrl || i.image_url)
+      );
+      if (hasImages) {
+        skipImages = !window.confirm('🖼️ Firebase(TZO Cloud)에 이미지가 있습니다.\n\nFirebase 이미지로 POS를 덮어쓰시겠습니까?\n\n• 확인 → Firebase 이미지로 덮어쓰기\n• 취소 → POS 이미지 유지');
+      }
+    } catch (e) {
+      // 확인 실패 시 기본값(덮어쓰기)으로 진행
+    }
+    
     setSyncing(true);
     
     try {
@@ -874,7 +901,7 @@ const ThezoneorderSyncTab = () => {
       const res = await fetch(`${API_URL}/menu-sync/sync-from-firebase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id, menuId: selectedMenuId })
+        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id, menuId: selectedMenuId, skipImages })
       });
       const data = await res.json();
       
@@ -895,81 +922,7 @@ const ThezoneorderSyncTab = () => {
     }
   };
 
-  const handleUploadToThezoneorder = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please enter Thezoneorder Restaurant ID first');
-      return;
-    }
-    if (!window.confirm(`⚠️ Upload "Menu" to Thezoneorder?\n\nThis will upload:\n1. Modifier Groups\n2. Tax Groups\n3. Printer Groups\n4. Menu\n\nExisting Thezoneorder data will be backed up and replaced.`)) return;
-    
-    setUploading(true);
-    
-    try {
-      // Step 1: Upload Modifier Groups
-      const modRes = await fetch(`${API_URL}/menu-sync/upload-modifier-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id, menuId: selectedMenuId })
-      });
-      const modData = await modRes.json();
-      if (!modData.success) {
-        throw new Error(`Modifier Groups upload failed: ${modData.error || 'Unknown error'}`);
-      }
-      const modGroups = modData.uploadedGroups || [];
-      alert(`✅ Step 1 Complete!\n\nModifier Groups uploaded successfully!\n\n${modGroups.length} groups synced:\n${modGroups.map((g: any) => `• ${g.name} (${g.modifierCount || 0} options)`).join('\n')}`);
-      
-      // Step 2: Upload Tax Groups
-      const taxRes = await fetch(`${API_URL}/menu-sync/upload-tax-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const taxData = await taxRes.json();
-      if (!taxData.success) {
-        throw new Error(`Tax Groups upload failed: ${taxData.error || 'Unknown error'}`);
-      }
-      const taxGroups = taxData.uploadedGroups || [];
-      alert(`✅ Step 2 Complete!\n\nTax Groups uploaded successfully!\n\n${taxGroups.length} groups synced:\n${taxGroups.map((g: any) => `• ${g.name} (${g.taxCount || 0} taxes)`).join('\n')}`);
-      
-      // Step 3: Upload Printer Groups
-      const printerRes = await fetch(`${API_URL}/menu-sync/upload-printer-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const printerData = await printerRes.json();
-      if (!printerData.success) {
-        throw new Error(`Printer Groups upload failed: ${printerData.error || 'Unknown error'}`);
-      }
-      const printerGroups = printerData.uploadedGroups || [];
-      alert(`✅ Step 3 Complete!\n\nPrinter Groups uploaded successfully!\n\n${printerGroups.length} groups synced:\n${printerGroups.map((g: any) => `• ${g.name}`).join('\n')}`);
-      
-      // Step 4: Upload Menu (last)
-      const res = await fetch(`${API_URL}/menu-sync/sync-to-firebase`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ 
-          restaurantId: profile.firebase_restaurant_id,
-          menuId: selectedMenuId
-        })
-      });
-      const data = await res.json();
-      
-      if (!data.success) {
-        throw new Error(`Menu upload failed: ${data.error || 'Unknown error'}`);
-      }
-      
-      alert(`✅ Step 4 Complete!\n\nMenu uploaded successfully!\n\n📤 Uploaded "Menu":\n  Categories: ${data.summary.categoriesUploaded}\n  Items: ${data.summary.itemsUploaded}\n\n💾 Backup saved:\n  Categories: ${data.backup?.categoriesBackedUp || 0}\n  Items: ${data.backup?.itemsBackedUp || 0}\n\n✅ All uploads completed successfully!`);
-      
-        loadBackups(profile.firebase_restaurant_id);
-        const syncRes = await fetch(`${API_URL}/menu-sync/sync-status`).then(r => r.json()).catch(() => null);
-        if (syncRes?.stats) setSyncStatus({ linked: syncRes.stats.linkedItems, total: syncRes.stats.totalItems });
-    } catch (e: any) {
-      alert(`❌ Upload failed: ${e.message}\n\nPlease try again or contact support.`);
-    } finally {
-      setUploading(false);
-    }
-  };
+  // handleUploadToThezoneorder 제거됨 - Full Sync만 사용
 
   const handleRestoreBackup = async (backupId: string) => {
     if (!window.confirm('⚠️ Restore this backup?\n\nCurrent Thezoneorder menu will be replaced.')) return;
@@ -1000,17 +953,33 @@ const ThezoneorderSyncTab = () => {
     }
     if (!window.confirm(`🔄 Full Sync "Menu" to TZO Cloud?\n\n이 작업은:\n1. 모디파이어 그룹 업로드\n2. 세금 그룹 업로드\n3. 프린터 그룹 업로드\n4. 카테고리 업로드\n5. 메뉴 아이템 업로드\n6. 모든 연결 정보 업로드\n\n⚠️ 기존 같은 이름의 메뉴는 교체됩니다.\n\n계속하시겠습니까?`)) return;
     
+    // Firebase에 이미지가 있는지 확인
+    let skipImages = false;
+    try {
+      const checkRes = await fetch(`${API_URL}/menu-sync/firebase-menu/${profile.firebase_restaurant_id}`);
+      const checkData = await checkRes.json();
+      const hasImages = checkData.success && (
+        (checkData.categories || []).some((c: any) => c.imageUrl || c.image_url) ||
+        (checkData.items || []).some((i: any) => i.imageUrl || i.image_url)
+      );
+      if (hasImages) {
+        skipImages = !window.confirm('🖼️ Firebase(TZO Cloud)에 이미지가 있습니다.\n\nPOS의 이미지로 덮어쓰시겠습니까?\n\n• 확인 → POS 이미지로 덮어쓰기\n• 취소 → Firebase 이미지 유지');
+      }
+    } catch (e) {
+      // 확인 실패 시 기본값(덮어쓰기)으로 진행
+    }
+    
     setFullSyncing(true);
     
     try {
-      // Full sync to Firebase (모든 데이터를 한 번에 업로드)
       const res = await fetch(`${API_URL}/menu-sync/full-sync-to-firebase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
         body: JSON.stringify({ 
           restaurantId: profile.firebase_restaurant_id,
           menuId: selectedMenuId,
-          deleteExisting: true
+          deleteExisting: true,
+          skipImages
         })
       });
       const data = await res.json();
@@ -1070,176 +1039,9 @@ const ThezoneorderSyncTab = () => {
     }
   };
 
-  // 프린터 그룹 업로드
-  const [uploadingPrinters, setUploadingPrinters] = useState(false);
-  
-  const handleUploadPrinterGroups = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please connect to Thezoneorder first');
-      return;
-    }
-    
-    if (!window.confirm('⚠️ Upload all printer group names to Thezoneorder?\n\nExisting Thezoneorder printer groups will be replaced.')) {
-      return;
-    }
-    
-    setUploadingPrinters(true);
-    try {
-      const res = await fetch(`${API_URL}/menu-sync/upload-printer-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        const groups = data.uploadedGroups || [];
-        alert(`✅ Printer Groups Uploaded!\n\n${groups.length} groups synced:\n${groups.map((g: any) => `• ${g.name}`).join('\n')}`);
-      } else {
-        alert('❌ Upload failed: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e: any) {
-      alert('❌ Upload failed: ' + e.message);
-    } finally {
-      setUploadingPrinters(false);
-    }
-  };
-
-  // 세금 그룹 업로드/다운로드
-  const [uploadingTaxes, setUploadingTaxes] = useState(false);
-  const [downloadingTaxes, setDownloadingTaxes] = useState(false);
-  
-  const handleUploadTaxGroups = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please connect to Thezoneorder first');
-      return;
-    }
-    
-    if (!window.confirm('⚠️ Upload all tax groups to Thezoneorder?\n\nExisting Thezoneorder tax groups will be replaced.')) {
-      return;
-    }
-    
-    setUploadingTaxes(true);
-    try {
-      const res = await fetch(`${API_URL}/menu-sync/upload-tax-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        const groups = data.uploadedGroups || [];
-        alert(`✅ Tax Groups Uploaded!\n\n${groups.length} groups synced:\n${groups.map((g: any) => `• ${g.name} (${g.taxCount} taxes)`).join('\n')}`);
-      } else {
-        alert('❌ Upload failed: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e: any) {
-      alert('❌ Upload failed: ' + e.message);
-    } finally {
-      setUploadingTaxes(false);
-    }
-  };
-
-  const handleDownloadTaxGroups = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please connect to Thezoneorder first');
-      return;
-    }
-    
-    if (!window.confirm('⚠️ Download tax groups from Thezoneorder?\n\nThis will add new tax groups and update existing ones (matched by name).')) {
-      return;
-    }
-    
-    setDownloadingTaxes(true);
-    try {
-      const res = await fetch(`${API_URL}/menu-sync/download-tax-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        const s = data.summary;
-        alert(`✅ Tax Groups Downloaded!\n\n📊 Summary:\n• Groups created: ${s.groupsCreated}\n• Groups updated: ${s.groupsUpdated}\n• Taxes created: ${s.taxesCreated}\n• Total groups: ${s.totalGroups}`);
-      } else {
-        alert('❌ Download failed: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e: any) {
-      alert('❌ Download failed: ' + e.message);
-    } finally {
-      setDownloadingTaxes(false);
-    }
-  };
-
-  // 모디파이어 그룹 업로드/다운로드
-  const [uploadingModifiers, setUploadingModifiers] = useState(false);
-  const [downloadingModifiers, setDownloadingModifiers] = useState(false);
-  
-  const handleUploadModifierGroups = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please connect to Thezoneorder first');
-      return;
-    }
-    
-    if (!window.confirm('⚠️ Upload all Modifier groups to Thezoneorder?\n\nExisting Thezoneorder Modifier groups will be replaced.\n\nThis includes Price1 and Price2 for each option.')) {
-      return;
-    }
-    
-    setUploadingModifiers(true);
-    try {
-      const res = await fetch(`${API_URL}/menu-sync/upload-modifier-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        const groups = data.uploadedGroups || [];
-        alert(`✅ Modifier Groups Uploaded!\n\n${groups.length} groups synced:\n${groups.map((g: any) => `• ${g.name} (${g.modifierCount} options)`).join('\n')}`);
-      } else {
-        alert('❌ Upload failed: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e: any) {
-      alert('❌ Upload failed: ' + e.message);
-    } finally {
-      setUploadingModifiers(false);
-    }
-  };
-
-  const handleDownloadModifierGroups = async () => {
-    if (!profile.firebase_restaurant_id) {
-      alert('Please connect to Thezoneorder first');
-      return;
-    }
-    
-    if (!window.confirm('⚠️ Download Modifier groups from Thezoneorder?\n\nThis will add new Modifier groups and update existing ones (matched by name + label).\n\nPrice1 and Price2 will be downloaded for each option.')) {
-      return;
-    }
-    
-    setDownloadingModifiers(true);
-    try {
-      const res = await fetch(`${API_URL}/menu-sync/download-modifier-groups`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
-        body: JSON.stringify({ restaurantId: profile.firebase_restaurant_id })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        const s = data.summary;
-        alert(`✅ Modifier Groups Downloaded!\n\n📊 Summary:\n• Groups created: ${s.groupsCreated}\n• Groups updated: ${s.groupsUpdated}\n• Modifiers created: ${s.modifiersCreated}\n• Total groups: ${s.totalGroups}`);
-      } else {
-        alert('❌ Download failed: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e: any) {
-      alert('❌ Download failed: ' + e.message);
-    } finally {
-      setDownloadingModifiers(false);
-    }
-  };
+  // 개별 업로드/다운로드 함수 제거됨 - Full Sync와 Download All만 사용
+  // (handleUploadPrinterGroups, handleUploadTaxGroups, handleUploadModifierGroups,
+  //  handleDownloadTaxGroups, handleDownloadModifierGroups 모두 제거)
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -1330,13 +1132,25 @@ const ThezoneorderSyncTab = () => {
               <div className="border border-green-300 rounded-lg p-4 bg-green-50">
                 <div className="flex items-center gap-2 mb-4">
                   <span className="text-2xl">🔄</span>
-                  <h3 className="text-lg font-bold text-green-800">Full Sync to TZO Cloud</h3>
+                  <h3 className="text-lg font-bold text-green-800">Upload All</h3>
                   <span className="ml-auto text-xs bg-green-600 text-white px-2 py-1 rounded-full">추천</span>
           </div>
           
                 <div className="space-y-3">
             <button 
-              onClick={handleFullSyncToCloud}
+              onClick={() => setDangerousAction({
+                isOpen: true,
+                title: 'Full Sync Menu to TZO Cloud',
+                description: 'This will DELETE all existing menu data on TZO Cloud and re-upload everything from POS.',
+                warningItems: [
+                  'ALL cloud menu data (categories, items, modifiers, tax groups, printer groups) will be deleted first',
+                  'Then POS data will be uploaded as new',
+                  'If sync fails midway, auto-restore from backup will be attempted',
+                  'Other devices will receive this new menu on next sync'
+                ],
+                confirmPhrase: 'SYNC',
+                onConfirm: handleFullSyncToCloud
+              })}
               disabled={fullSyncing || !profile.firebase_restaurant_id}
                     className={`w-full px-4 py-3 rounded-lg text-sm font-bold transition-all ${
                       fullSyncing 
@@ -1350,7 +1164,7 @@ const ThezoneorderSyncTab = () => {
                         Syncing...
                       </span>
                     ) : (
-                      '🔄 Full Sync to Cloud'
+                      '🔒 Upload All'
                     )}
             </button>
                   
@@ -1370,7 +1184,19 @@ const ThezoneorderSyncTab = () => {
 
                 <div className="space-y-3">
               <button 
-                    onClick={handleSyncFromThezoneorder}
+                    onClick={() => setDangerousAction({
+                      isOpen: true,
+                      title: 'Download Menu from TZO Cloud',
+                      description: 'This will overwrite your local POS menu with data from TZO Cloud. Modifier groups, tax groups, and printer groups will also be downloaded.',
+                      warningItems: [
+                        'Your current POS menu will be replaced with cloud data',
+                        'Modifier, tax, and printer group links will be re-synced',
+                        'A local backup will be created automatically before download',
+                        'If download fails, POS data will be rolled back to previous state'
+                      ],
+                      confirmPhrase: 'DOWNLOAD',
+                      onConfirm: handleSyncFromThezoneorder
+                    })}
                     disabled={syncing || !profile.firebase_restaurant_id}
                     className={`w-full px-4 py-3 rounded-lg text-sm font-bold transition-all ${
                       syncing 
@@ -1384,7 +1210,7 @@ const ThezoneorderSyncTab = () => {
                         Downloading...
                       </span>
                     ) : (
-                      '📥 Download All'
+                      '🔒 Download All'
                     )}
               </button>
                   
@@ -1433,10 +1259,21 @@ const ThezoneorderSyncTab = () => {
                   </div>
                 </div>
                 <button
-                  onClick={() => handleRestoreBackup(backup.id)}
+                  onClick={() => setDangerousAction({
+                    isOpen: true,
+                    title: 'Restore TZO Backup',
+                    description: `This will restore POS menu from TZO Cloud backup (${backup.categoryCount} categories, ${backup.itemCount} items).`,
+                    warningItems: [
+                      'Your current POS menu will be replaced with backup data',
+                      'This cannot be undone - make sure you want to restore',
+                      'Categories, items, and their links will be overwritten'
+                    ],
+                    confirmPhrase: 'RESTORE',
+                    onConfirm: () => handleRestoreBackup(backup.id)
+                  })}
                       className="w-full px-3 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-medium transition-all shadow-sm hover:shadow"
                 >
-                  ↩️ Restore
+                  🔒 Restore
                 </button>
               </div>
             ))}
@@ -1446,6 +1283,20 @@ const ThezoneorderSyncTab = () => {
         </div>
 
       </div>
+
+      {/* Dangerous Action Lock Modal (ThezoneorderSyncTab) */}
+      <DangerousActionModal
+        isOpen={dangerousAction.isOpen}
+        onClose={() => setDangerousAction((prev: any) => ({ ...prev, isOpen: false }))}
+        onConfirm={() => {
+          setDangerousAction((prev: any) => ({ ...prev, isOpen: false }));
+          dangerousAction.onConfirm();
+        }}
+        title={dangerousAction.title}
+        description={dangerousAction.description}
+        warningItems={dangerousAction.warningItems}
+        confirmPhrase={dangerousAction.confirmPhrase}
+      />
     </div>
   );
 };
@@ -1487,6 +1338,15 @@ const MenuListPage = () => {
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [selectedMenuId, setSelectedMenuId] = useState<number | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [pendingRestoreFile, setPendingRestoreFile] = useState<File | null>(null);
+  const [dangerousActionMain, setDangerousActionMain] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    warningItems: string[];
+    confirmPhrase: string;
+    onConfirm: () => void;
+  }>({ isOpen: false, title: '', description: '', warningItems: [], confirmPhrase: '', onConfirm: () => {} });
   // Manager PIN 모달 제거
   const navigate = useNavigate();
 
@@ -2002,7 +1862,27 @@ const MenuListPage = () => {
                    accept=".json"
                    onChange={(e) => {
                      const file = e.target.files?.[0];
-                     if (file) handleRestoreBackup(file);
+                     if (file) {
+                       const capturedFile = file;
+                       setPendingRestoreFile(capturedFile);
+                       setDangerousActionMain({
+                         isOpen: true,
+                         title: 'Restore Menu from Backup File',
+                         description: `This will overwrite your current menu with data from "${capturedFile.name}".`,
+                         warningItems: [
+                           'Your current menu data will be completely replaced',
+                           'Categories, items, modifiers, and all links will be overwritten',
+                           'This cannot be undone',
+                           'Make sure you selected the correct backup file'
+                         ],
+                         confirmPhrase: 'RESTORE',
+                         onConfirm: () => {
+                           handleRestoreBackup(capturedFile);
+                           setPendingRestoreFile(null);
+                         }
+                       });
+                     }
+                     e.target.value = '';
                    }}
                    className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                  />
@@ -2015,6 +1895,21 @@ const MenuListPage = () => {
          </div>
        )}
       </div>
+
+      {/* Dangerous Action Lock Modal (MenuListPage) */}
+      <DangerousActionModal
+        isOpen={dangerousActionMain.isOpen}
+        onClose={() => { setDangerousActionMain((prev: any) => ({ ...prev, isOpen: false })); setPendingRestoreFile(null); }}
+        onConfirm={() => {
+          const action = dangerousActionMain.onConfirm;
+          setDangerousActionMain((prev: any) => ({ ...prev, isOpen: false }));
+          action();
+        }}
+        title={dangerousActionMain.title}
+        description={dangerousActionMain.description}
+        warningItems={dangerousActionMain.warningItems}
+        confirmPhrase={dangerousActionMain.confirmPhrase}
+      />
     </div>
   );
 };

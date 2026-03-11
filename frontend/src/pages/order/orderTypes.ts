@@ -31,8 +31,12 @@ export interface OrderItem {
   } | undefined;
   // Evenly shared indicator: when present, UI can render as 1/splitDenominator
   splitDenominator?: number;
+  // Remaining portion numerator after partial 1/N split payment (e.g. 2 in 2/3)
+  splitNumerator?: number;
   // Share Evenly attempt sequence for ordering within lists
   splitOrder?: number;
+  // Dine-in item-level TOGO label (separate from orderType TOGO)
+  togoLabel?: boolean;
 }
 
 export interface MenuItem {
@@ -74,6 +78,12 @@ export interface LayoutSettings {
   mergedGroups?: Array<{ id: string; name: string; categoryNames: string[] }>;
   categoryBarOrder?: string[];
   menuGridColumns: number;
+  /**
+   * Optional fixed visible row count for the menu grid.
+   * - 0 / undefined: auto (based on container height)
+   * - >=1: force that many rows (helps create "6x4" style fixed grids)
+   */
+  menuGridRows?: number;
   menuItemHeight: number;
   menuFontSize: number;
   menuFontBold?: boolean;
@@ -81,6 +91,11 @@ export interface LayoutSettings {
   menuSelectedColor: string;
   showPrices: boolean;
   useShortName?: boolean;
+  /**
+   * Optional per-row item count pattern for menu grid (e.g. [4,6,3,4] when 6x4).
+   * This is a helper config; the actual fixed positioning is stored in menuItemOrderByCategory with EMPTY slots.
+   */
+  menuGridRowPattern?: number[];
   modifierRows: number;
   modifierColumns: number;
   modifierItemHeight: number;
@@ -88,11 +103,17 @@ export interface LayoutSettings {
   modifierFontBold?: boolean;
   modifierDefaultColor: string;
   modifierShowPrices: boolean;
+  /**
+   * Optional per-row item count pattern for modifier grid.
+   * This is a helper config; the actual fixed positioning is stored in modifierLayoutByItem with EMPTY slots.
+   */
+  modifierRowPattern?: number[];
   baseColor?: string;
   categoryAreaBgColor?: string;
   menuAreaBgColor?: string;
   modifierAreaBgColor?: string;
   selectServerOnEntry?: boolean;
+  gratuityRate?: number;
   // Function Tab: Void settings (simplified + internationalized)
   voidThreshold?: number; // displayed threshold in current profile scale (kept for backward compatibility)
   voidRequireManager?: boolean; // legacy, ignored

@@ -22,6 +22,18 @@ const FRONTEND_PORT = 3088;
 const isDev = !app.isPackaged;
 const appPath = isDev ? path.join(__dirname, '..') : process.resourcesPath;
 
+function getAppIconPath() {
+  // Prefer .ico for Windows. Keep it next to main.js for builder + runtime.
+  const ico = path.join(__dirname, 'icon.ico');
+  if (fs.existsSync(ico)) return ico;
+  // Fallbacks (older builds)
+  const png = path.join(__dirname, 'icon.png');
+  if (fs.existsSync(png)) return png;
+  const legacyAssetsPng = path.join(__dirname, 'assets', 'icon.png');
+  if (fs.existsSync(legacyAssetsPng)) return legacyAssetsPng;
+  return undefined;
+}
+
 /**
  * Backend 서버 시작 (직접 require로 실행)
  */
@@ -117,12 +129,13 @@ function startBackend() {
     // 패키징된 앱에서 모듈 경로 설정 (app 내부의 node_modules 사용)
     if (!isDev) {
       const appNodeModules = path.join(app.getAppPath(), 'node_modules');
-      // NODE_PATH 환경 변수 설정 (가장 확실한 방법)
-      process.env.NODE_PATH = appNodeModules;
-      require('module')._initPaths(); // NODE_PATH 변경 적용
-      // globalPaths에도 추가 (fallback)
+      const unpackedNodeModules = path.join(app.getAppPath() + '.unpacked', 'node_modules');
+      // NODE_PATH: unpacked 먼저 (네이티브 모듈), 그 다음 asar (JS 모듈)
+      process.env.NODE_PATH = unpackedNodeModules + path.delimiter + appNodeModules;
+      require('module')._initPaths();
+      require('module').globalPaths.unshift(unpackedNodeModules);
       require('module').globalPaths.push(appNodeModules);
-      console.log('[Backend] Added module path:', appNodeModules);
+      console.log('[Backend] Added module paths:', unpackedNodeModules, appNodeModules);
     }
     
     try {
@@ -208,7 +221,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    icon: getAppIconPath(),
     autoHideMenuBar: true,
     show: false,
     title: 'TheZonePOS',
@@ -330,7 +343,7 @@ function createSplash() {
   });
 
   // 로고 이미지 경로
-  const logoPath = path.join(__dirname, 'assets', 'icon.png').replace(/\\/g, '/');
+  const logoPath = (getAppIconPath() || '').replace(/\\/g, '/');
 
   splash.loadURL(`data:text/html,
     <html>
@@ -382,27 +395,29 @@ async function startApp() {
     // 스플래시 닫기
     splash.close();
     
-    // 🔄 업데이트 확인 (Backend가 준비된 후)
-    console.log('[App] Checking for updates...');
-    try {
-      const updated = await runUpdateProcess();
-      if (updated) {
-        // 업데이트 후 재시작되면 여기서 종료됨
-        return;
-      }
-    } catch (updateError) {
-      console.log('[App] Update check skipped:', updateError.message);
-      // 업데이트 실패해도 앱은 계속 실행
-    }
-    
-    // 메인 윈도우 생성
+    // 메인 윈도우 먼저 생성 (사용자가 기다리지 않도록)
     createWindow();
     createMenu();
     setupIpcHandlers();
     
     // 앱 시작 완료
+    isStartingApp = false;
     isAppStarting = false;
     console.log('[App] Startup complete!');
+    
+    // 업데이트 확인은 백그라운드에서 (앱 표시 후)
+    setTimeout(async () => {
+      console.log('[App] Checking for updates in background...');
+      try {
+        const updateTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Update check timeout')), 10000)
+        );
+        const updated = await Promise.race([runUpdateProcess(), updateTimeout]);
+        if (updated) return;
+      } catch (updateError) {
+        console.log('[App] Update check skipped:', updateError.message);
+      }
+    }, 3000);
     
   } catch (error) {
     console.error('[App] Startup error:', error);
@@ -435,7 +450,15 @@ function cleanup() {
 
 // ==================== 앱 생명주기 ====================
 
-app.whenReady().then(startApp);
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
+app.whenReady().then(() => {
+  try {
+    // Helps Windows taskbar grouping/icon behavior
+    app.setAppUserModelId('com.thezonepos.pos');
+  } catch {}
+  startApp();
+});
 
 // 앱 시작 중 플래그 (splash 닫힐 때 종료 방지)
 let isAppStarting = true;

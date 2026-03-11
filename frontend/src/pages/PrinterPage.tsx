@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Edit, Trash2 } from 'lucide-react';
+import PrintLayoutEditor from '../components/PrintLayoutEditor';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
@@ -9,6 +10,16 @@ interface PrinterSlot {
   name: string;
   type: 'receipt' | 'kitchen' | 'label' | '';
   selectedPrinter: string;
+  graphicScale?: number; // per-device graphic print scale (0.5 ~ 1.5)
+}
+
+// 프린터 그룹 내 프린터 정보
+interface GroupPrinter {
+  printer_id: number;
+  name: string;
+  type: string;
+  ip_address: string;
+  copies: number;
 }
 
 // 프린터 그룹 타입
@@ -16,6 +27,8 @@ interface PrinterGroup {
   id: number;
   name: string;
   printerIds: number[]; // PrinterSlot IDs
+  printers?: GroupPrinter[]; // 프린터 상세 정보 (copies 포함)
+  show_label?: boolean; // 라벨 출력 여부
 }
 
 // 시스템 프린터 타입
@@ -49,6 +62,8 @@ interface BillLayoutSettings {
   topMargin: number;
   leftMargin: number;
   fontScale: number;  // 프린터 출력 시 폰트 스케일 (기본 1.0, 권장 2.0)
+  // Safe right padding (px) for amount column in graphic mode
+  rightPaddingPx?: number;
   // Header Elements
   storeName: ElementStyle & { text: string };
   storeAddress: ElementStyle & { text: string };
@@ -85,6 +100,8 @@ interface ReceiptLayoutSettings {
   topMargin: number;
   leftMargin: number;
   fontScale: number;  // 프린터 출력 시 폰트 스케일 (기본 1.0, 권장 2.0)
+  // Safe right padding (px) for amount column in graphic mode
+  rightPaddingPx?: number;
   // Header Elements
   storeName: ElementStyle & { text: string };
   storeAddress: ElementStyle & { text: string };
@@ -160,7 +177,7 @@ interface KitchenPrinterLayout {
   leftMargin: number;
   fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
-  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (For Here/Togo)
+  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (Eat In/Togo)
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
   posOrderNumber: KitchenElementStyle;      // POS 내부 순차번호 (001, 002...)
   externalOrderNumber: KitchenElementStyle; // 외부 주문번호 (딜리버리 채널 원본)
@@ -222,7 +239,7 @@ interface KitchenLayoutSettings {
   leftMargin: number;
   fontScale?: number;                  // 폰트 스케일 (기본 1.0, Epson은 1.2 권장)
   // Header Elements
-  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (For Here/Togo)
+  orderType: KitchenElementStyle;      // DINE-IN / TOGO / ONLINE / DELIVERY / QSR (Eat In/Togo)
   tableNumber: KitchenElementStyle;    // 테이블번호 (Dine-in)
   posOrderNumber: KitchenElementStyle;      // POS 내부 순차번호 (001, 002...)
   externalOrderNumber: KitchenElementStyle; // 외부 주문번호 (딜리버리 채널 원본)
@@ -499,6 +516,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     topMargin: 5,
     leftMargin: 0,
     fontScale: 2.0,  // 프린터 출력 시 폰트 스케일 (권장 2.0)
+    rightPaddingPx: 40,
     // Header
     storeName: { ...createDefaultElementStyle(16), fontWeight: 'bold', text: 'TheZone Restaurant' },
     storeAddress: { ...createDefaultElementStyle(10), text: '123 Main Street, Vancouver, BC' },
@@ -535,6 +553,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
     topMargin: 5,
     leftMargin: 0,
     fontScale: 2.0,  // 프린터 출력 시 폰트 스케일 (권장 2.0)
+    rightPaddingPx: 40,
     // Header
     storeName: { ...createDefaultElementStyle(16), fontWeight: 'bold', text: 'TheZone Restaurant' },
     storeAddress: { ...createDefaultElementStyle(10), text: '123 Main Street, Vancouver, BC' },
@@ -571,7 +590,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
   kitchenLayout: {
     printMode: 'graphic',
     paperWidth: 80,
-    topMargin: 10,
+    topMargin: 15,
     leftMargin: 0,
     // Header
     orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true },
@@ -610,7 +629,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 10,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true },
@@ -636,7 +655,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 5,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false },
@@ -669,7 +688,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 10,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true, showInHeader: true, showInFooter: false },
@@ -700,7 +719,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 5,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false, showInHeader: true, showInFooter: false },
@@ -738,7 +757,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 10,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(20), fontWeight: 'bold', order: 1, inverse: true, showInHeader: true, showInFooter: false },
@@ -769,7 +788,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       printerName: '',
       printMode: 'graphic',
       paperWidth: 80,
-      topMargin: 5,
+      topMargin: 15,
       leftMargin: 0,
       fontScale: 1.0,
       orderType: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 1, inverse: false, showInHeader: true, showInFooter: false },
@@ -924,7 +943,8 @@ const createInitialPrinterSlots = (): PrinterSlot[] => {
     id: i + 1,
     name: '',
     type: '' as const,
-    selectedPrinter: ''
+    selectedPrinter: '',
+    graphicScale: 1.0
   }));
 };
 
@@ -951,7 +971,7 @@ const kitchenElementLabels: Record<string, string> = {
 
 
 export default function PrinterPage() {
-  const [activeTab, setActiveTab] = useState<'printers' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen' | 'deliveryKitchen'>('printers');
+  const [activeTab, setActiveTab] = useState<'printers' | 'newPrinter' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen' | 'deliveryKitchen'>('printers');
   
   // Kitchen 프린터 타입 (Kitchen vs Waitress)
   const [kitchenPrinterType, setKitchenPrinterType] = useState<'kitchen' | 'waitress'>('kitchen');
@@ -1072,7 +1092,13 @@ export default function PrinterPage() {
               id: p.id,
               name: p.name || '',
               type: (p.type || '') as PrinterSlot['type'],
-              selectedPrinter: p.selectedPrinter || ''
+              selectedPrinter: p.selectedPrinter || '',
+              graphicScale: (() => {
+                const raw = p.graphicScale ?? p.graphic_scale ?? 1.0;
+                const n = Number(raw);
+                if (!Number.isFinite(n)) return 1.0;
+                return Math.min(1.5, Math.max(0.5, Number(n.toFixed(2))));
+              })()
             }));
             const maxId = result.length > 0 ? Math.max(...result.map(s => s.id)) : 0;
             while (result.length < 5) {
@@ -1121,7 +1147,13 @@ export default function PrinterPage() {
         id: p.id,
         name: p.name || '',
         type: p.type || '',
-        selectedPrinter: p.selected_printer || ''
+        selectedPrinter: p.selectedPrinter || p.selected_printer || '',
+        graphicScale: (() => {
+          const raw = p.graphicScale ?? p.graphic_scale ?? 1.0;
+          const n = Number(raw);
+          if (!Number.isFinite(n)) return 1.0;
+          return Math.min(1.5, Math.max(0.5, Number(n.toFixed(2))));
+        })()
       }));
       // 최소 5개 슬롯 유지
       while (newSlots.length < 5) {
@@ -1129,7 +1161,8 @@ export default function PrinterPage() {
           id: Date.now() + newSlots.length,
           name: '',
           type: '' as const,
-          selectedPrinter: ''
+          selectedPrinter: '',
+          graphicScale: 1.0
         });
       }
       setPrinterSlots(newSlots);
@@ -1147,11 +1180,11 @@ export default function PrinterPage() {
       const printersToSave = printerSlots.filter(s => s.name.trim() !== '');
       console.log('[Frontend] Printers to save:', printersToSave);
       
-      // 1. 프린터 저장
+      // 1. 프린터 저장 (UPSERT — existing IDs are preserved by the backend)
       const res1 = await fetch(`${API_URL}/printers/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ printers: printersToSave.map((p, idx) => ({ ...p, sortOrder: idx })) })
+        body: JSON.stringify({ printers: printersToSave.map((p, idx) => ({ ...p, sortOrder: idx, graphicScale: (typeof p.graphicScale === 'number' ? p.graphicScale : 1.0) })) })
       });
       
       if (!res1.ok) {
@@ -1164,25 +1197,31 @@ export default function PrinterPage() {
       const savedPrinters = await res1.json();
       console.log('[Frontend] Saved printers:', savedPrinters);
       
-      // 2. 이전 ID -> 새 ID 매핑 생성
+      // 2. ID mapping for newly created printers only
       const idMap: Record<number, number> = {};
       printersToSave.forEach((oldPrinter, idx) => {
-        if (savedPrinters[idx]) {
+        if (savedPrinters[idx] && oldPrinter.id !== savedPrinters[idx].id) {
           idMap[oldPrinter.id] = savedPrinters[idx].id;
         }
       });
-      console.log('[Frontend] ID mapping:', idMap);
+      const hasIdChanges = Object.keys(idMap).length > 0;
+      console.log('[Frontend] ID mapping:', hasIdChanges ? idMap : '(no changes)');
       
-      // 3. 그룹의 printerIds를 새 ID로 변환
+      // 3. 그룹의 printerIds 및 printers 배열을 업데이트 (변경된 ID만 매핑)
+      const savedPrinterIds = new Set(savedPrinters.map((p: any) => p.id));
       const updatedGroups = printerGroups.map(group => ({
         ...group,
         printerIds: group.printerIds
           .map(oldId => idMap[oldId] !== undefined ? idMap[oldId] : oldId)
-          .filter(id => savedPrinters.some((p: any) => p.id === id))
+          .filter(id => savedPrinterIds.has(id)),
+        printers: (group.printers || []).map(p => ({
+          ...p,
+          printer_id: idMap[p.printer_id] !== undefined ? idMap[p.printer_id] : p.printer_id
+        })).filter(p => savedPrinterIds.has(p.printer_id))
       }));
       console.log('[Frontend] Updated groups:', updatedGroups);
       
-      // 4. 그룹 저장
+      // 4. 그룹 저장 (UPSERT — existing group IDs are preserved by the backend)
       const res2 = await fetch(`${API_URL}/printers/groups/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1292,8 +1331,10 @@ export default function PrinterPage() {
       const response = await fetch(`${API_URL}/printers/layout-settings`);
       if (response.ok) {
         const data = await response.json();
-        // 백엔드 printers.js의 /layout-settings는 { success: true, settings: ... } 형태로 반환
-        const savedSettings = data.settings;
+        // backend `/printers/layout-settings` returns the raw settings object (not wrapped)
+        const savedSettings = (data && typeof data === 'object' && (data as any).settings)
+          ? (data as any).settings
+          : data;
         if (savedSettings) {
           // 깊은 병합 - billLayout과 kitchen 등 중첩 객체도 병합
           const merged = {
@@ -1591,6 +1632,15 @@ export default function PrinterPage() {
     ));
   };
 
+  const handleSlotGraphicScaleChange = (slotId: number, raw: string) => {
+    setPrinterSlots(prev => prev.map(slot => {
+      if (slot.id !== slotId) return slot;
+      const n = raw === '' ? 1.0 : Number(raw);
+      const next = Number.isFinite(n) ? Math.min(1.5, Math.max(0.5, Number(n.toFixed(2)))) : 1.0;
+      return { ...slot, graphicScale: next };
+    }));
+  };
+
   // 프린터 선택 모달 열기
   const openPrinterModal = (slotId: number) => {
     setSelectedSlotId(slotId);
@@ -1611,14 +1661,14 @@ export default function PrinterPage() {
   // 프린터 슬롯 초기화
   const clearSlot = (slotId: number) => {
     setPrinterSlots(prev => prev.map(slot => 
-      slot.id === slotId ? { ...slot, name: '', type: '' as const, selectedPrinter: '' } : slot
+      slot.id === slotId ? { ...slot, name: '', type: '' as const, selectedPrinter: '', graphicScale: 1.0 } : slot
     ));
   };
 
   // 새 프린터 슬롯 추가
   const addPrinterSlot = () => {
     const maxId = printerSlots.length > 0 ? Math.max(...printerSlots.map(s => s.id)) : 0;
-    setPrinterSlots(prev => [...prev, { id: maxId + 1, name: '', type: '' as const, selectedPrinter: '' }]);
+    setPrinterSlots(prev => [...prev, { id: maxId + 1, name: '', type: '' as const, selectedPrinter: '', graphicScale: 1.0 }]);
   };
 
   // 프린터 슬롯 삭제 (이름이 없는 슬롯만)
@@ -1650,7 +1700,8 @@ export default function PrinterPage() {
     const newGroup: PrinterGroup = {
       id: Date.now(),
       name: newGroupName.trim(),
-      printerIds: []
+      printerIds: [],
+      show_label: true
     };
     
     setPrinterGroups(prev => [...prev, newGroup]);
@@ -4127,6 +4178,7 @@ export default function PrinterPage() {
       <div className="flex gap-1 mb-6 border-b">
         {[
           { id: 'printers', label: 'Printers & Groups' },
+          { id: 'newPrinter', label: 'New Printer' },
           { id: 'bill', label: 'Bill' },
           { id: 'receipt', label: 'Receipt' },
           { id: 'kitchen', label: 'Ticket for Dine-in' },
@@ -4202,6 +4254,19 @@ export default function PrinterPage() {
                     <option value="kitchen">Kitchen</option>
                     <option value="label">Label</option>
                   </select>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 font-semibold">Scale</span>
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={1.5}
+                      step={0.05}
+                      value={typeof slot.graphicScale === 'number' ? slot.graphicScale : 1.0}
+                      onChange={(e) => handleSlotGraphicScaleChange(slot.id, e.target.value)}
+                      className="w-20 p-2 border rounded text-sm bg-white text-center font-bold"
+                      title="Graphic Scale (0.5 ~ 1.5)"
+                    />
+                  </div>
                   <button
                     onClick={() => openPrinterModal(slot.id)}
                     className={`px-3 py-1.5 text-xs rounded max-w-[180px] truncate font-bold ${
@@ -4284,7 +4349,25 @@ export default function PrinterPage() {
                 return (
                   <div key={group.id} className="px-3 py-1.5 bg-gray-50 rounded-lg border">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-bold text-sm">{group.name}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-sm">{group.name}</h3>
+                        {/* 라벨 출력 토글 */}
+                        <button
+                          onClick={() => {
+                            setPrinterGroups(prev => prev.map(g => 
+                              g.id === group.id ? { ...g, show_label: !g.show_label } : g
+                            ));
+                          }}
+                          className={`px-3 py-1 text-sm font-medium rounded-full transition-all ${
+                            group.show_label !== false
+                              ? 'bg-black text-white'
+                              : 'bg-gray-200 text-gray-500'
+                          }`}
+                          title={group.show_label !== false ? 'Label ON - Click to turn off' : 'Label OFF - Click to turn on'}
+                        >
+                          {group.show_label !== false ? '🏷️ Label' : 'No Label'}
+                        </button>
+                      </div>
                       <div className="flex gap-1">
                         <button
                           onClick={() => openGroupPrinterModal(group.id)}
@@ -4304,14 +4387,53 @@ export default function PrinterPage() {
                     </div>
                     <div className="flex flex-wrap gap-1 mt-1">
                       {groupPrinters.length > 0 ? (
-                        groupPrinters.map(printer => (
-                          <span 
-                            key={printer.id} 
-                            className="px-2 py-0.5 bg-green-600 text-white text-xs rounded-full"
-                          >
-                            {printer.name}
-                          </span>
-                        ))
+                        groupPrinters.map(printer => {
+                          // group.printers에서 copies 정보 가져오기 (API에서 로드된 경우)
+                          const printerInfo = group.printers?.find(p => p.printer_id === printer.id);
+                          const copies = printerInfo?.copies || 1;
+                          
+                          return (
+                            <div 
+                              key={printer.id} 
+                              className="flex items-center gap-2 px-3 py-1 bg-green-600 text-white text-sm font-medium rounded-full"
+                            >
+                              <span>{printer.name}</span>
+                              {/* Copies 선택 */}
+                              <select
+                                value={copies}
+                                onChange={(e) => {
+                                  const newCopies = parseInt(e.target.value);
+                                  setPrinterGroups(prev => prev.map(g => {
+                                    if (g.id !== group.id) return g;
+                                    // printers 배열 업데이트 또는 생성
+                                    const existingPrinters = g.printers || groupPrinters.map(p => ({
+                                      printer_id: p.id,
+                                      name: p.name,
+                                      type: p.type,
+                                      ip_address: p.selectedPrinter,
+                                      copies: 1
+                                    }));
+                                    return {
+                                      ...g,
+                                      printers: existingPrinters.map(p => 
+                                        p.printer_id === printer.id 
+                                          ? { ...p, copies: newCopies }
+                                          : p
+                                      )
+                                    };
+                                  }));
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="bg-green-700 text-white text-sm font-medium rounded px-2 py-0.5 border-0 cursor-pointer"
+                                title="Number of copies"
+                              >
+                                <option value={1}>×1</option>
+                                <option value={2}>×2</option>
+                                <option value={3}>×3</option>
+                              </select>
+                            </div>
+                          );
+                        })
                       ) : (
                         <span className="text-gray-400 text-xs">No printers</span>
                       )}
@@ -4328,6 +4450,13 @@ export default function PrinterPage() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ===================== New Printer 탭 ===================== */}
+      {activeTab === 'newPrinter' && (
+        <div className="bg-white rounded-lg shadow-md p-6 h-[calc(100vh-220px)] overflow-y-auto">
+          <PrintLayoutEditor />
         </div>
       )}
 
@@ -4388,6 +4517,26 @@ export default function PrinterPage() {
                   <span className="text-gray-600">Left:</span>
                   <input type="number" value={layoutSettings.billLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
                   <span className="text-gray-400">mm</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-600">RightPad:</span>
+                  <input
+                    type="number"
+                    value={layoutSettings.billLayout.rightPaddingPx ?? 0}
+                    onChange={(e) =>
+                      updateLayoutSettings({
+                        ...layoutSettings,
+                        billLayout: {
+                          ...layoutSettings.billLayout,
+                          rightPaddingPx: parseInt(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-14 p-1 border rounded text-xs"
+                    min={0}
+                    max={300}
+                  />
+                  <span className="text-gray-400">px</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-gray-600 font-semibold">Scale:</span>
@@ -4615,6 +4764,26 @@ export default function PrinterPage() {
                   <span className="text-gray-600">Left:</span>
                   <input type="number" value={layoutSettings.receiptLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
                   <span className="text-gray-400">mm</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-600">RightPad:</span>
+                  <input
+                    type="number"
+                    value={layoutSettings.receiptLayout.rightPaddingPx ?? 0}
+                    onChange={(e) =>
+                      updateLayoutSettings({
+                        ...layoutSettings,
+                        receiptLayout: {
+                          ...layoutSettings.receiptLayout,
+                          rightPaddingPx: parseInt(e.target.value) || 0,
+                        },
+                      })
+                    }
+                    className="w-14 p-1 border rounded text-xs"
+                    min={0}
+                    max={300}
+                  />
+                  <span className="text-gray-400">px</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-gray-600 font-semibold">Scale:</span>

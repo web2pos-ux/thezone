@@ -1,0 +1,52 @@
+---
+description: CRITICAL - Order Screen DnD/Merge/Color/Move/EmptySlot code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/components/order/MenuItemGrid.tsx,frontend/src/components/order/ModifierPanel.tsx,frontend/src/pages/order/OrderCatalogPanel.tsx
+alwaysApply: true
+---
+
+# ORDER SCREEN DnD / LAYOUT CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Files
+- `frontend/src/components/order/MenuItemGrid.tsx` - 메뉴 아이템 그리드 (DnD, 빈슬롯, 레이아웃 빌드, EMPTY 토큰)
+- `frontend/src/components/order/ModifierPanel.tsx` - 모디파이어 패널 (DnD, 빈슬롯, 레이아웃)
+- `frontend/src/pages/order/OrderCatalogPanel.tsx` - 카탈로그 패널 (onMenuGridReorder, layoutIds 전달)
+
+## Protected Scope (이 파일들에서 보호되는 기능 영역)
+- 드래그 앤 드롭 (DnD) 로직 전체: onDragEnd, onDragStart, SortableContext, SortableMenuItem, SortableEmptyCell
+- 빈 슬롯 (EMPTY token) 생성/유지/삭제/렌더링 로직
+- 레이아웃 ID 빌드 로직 (layoutIds, kept, capacity, baseIds)
+- 아이템/모디파이어 버튼 이동 및 삽입+밀어내기 로직
+- 머지(Mergy) 카테고리 그리드 렌더링
+- 아이템/모디파이어 커스텀 컬러 적용 및 표시
+- menuItemOrderByCategory / modifierLayoutByItem 저장/로드 연동
+- 카테고리별/아이템별 모디파이어 레이아웃 키 분기 (modLayoutKey, modCategoryKey)
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: OrderPage.tsx 등 상위 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
+5. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - Explain WHAT you want to change (specific lines/functions)
+   - Explain WHY the change is necessary
+   - Explain the IMPACT on existing DnD/layout/color functionality
+   - Ask for explicit approval: "이 변경을 진행해도 될까요?"
+6. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 **파일을 편집하지 말고**, 변경을 시도하지 마라.
+7. 다른 작업의 "부수 효과로 DnD/레이아웃 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+
+## Example
+
+```
+❌ BAD: Silently editing MenuItemGrid.tsx
+❌ BAD: "I'll fix a small bug in the grid layout" then editing
+❌ BAD: Changing OrderCatalogPanel's onMenuGridReorder callback shape
+❌ BAD: Modifying how EMPTY tokens are generated or filtered
+
+✅ GOOD:
+"MenuItemGrid.tsx를 수정해야 합니다.
+- 변경 내용: SortableEmptyCell에 드롭 시 시각적 하이라이트 추가
+- 변경 이유: 빈 슬롯에 드롭할 때 사용자가 위치를 확인하기 어려움
+- 영향 범위: DnD 로직/EMPTY 토큰 처리/레이아웃 저장에는 영향 없음, CSS만 추가
+이 변경을 진행해도 될까요?"
+```

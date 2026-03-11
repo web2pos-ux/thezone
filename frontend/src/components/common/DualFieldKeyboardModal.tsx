@@ -85,10 +85,10 @@ export default function DualFieldKeyboardModal({
   return (
     <>
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-      <div className="bg-white rounded-lg p-6 w-[540px] max-h-[80vh] overflow-y-auto" id="dualfield-modal" style={{ transform: offsetYPx ? `translateY(-${offsetYPx}px)` : undefined }}>
+      <div className="bg-white rounded-lg p-6 w-[540px] max-h-[80vh] overflow-y-auto relative" id="dualfield-modal" style={{ transform: offsetYPx ? `translateY(-${offsetYPx}px)` : undefined }}>
+        <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setSoftKbTarget && setSoftKbTarget(null); onCancel(); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
-          <button onClick={() => { setSoftKbTarget && setSoftKbTarget(null); onCancel(); }} className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-10 h-10 flex items-center justify-center">×</button>
         </div>
         <div className="space-y-3">
           <div className="grid grid-cols-10 gap-3 items-end">

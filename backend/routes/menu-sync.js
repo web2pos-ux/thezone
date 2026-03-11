@@ -19,6 +19,80 @@ function getBackupDir(subDir = 'pos-menu') {
   return backupDir;
 }
 
+// 동기화에 필요한 컬럼이 없는 테이블에 자동 추가
+let syncColumnsEnsured = false;
+async function ensureSyncColumns() {
+  if (syncColumnsEnsured) return;
+  // firebase_id 컬럼 추가 (6개 테이블)
+  const firebaseIdTables = ['menus', 'menu_categories', 'menu_items', 'modifier_groups', 'tax_groups', 'printer_groups'];
+  for (const table of firebaseIdTables) {
+    try {
+      await dbRun(`ALTER TABLE ${table} ADD COLUMN firebase_id TEXT`);
+      console.log(`✅ ${table}에 firebase_id 컬럼 추가됨`);
+    } catch (e) {
+      // 이미 존재하면 무시
+    }
+  }
+  // menu_categories에 description 컬럼 추가 (Firebase 동기화 호환)
+  try {
+    await dbRun(`ALTER TABLE menu_categories ADD COLUMN description TEXT DEFAULT ''`);
+    console.log(`✅ menu_categories에 description 컬럼 추가됨`);
+  } catch (e) {
+    // 이미 존재하면 무시
+  }
+  // sync_logs, sync_log_details, id_mappings 테이블 생성 (없으면)
+  try {
+    await dbRun(`CREATE TABLE IF NOT EXISTS sync_logs (
+      sync_id TEXT PRIMARY KEY,
+      sync_type TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      status TEXT DEFAULT 'running',
+      total_items INTEGER DEFAULT 0,
+      created_count INTEGER DEFAULT 0,
+      updated_count INTEGER DEFAULT 0,
+      deleted_count INTEGER DEFAULT 0,
+      error_count INTEGER DEFAULT 0,
+      errors TEXT,
+      initiated_by TEXT,
+      employee_id TEXT,
+      device_id TEXT
+    )`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS sync_log_details (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id TEXT NOT NULL,
+      entity_type TEXT,
+      local_id TEXT,
+      firebase_id TEXT,
+      action TEXT,
+      status TEXT,
+      old_data TEXT,
+      new_data TEXT,
+      error_message TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (sync_id) REFERENCES sync_logs(sync_id)
+    )`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS id_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      local_id TEXT NOT NULL,
+      firebase_id TEXT,
+      uuid TEXT NOT NULL,
+      external_ids TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(entity_type, local_id)
+    )`);
+  } catch (e) {
+    console.error('동기화 테이블 생성 실패:', e.message);
+  }
+  syncColumnsEnsured = true;
+}
+// 모듈 로드 시 실행
+ensureSyncColumns().catch(e => console.error('동기화 컬럼 확인 실패:', e));
+
 // Simple role guard
 function requireManager(req, res, next) {
   try {
@@ -80,9 +154,9 @@ router.get('/firebase-restaurant/:restaurantId', async (req, res) => {
 router.get('/firebase-menu/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
+    const { menuId } = req.query; // 쿼리 파라미터에서 menuId 가져오기
     const firestore = firebaseService.getFirestore();
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
-    const menuRef = menuId ? restaurantRef.collection('menus').doc(menuId) : null;
     
     // 카테고리 가져오기 (서브컬렉션에서)
     const categoriesSnapshot = await restaurantRef
@@ -124,7 +198,7 @@ router.get('/firebase-menu/:restaurantId', async (req, res) => {
 // Firebase → POS 메뉴 동기화 (전체 덮어쓰기)
 router.post('/sync-from-firebase', requireManager, async (req, res) => {
   try {
-    const { restaurantId } = req.body;
+    const { restaurantId, skipImages = false } = req.body;
     
     if (!restaurantId) {
       return res.status(400).json({ error: 'Restaurant ID is required' });
@@ -273,7 +347,17 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       // 이미 존재하면 무시
     }
     
-    // 4. 카테고리 동기화
+    // 4. POS의 실제 menu_id 동적으로 조회 (하드코딩 방지)
+    const posMenuRow = await dbGet('SELECT menu_id FROM menus ORDER BY menu_id LIMIT 1');
+    const posDefaultMenuId = posMenuRow ? posMenuRow.menu_id : 200000;
+    console.log(`📋 POS 기본 menu_id: ${posDefaultMenuId}`);
+    
+    // ★ 안전장치: SQLite 트랜잭션 시작 (실패 시 ROLLBACK으로 POS 원래 상태 복원)
+    await dbRun('BEGIN TRANSACTION');
+    let transactionActive = true;
+    
+    try {
+    // 카테고리 동기화
     const categoryMapping = {}; // firebase_id -> pos_category_id
     
     for (const fbCat of firebaseCategories) {
@@ -284,7 +368,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       );
       
       if (posCategory) {
-        // 업데이트
+        const catImageValue = skipImages ? (posCategory.image_url || '') : (fbCat.imageUrl || fbCat.image_url || '');
         await dbRun(
           `UPDATE menu_categories SET 
             name = ?, 
@@ -296,7 +380,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             fbCat.name,
             fbCat.sortOrder || fbCat.sort_order || 0,
             fbCat.description || '',
-            fbCat.imageUrl || fbCat.image_url || '',
+            catImageValue,
             posCategory.category_id
           ]
         );
@@ -310,11 +394,11 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         // 이름으로 찾기 (firebase_id 조건 제거 - 기존 카테고리와 매칭)
         posCategory = await dbGet(
           'SELECT * FROM menu_categories WHERE name = ? AND menu_id = ?',
-          [fbCat.name, 200005]
+          [fbCat.name, posDefaultMenuId]
         );
         
         if (posCategory) {
-          // 기존 카테고리와 연결/업데이트
+          const catImageValue = skipImages ? (posCategory.image_url || '') : (fbCat.imageUrl || fbCat.image_url || '');
           await dbRun(
             `UPDATE menu_categories SET 
               firebase_id = ?, 
@@ -326,7 +410,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               fbCat.id, 
               fbCat.sortOrder || fbCat.sort_order || 0, 
               fbCat.description || '',
-              fbCat.imageUrl || fbCat.image_url || '',
+              catImageValue,
               posCategory.category_id
             ]
           );
@@ -337,8 +421,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
           
           console.log(`🔗 카테고리 연결: ${fbCat.name}`);
         } else {
-          // 새 카테고리 생성 (category_id는 INTEGER AUTOINCREMENT)
-          // menu_id는 고정값 200005 사용 (단일 메뉴 시스템)
+          const catImageValue = skipImages ? '' : (fbCat.imageUrl || fbCat.image_url || '');
           const result = await dbRun(
             `INSERT INTO menu_categories (name, sort_order, firebase_id, menu_id, description, image_url) 
              VALUES (?, ?, ?, ?, ?, ?)`,
@@ -346,9 +429,9 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               fbCat.name, 
               fbCat.sortOrder || fbCat.sort_order || 0, 
               fbCat.id, 
-              200005,
+              posDefaultMenuId,
               fbCat.description || '',
-              fbCat.imageUrl || fbCat.image_url || ''
+              catImageValue
             ]
           );
           categoryMapping[fbCat.id] = result.lastID;
@@ -380,7 +463,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       );
       
       if (posItem) {
-        // 업데이트
+        const itemImageValue = skipImages ? (posItem.image_url || '') : (fbItem.imageUrl || fbItem.image_url || '');
         await dbRun(
           `UPDATE menu_items SET
             name = ?,
@@ -391,7 +474,6 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             description = ?,
             image_url = ?,
             sort_order = ?,
-            is_active = ?,
             is_open_price = ?
           WHERE item_id = ?`,
           [
@@ -401,9 +483,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             fbItem.price2 || 0,
             posCategoryId,
             fbItem.description || '',
-            fbItem.imageUrl || fbItem.image_url || '',
+            itemImageValue,
             fbItem.sortOrder || fbItem.sort_order || 0,
-            fbItem.isAvailable !== false && fbItem.is_active !== 0 ? 1 : 0,
             fbItem.isOpenPrice || fbItem.is_open_price || 0,
             posItem.item_id
           ]
@@ -417,11 +498,11 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         // 이름으로 찾기 (firebase_id 조건 제거 - 기존 아이템과 매칭)
         posItem = await dbGet(
           'SELECT * FROM menu_items WHERE name = ? AND menu_id = ?',
-          [fbItem.name, 200005]
+          [fbItem.name, posDefaultMenuId]
         );
         
         if (posItem) {
-          // 기존 아이템과 연결 및 업데이트
+          const itemImageValue = skipImages ? (posItem.image_url || '') : (fbItem.imageUrl || fbItem.image_url || '');
           await dbRun(
             `UPDATE menu_items SET
               firebase_id = ?,
@@ -432,7 +513,6 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               description = ?,
               image_url = ?,
               sort_order = ?,
-              is_active = ?,
               is_open_price = ?
             WHERE item_id = ?`,
             [
@@ -442,9 +522,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               fbItem.price2 || 0,
               posCategoryId,
               fbItem.description || '',
-              fbItem.imageUrl || fbItem.image_url || '',
+              itemImageValue,
               fbItem.sortOrder || fbItem.sort_order || 0,
-              fbItem.isAvailable !== false && fbItem.is_active !== 0 ? 1 : 0,
               fbItem.isOpenPrice || fbItem.is_open_price || 0,
               posItem.item_id
             ]
@@ -456,25 +535,23 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
           updatedItems++;
           console.log(`🔗 아이템 연결: ${fbItem.name}`);
         } else {
-          // 새 아이템 생성 (item_id는 INTEGER AUTOINCREMENT)
-          // menu_id는 고정값 200005 사용 (단일 메뉴 시스템)
+          const itemImageValue = skipImages ? '' : (fbItem.imageUrl || fbItem.image_url || '');
           const result = await dbRun(
             `INSERT INTO menu_items (
               name, short_name, price, price2, category_id, menu_id, description, image_url, 
-              sort_order, firebase_id, is_active, is_open_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              sort_order, firebase_id, is_open_price
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               fbItem.name,
               fbItem.shortName || fbItem.short_name || '',
               fbItem.price || fbItem.price1 || 0,
               fbItem.price2 || 0,
               posCategoryId,
-              200005, // 고정 메뉴 ID
+              posDefaultMenuId,
               fbItem.description || '',
-              fbItem.imageUrl || fbItem.image_url || '',
+              itemImageValue,
               fbItem.sortOrder || fbItem.sort_order || 0,
               fbItem.id,
-              fbItem.isAvailable !== false && fbItem.is_active !== 0 ? 1 : 0,
               fbItem.isOpenPrice || fbItem.is_open_price || 0
             ]
           );
@@ -529,9 +606,9 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     
     // POS 그룹들 가져오기 (이름 → ID 매핑)
     const [posModifierGroups, posTaxGroups, posPrinterGroups] = await Promise.all([
-      dbAll('SELECT group_id as id, name FROM modifier_groups WHERE is_deleted = 0'),
-      dbAll('SELECT id, name FROM tax_groups'),
-      dbAll('SELECT id, name FROM printer_groups WHERE is_active = 1')
+      dbAll('SELECT modifier_group_id as id, name FROM modifier_groups WHERE is_deleted = 0'),
+      dbAll('SELECT tax_group_id as id, name FROM tax_groups WHERE is_deleted = 0'),
+      dbAll('SELECT printer_group_id as id, name FROM printer_groups WHERE is_active = 1')
     ]);
     
     const modifierGroupNameToId = {};
@@ -558,10 +635,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       // 기존 연결 삭제
       await Promise.all([
         dbRun('DELETE FROM menu_modifier_links WHERE item_id = ?', [posItem.item_id]),
-        dbRun('DELETE FROM menu_tax_links WHERE item_id = ?', [posItem.item_id]).catch(() => 
-          dbRun('DELETE FROM menu_item_tax_links WHERE item_id = ?', [posItem.item_id])
-        ),
-        dbRun('DELETE FROM menu_item_printer_links WHERE item_id = ?', [posItem.item_id])
+        dbRun('DELETE FROM menu_tax_links WHERE item_id = ?', [posItem.item_id]).catch(() => {}),
+        dbRun('DELETE FROM menu_printer_links WHERE item_id = ?', [posItem.item_id])
       ]);
       
       // 모디파이어 그룹 연결
@@ -589,19 +664,13 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         
         const posTgId = taxGroupNameToId[fbTg.name.toLowerCase()];
         if (posTgId) {
-          // menu_tax_links 또는 menu_item_tax_links 테이블 사용
-          try {
-            await dbRun(
-              'INSERT OR IGNORE INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)',
-              [posItem.item_id, posTgId]
-            );
-          } catch (e) {
-            // menu_item_tax_links 테이블 시도
-            await dbRun(
-              'INSERT OR IGNORE INTO menu_item_tax_links (item_id, menu_tax_group_id) VALUES (?, ?)',
-              [posItem.item_id, posTgId]
-            );
-          }
+          // menu_tax_links 테이블에 삽입
+          await dbRun(
+            'INSERT OR IGNORE INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)',
+            [posItem.item_id, posTgId]
+          ).catch(e => {
+            console.warn(`⚠️ 세금 그룹 연결 삽입 실패: ${e.message}`);
+          });
           taxLinksCreated++;
           console.log(`🔗 아이템-세금 연결: ${fbItem.name} → ${fbTg.name}`);
         }
@@ -616,7 +685,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         const posPgId = printerGroupNameToId[fbPg.name.toLowerCase()];
         if (posPgId) {
           await dbRun(
-            'INSERT OR IGNORE INTO menu_item_printer_links (item_id, menu_printer_group_id) VALUES (?, ?)',
+            'INSERT OR IGNORE INTO menu_printer_links (item_id, printer_group_id) VALUES (?, ?)',
             [posItem.item_id, posPgId]
           );
           printerLinksCreated++;
@@ -625,7 +694,174 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       }
     }
     
-    console.log(`✅ 동기화 완료 - 생성: ${createdItems}, 업데이트: ${updatedItems}, 모디파이어연결: ${modifierLinksCreated}, 세금연결: ${taxLinksCreated}, 프린터연결: ${printerLinksCreated}`);
+    // 8. 카테고리 레벨 링크 동기화 (모디파이어, 세금)
+    console.log('🔗 카테고리 레벨 링크 동기화 시작...');
+    let categoryModifierLinksCreated = 0;
+    let categoryTaxLinksCreated = 0;
+    
+    // 원래 POS category_id → 현재 POS category_id 매핑 생성
+    // (업로드 시 posId로 저장된 원래 ID가 다운로드 후 변경될 수 있음)
+    const oldPosIdToNewPosId = {};
+    for (const fbCat of firebaseCategories) {
+      const oldPosId = fbCat.posId;
+      const newPosId = categoryMapping[fbCat.id]; // firebase_id → 현재 pos_category_id
+      if (oldPosId && newPosId) {
+        oldPosIdToNewPosId[String(oldPosId)] = newPosId;
+      }
+    }
+    
+    // 동기화 대상 카테고리의 기존 링크 정리
+    const syncedCategoryIds = Object.values(categoryMapping).filter(id => id);
+    for (const catId of syncedCategoryIds) {
+      await dbRun('DELETE FROM category_modifier_links WHERE category_id = ?', [catId]).catch(() => {});
+      await dbRun('DELETE FROM category_tax_links WHERE category_id = ?', [catId]).catch(() => {});
+    }
+    
+    // Firebase에서 카테고리-모디파이어 연결 가져오기
+    try {
+      const catModLinksSnapshot = await restaurantRef.collection('categoryModifierLinks').get();
+      for (const doc of catModLinksSnapshot.docs) {
+        const linkData = doc.data();
+        // 원래 POS ID → 현재 POS ID로 변환 (없으면 원래 ID 사용)
+        const posCategoryId = oldPosIdToNewPosId[linkData.categoryId] || parseInt(linkData.categoryId);
+        if (!posCategoryId) continue;
+        
+        // Firebase 모디파이어 그룹 ID → POS 모디파이어 그룹 ID (이름 매칭)
+        const fbMg = firebaseModifierGroups[linkData.modifierGroupId];
+        if (!fbMg) continue;
+        
+        const posMgId = modifierGroupNameToId[fbMg.name.toLowerCase()];
+        if (posMgId) {
+          await dbRun(
+            'INSERT OR IGNORE INTO category_modifier_links (category_id, modifier_group_id) VALUES (?, ?)',
+            [posCategoryId, posMgId]
+          ).catch(() => {});
+          categoryModifierLinksCreated++;
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ 카테고리-모디파이어 연결 동기화 실패:', e.message);
+    }
+    
+    // Firebase에서 카테고리-세금 연결 가져오기
+    try {
+      const catTaxLinksSnapshot = await restaurantRef.collection('categoryTaxLinks').get();
+      for (const doc of catTaxLinksSnapshot.docs) {
+        const linkData = doc.data();
+        // 원래 POS ID → 현재 POS ID로 변환
+        const posCategoryId = oldPosIdToNewPosId[linkData.categoryId] || parseInt(linkData.categoryId);
+        if (!posCategoryId) continue;
+        
+        // Firebase 세금 그룹 ID → POS 세금 그룹 ID (이름 매칭)
+        const fbTg = firebaseTaxGroups[linkData.taxGroupId];
+        if (!fbTg) continue;
+        
+        const posTgId = taxGroupNameToId[fbTg.name.toLowerCase()];
+        if (posTgId) {
+          await dbRun(
+            'INSERT OR IGNORE INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)',
+            [posCategoryId, posTgId]
+          ).catch(() => {});
+          categoryTaxLinksCreated++;
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ 카테고리-세금 연결 동기화 실패:', e.message);
+    }
+    
+    // Firebase에서 카테고리-프린터 연결 가져오기
+    let categoryPrinterLinksCreated = 0;
+    try {
+      // 동기화 대상 카테고리의 기존 프린터 링크 정리
+      for (const catId of syncedCategoryIds) {
+        await dbRun('DELETE FROM category_printer_links WHERE category_id = ?', [catId]).catch(() => {});
+      }
+      
+      const catPrinterLinksSnapshot = await restaurantRef.collection('categoryPrinterLinks').get();
+      for (const doc of catPrinterLinksSnapshot.docs) {
+        const linkData = doc.data();
+        // 원래 POS ID → 현재 POS ID로 변환
+        const posCategoryId = oldPosIdToNewPosId[linkData.categoryId] || parseInt(linkData.categoryId);
+        if (!posCategoryId) continue;
+        
+        // Firebase 프린터 그룹 ID → POS 프린터 그룹 ID (이름 매칭)
+        const fbPg = firebasePrinterGroups[linkData.printerGroupId];
+        if (!fbPg) continue;
+        
+        const posPgId = printerGroupNameToId[fbPg.name.toLowerCase()];
+        if (posPgId) {
+          await dbRun(
+            'INSERT OR IGNORE INTO category_printer_links (category_id, printer_group_id) VALUES (?, ?)',
+            [posCategoryId, posPgId]
+          ).catch(() => {});
+          categoryPrinterLinksCreated++;
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ 카테고리-프린터 연결 동기화 실패:', e.message);
+    }
+    
+    // 9. 세금 미연결 아이템/카테고리에 기본 세금 그룹 자동 연결
+    try {
+      const defaultFoodGroup = await dbGet(
+        `SELECT tg.tax_group_id FROM tax_groups tg
+         JOIN tax_group_links tgl ON tg.tax_group_id = tgl.tax_group_id
+         JOIN taxes t ON tgl.tax_id = t.tax_id AND t.is_deleted = 0
+         WHERE tg.is_deleted = 0
+         GROUP BY tg.tax_group_id
+         HAVING COUNT(t.tax_id) = 1
+         ORDER BY tg.tax_group_id LIMIT 1`
+      );
+      const defaultDrinkGroup = await dbGet(
+        `SELECT tg.tax_group_id FROM tax_groups tg
+         JOIN tax_group_links tgl ON tg.tax_group_id = tgl.tax_group_id
+         JOIN taxes t ON tgl.tax_id = t.tax_id AND t.is_deleted = 0
+         WHERE tg.is_deleted = 0
+         GROUP BY tg.tax_group_id
+         HAVING COUNT(t.tax_id) >= 2
+         ORDER BY tg.tax_group_id LIMIT 1`
+      );
+      const foodGid = defaultFoodGroup?.tax_group_id;
+      const drinkGid = defaultDrinkGroup?.tax_group_id || foodGid;
+
+      if (foodGid) {
+        const unlinkedCats = await dbAll(
+          `SELECT c.category_id, c.name FROM menu_categories c
+           WHERE c.category_id NOT IN (SELECT category_id FROM category_tax_links)`
+        );
+        let autoLinkedCats = 0;
+        for (const cat of unlinkedCats) {
+          const gid = /drink|beverage|beer|wine|liquor/i.test(cat.name) ? drinkGid : foodGid;
+          await dbRun('INSERT OR IGNORE INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)', [cat.category_id, gid]);
+          autoLinkedCats++;
+        }
+
+        const unlinkedItems = await dbAll(
+          `SELECT mi.item_id, mi.category_id FROM menu_items mi
+           WHERE mi.item_id NOT IN (SELECT item_id FROM menu_tax_links)`
+        );
+        let autoLinkedItems = 0;
+        for (const item of unlinkedItems) {
+          const catLink = await dbGet('SELECT tax_group_id FROM category_tax_links WHERE category_id = ?', [item.category_id]);
+          const gid = catLink?.tax_group_id || foodGid;
+          await dbRun('INSERT OR IGNORE INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)', [item.item_id, gid]);
+          autoLinkedItems++;
+        }
+
+        if (autoLinkedCats > 0 || autoLinkedItems > 0) {
+          console.log(`🔗 기본 세금 자동 연결: 카테고리 ${autoLinkedCats}개, 아이템 ${autoLinkedItems}개`);
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ 기본 세금 자동 연결 실패:', e.message);
+    }
+
+    console.log(`✅ 동기화 완료 - 생성: ${createdItems}, 업데이트: ${updatedItems}, 모디파이어연결: ${modifierLinksCreated}, 세금연결: ${taxLinksCreated}, 프린터연결: ${printerLinksCreated}, 카테고리-모디파이어: ${categoryModifierLinksCreated}, 카테고리-세금: ${categoryTaxLinksCreated}, 카테고리-프린터: ${categoryPrinterLinksCreated}`);
+    
+    // ★ 트랜잭션 커밋 - 모든 POS 변경사항 확정
+    await dbRun('COMMIT');
+    transactionActive = false;
+    console.log('✅ SQLite 트랜잭션 커밋 완료');
     
     res.json({
       success: true,
@@ -645,12 +881,35 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         itemsUpdated: updatedItems,
         modifierLinksCreated: modifierLinksCreated,
         taxLinksCreated: taxLinksCreated,
-        printerLinksCreated: printerLinksCreated
+        printerLinksCreated: printerLinksCreated,
+        categoryModifierLinksCreated: categoryModifierLinksCreated,
+        categoryTaxLinksCreated: categoryTaxLinksCreated,
+        categoryPrinterLinksCreated: categoryPrinterLinksCreated
       }
     });
+    } catch (txErr) {
+      // ★ 트랜잭션 롤백 - POS 데이터를 동기화 이전 상태로 복원
+      if (transactionActive) {
+        try {
+          await dbRun('ROLLBACK');
+          console.log('🔄 SQLite 트랜잭션 롤백 완료 - POS 데이터가 원래 상태로 복원됨');
+        } catch (rollbackErr) {
+          console.error('❌ SQLite 롤백 실패:', rollbackErr.message);
+        }
+      }
+      throw txErr; // 외부 catch로 전달
+    }
   } catch (e) {
     console.error('❌ 메뉴 동기화 실패:', e);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ 
+      error: e.message,
+      rolledBack: true,
+      message: 'Sync failed. POS data has been rolled back to previous state.',
+      backup: {
+        filename: typeof backupFilename !== 'undefined' ? backupFilename : null,
+        hint: 'If rollback failed, use the backup file to manually restore.'
+      }
+    });
   }
 });
 
@@ -709,7 +968,7 @@ router.get('/backup-firebase/:restaurantId', async (req, res) => {
 // POS → Firebase 메뉴 업로드
 router.post('/sync-to-firebase', requireManager, async (req, res) => {
   try {
-    const { restaurantId, menuId } = req.body;
+    const { restaurantId, menuId, skipImages = false } = req.body;
     
     if (!restaurantId) {
       return res.status(400).json({ error: 'Restaurant ID is required' });
@@ -750,6 +1009,25 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
     });
     
     console.log(`💾 기존 메뉴 백업 완료 (ID: ${backupRef.id}) - 카테고리: ${backupCategories.length}, 아이템: ${backupItems.length}`);
+    
+    // skipImages: 기존 Firebase 이미지를 보존하기 위해 posId 기준으로 이미지 맵 구축
+    const fbCatImageMap = {};
+    const fbItemImageMap = {};
+    if (skipImages) {
+      for (const cat of backupCategories) {
+        const imgUrl = cat.imageUrl || cat.image_url || '';
+        if (imgUrl && cat.posId) {
+          fbCatImageMap[cat.posId] = imgUrl;
+        }
+      }
+      for (const item of backupItems) {
+        const imgUrl = item.imageUrl || item.image_url || '';
+        if (imgUrl && item.posId) {
+          fbItemImageMap[item.posId] = imgUrl;
+        }
+      }
+      console.log(`🖼️ skipImages=true: 기존 Firebase 이미지 보존 (카테고리: ${Object.keys(fbCatImageMap).length}개, 아이템: ${Object.keys(fbItemImageMap).length}개)`);
+    }
     
     // 1. POS 카테고리 가져오기 (menuId가 있으면 해당 메뉴의 카테고리만)
     let posCategories;
@@ -822,11 +1100,13 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
     
     for (let i = 0; i < posCategories.length; i++) {
       const cat = posCategories[i];
-      const docRef = await (menuRef ? menuRef : restaurantRef).collection('menuCategories').add({
+      const catImageUrl = skipImages && fbCatImageMap[cat.category_id] ? fbCatImageMap[cat.category_id] : (cat.image_url || '');
+      const docRef = await restaurantRef.collection('menuCategories').add({
         restaurantId,
         menuId: menuId || undefined,
         name: cat.name,
-        description: '',
+        description: cat.description || '',
+        imageUrl: catImageUrl,
         sortOrder: cat.sort_order || i,
         isActive: true,
         posId: cat.category_id,
@@ -863,7 +1143,7 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         [item.item_id]
       ).then(rows => rows.map(r => r.modifier_group_id)).catch(() => []);
       
-      // 아이템에 연결된 세금 그룹 ID들 가져오기 (menu_tax_links 또는 menu_item_tax_links)
+      // 아이템에 연결된 세금 그룹 ID들 가져오기 (menu_tax_links)
       let taxGroupIds = [];
       try {
         const taxRows = await dbAll(
@@ -872,23 +1152,14 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         );
         taxGroupIds = taxRows.map(r => r.tax_group_id);
       } catch (e) {
-        // menu_item_tax_links 테이블 시도
-        try {
-          const taxRows = await dbAll(
-            'SELECT menu_tax_group_id as tax_group_id FROM menu_item_tax_links WHERE item_id = ?',
-            [item.item_id]
-          );
-          taxGroupIds = taxRows.map(r => r.tax_group_id);
-        } catch (e2) {
-          console.warn(`⚠️ 세금 그룹 연결 조회 실패: ${item.name}`);
-        }
+        console.warn(`⚠️ 세금 그룹 연결 조회 실패: ${item.name}`);
       }
       
       // 아이템에 연결된 프린터 그룹 ID들 가져오기
       const printerGroupIds = await dbAll(
-        'SELECT menu_printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
+        'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
         [item.item_id]
-      ).then(rows => rows.map(r => r.menu_printer_group_id)).catch(() => []);
+      ).then(rows => rows.map(r => r.printer_group_id)).catch(() => []);
       
       // Firebase Modifier Groups에서 POS group_id로 찾은 Firebase ID들로 변환 (서브컬렉션에서)
       const firebaseModifierGroupIds = [];
@@ -932,7 +1203,8 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         }
       }
       
-      const docRef = await (menuRef ? menuRef : restaurantRef).collection('menuItems').add({
+      const itemImageUrl = skipImages && fbItemImageMap[item.item_id] ? fbItemImageMap[item.item_id] : (item.image_url || '');
+      const docRef = await restaurantRef.collection('menuItems').add({
         restaurantId,
         menuId: menuId || undefined,
         categoryId: firebaseCategoryId,
@@ -941,7 +1213,8 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         description: item.description || '',
         price: item.price || 0,
         price2: item.price2 || 0,
-        imageUrl: item.image_url || '',
+        imageUrl: itemImageUrl,
+        isOpenPrice: item.is_open_price || 0,
         isAvailable: true,
         sortOrder: item.sort_order || i,
         posId: item.item_id,
@@ -962,14 +1235,101 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
       uploadedItems++;
     }
     
-    console.log(`✅ 업로드 완료 - 카테고리: ${posCategories.length}, 아이템: ${uploadedItems}`);
+    // 7. 카테고리 레벨 링크 업로드 (sync-from-firebase 다운로드 시 필요)
+    let catModLinksUploaded = 0;
+    let catTaxLinksUploaded = 0;
+    let catPrinterLinksUploaded = 0;
+    
+    // 기존 카테고리 레벨 링크 삭제
+    const [existCatModLinks, existCatTaxLinks, existCatPrinterLinks] = await Promise.all([
+      restaurantRef.collection('categoryModifierLinks').get(),
+      restaurantRef.collection('categoryTaxLinks').get(),
+      restaurantRef.collection('categoryPrinterLinks').get()
+    ]);
+    for (const doc of existCatModLinks.docs) await doc.ref.delete();
+    for (const doc of existCatTaxLinks.docs) await doc.ref.delete();
+    for (const doc of existCatPrinterLinks.docs) await doc.ref.delete();
+    
+    for (const cat of posCategories) {
+      const fbCatId = categoryMapping[cat.category_id];
+      if (!fbCatId) continue;
+      
+      // 카테고리-모디파이어 링크
+      const catModLinks = await dbAll(
+        'SELECT modifier_group_id FROM category_modifier_links WHERE category_id = ?',
+        [cat.category_id]
+      ).catch(() => []);
+      
+      for (const link of catModLinks) {
+        // Firebase에서 POS modifier_group_id로 Firebase ID 찾기
+        const fbMgSnap = await restaurantRef.collection('modifierGroups')
+          .where('posGroupId', '==', link.modifier_group_id).limit(1).get();
+        if (!fbMgSnap.empty) {
+          const linkId = `${cat.category_id}_${link.modifier_group_id}`;
+          await restaurantRef.collection('categoryModifierLinks').doc(linkId).set({
+            id: linkId,
+            categoryId: String(cat.category_id),
+            modifierGroupId: fbMgSnap.docs[0].id,
+            created_at: new Date()
+          });
+          catModLinksUploaded++;
+        }
+      }
+      
+      // 카테고리-세금 링크
+      const catTaxLinks = await dbAll(
+        'SELECT tax_group_id FROM category_tax_links WHERE category_id = ?',
+        [cat.category_id]
+      ).catch(() => []);
+      
+      for (const link of catTaxLinks) {
+        const fbTgSnap = await restaurantRef.collection('taxGroups')
+          .where('posGroupId', '==', link.tax_group_id).limit(1).get();
+        if (!fbTgSnap.empty) {
+          const linkId = `${cat.category_id}_${link.tax_group_id}`;
+          await restaurantRef.collection('categoryTaxLinks').doc(linkId).set({
+            id: linkId,
+            categoryId: String(cat.category_id),
+            taxGroupId: fbTgSnap.docs[0].id,
+            created_at: new Date()
+          });
+          catTaxLinksUploaded++;
+        }
+      }
+      
+      // 카테고리-프린터 링크
+      const catPrinterLinks = await dbAll(
+        'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
+        [cat.category_id]
+      ).catch(() => []);
+      
+      for (const link of catPrinterLinks) {
+        const fbPgSnap = await restaurantRef.collection('printerGroups')
+          .where('posGroupId', '==', link.printer_group_id).limit(1).get();
+        if (!fbPgSnap.empty) {
+          const linkId = `${cat.category_id}_${link.printer_group_id}`;
+          await restaurantRef.collection('categoryPrinterLinks').doc(linkId).set({
+            id: linkId,
+            categoryId: String(cat.category_id),
+            printerGroupId: fbPgSnap.docs[0].id,
+            created_at: new Date()
+          });
+          catPrinterLinksUploaded++;
+        }
+      }
+    }
+    
+    console.log(`✅ 업로드 완료 - 카테고리: ${posCategories.length}, 아이템: ${uploadedItems}, 카테고리링크: 모디파이어(${catModLinksUploaded}), 세금(${catTaxLinksUploaded}), 프린터(${catPrinterLinksUploaded})`);
     
     res.json({
       success: true,
       message: 'Menu uploaded to Firebase',
       summary: {
         categoriesUploaded: posCategories.length,
-        itemsUploaded: uploadedItems
+        itemsUploaded: uploadedItems,
+        categoryModifierLinksUploaded: catModLinksUploaded,
+        categoryTaxLinksUploaded: catTaxLinksUploaded,
+        categoryPrinterLinksUploaded: catPrinterLinksUploaded
       },
       backup: {
         id: backupRef.id,
@@ -1207,7 +1567,6 @@ router.get('/menu-mapping', async (req, res) => {
     const items = await dbAll(`
       SELECT item_id, name, price, firebase_id, category_id 
       FROM menu_items 
-      WHERE is_active = 1
       ORDER BY name
     `);
     
@@ -1244,7 +1603,7 @@ router.post('/upload-printer-groups', requireManager, async (req, res) => {
 
     // POS에서 프린터 그룹 가져오기
     const printerGroups = await dbAll(`
-      SELECT id, name FROM printer_groups WHERE is_active = 1 ORDER BY name
+      SELECT printer_group_id as id, name FROM printer_groups WHERE is_active = 1 ORDER BY name
     `);
 
     console.log(`Found ${printerGroups.length} printer groups in POS`);
@@ -1274,7 +1633,7 @@ router.post('/upload-printer-groups', requireManager, async (req, res) => {
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE printer_groups SET firebase_id = ? WHERE id = ?',
+        'UPDATE printer_groups SET firebase_id = ? WHERE printer_group_id = ?',
         [docRef.id, group.id]
       );
       
@@ -1349,23 +1708,28 @@ router.post('/download-printer-groups', requireManager, async (req, res) => {
     for (const fbGroup of firebasePrinterGroups) {
       // POS에서 같은 이름의 프린터 그룹 찾기
       let posGroup = await dbGet(
-        'SELECT id, name FROM printer_groups WHERE name = ? AND is_active = 1',
+        'SELECT printer_group_id as id, name FROM printer_groups WHERE name = ? AND is_active = 1',
         [fbGroup.name]
       );
 
       if (!posGroup) {
         // 새 프린터 그룹 생성
         const result = await dbRun(
-          'INSERT INTO printer_groups (name, is_active) VALUES (?, 1)',
-          [fbGroup.name]
+          'INSERT INTO printer_groups (name, is_active, firebase_id) VALUES (?, 1, ?)',
+          [fbGroup.name, fbGroup.id]
         );
         posGroup = { id: result.lastID, name: fbGroup.name };
         createdGroups++;
         console.log(`➕ Created printer group: ${fbGroup.name}`);
       } else {
+        // firebase_id 업데이트
+        await dbRun('UPDATE printer_groups SET firebase_id = ? WHERE printer_group_id = ?', [fbGroup.id, posGroup.id]);
         updatedGroups++;
         console.log(`🔄 Found existing printer group: ${fbGroup.name}`);
       }
+      
+      // id_mappings 업데이트
+      await idMapperService.ensureMapping('printer_group', posGroup.id, fbGroup.id);
     }
 
     console.log(`✅ Download complete - Groups: ${createdGroups} created, ${updatedGroups} updated`);
@@ -1402,16 +1766,16 @@ router.post('/upload-tax-groups', requireManager, async (req, res) => {
 
     // POS에서 세금 그룹 가져오기 (개별 세금 포함)
     const taxGroups = await dbAll(`
-      SELECT id, name FROM tax_groups WHERE is_active = 1 ORDER BY name
+      SELECT tax_group_id as id, name FROM tax_groups WHERE is_deleted = 0 ORDER BY name
     `);
 
     // 각 그룹의 개별 세금 정보 가져오기
     for (const group of taxGroups) {
       const taxes = await dbAll(`
-        SELECT t.id, t.name, t.rate 
+        SELECT t.tax_id as id, t.name, t.rate 
         FROM tax_group_links tgl 
-        JOIN taxes t ON tgl.tax_id = t.id 
-        WHERE tgl.group_id = ? AND t.is_active = 1
+        JOIN taxes t ON tgl.tax_id = t.tax_id 
+        WHERE tgl.tax_group_id = ? AND t.is_deleted = 0
       `, [group.id]);
       group.taxes = taxes;
     }
@@ -1441,7 +1805,7 @@ router.post('/upload-tax-groups', requireManager, async (req, res) => {
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE tax_groups SET firebase_id = ? WHERE id = ?',
+        'UPDATE tax_groups SET firebase_id = ? WHERE tax_group_id = ?',
         [docRef.id, group.id]
       );
       
@@ -1495,39 +1859,44 @@ router.post('/download-tax-groups', requireManager, async (req, res) => {
     for (const fbGroup of firebaseTaxGroups) {
       // POS에서 같은 이름의 세금 그룹 찾기
       let posGroup = await dbGet(
-        'SELECT id, name FROM tax_groups WHERE name = ? AND is_active = 1',
+        'SELECT tax_group_id as id, name FROM tax_groups WHERE name = ? AND is_deleted = 0',
         [fbGroup.name]
       );
 
       if (!posGroup) {
         // 새 세금 그룹 생성
         const result = await dbRun(
-          'INSERT INTO tax_groups (name, is_active) VALUES (?, 1)',
-          [fbGroup.name]
+          'INSERT INTO tax_groups (name, is_deleted, firebase_id) VALUES (?, 0, ?)',
+          [fbGroup.name, fbGroup.id]
         );
         posGroup = { id: result.lastID, name: fbGroup.name };
         createdGroups++;
         console.log(`➕ Created tax group: ${fbGroup.name}`);
       } else {
+        // firebase_id 업데이트
+        await dbRun('UPDATE tax_groups SET firebase_id = ? WHERE tax_group_id = ?', [fbGroup.id, posGroup.id]);
         updatedGroups++;
         console.log(`🔄 Found existing tax group: ${fbGroup.name}`);
       }
+      
+      // id_mappings 업데이트
+      await idMapperService.ensureMapping('tax_group', posGroup.id, fbGroup.id);
 
       // 기존 링크 삭제
-      await dbRun('DELETE FROM tax_group_links WHERE group_id = ?', [posGroup.id]);
+      await dbRun('DELETE FROM tax_group_links WHERE tax_group_id = ?', [posGroup.id]);
 
       // 개별 세금 처리
       for (const fbTax of (fbGroup.taxes || [])) {
         // POS에서 같은 이름의 세금 찾기
         let posTax = await dbGet(
-          'SELECT id FROM taxes WHERE name = ? AND is_active = 1',
+          'SELECT tax_id as id FROM taxes WHERE name = ? AND is_deleted = 0',
           [fbTax.name]
         );
 
         if (!posTax) {
           // 새 세금 생성
           const result = await dbRun(
-            'INSERT INTO taxes (name, rate, is_active) VALUES (?, ?, 1)',
+            'INSERT INTO taxes (name, rate, is_deleted) VALUES (?, ?, 0)',
             [fbTax.name, fbTax.rate || 0]
           );
           posTax = { id: result.lastID };
@@ -1536,14 +1905,14 @@ router.post('/download-tax-groups', requireManager, async (req, res) => {
         } else {
           // 기존 세금 업데이트
           await dbRun(
-            'UPDATE taxes SET rate = ? WHERE id = ?',
+            'UPDATE taxes SET rate = ? WHERE tax_id = ?',
             [fbTax.rate || 0, posTax.id]
           );
         }
 
         // 그룹에 세금 연결
         await dbRun(
-          'INSERT INTO tax_group_links (group_id, tax_id) VALUES (?, ?)',
+          'INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)',
           [posGroup.id, posTax.id]
         );
       }
@@ -1607,14 +1976,14 @@ router.post('/upload-modifier-groups', requireManager, async (req, res) => {
          JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id
          WHERE mgl.modifier_group_id = ? AND m.is_deleted = 0
          ORDER BY m.sort_order`,
-        [group.group_id]
+        [group.modifier_group_id]
       );
       group.modifiers = modifiers;
       
       // 라벨 가져오기
       const labels = await dbAll(
-        'SELECT label_id, label_name as name FROM modifier_labels WHERE group_id = ?',
-        [group.group_id]
+        'SELECT label_id, label_name as name FROM modifier_labels WHERE modifier_group_id = ?',
+        [group.modifier_group_id]
       );
       group.labels = labels;
     }
@@ -1646,7 +2015,7 @@ router.post('/upload-modifier-groups', requireManager, async (req, res) => {
           price_adjustment: m.price_adjustment || 0,
           price_adjustment_2: m.price_adjustment_2 || 0
         })),
-        posGroupId: group.group_id,
+        posGroupId: group.modifier_group_id,
         sortOrder: 0,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1654,8 +2023,8 @@ router.post('/upload-modifier-groups', requireManager, async (req, res) => {
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE modifier_groups SET firebase_id = ? WHERE group_id = ?',
-        [docRef.id, group.group_id]
+        'UPDATE modifier_groups SET firebase_id = ? WHERE modifier_group_id = ?',
+        [docRef.id, group.modifier_group_id]
       );
       
       uploadedGroups.push({ id: docRef.id, name: group.name, modifierCount: group.modifiers.length });
@@ -1713,7 +2082,7 @@ router.post('/download-modifier-groups', requireManager, async (req, res) => {
         // 라벨이 있으면 이름 + 라벨로 찾기
         posGroup = await dbGet(`
           SELECT mg.* FROM modifier_groups mg
-          LEFT JOIN modifier_labels ml ON mg.group_id = ml.group_id
+          LEFT JOIN modifier_labels ml ON mg.modifier_group_id = ml.modifier_group_id
           WHERE mg.name = ? AND ml.label_name = ? AND mg.is_deleted = 0
         `, [fbGroup.name, searchLabel]);
       } else {
@@ -1730,13 +2099,32 @@ router.post('/download-modifier-groups', requireManager, async (req, res) => {
         // 기존 그룹 업데이트
         await dbRun(
           `UPDATE modifier_groups SET 
-            selection_type = ?, min_selection = ?, max_selection = ?
-          WHERE group_id = ?`,
-          [fbGroup.selection_type || 'OPTIONAL', fbGroup.min_selection || 0, fbGroup.max_selection || 0, posGroup.group_id]
+            selection_type = ?, min_selection = ?, max_selection = ?, firebase_id = ?
+          WHERE modifier_group_id = ?`,
+          [fbGroup.selection_type || 'OPTIONAL', fbGroup.min_selection || 0, fbGroup.max_selection || 0, fbGroup.id, posGroup.modifier_group_id]
         );
         
-        // 기존 옵션 삭제
-        await dbRun('DELETE FROM modifier_group_links WHERE modifier_group_id = ?', [posGroup.group_id]);
+        // modifier_labels 갱신 (Firebase 라벨 → POS 라벨 동기화)
+        const fbLabel = fbGroup.label || '';
+        // 기존 라벨 삭제 후 새 라벨 삽입 (라벨이 있는 경우)
+        await dbRun('DELETE FROM modifier_labels WHERE modifier_group_id = ?', [posGroup.modifier_group_id]).catch(() => {});
+        if (fbLabel) {
+          const { generateNextId, ID_RANGES } = require('../utils/idGenerator');
+          const newLabelId = await generateNextId(db, ID_RANGES.MODIFIER_LABEL);
+          await dbRun(
+            'INSERT INTO modifier_labels (label_id, modifier_group_id, label_name) VALUES (?, ?, ?)',
+            [newLabelId, posGroup.modifier_group_id, fbLabel]
+          );
+        }
+        
+        // 기존 모디파이어를 is_deleted = 1로 마킹 (고아 데이터 방지)
+        const oldLinks = await dbAll('SELECT modifier_id FROM modifier_group_links WHERE modifier_group_id = ?', [posGroup.modifier_group_id]);
+        for (const oldLink of oldLinks) {
+          await dbRun('UPDATE modifiers SET is_deleted = 1 WHERE modifier_id = ?', [oldLink.modifier_id]);
+        }
+        
+        // 기존 옵션 링크 삭제
+        await dbRun('DELETE FROM modifier_group_links WHERE modifier_group_id = ?', [posGroup.modifier_group_id]);
         
         // 새 옵션 추가
         for (let i = 0; i < (fbGroup.modifiers || []).length; i++) {
@@ -1750,10 +2138,13 @@ router.post('/download-modifier-groups', requireManager, async (req, res) => {
           
           await dbRun(
             'INSERT INTO modifier_group_links (modifier_group_id, modifier_id) VALUES (?, ?)',
-            [posGroup.group_id, newModifierId]
+            [posGroup.modifier_group_id, newModifierId]
           );
           createdModifiers++;
         }
+        
+        // id_mappings 업데이트
+        await idMapperService.ensureMapping('modifier_group', posGroup.modifier_group_id, fbGroup.id);
         
         updatedGroups++;
         console.log(`✅ Updated Modifier Group: ${fbGroup.name}`);
@@ -1762,15 +2153,15 @@ router.post('/download-modifier-groups', requireManager, async (req, res) => {
         const newGroupId = await generateNextId(db, ID_RANGES.MODIFIER_GROUP);
         
         await dbRun(
-          'INSERT INTO modifier_groups (group_id, name, selection_type, min_selection, max_selection, menu_id, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)',
-          [newGroupId, fbGroup.name, fbGroup.selection_type || 'OPTIONAL', fbGroup.min_selection || 0, fbGroup.max_selection || 0, targetMenuId]
+          'INSERT INTO modifier_groups (modifier_group_id, name, selection_type, min_selection, max_selection, menu_id, is_deleted, firebase_id) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
+          [newGroupId, fbGroup.name, fbGroup.selection_type || 'OPTIONAL', fbGroup.min_selection || 0, fbGroup.max_selection || 0, targetMenuId, fbGroup.id]
         );
         
         // 라벨 추가
         if (fbGroup.label) {
           const labelId = await generateNextId(db, ID_RANGES.MODIFIER_LABEL);
           await dbRun(
-            'INSERT INTO modifier_labels (label_id, group_id, label_name) VALUES (?, ?, ?)',
+            'INSERT INTO modifier_labels (label_id, modifier_group_id, label_name) VALUES (?, ?, ?)',
             [labelId, newGroupId, fbGroup.label]
           );
         }
@@ -1791,6 +2182,9 @@ router.post('/download-modifier-groups', requireManager, async (req, res) => {
           );
           createdModifiers++;
         }
+        
+        // id_mappings 업데이트
+        await idMapperService.ensureMapping('modifier_group', newGroupId, fbGroup.id);
         
         createdGroups++;
         console.log(`➕ Created Modifier Group: ${fbGroup.name}`);
@@ -1836,7 +2230,7 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
   };
   
   try {
-    const { restaurantId, menuId, deleteExisting = true } = req.body;
+    const { restaurantId, menuId, deleteExisting = true, skipImages = false } = req.body;
     
     if (!restaurantId) {
       return res.status(400).json({ error: 'Restaurant ID is required' });
@@ -1892,6 +2286,50 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     
     // 4. Firebase에서 기존 데이터 백업 및 삭제 (옵션)
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    
+    // ★ 안전장치: Firebase 기존 데이터 백업 (실패 시 복원용)
+    let firebaseBackupRef = null;
+    const firebaseBackupData = { restaurantId, backupDate: new Date(), categories: [], items: [], menus: [] };
+    try {
+      const [catSnap, itemSnap, menuSnap] = await Promise.all([
+        restaurantRef.collection('menuCategories').get(),
+        restaurantRef.collection('menuItems').get(),
+        restaurantRef.collection('menus').get()
+      ]);
+      catSnap.forEach(doc => firebaseBackupData.categories.push({ id: doc.id, ...doc.data() }));
+      itemSnap.forEach(doc => firebaseBackupData.items.push({ id: doc.id, ...doc.data() }));
+      menuSnap.forEach(doc => firebaseBackupData.menus.push({ id: doc.id, ...doc.data() }));
+      
+      firebaseBackupRef = await firestore.collection('menuBackups').add({
+        ...firebaseBackupData,
+        backupType: 'pre_full_sync',
+        categoryCount: firebaseBackupData.categories.length,
+        itemCount: firebaseBackupData.items.length,
+        menuCount: firebaseBackupData.menus.length
+      });
+      console.log(`💾 Firebase 기존 데이터 백업 완료 (ID: ${firebaseBackupRef.id}) - 카테고리: ${firebaseBackupData.categories.length}, 아이템: ${firebaseBackupData.items.length}, 메뉴: ${firebaseBackupData.menus.length}`);
+    } catch (backupErr) {
+      console.warn('⚠️ Firebase 백업 생성 실패 (동기화는 계속 진행):', backupErr.message);
+    }
+    
+    // skipImages: 기존 Firebase 이미지를 보존하기 위해 posId 기준으로 이미지 맵 구축
+    const fbCatImageMap = {};
+    const fbItemImageMap = {};
+    if (skipImages) {
+      for (const cat of firebaseBackupData.categories) {
+        const imgUrl = cat.imageUrl || cat.image_url || '';
+        if (imgUrl && cat.posId) {
+          fbCatImageMap[cat.posId] = imgUrl;
+        }
+      }
+      for (const item of firebaseBackupData.items) {
+        const imgUrl = item.imageUrl || item.image_url || '';
+        if (imgUrl && item.posId) {
+          fbItemImageMap[item.posId] = imgUrl;
+        }
+      }
+      console.log(`🖼️ skipImages=true: 기존 Firebase 이미지 보존 (카테고리: ${Object.keys(fbCatImageMap).length}개, 아이템: ${Object.keys(fbItemImageMap).length}개)`);
+    }
     
     if (deleteExisting) {
       // Hard reset: remove all menus/categories/items in TZO Cloud to avoid duplication
@@ -2028,8 +2466,8 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     console.log(`   📋 POS 모디파이어 그룹: ${posModifierGroups.length}개`);
     
     for (const group of posModifierGroups) {
-      if (!group.group_id) {
-        console.log(`   ⚠️ group_id 없음, 건너뜀:`, group.name);
+      if (!group.modifier_group_id) {
+        console.log(`   ⚠️ modifier_group_id 없음, 건너뜀:`, group.name);
         continue;
       }
       
@@ -2042,15 +2480,27 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
            JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id
            WHERE mgl.modifier_group_id = ? AND m.is_deleted = 0
            ORDER BY m.sort_order`,
-          [group.group_id]
+          [group.modifier_group_id]
         );
       } catch (e) {
         console.log(`   ⚠️ modifiers 테이블 없음`);
       }
       
+      // 실제 modifier_labels 테이블에서 라벨 조회
+      let groupLabel = '';
+      try {
+        const labelRow = await dbGet(
+          'SELECT label_name FROM modifier_labels WHERE modifier_group_id = ? LIMIT 1',
+          [group.modifier_group_id]
+        );
+        groupLabel = labelRow ? labelRow.label_name : '';
+      } catch (e) {
+        // modifier_labels 테이블 없으면 무시
+      }
+      
       const modGroupDocRef = await restaurantRef.collection('modifierGroups').add({
         name: group.name || 'Unknown',
-        label: group.name || 'Unknown',
+        label: groupLabel,
         min_selection: group.min_selection || 0,
         max_selection: group.max_selection || 0,
         selection_type: group.selection_type || 'OPTIONAL',
@@ -2060,7 +2510,7 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
           price_adjustment: m.price_adjustment || 0,
           price_adjustment_2: m.price_adjustment_2 || 0
         })),
-        posGroupId: group.group_id,
+        posGroupId: group.modifier_group_id,
         sortOrder: 0,
         created_at: new Date(),
         updated_at: new Date()
@@ -2068,11 +2518,11 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE modifier_groups SET firebase_id = ? WHERE group_id = ?',
-        [modGroupDocRef.id, group.group_id]
+        'UPDATE modifier_groups SET firebase_id = ? WHERE modifier_group_id = ?',
+        [modGroupDocRef.id, group.modifier_group_id]
       );
       
-      modifierGroupMapping[group.group_id] = modGroupDocRef.id;
+      modifierGroupMapping[group.modifier_group_id] = modGroupDocRef.id;
       console.log(`  ✅ 모디파이어 그룹: ${group.name} (${modifiers.length}개 옵션)`);
     }
     
@@ -2088,7 +2538,7 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     
     // tax_groups 테이블에서 세금 그룹 가져오기
     const posTaxGroups = await dbAll(
-      'SELECT * FROM tax_groups WHERE is_active = 1 ORDER BY name'
+      'SELECT * FROM tax_groups WHERE is_deleted = 0 ORDER BY name'
     ).catch(() => []);
     
     // 디버깅: 첫 번째 세금 그룹 구조 확인
@@ -2097,21 +2547,21 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     }
     
     for (const taxGroup of posTaxGroups) {
-      // id가 undefined인 경우 건너뛰기 (tax_groups 테이블은 'id' 컬럼 사용)
-      if (!taxGroup.id) {
+      // tax_group_id가 undefined인 경우 건너뛰기
+      if (!taxGroup.tax_group_id) {
         console.log(`  ⚠️ 세금 그룹 ID 없음: ${taxGroup.name}`);
         continue;
       }
       
       // 세금 그룹에 연결된 세금 항목들 가져오기
-      // tax_group_links 테이블: group_id, tax_id (컬럼 이름 주의!)
-      // taxes 테이블: id, name, rate (tax_id가 아닌 id 사용!)
+      // tax_group_links 테이블: tax_group_id, tax_id
+      // taxes 테이블: tax_id, name, rate
       const taxes = await dbAll(
         `SELECT t.* FROM taxes t
-         JOIN tax_group_links tgl ON t.id = tgl.tax_id
-         WHERE tgl.group_id = ? AND t.is_active = 1
+         JOIN tax_group_links tgl ON t.tax_id = tgl.tax_id
+         WHERE tgl.tax_group_id = ? AND t.is_deleted = 0
          ORDER BY t.name`,
-        [taxGroup.id]
+        [taxGroup.tax_group_id]
       ).catch(() => []);
       
       // 총 세율 계산
@@ -2120,27 +2570,27 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
       
       const docRef = await restaurantRef.collection('taxGroups').add({
         name: taxGroup.name || 'Unknown',
-        description: taxGroup.description || '',
+        description: '',
         rate: totalRate,
         taxes: taxes.map(t => ({
-          id: t.id || 0,
+          id: t.tax_id || 0,
           name: t.name || '',
           displayName: t.name || '',
           rate: t.rate || 0,
           type: 'percentage'
         })),
-        posGroupId: taxGroup.id,
+        posGroupId: taxGroup.tax_group_id,
         created_at: new Date(),
         updated_at: new Date()
       });
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE tax_groups SET firebase_id = ? WHERE id = ?',
-        [docRef.id, taxGroup.id]
+        'UPDATE tax_groups SET firebase_id = ? WHERE tax_group_id = ?',
+        [docRef.id, taxGroup.tax_group_id]
       );
       
-      taxGroupMapping[taxGroup.id] = docRef.id;
+      taxGroupMapping[taxGroup.tax_group_id] = docRef.id;
       console.log(`  ✅ 세금 그룹: ${taxGroup.name} (${totalRate}%)`);
     }
     console.log(`   📋 POS 세금 그룹: ${posTaxGroups.length}개`);
@@ -2166,27 +2616,27 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     }
     
     for (const printerGroup of posPrinterGroups) {
-      // id가 undefined인 경우 건너뛰기
-      if (!printerGroup.id) {
+      // printer_group_id가 undefined인 경우 건너뛰기
+      if (!printerGroup.printer_group_id) {
         console.log(`  ⚠️ 프린터 그룹 ID 없음: ${printerGroup.name}`);
         continue;
       }
       
       const docRef = await restaurantRef.collection('printerGroups').add({
         name: printerGroup.name,
-        printerType: printerGroup.printer_type || 'kitchen',
-        posGroupId: printerGroup.id,
+        printerType: 'kitchen',
+        posGroupId: printerGroup.printer_group_id,
         created_at: new Date(),
         updated_at: new Date()
       });
       
       // POS에 firebase_id 저장
       await dbRun(
-        'UPDATE printer_groups SET firebase_id = ? WHERE id = ?',
-        [docRef.id, printerGroup.id]
+        'UPDATE printer_groups SET firebase_id = ? WHERE printer_group_id = ?',
+        [docRef.id, printerGroup.printer_group_id]
       );
       
-      printerGroupMapping[printerGroup.id] = docRef.id;
+      printerGroupMapping[printerGroup.printer_group_id] = docRef.id;
       console.log(`  ✅ 프린터 그룹: ${printerGroup.name}`);
     }
     console.log(`   📋 POS 프린터 그룹: ${posPrinterGroups.length}개`);
@@ -2196,15 +2646,18 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     
     for (let i = 0; i < posCategories.length; i++) {
       const cat = posCategories[i];
+      const catImageUrl = skipImages && fbCatImageMap[cat.category_id] ? fbCatImageMap[cat.category_id] : (cat.image_url || '');
       const catDocRef = await restaurantRef.collection('menuCategories').add({
         menuId: firebaseMenuId,
         name: cat.name,
-        description: '',
+        description: cat.description || '',
+        imageUrl: catImageUrl,
+        image_url: catImageUrl,
         sort_order: cat.sort_order || i,
-        sortOrder: cat.sort_order || i, // 호환성
+        sortOrder: cat.sort_order || i,
         is_active: 1,
         isActive: true,
-        posId: cat.category_id, // POS 카테고리 ID 저장
+        posId: cat.category_id,
         created_at: new Date(),
         updated_at: new Date()
       });
@@ -2267,7 +2720,33 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         .map(link => printerGroupMapping[link.printer_group_id])
         .filter(id => id);
       
-      // 아이템 생성
+      // 아이템에 연결된 세금 그룹 가져오기 (테이블이 없을 수 있음)
+      let taxLinks = [];
+      try {
+        taxLinks = await dbAll(
+          'SELECT tax_group_id FROM menu_tax_links WHERE item_id = ?',
+          [item.item_id]
+        );
+      } catch (e) {
+        // 테이블 없음
+      }
+      
+      // 카테고리 세금도 포함 (아이템에 직접 세금이 없는 경우)
+      let itemTaxGroupIds = taxLinks.map(link => link.tax_group_id);
+      if (itemTaxGroupIds.length === 0) {
+        const catTaxLinks = await dbAll(
+          'SELECT tax_group_id FROM category_tax_links WHERE category_id = ?',
+          [item.category_id]
+        ).catch(() => []);
+        itemTaxGroupIds = catTaxLinks.map(l => l.tax_group_id);
+      }
+      
+      // taxGroupMapping에서 직접 Firebase ID 조회
+      const firebaseTaxGroupIds = itemTaxGroupIds
+        .map(id => taxGroupMapping[id])
+        .filter(id => id);
+      
+      const itemImageUrl = skipImages && fbItemImageMap[item.item_id] ? fbItemImageMap[item.item_id] : (item.image_url || '');
       const itemDocRef = await restaurantRef.collection('menuItems').add({
         menuId: firebaseMenuId,
         categoryId: firebaseCategoryId,
@@ -2277,15 +2756,18 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         description: item.description || '',
         price: parseFloat(item.price) || 0,
         price2: parseFloat(item.price2) || 0,
-        imageUrl: item.image_url || '',
-        image_url: item.image_url || '',
+        imageUrl: itemImageUrl,
+        image_url: itemImageUrl,
+        isOpenPrice: item.is_open_price || 0,
+        is_open_price: item.is_open_price || 0,
         isAvailable: true,
         is_active: 1,
         sortOrder: item.sort_order || i,
         sort_order: item.sort_order || i,
-        posId: item.item_id, // POS 아이템 ID 저장
-        posCategoryId: item.category_id, // POS 카테고리 ID 저장
+        posId: item.item_id,
+        posCategoryId: item.category_id,
         modifierGroupIds: firebaseModifierGroupIds,
+        taxGroupIds: firebaseTaxGroupIds,
         printerGroupIds: firebasePrinterGroupIds,
         options: [],
         created_at: new Date(),
@@ -2488,9 +2970,37 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     }
     console.log(`   ✅ 아이템-세금 연결: ${itemTaxLinksUploaded}개`);
     
-    // 14. 카테고리-프린터 연결 (POS에서는 아이템 레벨에서만 프린터 연결)
-    console.log(`📤 카테고리-프린터 연결: POS는 아이템 레벨에서만 프린터 연결 (건너뜀)`);
-    const categoryPrinterLinksUploaded = 0;
+    // 14. 카테고리-프린터 연결 업로드
+    console.log(`📤 카테고리-프린터 연결 업로드 중...`);
+    let categoryPrinterLinksUploaded = 0;
+    
+    // 기존 categoryPrinterLinks 삭제
+    const existingCatPrinterLinks = await restaurantRef.collection('categoryPrinterLinks').get();
+    for (const doc of existingCatPrinterLinks.docs) {
+      await doc.ref.delete();
+    }
+    
+    for (const cat of posCategories) {
+      const catPrinterLinks = await dbAll(
+        'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
+        [cat.category_id]
+      ).catch(() => []);
+      
+      for (const link of catPrinterLinks) {
+        const fbPrinterGroupId = printerGroupMapping[link.printer_group_id];
+        if (fbPrinterGroupId) {
+          const linkId = `${cat.category_id}_${link.printer_group_id}`;
+          await restaurantRef.collection('categoryPrinterLinks').doc(linkId).set({
+            id: linkId,
+            categoryId: String(cat.category_id),
+            printerGroupId: fbPrinterGroupId,
+            created_at: new Date()
+          });
+          categoryPrinterLinksUploaded++;
+        }
+      }
+    }
+    console.log(`   ✅ 카테고리-프린터 연결: ${categoryPrinterLinksUploaded}개`);
     
     // 15. 아이템-프린터 연결 업로드
     console.log(`📤 아이템-프린터 연결 업로드 중...`);
@@ -2503,14 +3013,14 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
     
     for (const item of posItems) {
       const links = await dbAll(
-        'SELECT menu_printer_group_id FROM menu_item_printer_links WHERE item_id = ?',
+        'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
         [item.item_id]
       ).catch(() => []);
       
       for (const link of links) {
-        const fbPrinterGroupId = printerGroupMapping[link.menu_printer_group_id];
+        const fbPrinterGroupId = printerGroupMapping[link.printer_group_id];
         if (fbPrinterGroupId) {
-          const linkId = `${item.item_id}_${link.menu_printer_group_id}`;
+          const linkId = `${item.item_id}_${link.printer_group_id}`;
           await restaurantRef.collection('itemPrinterLinks').doc(linkId).set({
             id: linkId,
             itemId: String(item.item_id),
@@ -2567,12 +3077,51 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
   } catch (e) {
     console.error('❌ Firebase 전체 동기화 실패:', e);
     
+    // ★ 안전장치: 실패 시 Firebase 백업에서 자동 복원 시도
+    let restored = false;
+    if (firebaseBackupRef && firebaseBackupData) {
+      try {
+        console.log('🔄 Firebase 백업에서 자동 복원 시도...');
+        const restaurantRef = firebaseService.getFirestore().collection('restaurants').doc(req.body.restaurantId);
+        
+        // 메뉴 복원
+        for (const menu of (firebaseBackupData.menus || [])) {
+          const { id, ...menuData } = menu;
+          await restaurantRef.collection('menus').doc(id).set(menuData);
+        }
+        // 카테고리 복원
+        for (const cat of (firebaseBackupData.categories || [])) {
+          const { id, ...catData } = cat;
+          await restaurantRef.collection('menuCategories').doc(id).set(catData);
+        }
+        // 아이템 복원
+        for (const item of (firebaseBackupData.items || [])) {
+          const { id, ...itemData } = item;
+          await restaurantRef.collection('menuItems').doc(id).set(itemData);
+        }
+        
+        restored = true;
+        console.log(`✅ Firebase 백업 복원 완료 - 메뉴: ${firebaseBackupData.menus.length}, 카테고리: ${firebaseBackupData.categories.length}, 아이템: ${firebaseBackupData.items.length}`);
+      } catch (restoreErr) {
+        console.error('❌ Firebase 백업 복원 실패:', restoreErr.message);
+        console.error('   수동 복원이 필요합니다. 백업 ID:', firebaseBackupRef?.id);
+      }
+    }
+    
     // 동기화 로그 실패
     if (syncId) {
       await SyncLogService.failSync(syncId, e);
     }
     
-    res.status(500).json({ error: e.message, syncId });
+    res.status(500).json({ 
+      error: e.message, 
+      syncId, 
+      restored,
+      backupId: firebaseBackupRef?.id || null,
+      message: restored 
+        ? 'Sync failed but Firebase data was restored from backup.' 
+        : 'Sync failed. Check backup for manual restore if needed.'
+    });
   }
 });
 
@@ -2872,26 +3421,24 @@ router.post('/sync-modifiers', async (req, res) => {
       return res.status(400).json({ error: 'groupId is required' });
     }
     
-    // 레스토랑 ID 가져오기
-    const storeInfo = await dbGet('SELECT store_id FROM store_info LIMIT 1');
-    if (!storeInfo || !storeInfo.store_id) {
-      return res.status(400).json({ error: 'Store not configured for Firebase sync' });
+    // 레스토랑 ID 가져오기 (req.body에서 받음 - 다른 엔드포인트와 동일 방식)
+    const { restaurantId } = req.body;
+    if (!restaurantId) {
+      return res.status(400).json({ error: 'restaurantId is required for Firebase sync' });
     }
-    
-    const restaurantId = storeInfo.store_id;
     const firestore = firebaseService.getFirestore();
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
     
     // SQLite에서 modifier group 정보 가져오기
     const group = await dbGet(`
       SELECT 
-        mg.group_id,
+        mg.modifier_group_id,
         mg.name,
         mg.selection_type,
         mg.min_selection,
         mg.max_selection
       FROM modifier_groups mg
-      WHERE mg.group_id = ? AND mg.is_deleted = 0
+      WHERE mg.modifier_group_id = ? AND mg.is_deleted = 0
     `, [groupId]);
     
     if (!group) {
@@ -2913,7 +3460,7 @@ router.post('/sync-modifiers', async (req, res) => {
     `, [groupId]);
     
     // label 가져오기
-    const labels = await dbAll('SELECT label_name FROM modifier_labels WHERE group_id = ?', [groupId]);
+    const labels = await dbAll('SELECT label_name FROM modifier_labels WHERE modifier_group_id = ?', [groupId]);
     
     // Firebase에서 기존 그룹 찾기 (posGroupId로)
     const existingQuery = await restaurantRef
@@ -2964,6 +3511,251 @@ router.post('/sync-modifiers', async (req, res) => {
     
   } catch (e) {
     console.error('Error syncing modifier to Firebase:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== Order Screen Layout Settings Upload/Download =====
+
+// POST /upload-layout-settings - POS → Firebase
+router.post('/upload-layout-settings', requireManager, async (req, res) => {
+  try {
+    const { restaurantId, layoutSettings } = req.body;
+    if (!restaurantId) return res.status(400).json({ error: 'restaurantId is required' });
+    if (!layoutSettings) return res.status(400).json({ error: 'layoutSettings is required' });
+
+    await ensureSyncColumns();
+    const firestore = firebaseService.getFirestore();
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+
+    // Firebase에 layoutSettings 저장 (단일 문서로 관리)
+    await restaurantRef.collection('posSettings').doc('layoutSettings').set({
+      settings: JSON.stringify(layoutSettings),
+      updatedAt: new Date().toISOString()
+    });
+
+    console.log(`✅ Layout settings uploaded to Firebase for restaurant: ${restaurantId}`);
+    res.json({ success: true, message: 'Layout settings uploaded to Firebase' });
+  } catch (e) {
+    console.error('❌ Layout settings upload error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /download-layout-settings - Firebase → POS
+router.post('/download-layout-settings', requireManager, async (req, res) => {
+  try {
+    const { restaurantId } = req.body;
+    if (!restaurantId) return res.status(400).json({ error: 'restaurantId is required' });
+
+    await ensureSyncColumns();
+    const firestore = firebaseService.getFirestore();
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+
+    // Firebase에서 layoutSettings 가져오기
+    const doc = await restaurantRef.collection('posSettings').doc('layoutSettings').get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'No layout settings found in Firebase' });
+    }
+
+    const data = doc.data();
+    let layoutSettings;
+    try {
+      layoutSettings = typeof data.settings === 'string' ? JSON.parse(data.settings) : data.settings;
+    } catch (parseErr) {
+      return res.status(500).json({ error: 'Failed to parse layout settings from Firebase' });
+    }
+
+    console.log(`✅ Layout settings downloaded from Firebase for restaurant: ${restaurantId}`);
+    res.json({ success: true, layoutSettings });
+  } catch (e) {
+    console.error('❌ Layout settings download error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===== Table Map Upload/Download =====
+
+// POST /upload-table-map - POS → Firebase
+router.post('/upload-table-map', requireManager, async (req, res) => {
+  try {
+    const { restaurantId } = req.body;
+    if (!restaurantId) return res.status(400).json({ error: 'restaurantId is required' });
+
+    await ensureSyncColumns();
+    const firestore = firebaseService.getFirestore();
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+
+    // 1. POS에서 모든 테이블맵 요소 가져오기
+    const elements = await dbAll('SELECT * FROM table_map_elements');
+    console.log(`📤 Table map elements to upload: ${elements.length}`);
+
+    // 2. POS에서 스크린 사이즈 설정 가져오기
+    let screenSettings = [];
+    try {
+      screenSettings = await dbAll('SELECT * FROM table_map_screen_settings');
+    } catch (e) {
+      console.warn('⚠️ table_map_screen_settings 테이블 없음 - 건너뜀');
+    }
+
+    // 3. Firebase 기존 데이터 삭제
+    const existingElements = await restaurantRef.collection('tableMapElements').get();
+    const batch1 = firestore.batch();
+    existingElements.docs.forEach(doc => batch1.delete(doc.ref));
+    await batch1.commit();
+
+    const existingScreenSettings = await restaurantRef.collection('tableMapScreenSettings').get();
+    const batch2 = firestore.batch();
+    existingScreenSettings.docs.forEach(doc => batch2.delete(doc.ref));
+    await batch2.commit();
+
+    // 4. 테이블맵 요소 업로드 (batch로 500개씩)
+    let elementsUploaded = 0;
+    const BATCH_SIZE = 400;
+    for (let i = 0; i < elements.length; i += BATCH_SIZE) {
+      const chunk = elements.slice(i, i + BATCH_SIZE);
+      const batch = firestore.batch();
+      for (const el of chunk) {
+        const docRef = restaurantRef.collection('tableMapElements').doc(el.element_id);
+        batch.set(docRef, {
+          element_id: el.element_id,
+          floor: el.floor || '1F',
+          type: el.type,
+          x_pos: el.x_pos,
+          y_pos: el.y_pos,
+          width: el.width,
+          height: el.height,
+          rotation: el.rotation || 0,
+          name: el.name || '',
+          fontSize: el.fontSize || 20,
+          color: el.color || '#3B82F6',
+          status: el.status || 'Available',
+          uploadedAt: new Date().toISOString()
+        });
+        elementsUploaded++;
+      }
+      await batch.commit();
+    }
+
+    // 5. 스크린 사이즈 설정 업로드
+    let screenSettingsUploaded = 0;
+    for (const ss of screenSettings) {
+      const docRef = restaurantRef.collection('tableMapScreenSettings').doc(ss.floor || '1F');
+      await docRef.set({
+        floor: ss.floor || '1F',
+        width: ss.width || 1024,
+        height: ss.height || 768,
+        scale: ss.scale || 1,
+        uploadedAt: new Date().toISOString()
+      });
+      screenSettingsUploaded++;
+    }
+
+    console.log(`✅ Table map uploaded: ${elementsUploaded} elements, ${screenSettingsUploaded} screen settings`);
+    res.json({
+      success: true,
+      message: 'Table map uploaded to Firebase',
+      summary: {
+        elementsUploaded,
+        screenSettingsUploaded
+      }
+    });
+  } catch (e) {
+    console.error('❌ Table map upload error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /download-table-map - Firebase → POS
+router.post('/download-table-map', requireManager, async (req, res) => {
+  try {
+    const { restaurantId } = req.body;
+    if (!restaurantId) return res.status(400).json({ error: 'restaurantId is required' });
+
+    await ensureSyncColumns();
+    const firestore = firebaseService.getFirestore();
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+
+    // 1. Firebase에서 테이블맵 요소 가져오기
+    const elementsSnapshot = await restaurantRef.collection('tableMapElements').get();
+    if (elementsSnapshot.empty) {
+      return res.status(404).json({ error: 'No table map data found in Firebase' });
+    }
+
+    const firebaseElements = elementsSnapshot.docs.map(doc => doc.data());
+    console.log(`📥 Table map elements to download: ${firebaseElements.length}`);
+
+    // 2. Firebase에서 스크린 사이즈 설정 가져오기
+    const screenSnapshot = await restaurantRef.collection('tableMapScreenSettings').get();
+    const firebaseScreenSettings = screenSnapshot.docs.map(doc => doc.data());
+
+    // 3. POS DB의 기존 테이블맵 요소 삭제
+    await dbRun('DELETE FROM table_map_elements');
+
+    // 4. Firebase 데이터를 POS DB에 삽입
+    let elementsDownloaded = 0;
+    for (const el of firebaseElements) {
+      try {
+        await dbRun(`
+          INSERT INTO table_map_elements (
+            element_id, floor, type, x_pos, y_pos, width, height, rotation,
+            name, fontSize, color, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          el.element_id,
+          el.floor || '1F',
+          el.type,
+          el.x_pos,
+          el.y_pos,
+          el.width,
+          el.height,
+          el.rotation || 0,
+          el.name || '',
+          el.fontSize || 20,
+          el.color || '#3B82F6',
+          'Available'  // 다운로드 시 상태는 Available로 초기화
+        ]);
+        elementsDownloaded++;
+      } catch (insertErr) {
+        console.warn(`⚠️ 테이블맵 요소 삽입 실패 (${el.element_id}):`, insertErr.message);
+      }
+    }
+
+    // 5. 스크린 사이즈 설정 업데이트
+    let screenSettingsDownloaded = 0;
+    for (const ss of firebaseScreenSettings) {
+      try {
+        await dbRun(`
+          INSERT INTO table_map_screen_settings (floor, width, height, scale, updated_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(floor) DO UPDATE SET
+            width = excluded.width,
+            height = excluded.height,
+            scale = excluded.scale,
+            updated_at = CURRENT_TIMESTAMP
+        `, [
+          ss.floor || '1F',
+          ss.width || 1024,
+          ss.height || 768,
+          ss.scale || 1
+        ]);
+        screenSettingsDownloaded++;
+      } catch (ssErr) {
+        console.warn(`⚠️ 스크린 사이즈 설정 업데이트 실패 (${ss.floor}):`, ssErr.message);
+      }
+    }
+
+    console.log(`✅ Table map downloaded: ${elementsDownloaded} elements, ${screenSettingsDownloaded} screen settings`);
+    res.json({
+      success: true,
+      message: 'Table map downloaded from Firebase',
+      summary: {
+        elementsDownloaded,
+        screenSettingsDownloaded
+      }
+    });
+  } catch (e) {
+    console.error('❌ Table map download error:', e);
     res.status(500).json({ error: e.message });
   }
 });

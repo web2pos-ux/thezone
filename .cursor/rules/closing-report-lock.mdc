@@ -1,0 +1,55 @@
+---
+description: CRITICAL - Closing Report (Z-Report) code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/components/DayClosingModal.tsx,backend/routes/daily-closings.js,pos-desktop/backend/routes/daily-closings.js
+alwaysApply: true
+---
+
+# CLOSING REPORT CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Files
+- `frontend/src/components/DayClosingModal.tsx` - Z-Report UI (레시트 프리뷰, Cash Count 화면)
+- `backend/routes/daily-closings.js` - Z-Report API (매출 집계, 결제수단, Gift Card, 예약금, 노쇼 쿼리)
+- `pos-desktop/backend/routes/daily-closings.js` - POS Desktop Z-Report API (위와 동일)
+
+## What This Code Does
+이 코드는 일일 마감 보고서(Z-Report)를 담당합니다:
+- **SALES SUMMARY**: 총매출, 할인, 순매출, 세금, 봉사료(FSR), 게스트 수(FSR)
+- **DESTINATIONS**: Dine-In/For Here, Togo/Pickup, Online, Delivery 채널별 매출
+- **PAYMENTS**: 실제 사용된 모든 결제수단별 금액 (동적 표시)
+- **TIPS**: 현금/카드 팁 분리
+- **GIFT CARD**: Gift Card 판매(선수금)와 Gift Card 결제(선수금 소진)
+- **RESERVATION FEE**: 예약금 수령, 예약금 결제 적용, 노쇼 몰수 (FSR only)
+- **ADJUSTMENTS**: Refund/Void 상세 내역, 할인 합계
+- **CASH DRAWER**: Opening Cash → Cash Sales → Expected Cash → Closing Cash → Over/Short
+- **QSR/FSR 분기**: service_mode에 따라 섹션 및 라벨 자동 전환
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: 다른 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
+5. **Backend 동기화 필수**: backend와 pos-desktop은 항상 동기화 — 한쪽만 수정하지 말 것.
+6. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
+   - **WHY**: 왜 이 변경이 필요한지
+   - **IMPACT**: 기존 closing report 기능에 미치는 영향
+   - 승인 요청: "이 변경을 진행해도 될까요?"
+7. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
+8. 다른 작업의 "부수 효과로 Z-Report 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+
+## Example
+
+```
+❌ BAD: Silently editing DayClosingModal.tsx
+❌ BAD: "I'll update the report layout" then editing
+❌ BAD: backend만 수정하고 pos-desktop은 수정하지 않음
+
+✅ GOOD:
+"DayClosingModal.tsx와 daily-closings.js를 수정해야 합니다.
+- 변경 내용: PAYMENTS 섹션에 결제 건수 표시 추가
+- 변경 이유: 결제수단별 건수를 확인할 수 있어야 정산에 도움이 됨
+- 영향 범위: 레포트 표시만 변경, 기존 매출 집계 로직에 영향 없음
+- backend + pos-desktop 동시 적용 예정
+이 변경을 진행해도 될까요?"
+```

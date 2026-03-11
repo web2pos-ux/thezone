@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
+import { firebaseDb } from '../config/firebase';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
 import WaitingListModal from '../components/waiting/WaitingListModal';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
@@ -15,6 +17,7 @@ import { clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { printReceipt, printKitchenTicket, printBill, openCashDrawer } from '../utils/printUtils';
+import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
 import { PartialSelectionPayload } from '../types/MoveMergeTypes';
@@ -24,6 +27,8 @@ import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
 import OrderDetailModal, { OrderData, OrderChannelType } from '../components/OrderDetailModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
+import TipEntryModal from '../components/TipEntryModal';
+// SoldOutModal removed - Sold Out is handled in OrderPage
 
 interface TableElement {
   id: string;
@@ -169,6 +174,12 @@ const formatPickupDateLabel = (date = new Date()) => {
 
 const getCurrentAmPm = () => (new Date().getHours() >= 12 ? 'PM' : 'AM');
 
+const formatHeaderClockLabel = (date = new Date()) => {
+  const dateLabel = formatPickupDateLabel(date); // e.g. Feb-23 (Mon)
+  const timeLabel = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }); // e.g. 05:12 PM
+  return `${dateLabel} ${timeLabel}`;
+};
+
 const formatMinutesToTime = (minutes: number) => {
   const normalized = Math.max(0, minutes);
   const hrs = Math.floor(normalized / 60) % 24;
@@ -261,7 +272,24 @@ const SalesPage: React.FC = () => {
     },
     [persistOccupiedTimes]
   );
+  // QSR/FSR 모드 구분 (초기 세팅에서 저장된 값)
+  const [serviceMode] = useState<'QSR' | 'FSR'>(() => {
+    try {
+      const raw = localStorage.getItem('pos_setup_config');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.operationMode === 'QSR') return 'QSR';
+      }
+    } catch {}
+    return 'FSR';
+  });
+
   const [selectedChannelTab, setSelectedChannelTab] = useState<string>('table-map');
+  // 현재 시간 표시용 상태
+  const [currentTime, setCurrentTime] = useState<string>(() => {
+    const now = new Date();
+    return formatHeaderClockLabel(now);
+  });
   const [togoSearch, setTogoSearch] = useState<string>('');
   const [togoSort, setTogoSort] = useState<'time' | 'number'>('time');
   const [togoDir, setTogoDir] = useState<'asc' | 'desc'>('asc');
@@ -277,6 +305,9 @@ const SalesPage: React.FC = () => {
   
   // Online Order Panel state
   const [showOnlineOrderPanel, setShowOnlineOrderPanel] = useState<boolean>(false);
+
+  // Sold Out state (badge count only)
+  const [soldOutItems, setSoldOutItems] = useState<Set<string>>(new Set());
   const [onlineOrderRestaurantId, setOnlineOrderRestaurantId] = useState<string | null>(
     localStorage.getItem('firebaseRestaurantId')
   );
@@ -296,12 +327,10 @@ const SalesPage: React.FC = () => {
 
   // Online/Togo PaymentCompleteModal state
   const [showOnlineTogoPaymentCompleteModal, setShowOnlineTogoPaymentCompleteModal] = useState<boolean>(false);
-  const [onlineTogoPaymentCompleteData, setOnlineTogoPaymentCompleteData] = useState<{ change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean } | null>(null);
+  const [onlineTogoPaymentCompleteData, setOnlineTogoPaymentCompleteData] = useState<{ change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } } | null>(null);
   const onlineTogoCompletionRef = React.useRef<any>(null);
-  
-  // ê²°ì œ ì™„ë£Œ í›„ Pickup Complete í™•ì¸ ëª¨ë‹¬
-  const [showPickupConfirmModal, setShowPickupConfirmModal] = useState<boolean>(false);
-  const [pickupConfirmOrder, setPickupConfirmOrder] = useState<any | null>(null);
+  const [showOnlineTogoTipEntryModal, setShowOnlineTogoTipEntryModal] = useState<boolean>(false);
+  const [onlineTogoPendingReceiptCountForTip, setOnlineTogoPendingReceiptCountForTip] = useState<number>(0);
   
   // UNPAID ì£¼ë¬¸ Pickup ì‹œë„ ì‹œ í™•ì¸ ëª¨ë‹¬
   const [showUnpaidPickupModal, setShowUnpaidPickupModal] = useState<boolean>(false);
@@ -309,6 +338,22 @@ const SalesPage: React.FC = () => {
   
   // EXIT ëª¨ë‹¬ ìƒíƒœ
   const [showExitModal, setShowExitModal] = useState<boolean>(false);
+  const [showBackofficePinModal, setShowBackofficePinModal] = useState<boolean>(false);
+  const [backofficePinError, setBackofficePinError] = useState<string>('');
+  const [backofficePinLoading, setBackofficePinLoading] = useState<boolean>(false);
+
+  // Togo/Online Void Modal state
+  const [showTogoVoidModal, setShowTogoVoidModal] = useState<boolean>(false);
+  const [togoVoidOrder, setTogoVoidOrder] = useState<any | null>(null);
+  const [togoVoidOrderType, setTogoVoidOrderType] = useState<string>('togo');
+  const [togoVoidItems, setTogoVoidItems] = useState<any[]>([]);
+  const [togoVoidSelections, setTogoVoidSelections] = useState<Record<string, { checked: boolean; qty: number }>>({});
+  const [togoVoidPin, setTogoVoidPin] = useState<string>('');
+  const [togoVoidPinError, setTogoVoidPinError] = useState<string>('');
+  const [togoVoidReason, setTogoVoidReason] = useState<string>('');
+  const [togoVoidReasonPreset, setTogoVoidReasonPreset] = useState<string>('');
+  const [togoVoidNote, setTogoVoidNote] = useState<string>('');
+  const [togoVoidLoading, setTogoVoidLoading] = useState<boolean>(false);
 
   // Clock In/Out modal state
   const [showClockInOutMenu, setShowClockInOutMenu] = useState<boolean>(false);
@@ -353,6 +398,7 @@ const SalesPage: React.FC = () => {
   const [closingStep, setClosingStep] = useState<'report' | 'cash'>('report'); // 'report' = Z-Report ë³´ê¸°, 'cash' = í˜„ê¸ˆ ìž…ë ¥
   const [zReportData, setZReportData] = useState<any>(null);
   const [isLoadingZReport, setIsLoadingZReport] = useState<boolean>(false);
+
   
   // Cash denomination counts for Opening
   const [openingCashCounts, setOpeningCashCounts] = useState({
@@ -602,7 +648,7 @@ const SalesPage: React.FC = () => {
   // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ì´ˆê¸°í™”
   useEffect(() => {
     if (!onlineOrderAudioRef.current) {
-      onlineOrderAudioRef.current = new Audio('/sounds/new-order.mp3');
+      onlineOrderAudioRef.current = new Audio('/sounds/Online_Order.mp3');
       onlineOrderAudioRef.current.preload = 'auto';
       onlineOrderAudioRef.current.volume = 1.0;
     }
@@ -612,7 +658,7 @@ const SalesPage: React.FC = () => {
   const playOnlineOrderSound = useCallback(() => {
     try {
       if (!onlineOrderAudioRef.current) {
-        onlineOrderAudioRef.current = new Audio('/sounds/new-order.mp3');
+        onlineOrderAudioRef.current = new Audio('/sounds/Online_Order.mp3');
       }
       onlineOrderAudioRef.current.currentTime = 0;
       onlineOrderAudioRef.current.volume = 1.0;
@@ -630,12 +676,19 @@ const SalesPage: React.FC = () => {
   const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
   const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
   const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
+  const [orderListVoidLines, setOrderListVoidLines] = useState<any[]>([]);
+  const [showOrderListPaymentModal, setShowOrderListPaymentModal] = useState<boolean>(false);
+  const [orderListPaymentOrder, setOrderListPaymentOrder] = useState<any | null>(null);
+  const [orderListPaymentSessionPayments, setOrderListPaymentSessionPayments] = useState<Array<{ paymentId: number; method: string; amount: number; tip: number }>>([]);
   const [orderListLoading, setOrderListLoading] = useState<boolean>(false);
   const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
   const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
   const [orderListTab, setOrderListTab] = useState<'history' | 'live'>('history');
   const [liveOrders, setLiveOrders] = useState<any[]>([]);
   const [liveOrderHighlightItem, setLiveOrderHighlightItem] = useState<string | null>(null);
+  const [orderListTaxRate, setOrderListTaxRate] = useState<number>(0);
+  const [orderListActiveTaxes, setOrderListActiveTaxes] = useState<Array<{ name: string; rate: number }>>([]);
+  const [orderListTaxGroupMap, setOrderListTaxGroupMap] = useState<Record<number, Array<{ name: string; rate: number }>>>({});
   
   // Order List modal scroll refs
   const liveOrderCardRefs = useRef<{ [tableId: string]: HTMLDivElement | null }>({});
@@ -758,17 +811,26 @@ const SalesPage: React.FC = () => {
   useEffect(() => {
     const loadDefaultSetup = async () => {
       try {
-        // Use saved if present; otherwise fetch the latest POS setup
-        if (defaultMenu.menuId) return;
+        // 항상 서버에서 최신 POS 설정을 가져옴 (백엔드에서 변경된 경우 반영)
         const res = await fetch(`${API_URL}/order-page-setups/type/pos`);
         if (!res.ok) return;
         const json = await res.json();
         const rows = Array.isArray(json?.data) ? json.data : [];
         if (rows.length > 0) {
           const { menuId, menuName } = rows[0];
-          const payload = { menuId: Number(menuId), menuName: String(menuName || '') };
-          setDefaultMenu(payload);
-          localStorage.setItem('foh_default_menu', JSON.stringify(payload));
+          const newMenuId = Number(menuId);
+          // 서버 설정이 현재와 다르면 업데이트
+          if (newMenuId && newMenuId !== defaultMenu.menuId) {
+            const payload = { menuId: newMenuId, menuName: String(menuName || '') };
+            setDefaultMenu(payload);
+            localStorage.setItem('foh_default_menu', JSON.stringify(payload));
+            console.log('[SalesPage] Default menu updated from server:', payload);
+          } else if (!defaultMenu.menuId && newMenuId) {
+            const payload = { menuId: newMenuId, menuName: String(menuName || '') };
+            setDefaultMenu(payload);
+            localStorage.setItem('foh_default_menu', JSON.stringify(payload));
+            console.log('[SalesPage] Default menu initialized from server:', payload);
+          }
         }
       } catch (e) {
         // ignore; FOH can still navigate but OrderPage will show empty without menuId
@@ -899,7 +961,38 @@ const SalesPage: React.FC = () => {
   const frameWidthPx = parseInt(screenSize.width) || 1024;
   const frameHeightPx = parseInt(screenSize.height) || 768;
   const headerHeightPx = 56;
-  const footerHeightPx = 70;
+  // 16:9 와이드스크린(비율 ≥ 1.5)이면 하단바 30% 높게, 4:3은 기본 70px 유지
+  const isWidescreen = (frameWidthPx / frameHeightPx) >= 1.5;
+  // Footer UI scale: when using large BO frame (e.g. 1920x1080) on same physical screen,
+  // text can look too small because global frame scaling often becomes 1.0.
+  // We mimic the "natural" size feel of running 1024x768 (which usually scales up) by
+  // selectively boosting footer only when the overall frame isn't already scaled up.
+  const legacyReferenceScale = useMemo(() => {
+    const w = actualScreenSize.width || window.innerWidth;
+    const h = actualScreenSize.height || window.innerHeight;
+    const scaleX = w / 1024;
+    const scaleY = h / 768;
+    return Math.max(0.5, Math.min(2.0, Math.min(scaleX, scaleY)));
+  }, [actualScreenSize.width, actualScreenSize.height]);
+
+  const footerUiScale = useMemo(() => {
+    const isLargeFrame = frameWidthPx >= 1600 && frameHeightPx >= 900;
+    const notShrunk = scaleFactor >= 0.98;
+    if (!isLargeFrame || !notShrunk) return 1;
+    return Math.min(1.45, Math.max(1, legacyReferenceScale));
+  }, [frameWidthPx, frameHeightPx, scaleFactor, legacyReferenceScale]);
+
+  const footerButtonFontPx = useMemo(() => {
+    const px = 16 * footerUiScale;
+    return Math.round(Math.max(14, Math.min(24, px)));
+  }, [footerUiScale]);
+
+  const footerGapPx = useMemo(() => {
+    const px = 14 * Math.min(1.2, footerUiScale);
+    return Math.round(Math.max(10, Math.min(22, px)));
+  }, [footerUiScale]);
+
+  const footerHeightPx = Math.round((isWidescreen ? 91 : 70) * footerUiScale);
   const contentHeightPx = Math.max(0, frameHeightPx - headerHeightPx - footerHeightPx);
   // ì¢Œ/ìš° ë¹„ìœ¨ 66%/34%ë¡œ ë¶„í• 
   const leftWidthPx = Math.round(frameWidthPx * (66 / 100));
@@ -907,12 +1000,13 @@ const SalesPage: React.FC = () => {
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
   // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
   // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
-  const boMapHeight = frameHeightPx * 0.93;
+  const boMapHeight = Math.max(0, frameHeightPx - 56 - 70);
   const boMapWidth = frameWidthPx * 0.66;
   const elementScaleX = leftWidthPx / boMapWidth;
   const elementScaleY = contentHeightPx / boMapHeight;
   const elementScale = Math.min(elementScaleX, elementScaleY);
   const KEYBOARD_RESERVED_HEIGHT = 260;
+  const DELIVERY_KEYBOARD_RESERVED_HEIGHT = 360;
   const TOGO_MODAL_MAX_WIDTH = 900;
   const togoModalMaxHeight = Math.max(360, frameHeightPx - KEYBOARD_RESERVED_HEIGHT - 32);
   const togoModalMaxWidth = Math.min(frameWidthPx - 48, TOGO_MODAL_MAX_WIDTH);
@@ -933,6 +1027,15 @@ const SalesPage: React.FC = () => {
     // ë¦¬ì‚¬ì´ì¦ˆ ì´ë²¤íŠ¸ ë¦¬ìŠ¤ë„ˆ
     window.addEventListener('resize', updateScreenSize);
     return () => window.removeEventListener('resize', updateScreenSize);
+  }, []);
+
+  // 현재 시간 업데이트 (1초마다)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = new Date();
+      setCurrentTime(formatHeaderClockLabel(now));
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   // ë°±ì˜¤í”¼ìŠ¤ í•´ìƒë„ì™€ ì‹¤ì œ í™”ë©´ í¬ê¸°ë¥¼ ë¹„êµí•˜ì—¬ ìŠ¤ì¼€ì¼ ê³„ì‚°
@@ -961,6 +1064,8 @@ const SalesPage: React.FC = () => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [pickupTime, setPickupTime] = useState(15);
+  const [togoReadyHour, setTogoReadyHour] = useState<string>('');
+  const [togoReadyMinute, setTogoReadyMinute] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const customerPhoneRef = useRef(''); // ë¹„ë™ê¸° í´ë¡œì €ìš© ref
@@ -973,8 +1078,15 @@ const SalesPage: React.FC = () => {
   const [deliveryCompany, setDeliveryCompany] = useState<'UberEats' | 'Doordash' | 'SkipTheDishes' | 'Fantuan' | ''>('');
   const [deliveryOrderNumber, setDeliveryOrderNumber] = useState('');
   const [deliveryPrepTime, setDeliveryPrepTime] = useState(15);
+  const [deliveryReadyHour, setDeliveryReadyHour] = useState<string>('');
+  const [deliveryReadyMinute, setDeliveryReadyMinute] = useState<string>('');
   const deliveryOrderInputRef = useRef<HTMLInputElement>(null);
   
+  type TimePickerTarget = 'TOGO_HOUR' | 'TOGO_MINUTE' | 'DELIVERY_HOUR' | 'DELIVERY_MINUTE';
+  const [timePickerTarget, setTimePickerTarget] = useState<TimePickerTarget | null>(null);
+  const openTimePicker = (target: TimePickerTarget) => setTimePickerTarget(target);
+  const closeTimePicker = () => setTimePickerTarget(null);
+
   const [prepButtonsLocked, setPrepButtonsLocked] = useState(false);
   const [togoNote, setTogoNote] = useState('');
   const [pickupAmPm, setPickupAmPm] = useState<'AM' | 'PM'>(() => getCurrentAmPm());
@@ -1028,6 +1140,134 @@ const SalesPage: React.FC = () => {
     const interval = setInterval(checkScheduledUpdate, 60000);
     return () => clearInterval(interval);
   }, []);
+  // ============================================
+  // 온라인 예약 Accept/Reject 시스템
+  // ============================================
+  const [pendingOnlineReservation, setPendingOnlineReservation] = useState<any | null>(null);
+  const [showOnlineReservationPopup, setShowOnlineReservationPopup] = useState(false);
+  const [onlineReservationProcessing, setOnlineReservationProcessing] = useState(false);
+  const processedOnlineReservationIds = React.useRef<Set<string>>(new Set());
+
+  // Firebase 실시간 리스너: 새 온라인 예약 pending 감지
+  useEffect(() => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    if (!restaurantId) return;
+
+    const q = query(
+      collection(firebaseDb, 'restaurants', restaurantId, 'reservations'),
+      where('status', '==', 'pending'),
+      where('channel', '==', 'ONLINE')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const pending: any[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        pending.push({
+          firebase_doc_id: docSnap.id,
+          reservation_number: data.reservation_number || '',
+          customer_name: data.customer_name || '',
+          phone_number: data.phone_number || '',
+          customer_email: data.customer_email || '',
+          reservation_date: data.reservation_date || '',
+          reservation_time: data.reservation_time || '',
+          party_size: data.party_size || 2,
+          tables_needed: data.tables_needed || 1,
+          deposit_amount: data.deposit_amount || 0,
+          special_requests: data.special_requests || '',
+          created_at: data.created_at || '',
+        });
+      });
+
+      if (pending.length > 0) {
+        // Sort newest first
+        pending.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        // Find first not yet processed
+        const newReservation = pending.find(
+          (r: any) => !processedOnlineReservationIds.current.has(r.firebase_doc_id)
+        );
+        if (newReservation && !showOnlineReservationPopup) {
+          setPendingOnlineReservation(newReservation);
+          setShowOnlineReservationPopup(true);
+          // Play notification sound
+          try {
+            const audio = new Audio('/sounds/Online_Order.mp3');
+            audio.volume = 1.0;
+            audio.play().catch(() => {});
+          } catch {}
+        }
+      }
+    }, (error) => {
+      console.warn('[Reservation Listener] Firebase error:', error);
+    });
+
+    return () => unsubscribe();
+  }, [showOnlineReservationPopup]);
+
+  const handleAcceptOnlineReservation = async () => {
+    if (!pendingOnlineReservation || onlineReservationProcessing) return;
+    setOnlineReservationProcessing(true);
+    try {
+      const res = await fetch(`${API_URL}/reservations/accept-online`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pendingOnlineReservation),
+      });
+      const data = await res.json();
+      if (data.success) {
+        processedOnlineReservationIds.current.add(pendingOnlineReservation.firebase_doc_id);
+        setShowOnlineReservationPopup(false);
+        setPendingOnlineReservation(null);
+        // Reload today reservations
+        const today = new Date().toISOString().split('T')[0];
+        const rRes = await fetch(`${API_URL}/reservations?date=${today}`);
+        if (rRes.ok) {
+          const rData = await rRes.json();
+          const reservations = Array.isArray(rData) ? rData : (rData.reservations || []);
+          reservations.sort((a: any, b: any) => (a.reservation_time || '').localeCompare(b.reservation_time || ''));
+          setTodayReservations(reservations);
+        }
+        // Reload table map to show reserved status
+        if (data.assignedTable) {
+          window.location.reload();
+        }
+      } else {
+        alert('Failed to accept reservation: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      alert('Error accepting reservation: ' + err.message);
+    } finally {
+      setOnlineReservationProcessing(false);
+    }
+  };
+
+  const handleRejectOnlineReservation = async () => {
+    if (!pendingOnlineReservation || onlineReservationProcessing) return;
+    setOnlineReservationProcessing(true);
+    try {
+      const res = await fetch(`${API_URL}/reservations/reject-online`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firebase_doc_id: pendingOnlineReservation.firebase_doc_id,
+          reservation_number: pendingOnlineReservation.reservation_number,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        processedOnlineReservationIds.current.add(pendingOnlineReservation.firebase_doc_id);
+        setShowOnlineReservationPopup(false);
+        setPendingOnlineReservation(null);
+      } else {
+        alert('Failed to reject reservation: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err: any) {
+      alert('Error rejecting reservation: ' + err.message);
+    } finally {
+      setOnlineReservationProcessing(false);
+    }
+  };
+
   const [historyError, setHistoryError] = useState('');
   const [customerHistoryOrders, setCustomerHistoryOrders] = useState<any[]>([]);
   const [customerHistoryLoading, setCustomerHistoryLoading] = useState(false);
@@ -1393,6 +1633,24 @@ const SalesPage: React.FC = () => {
   const [onlineQueueCards, setOnlineQueueCards] = useState<OnlineQueueCard[]>(() =>
     createInitialOnlineQueueCards()
   );
+
+  // Prevent "zombie" state: if the selected order disappears from the list, close/clear the detail modal.
+  useEffect(() => {
+    if (!showOrderDetailModal) return;
+    if (!selectedOrderDetail) return;
+
+    const selectedId = selectedOrderDetail?.id;
+    if (selectedId == null) return;
+
+    const pool = selectedOrderType === 'online' ? onlineQueueCards : togoOrders;
+    const exists = Array.isArray(pool) && pool.some((o: any) => String(o?.id) === String(selectedId));
+    if (!exists) {
+      setShowOrderDetailModal(false);
+      setSelectedOrderDetail(null);
+      setSelectedOrderType(null);
+    }
+  }, [showOrderDetailModal, selectedOrderDetail, selectedOrderType, onlineQueueCards, togoOrders]);
+
   const displayedHistoryOrders = useMemo(() => {
     return [...customerHistoryOrders].slice(0, 6);
   }, [customerHistoryOrders]);
@@ -1684,9 +1942,8 @@ const SalesPage: React.FC = () => {
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
         
-        // 🔄 ì•Œë¦¼ìŒì€ OnlineOrderPanelì˜ SSEì—ì„œ ìž¬ìƒë¨ (ì¤‘ë³µ ë°©ì§€)
-        console.log('🔄 ìƒˆ ì˜¨ë¼ì¸ ì£¼ë¬¸ ê°ì§€:', newOrder.id);
-        
+        playOnlineOrderSound();
+        console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
         if (prepTimeSettings.thezoneorder.mode === 'auto') {
           // Auto ëª¨ë“œ: ìžë™ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
           const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
@@ -2127,6 +2384,7 @@ const SalesPage: React.FC = () => {
           orderMap.set(meta.id, {
             id: meta.id,
             order_id: meta.order_id || null, // orders í…Œì´ë¸”ê³¼ ì—°ê²°ëœ id
+            deliveryMetaId: meta.id, // delivery_orders id
             type: 'Delivery',
             status: meta.status || 'pending',
             created_at: meta.created_at || meta.createdAt,
@@ -2225,6 +2483,11 @@ const SalesPage: React.FC = () => {
           // Delivery ì „ìš© í•„ë“œ
           deliveryCompany: o.deliveryCompany || o.delivery_company || '',
           deliveryOrderNumber: o.deliveryOrderNumber || o.delivery_order_number || '',
+          deliveryMetaId:
+            (o as any).deliveryMetaId ||
+            ((typeof (o as any).table_id === 'string' && String((o as any).table_id).toUpperCase().startsWith('DL'))
+              ? String((o as any).table_id).substring(2)
+              : null),
           prepTime: o.prepTime || o.prep_time || 0,
         };
       });
@@ -2299,6 +2562,8 @@ const SalesPage: React.FC = () => {
             customerName: order.name || order.customerName,
             customerPhone: order.phone || order.customerPhone,
             virtualTableId: resolvedVirtualId || order.virtualTableId || null,
+            readyTimeLabel: order.readyTimeLabel || (order.fullOrder || order)?.readyTimeLabel || '',
+            pickup: order.pickup || (order.fullOrder || order)?.pickup || null,
             virtualTableChannel: 'online',
             onlineOrder: order.fullOrder || order, // ì „ì²´ ì£¼ë¬¸ ë°ì´í„° ì „ë‹¬
           },
@@ -2306,6 +2571,72 @@ const SalesPage: React.FC = () => {
       }
     },
     [defaultMenu.menuId, defaultMenu.menuName, navigate, togoOrderMeta]
+  );
+
+  const handleBackToOrderFromDetailModal = useCallback(
+    (order: OrderData, orderType: OrderChannelType) => {
+      if (!order) return;
+      const resolvedOrderId =
+        orderType === 'delivery'
+          ? ((order as any).order_id ?? (order as any).fullOrder?.order_id ?? order.id)
+          : orderType === 'online'
+          ? (order.localOrderId ?? (order as any).fullOrder?.localOrderId ?? (order as any).order_id ?? order.id)
+          : order.id;
+
+      if (!resolvedOrderId) {
+        alert('Invalid order.');
+        return;
+      }
+
+      const customerName =
+        order.name ||
+        order.customerName ||
+        (order as any).fullOrder?.customer_name ||
+        (order as any).fullOrder?.customerName ||
+        '';
+      const customerPhone =
+        order.phone ||
+        order.customerPhone ||
+        (order as any).fullOrder?.customer_phone ||
+        (order as any).fullOrder?.customerPhone ||
+        '';
+      const readyTimeLabel =
+        (order.readyTimeLabel as any) ||
+        (order as any).fullOrder?.ready_time ||
+        (order as any).fullOrder?.readyTime ||
+        '';
+      const pickup = (order as any).pickup || null;
+      const togoFulfillment =
+        (order as any).fulfillment ||
+        (order as any).type ||
+        (orderType === 'delivery' ? 'delivery' : null);
+
+      const orderTypeForOrderPage =
+        orderType === 'togo' || orderType === 'pickup'
+          ? 'togo'
+          : orderType === 'online'
+          ? 'online'
+          : 'togo';
+
+      navigate('/sales/order', {
+        state: {
+          orderType: orderTypeForOrderPage,
+          menuId: defaultMenu.menuId,
+          menuName: defaultMenu.menuName,
+          orderId: resolvedOrderId,
+          customerName,
+          customerPhone,
+          readyTimeLabel,
+          pickup,
+          togoFulfillment,
+        },
+      });
+
+      setShowOrderDetailModal(false);
+      setSelectedOrderDetail(null);
+      setSelectedOrderType(null);
+    },
+    [defaultMenu.menuId, defaultMenu.menuName, navigate]
   );
 
   const handleVirtualOrderCardClick = useCallback(
@@ -2346,7 +2677,7 @@ const SalesPage: React.FC = () => {
             
             if (response.ok && result.success) {
               const isPartial = selectionChoice && selectionChoice !== 'ALL';
-              const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
+              const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Available');
               
               setTableElements(prev => prev.map(el => {
                 if (String(el.id) === String(sourceTableId)) {
@@ -2587,6 +2918,7 @@ const SalesPage: React.FC = () => {
                 status: data.order?.status || order.status,
                 paymentStatus: data.order?.paymentStatus || order.paymentStatus,
                 items: parsedItems,
+                adjustments: Array.isArray((data as any)?.adjustments) ? (data as any).adjustments : [],
                 subtotal: data.order?.subtotal || calculatedSubtotal,
                 tax: data.order?.tax || 0,
                 taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
@@ -2974,14 +3306,143 @@ const SalesPage: React.FC = () => {
     const readyHours = Math.floor(totalMinutes / 60) % 24;
     const readyMinutes = totalMinutes % 60;
     const ready24 = `${readyHours.toString().padStart(2, '0')}:${readyMinutes.toString().padStart(2, '0')}`;
+    // Display as 12-hour time (e.g. 08:00 PM) per UI requirement.
     const readyDisplay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), readyHours, readyMinutes).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const currentDisplay = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    return { current: formatMinutesToTime(now.getHours() * 60 + now.getMinutes()), ready: ready24, readyDisplay, currentDisplay };
+  }, [pickupTime]);
+
+  const computeReadyDisplayFromNow = (prepMinutes: number) => {
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes() + Math.max(0, Number(prepMinutes || 0));
+    const readyHours = Math.floor(totalMinutes / 60) % 24;
+    const readyMinutes = totalMinutes % 60;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), readyHours, readyMinutes).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  const formatHHMM = (hh: number, mm: number) => {
+    const h = Math.max(0, Math.min(23, Number(hh)));
+    const m = Math.max(0, Math.min(59, Number(mm)));
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+
+  const normalizeReadyTimeForPrint = (raw: any) => {
+    if (raw == null) return '';
+    const s = String(raw).trim();
+    if (!s) return '';
+    const m = s.match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+    // If it's a plain HH:MM (manual clock input), treat it as the specified time.
+    if (m && !m[3]) return formatHHMM(parseInt(m[1], 10), parseInt(m[2], 10));
+    // Otherwise try to parse as a Date/ISO string; if that fails, use raw string.
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    }
+    return s;
+  };
+
+  const applyTogoClockIfProvided = useCallback(() => {
+    try {
+      if (prepButtonsLocked) return null;
+      const hh = parseInt(String(togoReadyHour || ''), 10);
+      const mm = parseInt(String(togoReadyMinute || ''), 10);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+
+      const now = new Date();
+      const target = new Date(now);
+      target.setSeconds(0, 0);
+      target.setHours(Math.max(0, Math.min(23, hh)), Math.max(0, Math.min(59, mm)), 0, 0);
+      if (target.getTime() < now.getTime()) target.setDate(target.getDate() + 1);
+      const minutes = Math.max(0, Math.min(1440, Math.round((target.getTime() - now.getTime()) / 60000)));
+
+      const ampm: 'AM' | 'PM' = target.getHours() >= 12 ? 'PM' : 'AM';
+      const dateLabel = formatPickupDateLabel(target);
+      // Manual HH:MM input means "specified pickup time" -> store/print exactly HH:MM.
+      const readyDisplay = formatHHMM(hh, mm);
+
+      // Mirror the old "Set" behavior so OK/Reorder implicitly applies it.
+      setPickupTime(minutes);
+      setPickupAmPm(ampm);
+      setPickupDateLabel(dateLabel);
+
+      return { minutes, ampm, dateLabel, readyDisplay, target };
+    } catch {
+      return null;
+    }
+  }, [prepButtonsLocked, togoReadyHour, togoReadyMinute, formatPickupDateLabel]);
+
+  const computeDeliveryReadyDisplay = (prepMinutes: number) => {
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes() + Math.max(0, Number(prepMinutes || 0));
+    const readyHours = Math.floor(totalMinutes / 60) % 24;
+    const readyMinutes = totalMinutes % 60;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), readyHours, readyMinutes).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  };
+
+  const computeDeliveryReadyLabel = (prepMinutes: number) => {
+    const now = new Date();
+    const totalMinutes = now.getHours() * 60 + now.getMinutes() + Math.max(0, Number(prepMinutes || 0));
+    const readyHours = Math.floor(totalMinutes / 60) % 24;
+    const readyMinutes = totalMinutes % 60;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), readyHours, readyMinutes).toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
     });
-    const currentDisplay = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    return { current: formatMinutesToTime(now.getHours() * 60 + now.getMinutes()), ready: ready24, readyDisplay, currentDisplay };
-  }, [pickupTime]);
+  };
+
+  const applyDeliveryClockIfProvided = useCallback(() => {
+    try {
+      const hh = parseInt(String(deliveryReadyHour || ''), 10);
+      const mm = parseInt(String(deliveryReadyMinute || ''), 10);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+
+      const now = new Date();
+      const target = new Date(now);
+      target.setSeconds(0, 0);
+      target.setHours(Math.max(0, Math.min(23, hh)), Math.max(0, Math.min(59, mm)), 0, 0);
+      if (target.getTime() < now.getTime()) target.setDate(target.getDate() + 1);
+      const minutes = Math.max(0, Math.min(1440, Math.round((target.getTime() - now.getTime()) / 60000)));
+
+      setDeliveryPrepTime(minutes);
+      return { minutes, readyDisplay: computeDeliveryReadyDisplay(minutes), readyLabel: computeDeliveryReadyLabel(minutes) };
+    } catch {
+      return null;
+    }
+  }, [deliveryReadyHour, deliveryReadyMinute]);
+
+  // Prefill clock inputs when modals open (do not overwrite while editing)
+  useEffect(() => {
+    if (!showTogoOrderModal) return;
+    try {
+      const d = new Date(Date.now() + Math.max(0, Number(pickupTime || 0)) * 60000);
+      setTogoReadyHour(String(d.getHours()).padStart(2, '0'));
+      setTogoReadyMinute(String(d.getMinutes()).padStart(2, '0'));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTogoOrderModal]);
+
+  useEffect(() => {
+    if (!showDeliveryOrderModal) return;
+    try {
+      const d = new Date(Date.now() + Math.max(0, Number(deliveryPrepTime || 0)) * 60000);
+      setDeliveryReadyHour(String(d.getHours()).padStart(2, '0'));
+      setDeliveryReadyMinute(String(d.getMinutes()).padStart(2, '0'));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDeliveryOrderModal]);
   useEffect(() => {
     loadTogoOrders();
     const t = setInterval(loadTogoOrders, 10000);
@@ -3007,6 +3468,9 @@ const SalesPage: React.FC = () => {
     }
     try {
       setReorderLoading(true);
+      const clockApplied = applyTogoClockIfProvided();
+      const pickupMinutesForPayload = clockApplied?.minutes ?? pickupTime;
+      const readyDisplayForPayload = clockApplied?.readyDisplay ?? computeReadyDisplayFromNow(pickupMinutesForPayload);
       const order = historyOrderDetail.order;
       const orderTypeRaw = (order.order_type || order.orderType || 'TOGO').toString().toUpperCase();
       const fulfillmentModeRaw =
@@ -3068,8 +3532,8 @@ const SalesPage: React.FC = () => {
         customerPhone: customerPhoneForOrder,
         customerName: customerNameForOrder,
         fulfillmentMode: fulfillmentModeRaw,
-        readyTime: readyTimeSnapshot.readyDisplay,
-        pickupMinutes: pickupTime,
+        readyTime: readyDisplayForPayload,
+        pickupMinutes: pickupMinutesForPayload,
         serverId: selectedTogoServer?.employee_id || null,
         serverName: selectedTogoServer?.employee_name || null,
       };
@@ -3086,10 +3550,11 @@ const SalesPage: React.FC = () => {
         const orderTypeForPrint = orderTypeRaw === 'DELIVERY' ? 'DELIVERY' : 'TOGO';
         // ì‹¤ì œ ì£¼ë¬¸ ë²ˆí˜¸ ì‚¬ìš© (#1043 í˜•ì‹)
         const actualOrderNumber = orderResult.orderId || orderResult.id || newOrderNumber;
+        const actualOrderDisplayNumber = orderResult.order_number || actualOrderNumber;
         const printPayload = {
           orderInfo: {
             orderId: actualOrderNumber,
-            orderNumber: `#${actualOrderNumber}`,
+            orderNumber: `#${actualOrderDisplayNumber}`,
             orderType: orderTypeForPrint,
             channel: orderTypeForPrint,
             orderSource: orderTypeForPrint,
@@ -3109,36 +3574,8 @@ const SalesPage: React.FC = () => {
         
         console.log('ðŸ–¨ï¸ [Reorder] Printing Kitchen Ticket:', printPayload);
         await printKitchenTicket(printPayload, 1);
-        
-        // Bill 출력
-        const subtotal = itemsPayload.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
-        const billData = {
-          storeName: '',
-          orderNumber: `#${actualOrderNumber}`,
-          orderType: orderTypeForPrint,
-          channel: orderTypeForPrint,
-          customerName: payload.customerName || '',
-          customerPhone: payload.customerPhone || '',
-          pickupTime: payload.readyTime || '',
-          items: itemsPayload.map((item: any) => ({
-            name: item.name,
-            quantity: item.quantity,
-            price: item.price,
-            modifiers: item.modifiers || [],
-            memo: item.memo || null,
-          })),
-          guestSections: [],
-          subtotal: subtotal,
-          taxLines: [],
-          total: subtotal,
-          adjustments: [],
-          footer: {},
-        };
-        
-        console.log('🧾 [Reorder] Printing Bill:', billData);
-        await printBill(billData, 1);
       } catch (printError) {
-        console.warn('Kitchen Ticket/Bill print failed (ignored):', printError);
+        console.warn('Kitchen Ticket print failed (ignored):', printError);
       }
       
       await loadTogoOrders();
@@ -3159,7 +3596,7 @@ const SalesPage: React.FC = () => {
     customerPhone,
     customerName,
     pickupTime,
-    readyTimeSnapshot.readyDisplay,
+    applyTogoClockIfProvided,
     API_URL,
     getOrderTotalValue,
     loadTogoOrders,
@@ -3335,8 +3772,12 @@ const SalesPage: React.FC = () => {
     switch (element.type) {
       case 'rounded-rectangle':
       case 'circle':
-        // ì €ìž¥ëœ ì´ë¦„ ìš°ì„  ì‚¬ìš©, ì—†ìœ¼ë©´ T{id}
-        let displayName = (element.text && String(element.text).trim()) ? String(element.text).trim() : `T${element.id}`;
+      case 'bar':
+      case 'room': {
+        // ì €ìž¥ëœ ì´ë¦„ ìš°ì„  ì‚¬ìš©, ì—†ìœ¼ë©´ T/B/R{id}
+        const raw = (element.text && String(element.text).trim()) ? String(element.text).trim() : '';
+        const prefix = element.type === 'bar' ? 'B' : (element.type === 'room' ? 'R' : 'T');
+        let displayName = raw || `${prefix}${element.id}`;
         
         // Occupied ë˜ëŠ” Payment Pending ìƒíƒœì¸ ê²½ìš° ì‹œê°„ í‘œì‹œ
         if ((element.status === 'Occupied' || element.status === 'Payment Pending') && tableOccupiedTimes[String(element.id)]) {
@@ -3354,6 +3795,7 @@ const SalesPage: React.FC = () => {
         }
         
         return displayName;
+      }
       case 'entrance':
         return 'Entrance'; // ë²ˆí˜¸ ì—†ìŒ
       case 'counter':
@@ -3396,16 +3838,29 @@ const SalesPage: React.FC = () => {
         const transformedElements = elements.map((element: any) => ({
           ...element
         }));
+        // Normalize: Occupied/Payment Pending without a linked order must NOT happen.
+        const normalizedElements = transformedElements.map((el: any) => {
+          const st = String(el?.status || 'Available');
+          const isOccupiedLike = st === 'Occupied' || st === 'Payment Pending';
+          const hasOrderId = el?.current_order_id != null && String(el.current_order_id) !== '';
+          if (isOccupiedLike && !hasOrderId) return { ...el, status: 'Available' };
+          return el;
+        });
         // Optimistically apply last occupied table state (for up to 60s)
-        let patchedElements = transformedElements;
+        let patchedElements = normalizedElements;
         try {
           const raw = localStorage.getItem('lastOccupiedTable');
           if (raw) {
             const hint = JSON.parse(raw);
             if (hint && hint.floor === apiFloor && Date.now() - (hint.ts || 0) < 60000) {
-              patchedElements = transformedElements.map((el: any) => (
-                String(el.id) === String(hint.tableId) ? { ...el, status: hint.status } : el
-              ));
+              patchedElements = normalizedElements.map((el: any) => {
+                if (String(el.id) !== String(hint.tableId)) return el;
+                const hintedStatus = String(hint.status || '');
+                const isOccupiedLike = hintedStatus === 'Occupied' || hintedStatus === 'Payment Pending';
+                const hasOrderId = el?.current_order_id != null && String(el.current_order_id) !== '';
+                if (isOccupiedLike && !hasOrderId) return el;
+                return { ...el, status: hintedStatus || el.status };
+              });
             }
           }
         } catch {}
@@ -3439,7 +3894,7 @@ const SalesPage: React.FC = () => {
         if (Object.keys(tableOccupiedTimes).length === 0) {
           const occupiedTimesSeed: Record<string, number> = {};
           patchedElements.forEach((element: any) => {
-            if (element.status === 'Occupied' || element.status === 'Payment Pending') {
+            if ((element.status === 'Occupied' || element.status === 'Payment Pending') && element.current_order_id != null) {
               // ì‹œë“œê°€ ì—†ìœ¼ë©´ í˜„ìž¬ì‹œê°„ìœ¼ë¡œ, ìžˆìœ¼ë©´ ìœ ì§€
               const key = String(element.id);
               const existing = (() => { try { return JSON.parse(localStorage.getItem(`occupiedTimes_${selectedFloor}`) || '{}')[key]; } catch { return undefined; } })();
@@ -3586,8 +4041,12 @@ const SalesPage: React.FC = () => {
     const status = element.status || 'Available';
     const isOccupied = status === 'Occupied';
     
-    // í…Œì´ë¸” íƒ€ìž…ë§Œ pointer ì»¤ì„œ ì ìš©
-    const isClickable = element.type === 'rounded-rectangle' || element.type === 'circle';
+    // 주문 가능한 요소(Table/Bar/Room)만 pointer ì»¤ì„œ ì ìš©
+    const isClickable =
+      element.type === 'rounded-rectangle' ||
+      element.type === 'circle' ||
+      element.type === 'bar' ||
+      element.type === 'room';
     const rotationTransform = `rotate(${element.rotation}deg)`;
     
     const baseStyle: React.CSSProperties = {
@@ -3646,7 +4105,9 @@ const SalesPage: React.FC = () => {
 
     // ìš”ì†Œ íƒ€ìž…ë³„ ìŠ¤íƒ€ì¼ ì ìš©
     switch (element.type) {
-      case 'rounded-rectangle': {
+      case 'rounded-rectangle':
+      case 'bar':
+      case 'room': {
         // ìƒíƒœë³„ í…Œì´ë¸” ìƒ‰ìƒ ê³ ì •
         const status = element.status || 'Available';
         let backgroundStyle = '#3B82F6'; // Available: Blue (Restored)
@@ -3654,17 +4115,17 @@ const SalesPage: React.FC = () => {
         let borderWidth: string | undefined = undefined;
 
         if (status === 'Occupied') {
-          backgroundStyle = '#ef4444'; // Occupied: Red (Restored)
+          backgroundStyle = '#fb923c'; // Occupied: Bright Orange
         } else if (status === 'Payment Pending') {
-          backgroundStyle = '#fb923c'; // Payment Pending: Bright Orange (Orange-400)
+          backgroundStyle = '#9ca3af'; // Payment Pending (Bill printed): Medium Gray
         } else if (status === 'Preparing') {
-          backgroundStyle = '#9ca3af'; // Preparing: Silver/Gray (Gray-400)
+          backgroundStyle = '#e5e7eb'; // Legacy Preparing → treat as Available
         } else if (status === 'Hold') {
-          backgroundStyle = '#9ca3af'; // Hold: Silver/Gray (Gray-400)
-          borderColor = '#c2410c'; // Darker Orange border
+          backgroundStyle = '#f87171'; // Hold: Soft Red
+          borderColor = '#dc2626';
           borderWidth = '6px';
         } else if (status === 'Reserved') {
-          backgroundStyle = '#c2410c'; // Reserved: Darker Orange
+          backgroundStyle = '#f87171'; // Reserved: Soft Red
         }
 
         return applyPressedHighlight({
@@ -3687,7 +4148,7 @@ const SalesPage: React.FC = () => {
         } else if (status === 'Payment Pending') {
           backgroundStyle = '#fb923c'; // Payment Pending: Bright Orange (Orange-400)
         } else if (status === 'Preparing') {
-          backgroundStyle = '#9ca3af'; // Preparing: Silver/Gray (Gray-400)
+          backgroundStyle = '#e5e7eb'; // Legacy Preparing → treat as Available
         } else if (status === 'Hold') {
           backgroundStyle = '#9ca3af';
           borderColor = '#c2410c';
@@ -3773,6 +4234,8 @@ const SalesPage: React.FC = () => {
     let shapeClass = '';
     switch (element.type) {
       case 'rounded-rectangle':
+      case 'bar':
+      case 'room':
         shapeClass = 'rounded-2xl';
         break;
       case 'circle':
@@ -3822,7 +4285,7 @@ const SalesPage: React.FC = () => {
     const clickTime = performance.now();
     console.log('ðŸ–±ï¸ í…Œì´ë¸” í´ë¦­!', element.text, clickTime);
     
-    if (!(element.type === 'rounded-rectangle' || element.type === 'circle')) return;
+    if (!(element.type === 'rounded-rectangle' || element.type === 'circle' || element.type === 'bar' || element.type === 'room')) return;
 
     // Print Bill ëª¨ë“œ ì²˜ë¦¬
     if (isBillPrintMode) {
@@ -3875,20 +4338,15 @@ const SalesPage: React.FC = () => {
             menuName: defaultMenu.menuName,
             tableId: element.id,
             tableLabel: element.text,
+            tableName: element.text,
             floor: selectedFloor,
             loadExisting: false
           }
         });
       } else if (currentStatus === 'Reserved') {
-        // Reserved → Occupied (ì¦‰ì‹œ ë³€ê²½)
-        await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Occupied' })
-        });
-        setTableElements(prev => prev.map(el => String(el.id) === String(element.id) ? { ...el, status: 'Occupied', current_order_id: null as any } : el));
-        setOccupiedTimestamp(element.id, Date.now());
-        try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Occupied', ts: Date.now() })); } catch {}
-        
-        // ì£¼ë¬¸ì°½ìœ¼ë¡œ ì´ë™
+        // Reserved table can start ordering, but MUST NOT become Occupied without an actual linked order.
+        const latestElement = tableElements.find(el => String(el.id) === String(element.id));
+        const effectiveOrderId = latestElement?.current_order_id || (element as any).current_order_id;
         navigate('/sales/order', {
           state: {
             orderType: 'POS',
@@ -3896,39 +4354,33 @@ const SalesPage: React.FC = () => {
             menuName: defaultMenu.menuName,
             tableId: element.id,
             tableLabel: element.text,
+            tableName: element.text,
             floor: selectedFloor,
-            loadExisting: Boolean((element as any).current_order_id),
-            orderId: (element as any).current_order_id || null  // ê²ŒìŠ¤íŠ¸ ê²°ì œ ìƒíƒœ ë³µì›ì„ ìœ„í•´ orderId ì „ë‹¬
+            loadExisting: Boolean(effectiveOrderId),
+            orderId: effectiveOrderId || null
           }
         });
       } else if (currentStatus === 'Preparing') {
-        // Preparing → Available (ì²­ì†Œ ì™„ë£Œ)
-        await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Available' })
+        // Legacy: treat Preparing as Available
+        const latestElement = tableElements.find(el => String(el.id) === String(element.id));
+        const effectiveOrderId = latestElement?.current_order_id || (element as any).current_order_id;
+        navigate('/sales/order', {
+          state: {
+            orderType: 'POS',
+            menuId: defaultMenu.menuId,
+            menuName: defaultMenu.menuName,
+            tableId: element.id,
+            tableLabel: element.text,
+            tableName: element.text,
+            floor: selectedFloor,
+            loadExisting: Boolean(effectiveOrderId),
+            orderId: effectiveOrderId || null
+          }
         });
-        setTableElements(prev => prev.map(el => String(el.id) === String(element.id) ? { ...el, status: 'Available', current_order_id: null as any } : el));
-        clearOccupiedTimestamp(element.id);
-        
-        // Reset table-specific LocalStorage to prevent ghost guests on next order
-        try {
-          localStorage.removeItem(`splitGuests_${element.id}`);
-          localStorage.removeItem(`paidGuests_${element.id}`);
-          localStorage.removeItem(`voidDisplay_${element.id}`);
-          localStorage.removeItem(`lastOrderIdByTable_${element.id}`);
-        } catch (e) {}
-
-        try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Available', ts: Date.now() })); } catch {}
-        clearServerAssignment('table', element.id);
       } else if (currentStatus === 'Hold') {
-        // Hold (ê·¸ë¼ë°ì´ì…˜) → Occupied + ì£¼ë¬¸íŽ˜ì´ì§€ë¡œ ì´ë™
-        await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Occupied' })
-        });
-        setTableElements(prev => prev.map(el => String(el.id) === String(element.id) ? { ...el, status: 'Occupied', current_order_id: null as any } : el));
-        setOccupiedTimestamp(element.id, Date.now());
-        try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Occupied', ts: Date.now() })); } catch {}
-        
-        // ì¦‰ì‹œ ì£¼ë¬¸íŽ˜ì´ì§€ë¡œ ì´ë™
+        // Hold table can start ordering, but MUST NOT become Occupied without an actual linked order.
+        const latestElement = tableElements.find(el => String(el.id) === String(element.id));
+        const effectiveOrderId = latestElement?.current_order_id || (element as any).current_order_id;
         console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ → OrderPage ì´ë™ ì‹œìž‘', performance.now());
         navigate('/sales/order', {
           state: {
@@ -3937,9 +4389,10 @@ const SalesPage: React.FC = () => {
             menuName: defaultMenu.menuName,
             tableId: element.id,
             tableLabel: element.text,
+            tableName: element.text,
             floor: selectedFloor,
-            loadExisting: Boolean((element as any).current_order_id),
-            orderId: (element as any).current_order_id || null  // ê²ŒìŠ¤íŠ¸ ê²°ì œ ìƒíƒœ ë³µì›ì„ ìœ„í•´ orderId ì „ë‹¬
+            loadExisting: Boolean(effectiveOrderId),
+            orderId: effectiveOrderId || null
           }
         });
       } else {
@@ -3949,8 +4402,32 @@ const SalesPage: React.FC = () => {
         const currentStatus = latestElement?.status || element.status;
         const effectiveOrderId = latestElement?.current_order_id || (element as any).current_order_id;
         
-        // Occupied ìƒíƒœë¼ë©´ ì£¼ë¬¸ì´ ìžˆë‹¤ê³  ê°€ì • (ì•ˆì „ìž¥ì¹˜)
-        const hasOrder = Boolean(effectiveOrderId) || currentStatus === 'Occupied';
+        // If a table is Occupied-like but has no linked order, normalize it back to Available.
+        if ((currentStatus === 'Occupied' || currentStatus === 'Payment Pending') && !effectiveOrderId) {
+          try {
+            await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'Available' })
+            });
+          } catch {}
+          setTableElements(prev => prev.map(el =>
+            String(el.id) === String(element.id)
+              ? { ...el, status: 'Available', current_order_id: null as any }
+              : el
+          ));
+          clearOccupiedTimestamp(element.id);
+          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Available', ts: Date.now() })); } catch {}
+          try {
+            localStorage.removeItem(`splitGuests_${element.id}`);
+            localStorage.removeItem(`paidGuests_${element.id}`);
+            localStorage.removeItem(`voidDisplay_${element.id}`);
+            localStorage.removeItem(`lastOrderIdByTable_${element.id}`);
+          } catch {}
+          return;
+        }
+
+        const hasOrder = Boolean(effectiveOrderId);
         
         console.log('ðŸš€ í…Œì´ë¸” í´ë¦­ → OrderPage ì´ë™ ì‹œìž‘', performance.now(), { 
           status: currentStatus,
@@ -3965,6 +4442,7 @@ const SalesPage: React.FC = () => {
             menuName: defaultMenu.menuName,
             tableId: element.id,
             tableLabel: element.text,
+            tableName: element.text,
             floor: selectedFloor,
             loadExisting: hasOrder,
             orderId: effectiveOrderId || null  // ê²ŒìŠ¤íŠ¸ ê²°ì œ ìƒíƒœ ë³µì›ì„ ìœ„í•´ orderId ì „ë‹¬
@@ -4024,13 +4502,6 @@ const SalesPage: React.FC = () => {
       };
 
       // 5. Tax ì •ë³´ ê°€ì ¸ì˜¤ê¸°
-      const taxResponse = await fetch(`${API_URL}/taxes`);
-      const taxes = await taxResponse.json();
-      const activeTaxes = Array.isArray(taxes) ? taxes.filter((t: any) => !t.is_deleted) : [];
-      const taxRate = activeTaxes.length > 0 
-        ? (parseFloat(activeTaxes[0].rate) > 1 ? parseFloat(activeTaxes[0].rate) / 100 : parseFloat(activeTaxes[0].rate)) 
-        : 0.05;
-
       // 6. Guestë³„ë¡œ ì•„ì´í…œ ê·¸ë£¹í™”
       const byGuest: { [guestNumber: number]: any[] } = {};
       items.forEach((item: any) => {
@@ -4043,7 +4514,8 @@ const SalesPage: React.FC = () => {
           quantity: itemQty,
           unitPrice: itemPrice,
           total: itemQty * itemPrice,
-          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : []
+          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
+          togoLabel: !!(item as any).togo_label
         });
       });
 
@@ -4054,8 +4526,9 @@ const SalesPage: React.FC = () => {
         return sum + (price * qty);
       }, 0);
 
-      const taxesTotal = subtotal * taxRate;
-      const total = subtotal + taxesTotal;
+      const printBillTotals = orderListCalculateTotals();
+      const taxesTotal = printBillTotals.tax;
+      const total = printBillTotals.total;
 
       // 8. ì˜ìˆ˜ì¦ ë°ì´í„° êµ¬ì„±
       const now = new Date();
@@ -4067,11 +4540,12 @@ const SalesPage: React.FC = () => {
           address: store.address, 
           phone: store.phone, 
           dateTime: now.toISOString(), 
-          orderNumber: order.order_number || orderId 
+          orderNumber: order.order_number ? `#${order.order_number}` : orderId 
         },
         orderInfo: { 
-          channel: 'POS', 
-          table: tableLabel 
+          channel: 'DINE-IN', 
+          table: tableLabel,
+          tableName: tableLabel
         },
         body: { 
           guestSections: Object.keys(byGuest).sort((a, b) => Number(a) - Number(b)).map(k => ({ 
@@ -4080,7 +4554,7 @@ const SalesPage: React.FC = () => {
           })), 
           subtotal, 
           adjustments: [], 
-          taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxesTotal }], 
+          taxLines: printBillTotals.taxLines || [], 
           taxesTotal, 
           total 
         },
@@ -4121,12 +4595,80 @@ const SalesPage: React.FC = () => {
     console.log('[fetchOrderList] API URL:', `${API_URL}/orders?date=${date}&order_mode=FSR`);
     setOrderListLoading(true);
     try {
-      const response = await fetch(`${API_URL}/orders?date=${date}&order_mode=FSR`);
-      const data = await response.json();
+      // Fetch tax rate for order list display
+      if (orderListTaxRate === 0 || orderListActiveTaxes.length === 0 || Object.keys(orderListTaxGroupMap).length === 0) {
+        try {
+          const [taxResponse, taxGroupResponse] = await Promise.all([
+            fetch(`${API_URL}/taxes`),
+            fetch(`${API_URL}/tax-groups`),
+          ]);
+          const taxes = await taxResponse.json();
+          if (Array.isArray(taxes) && taxes.length > 0) {
+            const activeTaxes = taxes.filter((t: any) => !t.is_deleted);
+            if (activeTaxes.length > 0) {
+              const rate = parseFloat(activeTaxes[0].rate) || 0;
+              const finalRate = rate > 1 ? rate / 100 : rate;
+              setOrderListTaxRate(finalRate);
+              setOrderListActiveTaxes(activeTaxes.map((t: any) => ({
+                name: t.name || 'Tax',
+                rate: parseFloat(t.rate) > 1 ? parseFloat(t.rate) / 100 : parseFloat(t.rate),
+              })));
+            }
+          }
+          const taxGroups = await taxGroupResponse.json();
+          if (Array.isArray(taxGroups)) {
+            const groupMap: Record<number, Array<{ name: string; rate: number }>> = {};
+            taxGroups.forEach((g: any) => {
+              if (g.id && Array.isArray(g.taxes)) {
+                groupMap[g.id] = g.taxes.map((t: any) => ({ name: t.name || 'Tax', rate: Number(t.rate || 0) }));
+              }
+            });
+            setOrderListTaxGroupMap(groupMap);
+          }
+        } catch (e) {
+          console.error('Failed to fetch tax data for order list:', e);
+        }
+      }
+
+      const [ordersRes, deliveryMetaRes] = await Promise.all([
+        fetch(`${API_URL}/orders?date=${date}&order_mode=FSR`),
+        fetch(`${API_URL}/orders/delivery-orders`)
+      ]);
+      const data = await ordersRes.json();
+      const deliveryMetaJson = deliveryMetaRes.ok ? await deliveryMetaRes.json() : { orders: [] };
+      const deliveryMetaOrders = Array.isArray(deliveryMetaJson?.orders)
+        ? deliveryMetaJson.orders
+        : (Array.isArray(deliveryMetaJson) ? deliveryMetaJson : []);
       console.log('[fetchOrderList] Response:', data);
       console.log('[fetchOrderList] Orders count:', data.orders?.length || 0);
       if (data.success && Array.isArray(data.orders)) {
-        setOrderListOrders(data.orders);
+        // delivery_orders 메타(채널명/외부 주문번호) 병합
+        const baseOrders = data.orders;
+        if (deliveryMetaOrders.length > 0) {
+          const orderMap = new Map<number, any>();
+          baseOrders.forEach((o: any) => orderMap.set(Number(o.id), { ...o }));
+          const tableIdToOrderId = new Map<string, number>();
+          baseOrders.forEach((o: any) => {
+            if (o?.table_id && String(o.table_id).startsWith('DL')) {
+              tableIdToOrderId.set(String(o.table_id).substring(2), Number(o.id));
+            }
+          });
+          deliveryMetaOrders.forEach((meta: any) => {
+            const metaIdStr = String(meta?.id ?? '');
+            const mappedOrderId = tableIdToOrderId.get(metaIdStr);
+            const matchId = Number(meta?.order_id || mappedOrderId || 0);
+            const existing = matchId ? orderMap.get(matchId) : null;
+            if (existing) {
+              existing.deliveryCompany = meta.delivery_company || meta.deliveryCompany || existing.deliveryCompany;
+              existing.deliveryOrderNumber = meta.delivery_order_number || meta.deliveryOrderNumber || existing.deliveryOrderNumber;
+              // Delivery로 확실히 판단 가능하도록 fulfillment 보정
+              existing.fulfillment_mode = existing.fulfillment_mode || 'delivery';
+            }
+          });
+          setOrderListOrders(Array.from(orderMap.values()));
+        } else {
+          setOrderListOrders(baseOrders);
+        }
       } else if (Array.isArray(data)) {
         setOrderListOrders(data);
       } else {
@@ -4143,13 +4685,90 @@ const SalesPage: React.FC = () => {
   const fetchOrderDetails = async (orderId: number) => {
     try {
       const response = await fetch(`${API_URL}/orders/${orderId}`);
+      if (!response.ok) {
+        console.error(`Failed to fetch order details: HTTP ${response.status}`);
+        // 응답 실패 시에도 기본 주문 정보는 목록에서 가져와 표시
+        const listOrder = orderListOrders.find((o: any) => o.id === orderId);
+        if (listOrder) {
+          setOrderListSelectedOrder({ ...listOrder, adjustments: [] });
+          setOrderListSelectedItems([]);
+        }
+        return;
+      }
       const data = await response.json();
       if (data.success) {
-        setOrderListSelectedOrder({ ...data.order, adjustments: data.adjustments || [] });
-        setOrderListSelectedItems(data.items || []);
+        // 목록에서 가져온 table_name을 유지 (상세 API에는 JOIN 없음)
+        const listOrder = orderListOrders.find((o: any) => o.id === orderId);
+        const tableName = listOrder?.table_name || data.order.table_name || '';
+        // ✅ Compute the same numbers the "togo modal" would show ONCE,
+        // then reuse those exact numbers everywhere (detail, pay, etc.)
+        const items = Array.isArray(data.items) ? data.items : [];
+        let computedTotals: null | {
+          subtotal: number;
+          tax: number;
+          taxLines: Array<{ name: string; amount: number }>;
+          total: number;
+        } = null;
+        try {
+          const normalizedItems = (items || []).map((it: any) => {
+            let discountObj: any = it.discount ?? null;
+            if (!discountObj && it.discount_json) {
+              try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
+            }
+            return {
+              id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
+              orderLineId: it.order_line_id ?? it.orderLineId,
+              name: it.name,
+              type: it.type,
+              quantity: it.quantity,
+              price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
+              totalPrice: (it.total_price ?? it.totalPrice),
+              modifiers: it.modifiers ?? it.options ?? [],
+              memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+              discount: discountObj,
+              guestNumber: it.guestNumber ?? it.guest_number,
+              taxGroupId: it.taxGroupId ?? it.tax_group_id,
+              void_id: it.void_id,
+              voidId: it.voidId,
+              is_void: it.is_void,
+            };
+          });
+          const pricing = calculateOrderPricing(normalizedItems as any);
+          const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+          const storedTotalRaw = Number((data.order?.total ?? 0) as any);
+          const storedTotal = Number.isFinite(storedTotalRaw) ? Number(storedTotalRaw.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
+          const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+          const taxLines = derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [];
+          computedTotals = { subtotal: netSubtotal, tax: derivedTax, taxLines, total: storedTotal };
+        } catch {
+          computedTotals = null;
+        }
+
+        setOrderListSelectedOrder({
+          ...data.order,
+          table_name: tableName,
+          adjustments: data.adjustments || [],
+          __togoTotals: computedTotals,
+        } as any);
+        setOrderListSelectedItems(items);
+        setOrderListVoidLines(data.voidLines || []);
+      } else {
+        // success가 false인 경우에도 기본 정보 표시
+        const listOrder = orderListOrders.find((o: any) => o.id === orderId);
+        if (listOrder) {
+          setOrderListSelectedOrder({ ...listOrder, adjustments: [] });
+          setOrderListSelectedItems([]);
+          setOrderListVoidLines([]);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch order details:', error);
+      // 에러 시에도 기본 주문 정보는 목록에서 가져와 표시
+      const listOrder = orderListOrders.find((o: any) => o.id === orderId);
+      if (listOrder) {
+        setOrderListSelectedOrder({ ...listOrder, adjustments: [] });
+        setOrderListSelectedItems([]);
+      }
     }
   };
 
@@ -4288,13 +4907,6 @@ const SalesPage: React.FC = () => {
       };
 
       // Tax ì •ë³´ ê°€ì ¸ì˜¤ê¸°
-      const taxResponse = await fetch(`${API_URL}/taxes`);
-      const taxes = await taxResponse.json();
-      const activeTaxes = Array.isArray(taxes) ? taxes.filter((t: any) => !t.is_deleted) : [];
-      const taxRate = activeTaxes.length > 0 
-        ? (parseFloat(activeTaxes[0].rate) > 1 ? parseFloat(activeTaxes[0].rate) / 100 : parseFloat(activeTaxes[0].rate)) 
-        : 0.05;
-
       // Guestë³„ë¡œ ì•„ì´í…œ ê·¸ë£¹í™”
       const byGuest: { [guestNumber: number]: any[] } = {};
       orderListSelectedItems.forEach((item: any) => {
@@ -4307,15 +4919,24 @@ const SalesPage: React.FC = () => {
           quantity: itemQty,
           unitPrice: itemPrice,
           total: itemQty * itemPrice,
-          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : []
+          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
+          togoLabel: !!(item as any).togo_label
         });
       });
 
-      const subtotal = orderListSelectedItems.reduce((sum: number, item: any) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
-      const taxesTotal = subtotal * taxRate;
-      const total = subtotal + taxesTotal;
+      const billTotals = orderListCalculateTotals();
+      const subtotal = billTotals.subtotal;
+      const billTaxLines = billTotals.taxLines || [];
+      const taxesTotal = billTotals.tax;
+      const total = billTotals.total;
 
       const now = new Date();
+      const billChannelRaw = String(orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const billChannel = billChannelRaw === 'POS' ? 'DINE-IN' : billChannelRaw;
+      const billTableName =
+        (orderListSelectedOrder as any)?.table_name ||
+        (orderListSelectedOrder as any)?.tableName ||
+        '';
       const fullReceipt = {
         type: 'prebill',
         header: { 
@@ -4326,8 +4947,10 @@ const SalesPage: React.FC = () => {
           orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id 
         },
         orderInfo: { 
-          channel: orderListSelectedOrder.order_type || 'POS', 
-          table: orderListSelectedOrder.table_id || undefined 
+          channel: billChannel,
+          table: billTableName || undefined,
+          tableName: billTableName || undefined,
+          tableId: (orderListSelectedOrder as any)?.table_id || undefined
         },
         body: { 
           guestSections: Object.keys(byGuest).sort((a, b) => Number(a) - Number(b)).map(k => ({ 
@@ -4336,7 +4959,7 @@ const SalesPage: React.FC = () => {
           })), 
           subtotal, 
           adjustments: [], 
-          taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxesTotal }], 
+          taxLines: billTaxLines, 
           taxesTotal, 
           total 
         },
@@ -4359,71 +4982,294 @@ const SalesPage: React.FC = () => {
       console.log('Bill printed successfully');
     } catch (error: any) {
       console.error('Print bill error:', error);
-      alert(`Print failed: ${error.message}`);
+      try {
+        setBillPrintStatus(`❌ Print failed: ${error.message}`);
+        setTimeout(() => setBillPrintStatus(''), 3000);
+      } catch {}
+    }
+  };
+
+  const handleOrderListPrintReceipt = async () => {
+    if (!orderListSelectedOrder) return;
+    try {
+      const storeResponse = await fetch(`${API_URL}/admin-settings/business-profile`);
+      const storeData = await storeResponse.json();
+      const store = {
+        name: storeData?.business_name || 'Restaurant',
+        address: [storeData?.address_line1, storeData?.address_line2, storeData?.city, storeData?.state, storeData?.zip].filter(Boolean).join(', ') || '',
+        phone: storeData?.phone || ''
+      };
+
+      const orderId = orderListSelectedOrder.id;
+      let payments: Array<{ method: string; amount: number; tip?: number; change_amount?: number }> = [];
+      try {
+        const payRes = await fetch(`${API_URL}/payments/order/${orderId}`);
+        const payData = await payRes.json();
+        if (payData.success && Array.isArray(payData.payments)) {
+          payments = payData.payments
+            .filter((p: any) => (p.status || '').toUpperCase() !== 'VOIDED')
+            .map((p: any) => ({ method: p.payment_method || p.method || 'Unknown', amount: Number(p.amount || 0), tip: Number(p.tip || 0), change_amount: Number(p.change_amount || 0) }));
+        }
+      } catch {}
+
+      const byGuest: { [guestNumber: number]: any[] } = {};
+      orderListSelectedItems.forEach((item: any) => {
+        const guestNum = item.guest_number || 1;
+        if (!byGuest[guestNum]) byGuest[guestNum] = [];
+        byGuest[guestNum].push({
+          name: item.name || 'Unknown Item',
+          quantity: item.quantity || 1,
+          unitPrice: item.price || 0,
+          price: item.price || 0,
+          totalPrice: (item.price || 0) * (item.quantity || 1),
+          total: (item.price || 0) * (item.quantity || 1),
+          modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : [],
+        });
+      });
+
+      const totals = orderListCalculateTotals();
+      const subtotal = totals.subtotal;
+      const taxTotal = totals.tax;
+      const total = totals.total;
+      const adjustments: Array<{ label: string; amount: number }> = [];
+      if (totals.discountTotal > 0 && totals.promotionName) {
+        adjustments.push({ label: totals.promotionName, amount: -totals.discountTotal });
+      }
+
+      const channelRaw = String(orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
+      const channel = channelRaw === 'POS' ? 'DINE-IN' : channelRaw;
+      const tableName =
+        (orderListSelectedOrder as any)?.table_name ||
+        (orderListSelectedOrder as any)?.tableName || '';
+
+      const change = payments.reduce((s, p) => s + (p.change_amount || 0), 0);
+
+      const tipTotal = payments.reduce((s, p) => s + (p.tip || 0), 0);
+      const parseMemo = (item: any) => {
+        if (item.memo) return item.memo;
+        if (!item.memo_json) return null;
+        try { return typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json; } catch { return null; }
+      };
+      const parseDiscount = (item: any) => {
+        if (item.discount) return item.discount;
+        if (!item.discount_json) return null;
+        try { return typeof item.discount_json === 'string' ? JSON.parse(item.discount_json) : item.discount_json; } catch { return null; }
+      };
+      const parseMods = (item: any) => {
+        if (item.modifiers && Array.isArray(item.modifiers)) return item.modifiers;
+        if (!item.modifiers_json) return [];
+        try { return typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json; } catch { return []; }
+      };
+
+      const mapItem = (item: any) => {
+        const mods = parseMods(item);
+        const memo = parseMemo(item);
+        const disc = parseDiscount(item);
+        const memoPrice = memo && typeof memo.price === 'number' ? Number(memo.price) : 0;
+        const basePrice = Number(item.totalPrice ?? item.price ?? 0);
+        const perUnit = basePrice + memoPrice;
+        const gross = perUnit * (item.quantity || 1);
+        const discAmount = disc ? Number(disc.amount || 0) : 0;
+        const lineTotal = Math.max(0, gross - discAmount);
+        return {
+          name: item.name || 'Unknown',
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          totalPrice: basePrice,
+          lineTotal,
+          originalTotal: discAmount > 0 ? gross : undefined,
+          discount: discAmount > 0 ? { type: disc.type || 'Item Discount', value: disc.value || 0, amount: discAmount } : undefined,
+          modifiers: mods,
+          memo,
+        };
+      };
+
+      const receiptItems = orderListSelectedItems.map(mapItem);
+
+      const guestSectionsForReceipt: { [g: number]: any[] } = {};
+      orderListSelectedItems.forEach((item: any) => {
+        const g = item.guest_number || 1;
+        if (!guestSectionsForReceipt[g]) guestSectionsForReceipt[g] = [];
+        guestSectionsForReceipt[g].push(mapItem(item));
+      });
+
+      const receiptPayload = {
+        header: {
+          orderNumber: orderListSelectedOrder.order_number || orderId,
+          channel,
+          tableName,
+          serverName: (orderListSelectedOrder as any)?.server_name || '',
+        },
+        orderInfo: {
+          orderNumber: orderListSelectedOrder.order_number || orderId,
+          orderType: channel,
+          channel,
+          tableName,
+          customerName: (orderListSelectedOrder as any)?.customer_name || '',
+          customerPhone: (orderListSelectedOrder as any)?.customer_phone || '',
+          serverName: (orderListSelectedOrder as any)?.server_name || '',
+        },
+        storeName: store.name,
+        orderNumber: orderListSelectedOrder.order_number || orderId,
+        orderType: channel,
+        channel,
+        tableName,
+        customerName: (orderListSelectedOrder as any)?.customer_name || '',
+        customerPhone: (orderListSelectedOrder as any)?.customer_phone || '',
+        serverName: (orderListSelectedOrder as any)?.server_name || '',
+        items: receiptItems,
+        guestSections: Object.keys(guestSectionsForReceipt).sort((a, b) => Number(a) - Number(b)).map(k => ({
+          guestNumber: Number(k),
+          items: guestSectionsForReceipt[Number(k)]
+        })),
+        subtotal,
+        adjustments,
+        taxLines: totals.taxLines || [],
+        taxesTotal: taxTotal,
+        total,
+        payments: payments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
+        tip: tipTotal,
+        change: Math.max(0, Number(change.toFixed(2))),
+        footer: { message: 'Thank you!' }
+      };
+      console.log('📋 Receipt payload keys:', Object.keys(receiptPayload), 'items:', receiptPayload.items?.length);
+      await printReceipt(receiptPayload, 1);
+
+      console.log('Receipt printed successfully (1 copy)');
+    } catch (error: any) {
+      console.error('Print receipt error:', error);
+      alert(`Receipt print failed: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleOrderListPrintKitchen = async () => {
-    if (!orderListSelectedOrder || orderListSelectedItems.length === 0) return;
+    if (!orderListSelectedOrder) return;
     
     try {
-      // OrderPageì˜ printKitchenOrdersì™€ ë™ì¼í•œ í˜•ì‹ìœ¼ë¡œ ì•„ì´í…œ êµ¬ì„±
-      const printItems = orderListSelectedItems.map((item: any) => {
-        // modifiers íŒŒì‹±
-        let modifiers: any[] = [];
-        if (item.modifiers_json) {
-          try {
-            const parsed = typeof item.modifiers_json === 'string' 
-              ? JSON.parse(item.modifiers_json) 
-              : item.modifiers_json;
-            if (Array.isArray(parsed)) {
-              modifiers = parsed;
+      // If user clicks Reprint before details load, fetch items on-demand.
+      let itemsForPrint: any[] = Array.isArray(orderListSelectedItems) ? orderListSelectedItems : [];
+      const hasAnyPrinterRouting = (arr: any[]) => {
+        try {
+          return (arr || []).some((it: any) => {
+            if (Array.isArray(it?.printerGroupIds) && it.printerGroupIds.length > 0) return true;
+            if (Array.isArray(it?.printer_groups) && it.printer_groups.length > 0) return true;
+            if (it?.printerGroupId != null) return true;
+            if (it?.printer_group_id != null) return true;
+            return false;
+          });
+        } catch {
+          return false;
+        }
+      };
+
+      // If we have no items OR items exist but have no routing info, refetch full order details.
+      if (itemsForPrint.length === 0 || !hasAnyPrinterRouting(itemsForPrint)) {
+        try {
+          const response = await fetch(`${API_URL}/orders/${orderListSelectedOrder.id}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data?.success) {
+              itemsForPrint = Array.isArray(data?.items) ? data.items : [];
+              if (itemsForPrint.length > 0) {
+                setOrderListSelectedItems(itemsForPrint);
+                setOrderListVoidLines(data?.voidLines || []);
+                // Keep selected order info in sync (preserve table_name from list if missing)
+                try {
+                  const listOrder = orderListOrders.find((o: any) => o.id === orderListSelectedOrder.id);
+                  const tableName = listOrder?.table_name || data?.order?.table_name || (orderListSelectedOrder as any)?.table_name || '';
+                  setOrderListSelectedOrder({ ...(data.order || orderListSelectedOrder), table_name: tableName, adjustments: data.adjustments || [] });
+                } catch {}
+              }
             }
+          }
+        } catch {}
+      }
+
+      if (!itemsForPrint || itemsForPrint.length === 0) {
+        console.warn('[Order History Reprint] No items found to reprint.');
+        return;
+      }
+
+      // OrderPage의 OK(printKitchenOrders)와 동일한 형태로 아이템 구성:
+      // - items: [{ id, name, qty, guestNumber, modifiers, memo, printerGroupIds }]
+      // - orderInfo: { orderNumber, table, tableName, tableId, server, orderType, channel, pickupTime, pickupMinutes, kitchenNote, deliveryCompany, deliveryOrderNumber, customerName, customerPhone }
+      const printableItems = (itemsForPrint || []).filter((it: any) => {
+        // 주문내역 아이템은 보통 type==='item' 이지만, 혹시 섞여 들어오는 라인이 있으면 제외
+        if (it?.type && it.type !== 'item') return false;
+        return true;
+      });
+
+      const printItems = printableItems.map((item: any) => {
+        // modifiers 파싱 (orderInfo/items가 섞여 들어오는 다양한 포맷 대응)
+        let modifiers: any[] = Array.isArray(item.modifiers) ? item.modifiers : [];
+        if (modifiers.length === 0 && item.modifiers_json) {
+          try {
+            const parsed = typeof item.modifiers_json === 'string'
+              ? JSON.parse(item.modifiers_json)
+              : item.modifiers_json;
+            if (Array.isArray(parsed)) modifiers = parsed;
           } catch {}
         }
-        
-        // memo íŒŒì‹±
+
+        // memo 파싱
         let memo: string | null = null;
         if (item.memo_json) {
           try {
-            const parsed = typeof item.memo_json === 'string' 
-              ? JSON.parse(item.memo_json) 
+            const parsed = typeof item.memo_json === 'string'
+              ? JSON.parse(item.memo_json)
               : item.memo_json;
             memo = parsed?.text || (typeof parsed === 'string' ? parsed : null);
           } catch {}
+        } else if (item.memo && typeof item.memo === 'object') {
+          memo = item.memo?.text || null;
+        } else if (typeof item.memo === 'string') {
+          memo = item.memo;
         }
-        
+
+        const printerGroupIds = Array.isArray(item.printerGroupIds) ? item.printerGroupIds :
+          Array.isArray(item.printer_groups) ? item.printer_groups :
+          (item.printerGroupId || item.printer_group_id) ? [item.printerGroupId || item.printer_group_id] : [];
+
+        // menu item id 우선 (order_items row id(dbId)와 혼동 방지)
+        const menuItemId = item.item_id || item.itemId || item.menu_item_id || item.menuItemId || item.id || 0;
+
         return {
-          id: item.item_id || 0, // í”„ë¦°í„° ê·¸ë£¹ ì¡°íšŒë¥¼ ìœ„í•´ item_id í¬í•¨
-          name: item.name || 'Unknown Item',
-          qty: item.quantity || 1, // OrderPageì™€ ë™ì¼í•˜ê²Œ qty ì‚¬ìš©
-          guestNumber: item.guest_number || 1,
-          modifiers: modifiers,
-          memo: memo
+          id: menuItemId,
+          name: item.short_name || item.name || 'Unknown',
+          qty: item.quantity || item.qty || 1,
+          guestNumber: item.guestNumber || item.guest_number || 1,
+          modifiers,
+          memo,
+          printerGroupIds,
+          togoLabel: !!(item.togoLabel || item.togo_label),
         };
       });
 
-      // ì£¼ë¬¸ íƒ€ìž… ê²°ì • (Dine-In, Togo, Online, Delivery ë“±)
-      const rawOrderType = (orderListSelectedOrder.order_type || 'DINE-IN').toUpperCase();
-      const orderSource = (orderListSelectedOrder.order_source || '').toUpperCase();
-      
-      // ë°°ë‹¬ì•±/ì˜¨ë¼ì¸ ì£¼ë¬¸ì¸ì§€ í™•ì¸
-      const isOnlineOrDelivery = ['ONLINE', 'TOGO', 'DELIVERY'].includes(rawOrderType) ||
-                                  ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'].includes(orderSource);
-      
-      // ì±„ë„ëª… ê²°ì • (order_source ìš°ì„  ì‚¬ìš©)
-      const channelDisplay = orderSource || rawOrderType;
-      const deliveryChannel = ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'].includes(orderSource) 
-                              ? orderSource 
-                              : (rawOrderType === 'ONLINE' ? 'THEZONE' : rawOrderType);
+      // 주문 타입 결정 (OrderPage와 동일한 규칙: TOGO/ONLINE/DELIVERY만 별도, 그 외는 DINE-IN)
+      const rawOrderType = String(orderListSelectedOrder.order_type || '').toUpperCase();
+      const orderSource = String(orderListSelectedOrder.order_source || '').toUpperCase();
+      const deliverySources = ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'];
+
+      const isDeliveryLike =
+        rawOrderType === 'DELIVERY' ||
+        deliverySources.includes(orderSource) ||
+        String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase() === 'delivery';
+
+      const orderTypeDisplay =
+        isDeliveryLike ? 'DELIVERY' :
+        (rawOrderType === 'TOGO' || rawOrderType === 'TAKEOUT' || rawOrderType === 'TO GO' || rawOrderType === 'TO-GO') ? 'TOGO' :
+        rawOrderType === 'ONLINE' ? 'ONLINE' :
+        rawOrderType === 'PICKUP' ? 'PICKUP' :
+        'DINE-IN';
+
+      const isOnlineOrDelivery = orderTypeDisplay === 'ONLINE' || orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'DELIVERY' || orderTypeDisplay === 'PICKUP';
       
       // Pickup ì‹œê°„ ê³„ì‚° (ready_time ë˜ëŠ” pickup_minutes ì‚¬ìš©)
       let pickupTimeStr = '';
       let pickupMinutes = orderListSelectedOrder.pickup_minutes || 0;
       
       if (orderListSelectedOrder.ready_time) {
-        const readyDate = new Date(orderListSelectedOrder.ready_time);
-        pickupTimeStr = readyDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        pickupTimeStr = normalizeReadyTimeForPrint(orderListSelectedOrder.ready_time);
       } else if (pickupMinutes > 0) {
         const createdAt = new Date(orderListSelectedOrder.created_at);
         const pickupDate = new Date(createdAt.getTime() + pickupMinutes * 60000);
@@ -4436,50 +5282,78 @@ const SalesPage: React.FC = () => {
         pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
       }
       
-      // í…Œì´ë¸” í‘œì‹œ (ì˜¨ë¼ì¸/TogoëŠ” PICKUP/DELIVERY, Dine-Inì€ í…Œì´ë¸” ë²ˆí˜¸)
-      const tableDisplay = isOnlineOrDelivery 
-        ? (orderListSelectedOrder.fulfillment_mode === 'delivery' ? 'DELIVERY' : 'PICKUP')
-        : (orderListSelectedOrder.table_id ? `Table ${orderListSelectedOrder.table_id}` : '');
-      
+      const tableNameForPrint =
+        (orderListSelectedOrder as any)?.table_name ||
+        (orderListSelectedOrder as any)?.tableName ||
+        '';
+      const tableIdForPrint =
+        (orderListSelectedOrder as any)?.table_id ||
+        (orderListSelectedOrder as any)?.tableId ||
+        '';
+
+      // Delivery 메타 (있으면 사용)
+      const metaDeliveryCompany =
+        (orderListSelectedOrder as any).deliveryCompany ||
+        (orderListSelectedOrder as any).delivery_company ||
+        (orderListSelectedOrder as any).deliveryChannel ||
+        (orderListSelectedOrder as any).delivery_channel ||
+        '';
+      const metaDeliveryOrderNumber =
+        (orderListSelectedOrder as any).deliveryOrderNumber ||
+        (orderListSelectedOrder as any).delivery_order_number ||
+        '';
+
       const response = await fetch(`${API_URL}/printers/print-order`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
           items: printItems,
           orderInfo: {
-            // ì£¼ë¬¸ë²ˆí˜¸: ë¡œì»¬ ID í˜•ì‹ (#912) ì‚¬ìš©
-            orderNumber: `#${orderListSelectedOrder.id}`,
-            externalOrderNumber: `#${orderListSelectedOrder.id}`, // TZO/Onlineì€ POS ì£¼ë¬¸ë²ˆí˜¸ ì‚¬ìš©
-            table: tableDisplay,
-            orderType: rawOrderType,
-            channel: deliveryChannel,                    // ì¶œë ¥ë¬¼ì— í‘œì‹œë  ì±„ë„ëª… (THEZONE, UBEREATS ë“±)
-            deliveryChannel: deliveryChannel,            // ë°°ë‹¬ ì±„ë„ëª…
-            orderSource: orderSource || rawOrderType,    // ì›ë³¸ ì£¼ë¬¸ ì†ŒìŠ¤
+            orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : `#${orderListSelectedOrder.id}`,
+            table: tableNameForPrint || '',
+            tableName: tableNameForPrint || '',
+            tableId: tableIdForPrint || '',
             server: orderListSelectedOrder.server_name || '',
-            customerName: orderListSelectedOrder.customer_name || '',
-            customerPhone: orderListSelectedOrder.customer_phone || '',
-            notes: orderListSelectedOrder.notes || '',
-            specialInstructions: orderListSelectedOrder.kitchen_note || '', // Footerì— ì¶œë ¥ë  Special Instructions
+            orderType: orderTypeDisplay,
+            channel: orderTypeDisplay,
+            pickupTime: pickupTimeStr || '',
+            pickupMinutes: pickupMinutes,
             kitchenNote: orderListSelectedOrder.kitchen_note || '',
-            pickupMinutes: pickupMinutes,                // ê³„ì‚°ëœ pickup_minutes
-            pickupTime: pickupTimeStr                    // ê³„ì‚°ëœ Pickup ì‹œê°„
+            deliveryCompany: metaDeliveryCompany || '',
+            deliveryOrderNumber: metaDeliveryOrderNumber || '',
+            customerName: orderListSelectedOrder.customer_name || '',
+            customerPhone: orderListSelectedOrder.customer_phone || ''
           },
+          printMode: 'graphic',
           isReprint: true, // Reprint í‘œì‹œ (** REPRINT ** ë°°ë„ˆ ì¶œë ¥)
+          isAdditionalOrder: false,
           isPaid: orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'PAID' || orderListSelectedOrder.status === 'closed'
         }) 
       });
       
-      const result = await response.json();
+      let result: any = null;
+      try { result = await response.json(); } catch {}
       
-      if (result.success) {
-        // ì„±ê³µ ì‹œ ì¡°ìš©ížˆ ì²˜ë¦¬ (alert ì œê±°)
-        console.log('Reprint sent to kitchen:', result.message);
-      } else {
-        alert(`Print failed: ${result.error || result.message || 'Unknown error'}`);
+      if (!response.ok || !result || result.success !== true) {
+        const msg = (result && (result.error || result.message)) || `HTTP ${response.status}`;
+        console.error('[Order History Reprint] Print failed:', msg);
+        return;
       }
+
+      const results = Array.isArray(result.results) ? result.results : [];
+      if (results.length === 0) {
+        console.warn('[Order History Reprint] No printer was dispatched. Check Printer settings (Kitchen/Groups).');
+        return;
+      }
+
+      const printerNames = results
+        .map((r: any) => r.printerName || r.printer)
+        .filter(Boolean)
+        .join(', ');
+      console.log(`[Order History Reprint] Sent: ${printerNames}`);
     } catch (error: any) {
       console.error('Print kitchen error:', error);
-      alert(`Print failed: ${error.message}`);
+      console.error('[Order History Reprint] Print failed:', error?.message || error);
     }
   };
 
@@ -4533,13 +5407,53 @@ const SalesPage: React.FC = () => {
       if (type === 'PICKUP') return 'Pickup';
       // Togo
       if (type === 'TOGO' || type === 'TAKEOUT') return 'Togo';
-      // For Here (default)
-      return 'For Here';
+      // FSR → Dine-in / QSR → Eat In
+      return serviceMode === 'FSR' ? 'Dine-in' : 'Eat In';
+    };
+
+  const orderListNormalizeDeliveryAbbr = (raw: any) => {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      const key = s.toUpperCase().replace(/\s+/g, '');
+      if (key === 'UBEREATS' || key === 'UBER') return 'Uber';
+      if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'Ddash';
+      if (key === 'SKIPTHEDISHES' || key === 'SKIP') return 'SKIP';
+      if (key === 'FANTUAN') return 'Fantuan';
+      return s;
+    };
+
+  const orderListGetDeliveryMeta = (order: any) => {
+      const company =
+        order?.deliveryCompany ||
+        order?.delivery_company ||
+        order?.deliveryChannel ||
+        order?.delivery_channel ||
+        order?.order_source ||
+        '';
+      const orderNumber =
+        order?.deliveryOrderNumber ||
+        order?.delivery_order_number ||
+        order?.externalOrderNumber ||
+        order?.external_order_number ||
+        '';
+      return { company, orderNumber };
     };
 
   const orderListGetTableOrCustomer = (order: any) => {
       const parts: string[] = [];
-      if (order.table_id) parts.push(`Table ${order.table_id}`);
+      const type = (order.order_type || '').toUpperCase();
+      const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
+      const isDelivery = type === 'DELIVERY' || fulfillment === 'delivery';
+      // Delivery는 table_id(DL...) 대신 고객정보만 표시
+      if (!isDelivery) {
+        // table_name (JOIN으로 가져온 실제 테이블 이름) 우선 사용
+        const tableName = order.table_name || '';
+        if (tableName) {
+          parts.push(`Table ${tableName}`);
+        } else if (order.table_id) {
+          parts.push(`Table ${order.table_id}`);
+        }
+      }
       if (order.customer_name) parts.push(order.customer_name);
       if (order.customer_phone) parts.push(order.customer_phone);
       return parts.length > 0 ? parts.join(' / ') : '-';
@@ -4570,73 +5484,84 @@ const SalesPage: React.FC = () => {
       return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
     
-    // For Here (default - POS, Table Order, Dine-in, Forhere)
-    return { label: 'For Here', bgColor: 'bg-amber-500', textColor: 'text-white' };
+    // FSR → Dine-in (blue) / QSR → Eat In (amber)
+    if (serviceMode === 'FSR') {
+      return { label: 'Dine-in', bgColor: 'bg-blue-500', textColor: 'text-white' };
+    }
+    return { label: 'Eat In', bgColor: 'bg-amber-500', textColor: 'text-white' };
   };
 
   const orderListCalculateTotals = () => {
-      // Helper: Calculate item total including modifiers and memo
-      const getItemTotal = (item: any) => {
-        const basePrice = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0);
-        const memoPrice = item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
-        return (basePrice + memoPrice) * (item.quantity || 1);
-      };
-      const subtotal = orderListSelectedItems.reduce((sum, item) => sum + getItemTotal(item), 0);
-      
-      // ì•„ì´í…œ ë ˆë²¨ í• ì¸ (Item D/C) ê³„ì‚°
-      let itemDiscountTotal = 0;
-      let hasItemDiscount = false;
-      orderListSelectedItems.forEach((item: any) => {
-        if (item.discount_json || item.discount) {
-          const discount = typeof item.discount_json === 'string' 
-            ? JSON.parse(item.discount_json) 
-            : (item.discount_json || item.discount);
-          if (discount && discount.value > 0) {
-            hasItemDiscount = true;
-            const itemPrice = getItemTotal(item); // Includes modifiers and memo
-            if (discount.mode === 'percent') {
-              itemDiscountTotal += itemPrice * (discount.value / 100);
-            } else {
-              itemDiscountTotal += Number(discount.value || 0);
-            }
-          }
+      const order = orderListSelectedOrder as any;
+      let pmAdjustments: any[] = [];
+      try {
+        const adjRaw = order?.adjustments_json;
+        if (adjRaw) {
+          pmAdjustments = typeof adjRaw === 'string' ? JSON.parse(adjRaw) : adjRaw;
+          if (!Array.isArray(pmAdjustments)) pmAdjustments = [];
         }
-      });
-      itemDiscountTotal = Number(itemDiscountTotal.toFixed(2));
-      
-      // adjustments_json ë˜ëŠ” adjustments ë°°ì—´ì—ì„œ í• ì¸ ì •ë³´ ê°€ì ¸ì˜¤ê¸°
-      let adjustments = orderListSelectedOrder?.adjustments || [];
-      if (orderListSelectedOrder?.adjustments_json) {
-        try {
-          const parsed = typeof orderListSelectedOrder.adjustments_json === 'string' 
-            ? JSON.parse(orderListSelectedOrder.adjustments_json) 
-            : orderListSelectedOrder.adjustments_json;
-          if (Array.isArray(parsed)) {
-            adjustments = [...adjustments, ...parsed];
+      } catch { pmAdjustments = []; }
+      const pmDiscount = pmAdjustments.find((a: any) => a.percent > 0 && a.originalSubtotal > 0);
+
+      try {
+        const items = orderListSelectedItems || [];
+        const subtotal = items.reduce((sum: number, it: any) => sum + ((it.price || 0) * (it.quantity || 1)), 0);
+
+        const taxByName: Record<string, number> = {};
+        items.forEach((it: any) => {
+          const itemTotal = (it.price || 0) * (it.quantity || 1);
+          const details = it.taxDetails || it.tax_details;
+          if (Array.isArray(details) && details.length > 0) {
+            details.forEach((td: any) => {
+              const name = td.name || 'Tax';
+              const rate = Number(td.rate || 0);
+              const pct = rate > 1 ? rate / 100 : rate;
+              const taxAmt = Number((itemTotal * pct).toFixed(2));
+              taxByName[name] = (taxByName[name] || 0) + taxAmt;
+            });
+          } else if (it.taxRate > 0) {
+            const pct = it.taxRate > 1 ? it.taxRate / 100 : it.taxRate;
+            const taxAmt = Number((itemTotal * pct).toFixed(2));
+            taxByName['Tax'] = (taxByName['Tax'] || 0) + taxAmt;
           }
-        } catch (e) { /* ignore */ }
+        });
+
+        const taxLines = Object.entries(taxByName).map(([name, amount]) => ({ name, amount: Number(amount.toFixed(2)) }));
+        const taxTotal = Number(taxLines.reduce((s, tl) => s + tl.amount, 0).toFixed(2));
+
+        let discountTotal = 0;
+        let netSubtotal = subtotal;
+        if (pmDiscount) {
+          const origSub = Number((pmDiscount.originalSubtotal || 0).toFixed(2));
+          discountTotal = Math.abs(Number(pmDiscount.amount || 0));
+          netSubtotal = Number((origSub - discountTotal).toFixed(2));
+          const discTaxLines = taxLines.map(tl => ({
+            name: tl.name,
+            amount: Number((tl.amount * (netSubtotal / origSub)).toFixed(2)),
+          }));
+          const discTaxTotal = Number(discTaxLines.reduce((s, tl) => s + tl.amount, 0).toFixed(2));
+          return {
+            subtotal: origSub,
+            discountTotal,
+            subtotalAfterDiscount: netSubtotal,
+            tax: discTaxTotal,
+            taxLines: discTaxLines,
+            total: Number((netSubtotal + discTaxTotal).toFixed(2)),
+            promotionName: pmDiscount.label || `Discount (${pmDiscount.percent}%)`,
+          };
+        }
+        return {
+          subtotal: netSubtotal,
+          discountTotal: 0,
+          subtotalAfterDiscount: netSubtotal,
+          tax: taxTotal,
+          taxLines,
+          total: Number((netSubtotal + taxTotal).toFixed(2)),
+          promotionName: '',
+        };
+      } catch {
+        return { subtotal: 0, discountTotal: 0, subtotalAfterDiscount: 0, tax: 0, taxLines: [] as Array<{ name: string; amount: number }>, total: 0, promotionName: '' };
       }
-      
-      // DISCOUNT ë˜ëŠ” PROMOTION ë˜ëŠ” CHANNEL_DISCOUNT íƒ€ìž… í• ì¸ í•©ì‚°
-      const adjustmentDiscountTotal = adjustments
-        .filter((a: any) => ['DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT'].includes(String(a.kind).toUpperCase()))
-        .reduce((sum: number, a: any) => sum + Math.abs(Number(a.amount_applied || a.amountApplied || a.value || 0)), 0);
-      
-      // ì´ í• ì¸ = ì•„ì´í…œ í• ì¸ + ì£¼ë¬¸ ë ˆë²¨ í• ì¸
-      const discountTotal = itemDiscountTotal + adjustmentDiscountTotal;
-      const subtotalAfterDiscount = subtotal - discountTotal;
-      
-      // TaxëŠ” í• ì¸ í›„ ê¸ˆì•¡ì—ì„œ ê³„ì‚° (ë˜ëŠ” ì €ìž¥ëœ totalì—ì„œ ì—­ì‚°)
-      const storedTotal = Number(orderListSelectedOrder?.total || 0);
-      const calculatedTax = storedTotal > 0 ? Math.max(0, storedTotal - subtotalAfterDiscount) : subtotalAfterDiscount * 0.05;
-      const tax = calculatedTax;
-      const total = storedTotal || (subtotalAfterDiscount + tax);
-      
-      // í• ì¸ ë¼ë²¨ ê²°ì •: Item D/Cê°€ ìžˆìœ¼ë©´ 'Item Discount', ì•„ë‹ˆë©´ í”„ë¡œëª¨ì…˜ ì´ë¦„
-      const promotionLabel = adjustments.find((a: any) => String(a.kind).toUpperCase() === 'PROMOTION')?.label || null;
-      const discountLabel = hasItemDiscount ? 'Item Discount' : (promotionLabel || 'Discount');
-      
-      return { subtotal, discountTotal, subtotalAfterDiscount, tax, total, promotionName: discountLabel };
     };
 
   const orderListGetDaysInMonth = (date: Date) => {
@@ -4908,7 +5833,7 @@ const SalesPage: React.FC = () => {
 
         if (result.success) {
           const isPartial = Boolean(result.partial);
-          const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
+          const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Available');
           const toStatus = result.toTable?.status || 'Occupied';
           const targetOrderId = result.toTable?.orderId ?? null;
           setMoveMergeStatus(result.message ? `âœ… ${result.message}` : `âœ… Table moved: ${sourceTableId} → ${element.text}`);
@@ -5086,7 +6011,7 @@ const SalesPage: React.FC = () => {
 
         if (result.success) {
           const isPartial = Boolean(result.partial);
-          const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Preparing');
+          const fromStatus = result.fromTable?.status || (isPartial ? 'Occupied' : 'Available');
           const toStatus = result.toTable?.status || 'Occupied';
           const targetOrderId = result.toTable?.orderId ?? null;
           setMoveMergeStatus(result.message ? `âœ… ${result.message}` : `âœ… Tables merged: ${sourceTableId} + ${element.text}`);
@@ -5256,6 +6181,33 @@ const SalesPage: React.FC = () => {
   };
 
   // ë²„íŠ¼ í´ë¦­ í•¸ë“¤ëŸ¬
+  
+  // --- Sold Out: load badge count ---
+  const loadSoldOutCount = async () => {
+    try {
+      const mid = String(defaultMenu.menuId || '');
+      if (!mid) return;
+      const res = await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const records = Array.isArray(data?.records) ? data.records : [];
+      const itemSet = new Set<string>();
+      records.forEach((r: any) => {
+        if (String(r.scope) === 'item') {
+          itemSet.add(String(r.key_id));
+        }
+      });
+      setSoldOutItems(itemSet);
+    } catch {}
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => loadSoldOutCount(), 1000);
+    const interval = setInterval(() => loadSoldOutCount(), 60000);
+    return () => { clearTimeout(timer); clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultMenu.menuId]);
+
   const handleButtonClick = async (buttonName: string) => {
     console.log(`ë²„íŠ¼ í´ë¦­: ${buttonName}`);
     switch (buttonName) {
@@ -5281,7 +6233,7 @@ const SalesPage: React.FC = () => {
           alert('Error opening cash drawer. Check console for details.');
         }
         break;
-      case 'Move/Merge':
+      case 'Move\nMerge':
         if (!isMoveMergeMode) {
           setIsBillPrintMode(false); // ë‹¤ë¥¸ ëª¨ë“œ ë„ê¸°
           setBillPrintStatus('');
@@ -5301,7 +6253,7 @@ const SalesPage: React.FC = () => {
         setShowOrderListModal(true);
         fetchOrderList(orderListDate);
         break;
-      case 'Reservation':
+      case 'Reserve':
         console.log('Reservation ë²„íŠ¼ í´ë¦­ë¨, ëª¨ë‹¬ ì—´ê¸°');
         setShowReservationModal(true);
         break;
@@ -5337,6 +6289,16 @@ const SalesPage: React.FC = () => {
       case 'QSR/Cafe':
         console.log('QSR/Cafe ë²„íŠ¼ í´ë¦­ë¨');
         navigate('/qsr');
+        break;
+      case 'Sold Out':
+        navigate('/sales/order', {
+          state: {
+            soldOutModeFromSales: true,
+            orderType: 'POS',
+            menuId: defaultMenu.menuId,
+            menuName: defaultMenu.menuName,
+          },
+        });
         break;
       case 'Closing':
         console.log('Closing button clicked');
@@ -6079,12 +7041,13 @@ const SalesPage: React.FC = () => {
   // ë²„íŠ¼ ë°ì´í„° (Opening/Closingì€ ìƒíƒœì— ë”°ë¼ ë™ì ìœ¼ë¡œ ë³€ê²½)
   const buttonData = [
     'Open Till',
-    'Move/Merge',
-    'Reservation',
+    'Move\nMerge',
+    'Reserve',
     'Waiting List',
     'Gift Card',
     'Online',
     'Order History',
+    'Sold Out',
     'Clock In/Out',
     isDayClosed ? 'Opening' : 'Closing'
   ];
@@ -6131,6 +7094,20 @@ const SalesPage: React.FC = () => {
 
     const pickupDisplay = formatMinutesToTime(pickupTime);
     const readyTime = readyTimeSnapshot;
+    const clampPrepMinutes = (n: number) => Math.max(0, Math.min(1440, n));
+    const clampClock = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+    const sanitizeClockInput = (raw: string, maxDigits: number) => String(raw || '').replace(/[^\d]/g, '').slice(0, maxDigits);
+    const computeMinutesUntilClock = (hh: number, mm: number) => {
+      const now = new Date();
+      const target = new Date(now);
+      target.setSeconds(0, 0);
+      target.setHours(clampClock(hh, 0, 23), clampClock(mm, 0, 59), 0, 0);
+      if (target.getTime() < now.getTime()) {
+        target.setDate(target.getDate() + 1);
+      }
+      const diff = Math.round((target.getTime() - now.getTime()) / 60000);
+      return { minutes: clampPrepMinutes(diff), target };
+    };
     const handleIncrement = (minutes: number) => {
       setPickupTime((prev) => Math.max(0, prev + minutes));
     };
@@ -6162,9 +7139,6 @@ const SalesPage: React.FC = () => {
           <div className="flex items-center justify-between mb-3 flex-shrink-0">
             <div>
               <h3 className="text-lg font-semibold text-slate-800">New Togo</h3>
-            </div>
-            <div className="px-2.5 py-1 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs font-semibold">
-              {selectedTogoServer ? `Server: ${formatEmployeeName(selectedTogoServer.employee_name)}` : 'Server: â€”'}
             </div>
           </div>
 
@@ -6229,61 +7203,202 @@ const SalesPage: React.FC = () => {
                 </div>
             </div>
             
-              <div className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-inner space-y-2">
-                <div className="flex flex-nowrap items-center gap-1.5 text-sm font-semibold text-slate-700 min-w-0">
-                  <div className="flex items-center gap-1 min-w-[140px]">
-                    <span className={prepButtonsLocked ? 'text-slate-400' : ''}>Prep Time</span>
-                    <span className={`text-3xl font-mono font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{pickupDisplay}</span>
+              <div className="grid gap-1.5">
+                {/* Panel 1: Prep time summary */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
+                    <div className="flex items-center gap-2 min-w-[140px]">
+                      <span className={prepButtonsLocked ? 'text-slate-400' : ''}>Prep Time</span>
+                      <span className={`text-3xl font-mono font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{pickupDisplay}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
+                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                        Ready {readyTime.readyDisplay}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                        Current {readyTime.currentDisplay}
+                      </span>
+                    </div>
+                    <div className="flex-1" />
                   </div>
-                  <div className="flex items-center gap-1 text-xs sm:text-sm min-w-[170px]">
-                    <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
-                      Ready {readyTime.readyDisplay}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
-                      Current {readyTime.currentDisplay}
-                    </span>
-                  </div>
-                  <div className="flex-1" />
                 </div>
-                <div className="flex flex-col gap-2">
-                  <div className="flex flex-wrap gap-2">
-                    {[5, 10, 15, 20, 25].map((min) => (
+
+                {/* Panel 2: Minute buttons */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap gap-2">
+                      {[5, 10, 15, 20, 25].map((min) => (
+                        <button
+                          type="button"
+                          key={`top-${min}`}
+                          onClick={() => setPickupTime(min)}
+                          disabled={prepButtonsLocked}
+                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                            prepButtonsLocked
+                              ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50'
+                              : min === 15
+                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                              : 'bg-slate-500 text-white hover:bg-slate-600'
+                          }`}
+                        >
+                          +{min}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[30, 40, 50, 60].map((min) => (
+                        <button
+                          type="button"
+                          key={`bottom-${min}`}
+                          onClick={() => setPickupTime(min)}
+                          disabled={prepButtonsLocked}
+                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                            prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                          }`}
+                        >
+                          +{min}
+                        </button>
+                      ))}
                       <button
                         type="button"
-                        key={`top-${min}`}
-                        onClick={() => setPickupTime(min)}
-                        disabled={prepButtonsLocked}
-                        className={`min-w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                          prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                        onClick={handleToggleNoPrep}
+                        className={`w-[75px] h-[40px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                          prepButtonsLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'
                         }`}
                       >
-                        +{min}
+                        {prepButtonsLocked ? 'Prep On' : 'Prep Off'}
                       </button>
-                    ))}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {[30, 40, 50, 60].map((min) => (
+                </div>
+
+                {/* Panel 3: Manual time input */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        key={`bottom-${min}`}
-                        onClick={() => setPickupTime(min)}
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          const cur = parseInt(String(togoReadyHour || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) - 1;
+                          setTogoReadyHour(String((next + 24) % 24).padStart(2, '0'));
+                        }}
                         disabled={prepButtonsLocked}
-                        className={`min-w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                          prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
                         }`}
                       >
-                        +{min}
+                        -H
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={handleToggleNoPrep}
-                      className={`w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                        prepButtonsLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'
-                      }`}
-                    >
-                      {prepButtonsLocked ? 'Prep On' : 'Prep Off'}
-                    </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={togoReadyHour}
+                        readOnly
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          openTimePicker('TOGO_HOUR');
+                        }}
+                        onChange={(e) => {
+                          if (prepButtonsLocked) return;
+                          const digits = sanitizeClockInput(e.target.value, 2);
+                          const n = digits === '' ? NaN : parseInt(digits, 10);
+                          if (!Number.isFinite(n)) { setTogoReadyHour(digits); return; }
+                          setTogoReadyHour(String(clampClock(n, 0, 23)).padStart(2, '0'));
+                        }}
+                        disabled={prepButtonsLocked}
+                        placeholder="HH"
+                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400'
+                            : 'bg-white border-slate-300 text-slate-800'
+                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          const cur = parseInt(String(togoReadyHour || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) + 1;
+                          setTogoReadyHour(String(next % 24).padStart(2, '0'));
+                        }}
+                        disabled={prepButtonsLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        }`}
+                      >
+                        +H
+                      </button>
+                    </div>
+                    <span className={prepButtonsLocked ? 'text-slate-400' : 'text-slate-500'}>:</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          const cur = parseInt(String(togoReadyMinute || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) - 1;
+                          const norm = ((next % 60) + 60) % 60;
+                          setTogoReadyMinute(String(norm).padStart(2, '0'));
+                        }}
+                        disabled={prepButtonsLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        }`}
+                      >
+                        -M
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={togoReadyMinute}
+                        readOnly
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          openTimePicker('TOGO_MINUTE');
+                        }}
+                        onChange={(e) => {
+                          if (prepButtonsLocked) return;
+                          const digits = sanitizeClockInput(e.target.value, 2);
+                          const n = digits === '' ? NaN : parseInt(digits, 10);
+                          if (!Number.isFinite(n)) { setTogoReadyMinute(digits); return; }
+                          setTogoReadyMinute(String(clampClock(n, 0, 59)).padStart(2, '0'));
+                        }}
+                        disabled={prepButtonsLocked}
+                        placeholder="MM"
+                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400'
+                            : 'bg-white border-slate-300 text-slate-800'
+                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (prepButtonsLocked) return;
+                          const cur = parseInt(String(togoReadyMinute || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) + 1;
+                          const norm = next % 60;
+                          setTogoReadyMinute(String(norm).padStart(2, '0'));
+                        }}
+                        disabled={prepButtonsLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          prepButtonsLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        }`}
+                      >
+                        +M
+                      </button>
+                    </div>
+                    <div className={`text-xs font-semibold ${prepButtonsLocked ? 'text-slate-400' : 'text-slate-600'}`}>Time (HH:MM)</div>
                   </div>
                 </div>
               </div>
@@ -6412,10 +7527,34 @@ const SalesPage: React.FC = () => {
                             const qty = item.quantity || 1;
                             const unitPrice = Number(item.price || item.unit_price || 0);
                             const lineTotal = unitPrice * qty;
-                            const modifiers = Array.isArray(item.modifiers)
-                              ? item.modifiers.map((mod: any) => mod?.name || mod).filter(Boolean)
-                              : [];
-                            const noteText = item.note || item.memo || item.specialRequest;
+                            // 모디파이어 파싱 - 다양한 형식 지원
+                            let rawMods = item.modifiers || [];
+                            if (typeof rawMods === 'string') {
+                              try { rawMods = JSON.parse(rawMods); } catch { rawMods = []; }
+                            }
+                            if (!rawMods && item.modifiers_json) {
+                              try { rawMods = typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json; } catch { rawMods = []; }
+                            }
+                            const modifiers: string[] = [];
+                            if (Array.isArray(rawMods)) {
+                              rawMods.forEach((m: any) => {
+                                if (typeof m === 'string') {
+                                  modifiers.push(m);
+                                } else if (m?.name) {
+                                  modifiers.push(m.name);
+                                } else if (m?.modifierNames && Array.isArray(m.modifierNames)) {
+                                  modifiers.push(...m.modifierNames);
+                                } else if (m?.selectedEntries && Array.isArray(m.selectedEntries)) {
+                                  m.selectedEntries.forEach((entry: any) => {
+                                    if (typeof entry === 'string') modifiers.push(entry);
+                                    else if (entry?.name) modifiers.push(entry.name);
+                                  });
+                                } else if (m?.groupName) {
+                                  modifiers.push(m.groupName);
+                                }
+                              });
+                            }
+                            const noteText = item.note || (typeof item.memo === 'string' ? item.memo : item.memo?.text) || item.specialRequest;
                             return (
                               <div key={item.order_line_id || `${item.id}-${idx}`} className="px-3 py-[3px] text-sm text-slate-700">
                                 <div className="flex items-center justify-between gap-3">
@@ -6487,7 +7626,11 @@ const SalesPage: React.FC = () => {
                 } = parseCustomerName(sanitizedCustomerName);
                 const phoneRaw = getTogoPhoneDigits(customerPhone);
                 const selectedServer = selectedTogoServer;
-                const readyTimeLabel = readyTime?.readyDisplay || '';
+                const clockApplied = applyTogoClockIfProvided();
+                const pickupMinutesForOrder = clockApplied?.minutes ?? pickupTime;
+                const pickupAmPmForOrder = clockApplied?.ampm ?? pickupAmPm;
+                const pickupDateLabelForOrder = clockApplied?.dateLabel ?? pickupDateLabel;
+                const readyTimeLabel = clockApplied?.readyDisplay ?? computeReadyDisplayFromNow(pickupMinutesForOrder);
                 const createdIso = new Date().toISOString();
                 const newOrder = {
                     id: Date.now(),
@@ -6508,9 +7651,9 @@ const SalesPage: React.FC = () => {
                   note: togoNote,
                   fulfillment: togoOrderMode,
                   pickup: {
-                    minutes: pickupTime,
-                    ampm: pickupAmPm,
-                    dateLabel: pickupDateLabel,
+                    minutes: pickupMinutesForOrder,
+                    ampm: pickupAmPmForOrder,
+                    dateLabel: pickupDateLabelForOrder,
                   },
                   readyTimeLabel,
                   virtualChannel: 'togo' as VirtualOrderChannel,
@@ -6615,17 +7758,17 @@ const SalesPage: React.FC = () => {
               onClick={async () => {
                 try {
                   if (selectedOrder) {
-                    // í…Œì´ë¸” ìƒíƒœë¥¼ Preparingìœ¼ë¡œ ë³€ê²½
+                    // 테이블 상태를 Available로 변경 (Preparing 제거)
                     await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(selectedOrder.tableId))}/status`, {
                       method: 'PATCH',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ status: 'Preparing' })
+                      body: JSON.stringify({ status: 'Available' })
                     });
                     
                     // ë¡œì»¬ ìƒíƒœ ì—…ë°ì´íŠ¸
                     setTableElements(prev => prev.map(el => 
                       String(el.id) === String(selectedOrder.tableId) 
-                        ? { ...el, status: 'Preparing' }
+                        ? { ...el, status: 'Available' }
                         : el
                     ));
                     
@@ -6634,7 +7777,7 @@ const SalesPage: React.FC = () => {
                       localStorage.setItem('lastOccupiedTable', JSON.stringify({
                         tableId: selectedOrder.tableId,
                         floor: selectedFloor,
-                        status: 'Preparing',
+                        status: 'Available',
                         ts: Date.now()
                       }));
                     } catch {}
@@ -6680,16 +7823,29 @@ const SalesPage: React.FC = () => {
             ...element,
             text: getElementDisplayName(element)
           }));
+          // Normalize: Occupied/Payment Pending without a linked order must NOT happen.
+          const normalizedElements = transformedElements.map((el: any) => {
+            const st = String(el?.status || 'Available');
+            const isOccupiedLike = st === 'Occupied' || st === 'Payment Pending';
+            const hasOrderId = el?.current_order_id != null && String(el.current_order_id) !== '';
+            if (isOccupiedLike && !hasOrderId) return { ...el, status: 'Available' };
+            return el;
+          });
           // Optimistically apply last occupied table state (for up to 60s)
-          let patchedElements = transformedElements;
+          let patchedElements = normalizedElements;
           try {
             const raw = localStorage.getItem('lastOccupiedTable');
             if (raw) {
               const hint = JSON.parse(raw);
               if (hint && hint.floor === apiFloor && Date.now() - (hint.ts || 0) < 60000) {
-                patchedElements = transformedElements.map((el: any) => (
-                  String(el.id) === String(hint.tableId) ? { ...el, status: hint.status } : el
-                ));
+                patchedElements = normalizedElements.map((el: any) => {
+                  if (String(el.id) !== String(hint.tableId)) return el;
+                  const hintedStatus = String(hint.status || '');
+                  const isOccupiedLike = hintedStatus === 'Occupied' || hintedStatus === 'Payment Pending';
+                  const hasOrderId = el?.current_order_id != null && String(el.current_order_id) !== '';
+                  if (isOccupiedLike && !hasOrderId) return el;
+                  return { ...el, status: hintedStatus || el.status };
+                });
               }
             }
           } catch {}
@@ -6765,6 +7921,132 @@ const SalesPage: React.FC = () => {
     if (!completionData) return;
     
     const { orderType, orderId, orderDetail, paymentOrder, sessionPayments } = completionData;
+    // IMPORTANT: completionData.sessionPayments is a snapshot taken when payment completed.
+    // If tip was added after completion (TipEntryModal / Add Cash Tip), use the latest state.
+    const sessionPaymentsFresh = (Array.isArray(onlineTogoSessionPayments) && onlineTogoSessionPayments.length > 0)
+      ? onlineTogoSessionPayments
+      : (sessionPayments || []);
+
+    const normalizeReceiptModifiers = (rawItem: any) => {
+      const mods = rawItem?.modifiers ?? rawItem?.options ?? rawItem?.modifierOptions ?? [];
+      if (!Array.isArray(mods)) return [];
+      // Online order options format: [{ optionName, choiceName, price }]
+      if (mods.length > 0 && typeof mods[0] === 'object' && (mods[0].optionName || mods[0].choiceName)) {
+        return [{
+          selectedEntries: mods
+            .map((o: any) => ({
+              name: (o.optionName && o.choiceName) ? `${o.optionName}: ${o.choiceName}` : (o.choiceName || o.optionName || o.name || ''),
+              price_delta: Number(o.price || 0)
+            }))
+            .filter((e: any) => e.name)
+        }];
+      }
+      return mods;
+    };
+
+    const normalizeReceiptMemo = (rawItem: any) => {
+      try {
+        if (rawItem?.memo_json) {
+          const memo = (typeof rawItem.memo_json === 'string') ? JSON.parse(rawItem.memo_json) : rawItem.memo_json;
+          return memo;
+        }
+      } catch {}
+      return rawItem?.memo ?? rawItem?.memoText ?? rawItem?.note ?? rawItem?.notes ?? rawItem?.specialInstructions ?? '';
+    };
+
+    const normalizeReceiptDiscount = (rawItem: any, gross: number) => {
+      const d = (rawItem as any)?.discount ?? null;
+      if (d && typeof d === 'object') {
+        const amt = Number(d.amount ?? d.amount_applied ?? d.discountAmount ?? 0);
+        if (amt > 0) return { type: d.type || d.label || 'Discount', value: d.value || 0, amount: amt };
+      }
+      try {
+        const dj = (rawItem as any)?.discount_json;
+        if (!dj) return undefined;
+        const parsed = (typeof dj === 'string') ? JSON.parse(dj) : dj;
+        if (!parsed || typeof parsed !== 'object') return undefined;
+        const mode = String(parsed.mode || parsed.type || '').toLowerCase();
+        const value = Number(parsed.value ?? parsed.percent ?? parsed.rate ?? 0);
+        const amountField = Number(parsed.amount ?? parsed.amountApplied ?? parsed.amount_applied ?? 0);
+        let amount = 0;
+        if (amountField > 0) amount = amountField;
+        else if (mode === 'percent' || mode === 'percentage') amount = gross * (value / 100);
+        else if (value > 0) amount = value;
+        amount = Number(amount.toFixed(2));
+        if (amount > 0) return { type: parsed.type || parsed.label || 'Discount', value, amount };
+      } catch {}
+      return undefined;
+    };
+
+    const normalizeReceiptAdjustments = (rawOrderData: any) => {
+      const adjs = Array.isArray(rawOrderData?.adjustments) ? rawOrderData.adjustments : [];
+      return adjs.map((a: any) => {
+        const kind = String(a.kind || '').toUpperCase();
+        const rawAmt = Number(a.amount_applied ?? a.amountApplied ?? a.amount_applied ?? a.amount ?? a.value ?? 0);
+        const absAmt = Math.abs(Number(rawAmt || 0));
+        if (!(absAmt > 0)) return null;
+
+        const isDiscountLike =
+          kind === 'PROMOTION' ||
+          kind === 'COUPON' ||
+          kind.includes('DISCOUNT') ||
+          kind.includes('D/C') ||
+          kind === 'DISCOUNT';
+
+        const isFeeLike =
+          kind.includes('FEE') ||
+          kind.includes('CHARGE') ||
+          kind === 'BAG_FEE';
+
+        const signed =
+          isDiscountLike ? -absAmt :
+          isFeeLike ? absAmt :
+          (rawAmt < 0 ? -absAmt : absAmt);
+
+        const label =
+          a.label ||
+          (kind === 'BAG_FEE' ? 'Bag Fee' : '') ||
+          (kind === 'CHANNEL_DISCOUNT' ? 'Discount' : '') ||
+          (kind === 'PROMOTION' ? 'Promotion' : '') ||
+          kind ||
+          'Adjustment';
+
+        return { label: String(label), amount: Number(signed.toFixed(2)) };
+      }).filter(Boolean);
+    };
+
+    const normalizeReceiptItems = (rawOrderData: any) => {
+      const rawItems = rawOrderData?.items || [];
+      if (!Array.isArray(rawItems)) return [];
+      return rawItems.map((item: any) => {
+        const qty = item.quantity || item.qty || 1;
+        const basePrice = Number(item.price ?? item.unitPrice ?? item.unit_price ?? item.itemPrice ?? 0);
+        const modifiers = normalizeReceiptModifiers(item);
+        // Estimate modifier total (best effort, to compute discount percent amounts)
+        let modsPerUnit = 0;
+        try {
+          modifiers.forEach((m: any) => {
+            if (m?.selectedEntries && Array.isArray(m.selectedEntries)) {
+              m.selectedEntries.forEach((e: any) => { modsPerUnit += Number(e.price_delta || e.priceDelta || e.price || 0); });
+            } else if (m && typeof m === 'object') {
+              modsPerUnit += Number(m.price || m.price_delta || 0);
+            }
+          });
+        } catch {}
+        const memo = normalizeReceiptMemo(item);
+        const memoPrice = (memo && typeof memo === 'object') ? Number((memo as any).price || 0) : 0;
+        const gross = Number(((basePrice + modsPerUnit + memoPrice) * qty).toFixed(2));
+        const discount = normalizeReceiptDiscount(item, gross);
+        return {
+          name: item.name || item.itemName || '',
+          quantity: qty,
+          price: basePrice,
+          modifiers,
+          memo,
+          discount
+        };
+      });
+    };
     
     try {
       if (orderType === 'online' && orderId) {
@@ -6783,30 +8065,51 @@ const SalesPage: React.FC = () => {
         if (receiptCount > 0) {
           try {
             const orderData = orderDetail?.fullOrder || paymentOrder;
-            const actualPayments = sessionPayments.length > 0
-              ? sessionPayments.map((p: any) => ({ method: p.method, amount: p.amount }))
+            const receiptItems = normalizeReceiptItems(orderData);
+            const receiptAdjustments = normalizeReceiptAdjustments(orderData);
+            const actualPayments = sessionPaymentsFresh.length > 0
+              ? sessionPaymentsFresh.map((p: any) => ({ method: p.method, amount: p.amount, tip: (p.tip || 0) }))
               : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
-            const cashPaid = sessionPayments.filter((p: any) => p.method === 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
-            const totalAmount = paymentOrder.total || 0;
-            const nonCashPaid = sessionPayments.filter((p: any) => p.method !== 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
-            const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+            // Change should be calculated from FOOD portion only (amount - tip).
+            // This prevents "cash tip" from being misinterpreted as change.
+            const cashFoodPaid = sessionPaymentsFresh
+              .filter((p: any) => String(p.method || '').toUpperCase() === 'CASH')
+              .reduce((s: number, p: any) => s + Math.max(0, (p.amount || 0) - (p.tip || 0)), 0);
+            const foodTotal = paymentOrder.total || 0;
+            const nonCashFoodPaid = sessionPaymentsFresh
+              .filter((p: any) => String(p.method || '').toUpperCase() !== 'CASH')
+              .reduce((s: number, p: any) => s + Math.max(0, (p.amount || 0) - (p.tip || 0)), 0);
+            const changeAmount = Math.max(0, Number((cashFoodPaid - Math.max(0, foodTotal - nonCashFoodPaid)).toFixed(2)));
+            const pmDiscOnline = onlineTogoPaymentCompleteData?.discount;
+            let onlineTaxLines: Array<{ name: string; amount: number }> = paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [];
+            let onlineTaxTotal = paymentOrder.tax || 0;
+            let onlineTotal = paymentOrder.total || 0;
+            if (pmDiscOnline && pmDiscOnline.percent > 0) {
+              receiptAdjustments.push({ label: `Discount (${pmDiscOnline.percent}%)`, amount: -Number(pmDiscOnline.amount.toFixed(2)) });
+              onlineTaxLines = pmDiscOnline.taxLines.map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+              onlineTaxTotal = Number(pmDiscOnline.taxesTotal.toFixed(2));
+              onlineTotal = Number((pmDiscOnline.discountedSubtotal + pmDiscOnline.taxesTotal).toFixed(2));
+            }
             const receiptData = {
+              header: {
+                orderNumber: paymentOrder.number || paymentOrder.id,
+                channel: 'ONLINE',
+                tableName: '',
+              },
               orderInfo: {
                 orderNumber: paymentOrder.number || paymentOrder.id,
                 orderType: 'ONLINE',
+                channel: 'ONLINE',
                 customerName: paymentOrder.name || '',
                 customerPhone: paymentOrder.phone || '',
               },
-              items: orderData?.items?.map((item: any) => ({
-                name: item.name,
-                quantity: item.quantity || 1,
-                unitPrice: item.price || 0,
-                totalPrice: (item.price || 0) * (item.quantity || 1)
-              })) || [],
+              channel: 'ONLINE',
+              items: receiptItems,
               subtotal: paymentOrder.subtotal || 0,
-              taxLines: paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [],
-              taxesTotal: paymentOrder.tax || 0,
-              total: paymentOrder.total || 0,
+              adjustments: receiptAdjustments,
+              taxLines: onlineTaxLines,
+              taxesTotal: onlineTaxTotal,
+              total: onlineTotal,
               payments: actualPayments,
               change: changeAmount
             };
@@ -6832,30 +8135,51 @@ const SalesPage: React.FC = () => {
         if (receiptCount > 0) {
           try {
             const orderData = orderDetail?.fullOrder || paymentOrder;
-            const actualPayments = sessionPayments.length > 0
-              ? sessionPayments.map((p: any) => ({ method: p.method, amount: p.amount }))
+            const receiptItems = normalizeReceiptItems(orderData);
+            const receiptAdjustments = normalizeReceiptAdjustments(orderData);
+            const actualPayments = sessionPaymentsFresh.length > 0
+              ? sessionPaymentsFresh.map((p: any) => ({ method: p.method, amount: p.amount, tip: (p.tip || 0) }))
               : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
-            const cashPaid = sessionPayments.filter((p: any) => p.method === 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
-            const totalAmount = paymentOrder.total || 0;
-            const nonCashPaid = sessionPayments.filter((p: any) => p.method !== 'CASH').reduce((s: number, p: any) => s + p.amount, 0);
-            const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+            // Change should be calculated from FOOD portion only (amount - tip).
+            // This prevents "cash tip" from being misinterpreted as change.
+            const cashFoodPaid = sessionPaymentsFresh
+              .filter((p: any) => String(p.method || '').toUpperCase() === 'CASH')
+              .reduce((s: number, p: any) => s + Math.max(0, (p.amount || 0) - (p.tip || 0)), 0);
+            const foodTotal = paymentOrder.total || 0;
+            const nonCashFoodPaid = sessionPaymentsFresh
+              .filter((p: any) => String(p.method || '').toUpperCase() !== 'CASH')
+              .reduce((s: number, p: any) => s + Math.max(0, (p.amount || 0) - (p.tip || 0)), 0);
+            const changeAmount = Math.max(0, Number((cashFoodPaid - Math.max(0, foodTotal - nonCashFoodPaid)).toFixed(2)));
+            const pmDiscTogo = onlineTogoPaymentCompleteData?.discount;
+            let togoTaxLines: Array<{ name: string; amount: number }> = paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [];
+            let togoTaxTotal = paymentOrder.tax || 0;
+            let togoTotal = paymentOrder.total || 0;
+            if (pmDiscTogo && pmDiscTogo.percent > 0) {
+              receiptAdjustments.push({ label: `Discount (${pmDiscTogo.percent}%)`, amount: -Number(pmDiscTogo.amount.toFixed(2)) });
+              togoTaxLines = pmDiscTogo.taxLines.map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+              togoTaxTotal = Number(pmDiscTogo.taxesTotal.toFixed(2));
+              togoTotal = Number((pmDiscTogo.discountedSubtotal + pmDiscTogo.taxesTotal).toFixed(2));
+            }
             const receiptData = {
+              header: {
+                orderNumber: paymentOrder.number || paymentOrder.id,
+                channel: 'TOGO',
+                tableName: '',
+              },
               orderInfo: {
                 orderNumber: paymentOrder.number || paymentOrder.id,
                 orderType: 'TOGO',
+                channel: 'TOGO',
                 customerName: paymentOrder.name || '',
                 customerPhone: paymentOrder.phone || '',
               },
-              items: orderData?.items?.map((item: any) => ({
-                name: item.name,
-                quantity: item.quantity || 1,
-                unitPrice: item.price || 0,
-                totalPrice: (item.price || 0) * (item.quantity || 1)
-              })) || [],
+              channel: 'TOGO',
+              items: receiptItems,
               subtotal: paymentOrder.subtotal || 0,
-              taxLines: paymentOrder.tax ? [{ name: 'Tax', amount: paymentOrder.tax }] : [],
-              taxesTotal: paymentOrder.tax || 0,
-              total: paymentOrder.total || 0,
+              adjustments: receiptAdjustments,
+              taxLines: togoTaxLines,
+              taxesTotal: togoTaxTotal,
+              total: togoTotal,
               payments: actualPayments,
               change: changeAmount
             };
@@ -6883,9 +8207,59 @@ const SalesPage: React.FC = () => {
     // Cash drawer는 onPaymentComplete 콜백에서 이미 열었으므로 여기서는 생략
     // (Dine-in도 동일: onPaymentComplete에서 1회만 오픈)
     
-    // Show Pickup Confirm modal
-    setPickupConfirmOrder({ ...paymentOrder, orderType });
-    setShowPickupConfirmModal(true);
+    // Auto Pickup Complete (no confirm modal) for TOGO/ONLINE pickup flow
+    try {
+      const orderId = paymentOrder?.id;
+      const localOrderId = paymentOrder?.localOrderId || paymentOrder?.fullOrder?.localOrderId;
+      if (orderId) {
+        if (orderType === 'online') {
+          // 온라인 주문: Firebase picked_up + local DB (if exists)
+          await fetch(`${API_URL}/online-orders/order/${orderId}/pickup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (localOrderId) {
+            await fetch(`${API_URL}/orders/${localOrderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          }
+        } else if (orderType === 'togo' || orderType === 'pickup') {
+          await fetch(`${API_URL}/orders/${orderId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'PICKED_UP' }),
+          });
+        } else if (orderType === 'delivery') {
+          const actualOrderId = paymentOrder?.order_id || orderId;
+          if (Number.isFinite(Number(actualOrderId))) {
+            await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          }
+          const deliveryMetaId = paymentOrder?.deliveryMetaId || (typeof paymentOrder?.table_id === 'string' && String(paymentOrder.table_id).toUpperCase().startsWith('DL')
+            ? String(paymentOrder.table_id).substring(2)
+            : null);
+          if (deliveryMetaId != null && String(deliveryMetaId).trim() !== '') {
+            await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(deliveryMetaId))}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          }
+        }
+      }
+    } catch (pickupErr) {
+      console.error('Auto pickup complete error:', pickupErr);
+    }
+
+    // Ensure we return to TableMap immediately
+    setShowOrderDetailModal(false);
+    setSelectedOrderDetail(null);
+    setSelectedOrderType(null);
     
     setOnlineTogoPaymentOrder(null);
     setOnlineTogoSessionPayments([]);
@@ -6911,16 +8285,23 @@ const SalesPage: React.FC = () => {
           </div>
         ) : (
         <div
-          ref={fixedAreaRef}
-          style={ {
-            width: `${frameWidthPx}px`,
-            height: `${frameHeightPx}px`,
-            transform: `scale(${scaleFactor})`,
-            transformOrigin: 'top left'
+          className="relative"
+          style={{
+            width: `${Math.round(frameWidthPx * scaleFactor)}px`,
+            height: `${Math.round(frameHeightPx * scaleFactor)}px`,
           }}
-          className="bg-gray-100 relative flex flex-col"
-          id="pos-canvas-anchor"
         >
+          <div
+            ref={fixedAreaRef}
+            style={ {
+              width: `${frameWidthPx}px`,
+              height: `${frameHeightPx}px`,
+              transform: `scale(${scaleFactor})`,
+              transformOrigin: 'top left'
+            }}
+            className="bg-gray-100 relative flex flex-col"
+            id="pos-canvas-anchor"
+          >
           {/* 1. ìƒë‹¨ ë°” (ê³ ì • ë†’ì´) */}
           <div className="h-14 bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg grid grid-cols-3 items-center px-4">
             <div className="flex space-x-2 h-3/4 items-center">
@@ -6944,18 +8325,21 @@ const SalesPage: React.FC = () => {
                 </div>
               ))}
             </div>
-            {/* ì£¼ë¬¸ì±„ë„ íƒ­ (ì¤‘ì•™) - Deliveryë§Œ í‘œì‹œ */}
-            <div className="flex justify-center">
+            {/* 현재 시간 (중앙) */}
+            <div className="flex justify-center items-center">
+              <span className="text-lg font-bold text-gray-700 tracking-wide">
+                {currentTime}
+              </span>
+            </div>
+            {/* Delivery + EXIT 버튼 (오른쪽) */}
+            <div className="flex justify-end items-center gap-2">
               <button
-                className="h-9 px-3 mx-1 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
+                className="h-9 px-3 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
                 onClick={() => setSelectedChannelTab('delivery')}
                 title="Delivery"
               >
                 Delivery
               </button>
-            </div>
-            {/* EXIT ë²„íŠ¼ (ì˜¤ë¥¸ìª½) */}
-            <div className="flex justify-end">
               <button
                 className="h-10 px-5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 border-2 border-red-700 shadow-md transition-all"
                 onClick={() => setShowExitModal(true)}
@@ -7290,59 +8674,73 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
           </div>
-          {/* 3. í•˜ë‹¨ ì•¡ì…˜ ë°” (í”„ë ˆìž„ ë‚´ë¶€) */}
-          <div className="bg-gray-200 border-t border-gray-300 py-1.5 pl-3 pr-3" style={{ height: '70px' }}>
-            <div className="grid grid-cols-9 h-full w-full gap-1">
+          {/* 3. 하단 액션 바 - Neumorphic Raised Style */}
+          <div className="border-t py-1.5 pl-3 pr-3" data-pos-lock="sales-footer" style={{ height: `${footerHeightPx}px`, background: '#d1d5db', borderColor: '#c0c5cc' }}>
+            <div className="grid grid-cols-10 h-full w-full" style={{ gap: `${footerGapPx}px` }}>
               {buttonData.map((buttonName, index) => {
-                const isMoveMergeActive = buttonName === 'Move/Merge' && isMoveMergeMode;
+                const isMoveMergeActive = buttonName === 'Move\nMerge' && isMoveMergeMode;
                 const isBillPrintActive = buttonName === 'Online' && isBillPrintMode;
                 const isButtonActive = isMoveMergeActive || isBillPrintActive;
+                const normalShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff';
+                const hoverShadow = '8px 8px 16px #b8bec7, -8px -8px 16px #ffffff';
+                const pressedShadow = 'inset 4px 4px 8px #b8bec7, inset -4px -4px 8px #ffffff';
                 return (
                   <div key={buttonName} className="h-full flex items-center justify-center relative group">
                 <button
                   onClick={() => handleButtonClick(buttonName)}
-                      className={`relative w-full h-full rounded-lg text-base font-semibold flex items-center justify-center text-center leading-tight transition-all duration-200 shadow-md hover:shadow-lg active:shadow-sm active:translate-y-[1px] ring-1 ring-black/10 hover:ring-black/20 ${
-                        isMoveMergeActive ? 'text-white bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-600' : 
-                        isBillPrintActive ? 'text-white bg-gradient-to-r from-emerald-500 via-green-500 to-emerald-600' : 'text-white'
-                      }`}
-                      style={
-                        isMoveMergeActive
-                          ? {
-                              backgroundImage: 'linear-gradient(135deg, rgba(99,102,241,0.95), rgba(139,92,246,0.85))',
-                              color: 'white',
-                              position: 'relative',
-                              overflow: 'hidden',
-                            }
-                          : isBillPrintActive
-                          ? {
-                              backgroundImage: 'linear-gradient(135deg, rgba(16,185,129,0.95), rgba(52,211,153,0.85))',
-                              color: 'white',
-                              position: 'relative',
-                              overflow: 'hidden',
-                            }
-                          : { backgroundColor: getButtonColor(buttonName, index) }
-                      }
+                      className="relative w-full h-full flex items-center justify-center text-center leading-tight transition-all duration-150"
+                      data-pos-lock="sales-footer-btn"
+                      style={{
+                        borderRadius: '14px',
+                        border: 'none',
+                        fontSize: `var(--bottom-bar-btn-font, ${footerButtonFontPx}px)`,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: '#e0e5ec',
+                        boxShadow: isButtonActive ? pressedShadow : normalShadow,
+                        // Use gray-600 for bottom function button text
+                        color: '#4B5563',
+                      }}
                   onMouseEnter={(e) => {
                         if (isButtonActive) return;
-                    e.currentTarget.style.filter = 'brightness(0.9)';
+                        e.currentTarget.style.boxShadow = hoverShadow;
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.filter = 'brightness(1)';
+                        if (isButtonActive) return;
+                        e.currentTarget.style.boxShadow = normalShadow;
+                  }}
+                  onMouseDown={(e) => {
+                        if (isButtonActive) return;
+                        e.currentTarget.style.boxShadow = pressedShadow;
+                  }}
+                  onMouseUp={(e) => {
+                        if (isButtonActive) return;
+                        e.currentTarget.style.boxShadow = hoverShadow;
                   }}
                 >
-                  {buttonName}
+                  <span className="whitespace-pre-line">
+                    {buttonName}
+                  </span>
                       {isMoveMergeActive && (
                         <span
-                          className="absolute bottom-1 left-1 right-1 h-[3px] rounded-full bg-white/80 opacity-90"
+                          className="absolute bottom-1 left-2 right-2 h-[3px] rounded-full opacity-90"
                           style={{
                             animation: 'beamSweep 0.9s linear infinite',
-                            boxShadow: '0 0 12px rgba(255,255,255,0.7)',
+                            background: '#6366f1',
+                            boxShadow: '0 0 12px rgba(99,102,241,0.7)',
+                            zIndex: 2,
                           }}
                         />
                       )}
                 </button>
+                {/* Sold Out badge */}
+                {buttonName === 'Sold Out' && soldOutItems.size > 0 && (
+                  <span className="absolute top-[-6px] right-[-6px] min-w-[20px] h-[20px] bg-red-600 text-white rounded-full flex items-center justify-center shadow-md z-10 text-[10px] font-bold px-1">
+                    {soldOutItems.size}
+                  </span>
+                )}
                 {/* Tiny history button for Move/Merge */}
-                {buttonName === 'Move/Merge' && (
+                {buttonName === 'Move\nMerge' && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -7359,7 +8757,7 @@ const SalesPage: React.FC = () => {
               })}
           </div>
           </div>
-        <TogoOrderModal />
+          <TogoOrderModal />
         
         {/* Online Settings Modal (Prep Time, Pause, Day Off, Order Type) */}
         {showPrepTimeModal && (
@@ -7369,8 +8767,17 @@ const SalesPage: React.FC = () => {
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
-              <div className="flex items-center justify-center px-5 py-3 bg-slate-700 rounded-t-xl">
-                <h2 className="text-lg font-bold text-white">Online Settings</h2>
+              <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl relative">
+                <div className="w-12" />
+                <h2 className="text-lg font-bold text-white" style={{ marginRight: '50px' }}>Online Settings</h2>
+                <button
+                  onClick={() => setShowPrepTimeModal(false)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                >
+                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
               
               {/* Tabs - ìž…ì²´ê° ìžˆëŠ” ë²„íŠ¼ */}
@@ -8308,7 +9715,7 @@ const SalesPage: React.FC = () => {
                                             : 'bg-white text-slate-600 hover:bg-amber-50'
                                         }`}
                                       >
-                                        <span className="text-sm">â°</span>
+                                        <span className="text-sm">⏰</span>
                                         <span>{selectedItem.online_hide_type === 'time_limited' ? 'Limited' : 'Available Until'}</span>
                                         {selectedItem.online_hide_type === 'time_limited' && (
                                           <svg className="w-4 h-4 ml-auto" fill="currentColor" viewBox="0 0 20 20">
@@ -8369,7 +9776,7 @@ const SalesPage: React.FC = () => {
                                             : 'bg-white text-slate-600 hover:bg-amber-50'
                                         }`}
                                       >
-                                        <span className="text-sm">â°</span>
+                                        <span className="text-sm">⏰</span>
                                         <span>{selectedItem.delivery_hide_type === 'time_limited' ? 'Limited' : 'Available Until'}</span>
                                         {selectedItem.delivery_hide_type === 'time_limited' && (
                                           <svg className="w-4 h-4 ml-auto" fill="currentColor" viewBox="0 0 20 20">
@@ -8590,11 +9997,20 @@ const SalesPage: React.FC = () => {
           return (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div 
-                className="bg-gray-200 rounded-xl shadow-2xl w-full max-w-[1000px] h-full max-h-[740px] min-h-[400px] flex flex-col"
+                className="bg-gray-200 rounded-xl shadow-2xl w-full max-w-[1000px] h-full max-h-[740px] min-h-[400px] flex flex-col relative"
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0 relative">
+                  {/* Floating close button in header */}
+                  <button
+                    onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); setLiveOrderHighlightItem(null); }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                  >
+                    <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                   {/* íƒ­ ë²„íŠ¼: Order History / Live Order */}
                   <div className="flex items-center gap-1">
                     <button
@@ -8618,7 +10034,7 @@ const SalesPage: React.FC = () => {
                       🟢 Live Order
                     </button>
                   </div>
-                  <div className="flex items-center gap-2 sm:gap-3 relative">
+                  <div className="flex items-center gap-2 sm:gap-3 relative" style={{ marginRight: "55px" }}>
                     {/* ë‚ ì§œ ì„ íƒì€ Order History íƒ­ì—ì„œë§Œ í‘œì‹œ */}
                     {orderListTab === 'history' && (
                       <>
@@ -8691,25 +10107,13 @@ const SalesPage: React.FC = () => {
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={() => {
-                      setShowOrderListModal(false);
-                      setShowOrderListCalendar(false);
-                      setOrderListSelectedOrder(null);
-                      setOrderListSelectedItems([]);
-                      setLiveOrderHighlightItem(null);
-                    }}
-                    className="px-4 sm:px-6 py-2 sm:py-3 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-lg text-base sm:text-lg font-bold"
-                  >
-                    ✕ Close
-                  </button>
                 </div>
 
                 {/* Content - Order History Tab */}
                 {orderListTab === 'history' && (
                 <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
-                  {/* Left Panel - Order List (60%) */}
-                  <div className="w-full md:w-[60%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
+                  {/* Left Panel - Order List (55%) */}
+                  <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
                     <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center gap-1.5 flex-shrink-0">
                       <span className="w-16 text-center">Channel</span>
                       <span className="w-28">ID / Order#</span>
@@ -8735,6 +10139,22 @@ const SalesPage: React.FC = () => {
                       ) : (
                         orderListOrders.map((order) => {
                           const badge = orderListGetChannelBadge(order);
+                          const type = (order.order_type || '').toUpperCase();
+                          const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
+                          const isDelivery = type === 'DELIVERY' || fulfillment === 'delivery';
+                          const { company: deliveryCompanyRaw, orderNumber: deliveryOrderNumberRaw } = orderListGetDeliveryMeta(order);
+                          const deliveryCompanyAbbr = orderListNormalizeDeliveryAbbr(deliveryCompanyRaw);
+                          const deliveryOrderNumber = String(deliveryOrderNumberRaw || '').replace(/^#/, '').trim();
+                          const displayIdText = (isDelivery && (deliveryCompanyAbbr || deliveryOrderNumber))
+                            ? `${deliveryCompanyAbbr || 'Delivery'} / ${deliveryOrderNumber || String(order.id)}`
+                            : (order.order_number ? `#${order.order_number}` : `#${order.id}`);
+                          const subtotalVal = Number(order.subtotal || 0);
+                          const taxVal = Number(order.tax || 0);
+                          // Order History list Amount should be tax-inclusive (subtotal + tax).
+                          // Some historical rows may have subtotal/tax missing; fall back to stored total in that case.
+                          const totalVal = Number(order.total || 0);
+                          const hasSubtotalOrTax = Number.isFinite(subtotalVal) && Number.isFinite(taxVal) && (Math.abs(subtotalVal) > 0 || Math.abs(taxVal) > 0);
+                          const displayAmount = hasSubtotalOrTax ? Number((subtotalVal + taxVal).toFixed(2)) : totalVal;
                           return (
                             <div
                               key={order.id}
@@ -8747,17 +10167,12 @@ const SalesPage: React.FC = () => {
                               <span className={`w-16 px-1.5 py-1 rounded text-center text-xs font-bold ${badge.bgColor} ${badge.textColor}`}>
                                 {badge.label}
                               </span>
-                              <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
-                                <span className="font-bold text-gray-700">#{order.id}</span>
-                                {order.order_number && (
-                                  <span className="text-[10px] font-normal text-gray-400 ml-0.5">
-                                    {order.order_number.length > 12 ? order.order_number.slice(0, 12) + '...' : order.order_number}
-                                  </span>
-                                )}
+                              <span className="w-28 leading-tight truncate" title={isDelivery ? displayIdText : (order.order_number || '')}>
+                                <span className="font-bold text-gray-700">{displayIdText}</span>
                               </span>
                               <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
                               <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
-                              <span className="w-18 text-right font-bold">${Number(order.total || 0).toFixed(2)}</span>
+                              <span className="w-18 text-right font-bold">${Number(displayAmount || 0).toFixed(2)}</span>
                             </div>
                           );
                         })
@@ -8765,8 +10180,8 @@ const SalesPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Right Panel - Order Details (40%) */}
-                  <div className="w-full md:w-[40%] h-1/2 md:h-full bg-blue-50 rounded-xl shadow-lg border-2 border-blue-200 flex flex-col" style={{ overflow: 'hidden' }}>
+                  {/* Right Panel - Order Details (45%) */}
+                  <div className="w-full md:w-[45%] h-1/2 md:h-full bg-blue-50 rounded-xl shadow-lg border-2 border-blue-200 flex flex-col" style={{ overflow: 'hidden' }}>
                     {!orderListSelectedOrder ? (
                       <div className="flex-1 flex items-center justify-center text-gray-400 text-base">
                         Select an order to view details
@@ -8775,93 +10190,239 @@ const SalesPage: React.FC = () => {
                       <>
                         {/* Action Buttons - ë§¨ ìœ„ë¡œ ì´ë™ */}
                         <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
-                          {/* Pay Button - Only show for unpaid orders */}
+                          {/* 1. Back to Order */}
                           {(() => {
-                            const status = (orderListSelectedOrder.status || '').toLowerCase();
-                            const paymentStatus = (orderListSelectedOrder.paymentStatus || '').toLowerCase();
-                            const isPaid = status === 'paid' || status === 'closed' || status === 'completed' || 
-                                          paymentStatus === 'paid' || paymentStatus === 'completed' ||
-                                          orderListSelectedOrder.paid === true;
-                            if (!isPaid) {
-                              return (
-                                <button
-                                  onClick={() => {
-                                    // Navigate to order page with this order loaded
-                                    const orderId = orderListSelectedOrder.id;
-                                    const tableId = orderListSelectedOrder.table_id;
-                                    if (tableId) {
-                                      // FSR mode - go to order page with table and orderId
-                                      navigate('/order', { state: { tableId: tableId, orderId: orderId, openPayment: true } });
-                                    } else {
-                                      // QSR mode - go to QSR order page
-                                      navigate('/qsr-order', { state: { orderId: orderId, openPayment: true } });
-                                    }
-                                  }}
-                                  style={{ flex: 3 }}
-                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-base font-bold"
-                                >
-                                  💳 Pay
-                                </button>
-                              );
-                            }
-                            return null;
+                            const _type = (orderListSelectedOrder.order_type || '').toUpperCase();
+                            const _tableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
+                            const _fulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                            const isOnlineOrDelivery =
+                              _type === 'UBEREATS' || _type === 'UBER' || _type === 'DOORDASH' || _type === 'SKIP' || _type === 'SKIPTHEDISHES' ||
+                              _type === 'ONLINE' || _type === 'WEB' || _type === 'QR' || _tableId.startsWith('OL') ||
+                              _type === 'DELIVERY' || _fulfillment === 'delivery' || _tableId.startsWith('DL');
+                            return (
+                              <button
+                                disabled={isOnlineOrDelivery}
+                                onClick={() => {
+                                  if (isOnlineOrDelivery) return;
+                                  const orderId = orderListSelectedOrder.id;
+                                  const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                  const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                  const nextOrderType =
+                                    rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                      ? 'togo'
+                                      : 'pos';
+
+                                  navigate('/sales/order', {
+                                    state: {
+                                      orderType: nextOrderType,
+                                      menuId: defaultMenu.menuId,
+                                      menuName: defaultMenu.menuName,
+                                      orderId: orderId,
+                                      customerName: orderListSelectedOrder.customer_name || '',
+                                      customerPhone: orderListSelectedOrder.customer_phone || '',
+                                      readyTimeLabel: orderListSelectedOrder.ready_time || '',
+                                      fulfillmentMode: orderListSelectedOrder.fulfillment_mode || null,
+                                    },
+                                  });
+
+                                  setShowOrderListModal(false);
+                                }}
+                                style={{ flex: 1 }}
+                                className={`py-4 rounded-lg text-sm font-bold ${
+                                  isOnlineOrDelivery
+                                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                    : 'bg-slate-500 hover:bg-slate-600 active:bg-slate-700 text-white'
+                                }`}
+                              >
+                                Back to Order
+                              </button>
+                            );
                           })()}
+                          {/* 2. Void */}
                           <button
                             onClick={async () => {
-                              // Check if order is paid
-                              const status = (orderListSelectedOrder.status || '').toLowerCase();
-                              const isPaid = status === 'paid' || status === 'closed' || status === 'completed';
-                              if (!isPaid) {
-                                alert('Only paid orders can be refunded.');
-                                return;
+                              try {
+                                const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                const rawTableId = String(orderListSelectedOrder.table_id || '').toUpperCase();
+                                const voidType =
+                                  rawType.includes('delivery') || rawFulfillment.includes('delivery') || rawTableId.startsWith('DL')
+                                    ? 'delivery'
+                                    : rawType.includes('online')
+                                    ? 'online'
+                                    : rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                    ? 'togo'
+                                    : 'pos';
+
+                                const items = (orderListSelectedItems || []).map((it: any) => {
+                                  let mods: any[] = [];
+                                  try {
+                                    if (it.modifiers_json) {
+                                      mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json;
+                                    }
+                                  } catch {}
+                                  return { ...it, modifiers: mods };
+                                });
+                                if (!items.length) {
+                                  alert('No items to void.');
+                                  return;
+                                }
+                                const sels: Record<string, { checked: boolean; qty: number }> = {};
+                                items.forEach((it: any) => {
+                                  const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
+                                  sels[key] = { checked: true, qty: it.quantity || 1 };
+                                });
+
+                                const orderForVoid = { ...orderListSelectedOrder, number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || orderListSelectedOrder.id };
+                                setTogoVoidOrder(orderForVoid);
+                                setTogoVoidOrderType(voidType);
+                                setTogoVoidItems(items);
+                                setTogoVoidSelections(sels);
+                                setTogoVoidPin('');
+                                setTogoVoidPinError('');
+                                setTogoVoidReason('');
+                                setTogoVoidReasonPreset('');
+                                setTogoVoidNote('');
+                                setTogoVoidLoading(false);
+                                setShowTogoVoidModal(true);
+                              } catch (e) {
+                                console.error('[Order History Void] Failed to open void modal:', e);
+                                alert('Failed to open void.');
                               }
-                              // Open refund modal with this order pre-selected
-                              setShowRefundModal(true);
-                              setRefundStep('list');
-                              setRefundSelectedOrder(null);
-                              setRefundOrderItems([]);
-                              setRefundPayments([]);
-                              setRefundSelectedItems({});
-                              setRefundType('FULL');
-                              setRefundPin('');
-                              setRefundPinError('');
-                              setRefundReason('');
-                              setRefundResult(null);
-                              setRefundCardNumber('');
-                              setRefundApprovalNumber('');
-                              setRefundGiftCardNumber('');
-                              setRefundPendingData(null);
-                              // Pre-select the order for refund
-                              await selectOrderForRefund(orderListSelectedOrder);
                             }}
-                            style={{ flex: 3 }}
-                            className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-base font-bold"
+                            style={{ flex: 1 }}
+                            className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-sm font-bold"
                           >
-                            Refund
+                            Void
                           </button>
-                          <button
-                            onClick={handleOrderListPrintBill}
-                            style={{ flex: 4 }}
-                            className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-base font-bold"
-                          >
-                            Print Bill
-                          </button>
+                          {/* 3. Reprint */}
                           <button
                             onClick={handleOrderListPrintKitchen}
-                            style={{ flex: 4 }}
-                            className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-base font-bold"
+                            style={{ flex: 1 }}
+                            className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold"
                           >
                             Reprint
                           </button>
+                          {/* 4. Print Bill */}
+                          <button
+                            onClick={handleOrderListPrintBill}
+                            style={{ flex: 1 }}
+                            className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold"
+                          >
+                            Print Bill
+                          </button>
+                          {/* 4.5. Print Receipt - only enabled for paid orders */}
+                          {(() => {
+                            const isPaid = orderListSelectedOrder?.status === 'paid' || orderListSelectedOrder?.status === 'closed' || orderListSelectedOrder?.status === 'completed' || orderListSelectedOrder?.status === 'PAID' ||
+                              orderListSelectedOrder?.paymentStatus === 'PAID' || orderListSelectedOrder?.paymentStatus === 'paid' || orderListSelectedOrder?.paymentStatus === 'completed' || orderListSelectedOrder?.paymentStatus === 'COMPLETED' ||
+                              (orderListSelectedOrder as any)?.paid === true;
+                            return (
+                              <button
+                                onClick={isPaid ? handleOrderListPrintReceipt : undefined}
+                                disabled={!isPaid}
+                                style={{ flex: 1 }}
+                                className={`py-4 rounded-lg text-sm font-bold ${isPaid ? 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+                              >
+                                Print Receipt
+                              </button>
+                            );
+                          })()}
+                          {/* 5. Pay */}
+                          {(() => {
+                            const status = (orderListSelectedOrder.status || '').toLowerCase();
+                            const paymentStatus = (orderListSelectedOrder.paymentStatus || '').toLowerCase();
+                            const _pType = (orderListSelectedOrder.order_type || '').toUpperCase();
+                            const _pTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
+                            const isOnline =
+                              _pType === 'UBEREATS' || _pType === 'UBER' || _pType === 'DOORDASH' || _pType === 'SKIP' || _pType === 'SKIPTHEDISHES' ||
+                              _pType === 'ONLINE' || _pType === 'WEB' || _pType === 'QR' || _pTableId.startsWith('OL');
+                            const isPaid = !isOnline && (
+                              status === 'paid' || status === 'closed' || status === 'completed' || 
+                              paymentStatus === 'paid' || paymentStatus === 'completed' ||
+                              orderListSelectedOrder.paid === true
+                            );
+                            return (
+                              <button
+                                disabled={isPaid}
+                                onClick={async () => {
+                                  if (isPaid) return;
+                                  try {
+                                    const orderId = Number(orderListSelectedOrder.id);
+                                    if (!Number.isFinite(orderId)) return;
+                                    const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                    const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                    const nextOrderType =
+                                      rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                        ? 'togo'
+                                        : rawType.includes('online')
+                                        ? 'online'
+                                        : 'pos';
+                                    navigate('/sales/order', {
+                                      state: {
+                                        orderType: nextOrderType,
+                                        menuId: defaultMenu.menuId,
+                                        menuName: defaultMenu.menuName,
+                                        orderId,
+                                        customerName: orderListSelectedOrder.customer_name || '',
+                                        customerPhone: orderListSelectedOrder.customer_phone || '',
+                                        readyTimeLabel: orderListSelectedOrder.ready_time || '',
+                                        fulfillmentMode: orderListSelectedOrder.fulfillment_mode || null,
+                                        openPayment: true,
+                                        fromOrderHistory: true,
+                                      },
+                                    });
+                                    setShowOrderListModal(false);
+                                  } catch (e) {
+                                    console.error('[Order History Pay] Failed to open payment modal:', e);
+                                    alert('Failed to open payment modal.');
+                                  }
+                                }}
+                                style={{ flex: 1 }}
+                                className={`py-4 rounded-lg text-sm font-bold ${
+                                  isPaid
+                                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                    : 'bg-green-600 hover:bg-green-700 active:bg-green-800 text-white'
+                                }`}
+                              >
+                                Pay
+                              </button>
+                            );
+                          })()}
                         </div>
 
                         {/* Channel Header - ë²„íŠ¼ ì•„ëž˜ë¡œ ì´ë™ (ë†’ì´ 10% ê°ì†Œ) */}
                         <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 text-center flex-shrink-0">
                           {(() => {
                             const badge = orderListGetChannelBadge(orderListSelectedOrder);
+                            const oType = (orderListSelectedOrder.order_type || '').toUpperCase();
+                            const { company: dCompany, orderNumber: dOrderNum } = orderListGetDeliveryMeta(orderListSelectedOrder);
+                            const dCompanyStr = String(dCompany || '').toUpperCase().replace(/\s+/g, '');
+                            const dNum = String(dOrderNum || '').replace(/^#/, '').trim();
+
+                            let detailLabel = badge.label;
+
+                            if (badge.label === 'Online' || badge.label === 'Delivery') {
+                              if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
+                                detailLabel = dNum ? `UberEATS #${dNum}` : 'UberEATS';
+                              } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
+                                detailLabel = dNum ? `Doordash #${dNum}` : 'Doordash';
+                              } else if (dCompanyStr === 'SKIPTHEDISHES' || dCompanyStr === 'SKIP' || oType === 'SKIP' || oType === 'SKIPTHEDISHES') {
+                                detailLabel = dNum ? `Skipthedishes #${dNum}` : 'Skipthedishes';
+                              } else if (dCompanyStr === 'FANTUAN' || oType === 'FANTUAN') {
+                                detailLabel = dNum ? `Fantuan #${dNum}` : 'Fantuan';
+                              } else if (oType === 'DELIVERY') {
+                                detailLabel = dNum ? `Delivery #${dNum}` : 'Delivery';
+                              } else {
+                                detailLabel = dNum ? `Online #${dNum}` : 'Online';
+                              }
+                            } else if (badge.label === 'Dine-in') {
+                              const tbl = orderListSelectedOrder.table_name || '';
+                              if (tbl) detailLabel = `Dine-in  ${tbl}`;
+                            }
+
                             return (
                               <span className={`inline-block px-4 py-1.5 rounded-lg text-lg font-bold ${badge.bgColor} ${badge.textColor}`}>
-                                {badge.label}
+                                {detailLabel}
                               </span>
                             );
                           })()}
@@ -8909,7 +10470,7 @@ const SalesPage: React.FC = () => {
                                 </tr>
                               </thead>
                               <tbody>
-                                {orderListSelectedItems.map((item, idx) => {
+                                {(orderListSelectedItems || []).map((item: any, idx: number) => {
                                   const rawModifiers = item.modifiers_json 
                                     ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) 
                                     : [];
@@ -8935,24 +10496,37 @@ const SalesPage: React.FC = () => {
                                   }
                                   return (
                                     <tr key={idx} className="border-b border-gray-100">
-                                      <td className="text-center font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>{item.quantity || 1}</td>
+                                      <td className="text-center font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2, verticalAlign: 'top' }}>{item.quantity || 1}</td>
                                       <td style={{ paddingTop: 2, paddingBottom: 2 }}>
-                                        <div className="font-medium text-sm" style={{ lineHeight: 1.15 }}>{item.name}</div>
-                                        {modifierNames.length > 0 && (
-                                          <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
-                                            {modifierNames.map((name: string, mi: number) => (
-                                              <div key={mi}>· {name}</div>
-                                            ))}
-                                          </div>
+                                        <div className="font-medium text-sm" style={{ lineHeight: 1.15 }}>
+                                          {item.name}
+                                        </div>
+                                        {!!item.togo_label && (
+                                          <div className="text-xs text-orange-500 font-semibold italic ml-1" style={{ lineHeight: 1.1 }}>{'<Togo>'}</div>
                                         )}
-                                        {item.discountPercent && item.discountPercent > 0 && (
+                                        {modifierNames.length > 0 && (() => {
+                                          const grouped: Array<{ name: string; count: number }> = [];
+                                          modifierNames.forEach(n => {
+                                            const existing = grouped.find(g => g.name === n);
+                                            if (existing) existing.count++;
+                                            else grouped.push({ name: n, count: 1 });
+                                          });
+                                          return (
+                                            <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
+                                              {grouped.map((g, mi) => (
+                                                <div key={mi}>· {g.count > 1 ? `${g.count}x ` : ''}{g.name}</div>
+                                              ))}
+                                            </div>
+                                          );
+                                        })()}
+                                        {item.discountPercent > 0 && (
                                           <div className="text-xs text-green-600 ml-2 font-medium" style={{ lineHeight: 1.1 }}>
                                             🎁 {item.discountPercent}% off {item.promotionName && `(${item.promotionName})`}
                                           </div>
                                         )}
                                       </td>
-                                      <td className="text-right font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2 }}>
-                                        {item.discountAmount && item.discountAmount > 0 ? (
+                                      <td className="text-right font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2, verticalAlign: 'top' }}>
+                                        {item.discountAmount > 0 ? (
                                           <div style={{ lineHeight: 1.1 }}>
                                             <span className="line-through text-gray-400 text-xs">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</span>
                                             <div className="text-green-600">${(((item.price || 0) * (item.quantity || 1)) - item.discountAmount).toFixed(2)}</div>
@@ -8964,6 +10538,28 @@ const SalesPage: React.FC = () => {
                                     </tr>
                                   );
                                 })}
+                                {/* VOID 아이템 표시 (취소선 + VOID 라벨) */}
+                                {orderListVoidLines.length > 0 && (
+                                  <>
+                                    <tr><td colSpan={3} className="text-center text-xs font-bold text-red-600 py-1" style={{ borderTop: '1px dashed #ef4444' }}>VOID</td></tr>
+                                    {orderListVoidLines.map((vl: any, vi: number) => (
+                                      <tr key={`void-${vi}`} className="border-b border-red-100 bg-red-50">
+                                        <td className="text-center font-medium text-sm text-red-400" style={{ paddingTop: 2, paddingBottom: 2, textDecoration: 'line-through' }}>{vl.qty || 1}</td>
+                                        <td style={{ paddingTop: 2, paddingBottom: 2 }}>
+                                          <div className="font-medium text-sm text-red-400" style={{ lineHeight: 1.15, textDecoration: 'line-through' }}>{vl.name}</div>
+                                          {vl.reason && (
+                                            <div className="text-xs text-red-300 ml-2" style={{ lineHeight: 1.1 }}>
+                                              Reason: {vl.reason}
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td className="text-right font-medium text-sm text-red-400" style={{ paddingTop: 2, paddingBottom: 2, textDecoration: 'line-through' }}>
+                                          -${(Number(vl.amount || 0)).toFixed(2)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </>
+                                )}
                               </tbody>
                             </table>
                           </div>
@@ -8987,10 +10583,19 @@ const SalesPage: React.FC = () => {
                                   </div>
                                 </>
                               )}
-                              <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
-                                <span className="font-medium text-xs">Tax:</span>
-                                <span className="font-medium text-xs">${totals.tax.toFixed(2)}</span>
-                              </div>
+                              {(totals.taxLines && totals.taxLines.length > 0) ? (
+                                totals.taxLines.map((tl: any, ti: number) => (
+                                  <div key={ti} className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                                    <span className="font-medium text-xs">{tl.name}:</span>
+                                    <span className="font-medium text-xs">${tl.amount.toFixed(2)}</span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
+                                  <span className="font-medium text-xs">Tax:</span>
+                                  <span className="font-medium text-xs">${totals.tax.toFixed(2)}</span>
+                                </div>
+                              )}
                               <div className="flex justify-between py-0.5 font-bold text-base border-t-2 border-gray-400 mt-0.5">
                                 <span>Total:</span>
                                 <span>${totals.total.toFixed(2)}</span>
@@ -9019,7 +10624,7 @@ const SalesPage: React.FC = () => {
 
                 {/* Content - Live Order Tab */}
                 {orderListTab === 'live' && (
-                <div className="flex-1 p-3 overflow-auto flex flex-col">
+                <div className="flex-1 p-3 overflow-hidden flex flex-col">
                   {/* í•˜ì´ë¼ì´íŠ¸ëœ ì•„ì´í…œì´ ìžˆëŠ” í…Œì´ë¸” ëª©ë¡ í‘œì‹œ */}
                   {liveOrderHighlightItem && (() => {
                     const tablesWithItem = liveOrders
@@ -9061,15 +10666,15 @@ const SalesPage: React.FC = () => {
                         </div>
                         <button
                           onClick={() => setLiveOrderHighlightItem(null)}
-                          className="ml-auto text-gray-500 hover:text-gray-700 text-lg"
+                          className="ml-auto w-6 h-6 flex items-center justify-center rounded-full bg-gray-200 hover:bg-gray-400 text-gray-600 hover:text-white text-sm font-bold transition-all"
                         >
-                          âœ•
+                          X
                         </button>
                       </div>
                     );
                   })()}
                   
-                  <div className="grid grid-cols-4 gap-3 auto-rows-[minmax(200px,1fr)] flex-1">
+                  <div className="grid grid-cols-4 gap-3 flex-1 overflow-y-auto" style={{ gridAutoRows: 'calc((100% - 12px) / 2)' }}>
                     {/* ê²°ì œ ì™„ë£Œë˜ì§€ ì•Šì€ í…Œì´ë¸” ì£¼ë¬¸ í‘œì‹œ - í…Œì´ë¸” ë²ˆí˜¸ ì˜¤ë¦„ì°¨ìˆœ */}
                     {liveOrders
                       .slice()
@@ -9110,10 +10715,22 @@ const SalesPage: React.FC = () => {
                           style={{ minHeight: 0 }}
                         >
                           {liveOrder.items && liveOrder.items.length > 0 ? (
-                            liveOrder.items
-                              .slice()
-                              .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''))
+                            (() => {
+                              const dine = liveOrder.items.filter((it: any) => !it.togo_label).slice().sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+                              const togo = liveOrder.items.filter((it: any) => !!it.togo_label).slice().sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+                              const all: any[] = [...dine, ...(togo.length > 0 ? [{ _togoSep: true }, ...togo] : [])];
+                              return all;
+                            })()
                               .map((item: any, idx: number) => {
+                                if (item._togoSep) {
+                                  return (
+                                    <div key="togo-sep" className="flex items-center my-1">
+                                      <div className="flex-1 border-t border-dashed border-gray-400" />
+                                      <span className="px-2 text-[10px] font-semibold text-gray-500">TOGO</span>
+                                      <div className="flex-1 border-t border-dashed border-gray-400" />
+                                    </div>
+                                  );
+                                }
                                 const isHighlighted = liveOrderHighlightItem === item.name;
                                 return (
                               <div 
@@ -9148,7 +10765,9 @@ const SalesPage: React.FC = () => {
                                 <div className="flex justify-between items-start">
                                   <span className={`leading-snug flex-1 ${
                                     isHighlighted ? 'text-red-600 font-bold' : 'font-semibold text-gray-800'
-                                  }`}>{item.name}</span>
+                                  }`}>
+                                    {item.name}
+                                  </span>
                                   <span className={`ml-2 ${
                                     isHighlighted ? 'text-red-600 font-bold' : 'text-gray-700 font-bold'
                                   }`}>x{item.quantity || 1}</span>
@@ -9236,6 +10855,7 @@ const SalesPage: React.FC = () => {
           maxWidthPx={keyboardMaxWidth}
           />
         )}
+          </div>
         </div>
         )}
       </div>
@@ -9250,6 +10870,24 @@ const SalesPage: React.FC = () => {
         onSelect={handleServerSelectForTogo}
       />
       <PaymentModal />
+      {/* Waiting List with floating close button */}
+      {showWaitingModal && (
+        <div className="fixed inset-0 z-[99999] pointer-events-none flex items-center justify-center">
+          <div className="relative pointer-events-none flex flex-col" style={{ width: '580px', height: '80vh' }}>
+             {/* Header area placeholder to position button */}
+             <div className="h-[60px] relative w-full pointer-events-none">
+              <button
+                onClick={() => setShowWaitingModal(false)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg backdrop-blur-sm pointer-events-auto"
+              >
+                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <WaitingListModal
         open={showWaitingModal}
         onClose={() => setShowWaitingModal(false)}
@@ -9262,101 +10900,87 @@ const SalesPage: React.FC = () => {
 
       {/* Delivery ì „ìš© ëª¨ë‹¬ */}
       {showDeliveryOrderModal && (
-        <div className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-2">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[950px] flex flex-col overflow-hidden" style={{ height: 'min(90vh, 560px)' }}>
-            {/* ìƒë‹¨: ì¢Œ-ì±„ë„(35%), ì¤‘-í”„ë ™íƒ€ìž„(50%), ìš°-ë²„íŠ¼(15%) */}
-            <div className="flex-shrink-0 border-b border-gray-300">
-              <div className="flex items-stretch">
-                {/* ì¢Œì¸¡: ë”œë¦¬ë²„ë¦¬ ì±„ë„ (35%) - ì—°í•œ íŒŒëž€ìƒ‰ ë°°ê²½ */}
-                <div className="p-3 bg-blue-50" style={{ width: '35%' }}>
-                  <div className="grid grid-cols-2 gap-1.5 mb-1.5">
-                    {(['UberEats', 'Doordash', 'SkipTheDishes', 'Fantuan'] as const).map((company) => (
-                      <button
-                        key={company}
-                        type="button"
-                        onClick={() => setDeliveryCompany(company)}
-                        className={`h-10 rounded-lg font-bold text-xs transition-all shadow ${
-                          deliveryCompany === company
-                            ? company === 'UberEats' ? 'bg-green-500 text-white ring-2 ring-green-300'
-                            : company === 'Doordash' ? 'bg-red-500 text-white ring-2 ring-red-300'
-                            : company === 'SkipTheDishes' ? 'bg-orange-500 text-white ring-2 ring-orange-300'
-                            : 'bg-yellow-500 text-white ring-2 ring-yellow-300'
-                            : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
-                        }`}
-                      >
-                        {company === 'SkipTheDishes' ? 'Skip' : company}
-                      </button>
-                    ))}
-                  </div>
+        <div
+          className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm p-2"
+          style={{ paddingBottom: DELIVERY_KEYBOARD_RESERVED_HEIGHT }}
+        >
+          <div className="w-full h-full flex flex-col items-center justify-start pt-2">
+            <div
+              className="w-full max-w-[950px] flex flex-col gap-2"
+              style={{ maxHeight: `calc(100vh - ${DELIVERY_KEYBOARD_RESERVED_HEIGHT}px)` }}
+            >
+              <div className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-2xl w-full border border-slate-200 overflow-hidden flex flex-col flex-1 min-h-0">
+            <div className="px-4 sm:px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <div className="text-lg font-semibold text-slate-800">New Delivery</div>
+                <div className="text-xs text-slate-500 font-semibold">Channel · Order # · Prep time</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDeliveryOrderModal(false)}
+                  className="h-10 px-4 rounded-xl bg-white border border-slate-300 text-slate-700 font-semibold shadow-sm hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3">
+              {/* Left: order # + channel */}
+              <div className="space-y-2">
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="text-xs font-semibold text-slate-600 mb-2">Order #</div>
                   <input
                     type="text"
                     ref={deliveryOrderInputRef}
                     value={deliveryOrderNumber}
                     onChange={(e) => setDeliveryOrderNumber(e.target.value.toUpperCase())}
                     placeholder="Order #"
-                    className="w-full h-11 px-3 text-lg font-mono bg-white border-2 border-purple-400 rounded-lg text-gray-800 text-center tracking-widest focus:outline-none focus:border-purple-600"
+                    className="w-full h-11 px-3 text-xl font-mono bg-white border border-slate-300 rounded-xl text-slate-800 text-center tracking-widest focus:outline-none focus:border-emerald-400"
                   />
                 </div>
 
-                {/* ì¤‘ì•™: í”„ë ™íƒ€ìž„ (50%) - ì—°í•œ ë…¸ëž€ìƒ‰ ë°°ê²½ */}
-                <div className="p-3 bg-amber-50 flex flex-col justify-end" style={{ width: '50%' }}>
-                  <div className="flex items-center gap-3 mb-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-gray-500 text-xs">Now</span>
-                      <span className="text-sm font-mono text-gray-600">
-                        {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-gray-600 text-sm font-semibold">+</span>
-                      <span className="text-xl font-mono font-bold text-purple-600">{deliveryPrepTime}m</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-gray-600 text-sm">=</span>
-                      <span className="px-3 py-1 rounded-lg bg-emerald-500 text-white text-lg font-bold shadow-md">
-                        Ready {(() => {
-                          const now = new Date();
-                          now.setMinutes(now.getMinutes() + deliveryPrepTime);
-                          return now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-                        })()}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {[5, 10, 15, 20, 25, 30, 40, 50, 60, 90].map((min) => (
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="text-xs font-semibold text-slate-600 mb-2">Channel</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['UberEats', 'Doordash', 'SkipTheDishes', 'Fantuan'] as const).map((company) => (
                       <button
-                        key={`prep-${min}`}
+                        key={company}
                         type="button"
-                        onClick={() => setDeliveryPrepTime(min)}
-                        className={`h-11 rounded-lg text-sm font-bold transition-all ${
-                          deliveryPrepTime === min ? 'bg-purple-500 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
+                        onClick={() => setDeliveryCompany(company)}
+                        className={`h-12 rounded-xl font-bold text-sm transition-all shadow border ${
+                          deliveryCompany === company
+                            ? 'bg-emerald-600 text-white border-emerald-700'
+                            : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'
                         }`}
                       >
-                        {min}
+                        {company === 'SkipTheDishes' ? 'Skip' : company}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* ìš°ì¸¡: ë²„íŠ¼ (15%) - ì—°í•œ ë³´ë¼ìƒ‰ ë°°ê²½ */}
-                <div className="p-3 bg-purple-50 flex flex-col gap-1.5" style={{ width: '15%' }}>
+                <div className="flex gap-2">
                   <button
                     type="button"
                     onClick={async () => {
                       if (!deliveryCompany) { alert('Select channel'); return; }
                       if (!deliveryOrderNumber.trim()) { alert('Enter order #'); return; }
-                      
-                      const now = new Date();
-                      now.setMinutes(now.getMinutes() + deliveryPrepTime);
-                      const readyTimeLabel = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-                      
+
+                      const clockApplied = applyDeliveryClockIfProvided();
+                      const minutesForOrder = clockApplied?.minutes ?? deliveryPrepTime;
+                      const readyTimeLabel = clockApplied?.readyLabel ?? computeDeliveryReadyLabel(minutesForOrder);
+                      const deliveryOrderNumberTrimmed = deliveryOrderNumber.trim();
+
                       const newOrder = {
                         id: Date.now(),
                         type: 'Delivery',
                         time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
                         createdAt: new Date().toISOString(),
                         phone: '',
-                        name: `${deliveryCompany} #${deliveryOrderNumber}`,
+                        name: `${deliveryCompany} #${deliveryOrderNumberTrimmed}`,
                         status: 'pending',
                         serverId: null,
                         serverName: '',
@@ -9364,23 +10988,23 @@ const SalesPage: React.FC = () => {
                         orderItems: [],
                         fulfillment: 'delivery',
                         deliveryCompany,
-                        deliveryOrderNumber: deliveryOrderNumber.trim(),
+                        deliveryOrderNumber: deliveryOrderNumberTrimmed,
                         readyTimeLabel,
-                        prepTime: deliveryPrepTime,
+                        prepTime: minutesForOrder,
                       };
-                      
+
                       setTogoOrders(prev => [...prev, newOrder]);
-                      
-                      // DB ì €ìž¥ (Kitchen Ticket/ReceiptëŠ” ì£¼ë¬¸íŽ˜ì´ì§€ì—ì„œ ë©”ë‰´ ì¶”ê°€ í›„ ì¶œë ¥)
+
                       try {
                         await fetch(`${API_URL}/orders/delivery-orders`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ storeId: 'STORE001', ...newOrder }),
                         });
-                        console.log('âœ… Delivery order saved to DB and Firebase');
-                      } catch (err) { console.error('âŒ Failed to save delivery order:', err); }
-                      
+                      } catch (err) {
+                        console.error('❌ Failed to save delivery order:', err);
+                      }
+
                       setShowDeliveryOrderModal(false);
                       navigate('/sales/order', {
                         state: {
@@ -9391,17 +11015,19 @@ const SalesPage: React.FC = () => {
                           priceType: 'price2',
                           menuId: defaultMenu.menuId,
                           menuName: defaultMenu.menuName,
-                          deliveryMetaId: newOrder.id,  // delivery_orders í…Œì´ë¸”ì˜ id
+                          deliveryMetaId: newOrder.id,
                           deliveryCompany,
-                          deliveryOrderNumber: deliveryOrderNumber.trim(),
+                          deliveryOrderNumber: deliveryOrderNumberTrimmed,
+                          readyTimeLabel,
+                          pickup: { minutes: minutesForOrder },
                         },
                       });
                     }}
                     disabled={!deliveryCompany || !deliveryOrderNumber.trim()}
-                    className={`flex-1 font-bold rounded-lg transition-all ${
+                    className={`flex-1 h-12 rounded-2xl font-bold transition-all shadow ${
                       deliveryCompany && deliveryOrderNumber.trim()
-                        ? 'bg-purple-600 text-white hover:bg-purple-500 shadow-md'
-                        : 'bg-gray-300 text-gray-400 cursor-not-allowed'
+                        ? 'bg-gradient-to-b from-emerald-400 to-emerald-600 text-white hover:shadow-lg'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                     }`}
                   >
                     Save
@@ -9409,32 +11035,267 @@ const SalesPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowDeliveryOrderModal(false)}
-                    className="flex-1 bg-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-400"
+                    className="flex-1 h-12 rounded-2xl bg-white border border-slate-300 text-slate-700 font-bold shadow-sm hover:bg-slate-50"
                   >
                     Cancel
                   </button>
                 </div>
               </div>
-            </div>
 
-            {/* í•˜ë‹¨: í‚¤ë³´ë“œ */}
-            <div className="flex-1 flex items-start justify-center bg-gray-100 pt-1 px-2">
-              <VirtualKeyboard
-                open={true}
-                onType={(char) => setDeliveryOrderNumber(prev => (prev + char).toUpperCase())}
-                onBackspace={() => setDeliveryOrderNumber(prev => prev.slice(0, -1))}
-                onClear={() => setDeliveryOrderNumber('')}
-                displayText={deliveryOrderNumber}
-                keepOpen={true}
-                showNumpad={true}
-                languages={['EN']}
-                currentLanguage="EN"
-                maxWidthPx={900}
-              />
+              {/* Right: prep time panels (match Togo) */}
+              <div className="grid gap-1.5">
+                {/* Panel 1: summary */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
+                    <div className="flex items-center gap-2 min-w-[140px]">
+                      <span>Prep Time</span>
+                      <span className="text-3xl font-mono font-semibold leading-none text-indigo-600">{deliveryPrepTime}m</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
+                      <span className="px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold whitespace-nowrap">
+                        Ready {computeDeliveryReadyDisplay(deliveryPrepTime)}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-700 font-semibold whitespace-nowrap">
+                        Current {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                      </span>
+                    </div>
+                    <div className="flex-1" />
+                  </div>
+                </div>
+
+                {/* Panel 2: minute buttons */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap gap-2">
+                      {[5, 10, 15, 20, 25].map((min) => (
+                        <button
+                          key={`del-top-${min}`}
+                          type="button"
+                          onClick={() => {
+                            setDeliveryPrepTime(min);
+                            try {
+                              const d = new Date(Date.now() + min * 60000);
+                              setDeliveryReadyHour(String(d.getHours()).padStart(2, '0'));
+                              setDeliveryReadyMinute(String(d.getMinutes()).padStart(2, '0'));
+                            } catch {}
+                          }}
+                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                            min === 15
+                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                              : 'bg-slate-500 text-white hover:bg-slate-600'
+                          }`}
+                        >
+                          +{min}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[30, 40, 50, 60].map((min) => (
+                        <button
+                          key={`del-bottom-${min}`}
+                          type="button"
+                          onClick={() => {
+                            setDeliveryPrepTime(min);
+                            try {
+                              const d = new Date(Date.now() + min * 60000);
+                              setDeliveryReadyHour(String(d.getHours()).padStart(2, '0'));
+                              setDeliveryReadyMinute(String(d.getMinutes()).padStart(2, '0'));
+                            } catch {}
+                          }}
+                          className="min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center bg-slate-500 text-white hover:bg-slate-600"
+                        >
+                          +{min}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Panel 3: manual HH:MM */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cur = parseInt(String(deliveryReadyHour || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) - 1;
+                          setDeliveryReadyHour(String((next + 24) % 24).padStart(2, '0'));
+                        }}
+                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+                      >
+                        -H
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={deliveryReadyHour}
+                        readOnly
+                        onClick={() => openTimePicker('DELIVERY_HOUR')}
+                        onChange={(e) => {
+                          const digits = String(e.target.value || '').replace(/[^\d]/g, '').slice(0, 2);
+                          const n = digits === '' ? NaN : parseInt(digits, 10);
+                          if (!Number.isFinite(n)) { setDeliveryReadyHour(digits); return; }
+                          setDeliveryReadyHour(String(Math.max(0, Math.min(23, n))).padStart(2, '0'));
+                        }}
+                        placeholder="HH"
+                        className="h-[38px] w-[54px] px-2 rounded-lg border border-slate-300 bg-white text-sm font-mono text-slate-800 text-center focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cur = parseInt(String(deliveryReadyHour || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) + 1;
+                          setDeliveryReadyHour(String(next % 24).padStart(2, '0'));
+                        }}
+                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+                      >
+                        +H
+                      </button>
+                    </div>
+                    <span className="text-slate-500">:</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cur = parseInt(String(deliveryReadyMinute || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) - 1;
+                          const norm = ((next % 60) + 60) % 60;
+                          setDeliveryReadyMinute(String(norm).padStart(2, '0'));
+                        }}
+                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700"
+                      >
+                        -M
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={deliveryReadyMinute}
+                        readOnly
+                        onClick={() => openTimePicker('DELIVERY_MINUTE')}
+                        onChange={(e) => {
+                          const digits = String(e.target.value || '').replace(/[^\d]/g, '').slice(0, 2);
+                          const n = digits === '' ? NaN : parseInt(digits, 10);
+                          if (!Number.isFinite(n)) { setDeliveryReadyMinute(digits); return; }
+                          setDeliveryReadyMinute(String(Math.max(0, Math.min(59, n))).padStart(2, '0'));
+                        }}
+                        placeholder="MM"
+                        className="h-[38px] w-[54px] px-2 rounded-lg border border-slate-300 bg-white text-sm font-mono text-slate-800 text-center focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const cur = parseInt(String(deliveryReadyMinute || '0'), 10);
+                          const next = (Number.isFinite(cur) ? cur : 0) + 1;
+                          const norm = next % 60;
+                          setDeliveryReadyMinute(String(norm).padStart(2, '0'));
+                        }}
+                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700"
+                      >
+                        +M
+                      </button>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-600">Time (HH:MM)</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
+
+              {/* 키보드: 모달 아래 (겹침 방지) */}
+              <div className="w-full bg-white rounded-2xl shadow-2xl p-2 flex-shrink-0">
+                <VirtualKeyboard
+                  open={true}
+                  onType={(char) => setDeliveryOrderNumber(prev => (prev + char).toUpperCase())}
+                  onBackspace={() => setDeliveryOrderNumber(prev => prev.slice(0, -1))}
+                  onClear={() => setDeliveryOrderNumber('')}
+                  displayText={deliveryOrderNumber}
+                  keepOpen={true}
+                  showNumpad={true}
+                  languages={['EN']}
+                  currentLanguage="EN"
+                  maxWidthPx={920}
+                />
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {timePickerTarget &&
+        (() => {
+          const isHour = String(timePickerTarget).endsWith('HOUR');
+          const currentValue =
+            timePickerTarget === 'TOGO_HOUR'
+              ? togoReadyHour
+              : timePickerTarget === 'TOGO_MINUTE'
+              ? togoReadyMinute
+              : timePickerTarget === 'DELIVERY_HOUR'
+              ? deliveryReadyHour
+              : deliveryReadyMinute;
+
+          const apply = (val: string) => {
+            if (timePickerTarget === 'TOGO_HOUR') setTogoReadyHour(val);
+            else if (timePickerTarget === 'TOGO_MINUTE') setTogoReadyMinute(val);
+            else if (timePickerTarget === 'DELIVERY_HOUR') setDeliveryReadyHour(val);
+            else if (timePickerTarget === 'DELIVERY_MINUTE') setDeliveryReadyMinute(val);
+            closeTimePicker();
+          };
+
+          const hourOptions = Array.from({ length: 13 }, (_, i) => 11 + i).map((h24) => {
+            const label = h24 === 11 ? '11 AM' : h24 === 12 ? '12 PM' : `${h24 - 12} PM`;
+            const value = String(h24).padStart(2, '0');
+            return { label, value };
+          });
+          const minuteOptions = ['00', '15', '30', '45'].map((m) => ({ label: m, value: m }));
+          const options = isHour ? hourOptions : minuteOptions;
+
+          return (
+            <div
+              className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
+              onClick={closeTimePicker}
+            >
+              <div
+                className="w-full max-w-md rounded-2xl bg-white p-4 shadow-2xl border border-slate-200"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-lg font-extrabold text-slate-800">
+                    {isHour ? 'Select Hour' : 'Select Minute'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeTimePicker}
+                    className="px-3 h-9 rounded-xl border border-slate-300 bg-white text-slate-700 font-bold hover:bg-slate-50"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className={`grid gap-2 ${isHour ? 'grid-cols-3' : 'grid-cols-4'}`}>
+                  {options.map((opt) => {
+                    const active = String(opt.value) === String(currentValue);
+                    return (
+                      <button
+                        key={`${isHour ? 'h' : 'm'}-${opt.value}`}
+                        type="button"
+                        onClick={() => apply(opt.value)}
+                        className={`h-12 rounded-xl font-bold border shadow-sm transition ${
+                          active
+                            ? 'bg-emerald-600 border-emerald-700 text-white'
+                            : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       {/* Online Order Panel */}
       <OnlineOrderPanel
@@ -9457,7 +11318,10 @@ const SalesPage: React.FC = () => {
           onlineTogoSavedOrderIdRef.current = null;
         }}
         subtotal={onlineTogoPaymentOrder?.subtotal || 0}
-        taxLines={onlineTogoPaymentOrder?.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : []}
+        taxLines={
+          (onlineTogoPaymentOrder as any)?.taxLines ||
+          (onlineTogoPaymentOrder?.tax ? [{ name: 'Tax', amount: onlineTogoPaymentOrder.tax }] : [])
+        }
         total={onlineTogoPaymentOrder?.total || 0}
         channel={onlineTogoPaymentOrder?.type?.toLowerCase() || 'togo'}
         customerName={onlineTogoPaymentOrder?.name || ''}
@@ -9470,8 +11334,29 @@ const SalesPage: React.FC = () => {
         })()}
         paidSoFar={onlineTogoSessionPayments.reduce((s, p) => s + (p.amount || 0), 0)}
         onClearAllPayments={async () => {
-          // ê²°ì œ ì„¸ì…˜ë§Œ ì´ˆê¸°í™” (DB ê²°ì œëŠ” ìœ ì§€ - void ì²˜ë¦¬ëŠ” ë³„ë„ë¡œ)
-          setOnlineTogoSessionPayments([]);
+          try {
+            const ids = onlineTogoSessionPayments.map(p => p.paymentId).filter((id) => typeof id === 'number' && Number.isFinite(id));
+            for (const pid of ids) {
+              try {
+                await fetch(`${API_URL}/payments/${pid}/void`, { method: 'POST' });
+              } catch {}
+            }
+          } finally {
+            setOnlineTogoSessionPayments([]);
+          }
+        }}
+        onClearScopedPayments={async (paymentIds: number[]) => {
+          const idSet = new Set((paymentIds || []).filter((id) => typeof id === 'number' && Number.isFinite(id)));
+          if (idSet.size === 0) return;
+          try {
+            for (const pid of Array.from(idSet)) {
+              try {
+                await fetch(`${API_URL}/payments/${pid}/void`, { method: 'POST' });
+              } catch {}
+            }
+          } finally {
+            setOnlineTogoSessionPayments(prev => prev.filter(p => !idSet.has(p.paymentId)));
+          }
         }}
         onConfirm={async (payload: { method: string; amount: number; tip: number }) => {
           try {
@@ -9558,7 +11443,7 @@ const SalesPage: React.FC = () => {
             alert('An error occurred during payment processing.');
           }
         }}
-        onPaymentComplete={(data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean }) => {
+        onPaymentComplete={(data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } }) => {
           // Dine-inê³¼ ë™ì¼: PaymentModalì´ ìž”ì•¡ 0 ê°ì§€ ì‹œ ìžë™ìœ¼ë¡œ í˜¸ì¶œ
           // Cash drawer ì¦‰ì‹œ ì˜¤í”ˆ
           try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
@@ -9580,23 +11465,27 @@ const SalesPage: React.FC = () => {
             tip: data.tip,
             payments: data.payments,
             hasCashPayment: data.hasCashPayment,
+            discount: data.discount,
           });
           setShowOnlineTogoPaymentCompleteModal(true);
         }}
         onComplete={async () => {
           // Calculate change and payment info for PaymentCompleteModal
-          const cashPaid = onlineTogoSessionPayments.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+          // Change should be calculated from FOOD portion only (amount - tip).
+          // This prevents "cash tip" from being misinterpreted as change.
+          const cashFoodPaid = onlineTogoSessionPayments
+            .filter(p => String(p.method || '').toUpperCase() === 'CASH')
+            .reduce((s, p) => s + Math.max(0, (p.amount || 0) - ((p as any).tip || 0)), 0);
           const totalAmount = onlineTogoPaymentOrder?.total || 0;
-          const nonCashPaid = onlineTogoSessionPayments.filter(p => p.method !== 'CASH').reduce((s, p) => s + p.amount, 0);
-          const changeAmount = Math.max(0, cashPaid - (totalAmount - nonCashPaid));
+          const nonCashFoodPaid = onlineTogoSessionPayments
+            .filter(p => String(p.method || '').toUpperCase() !== 'CASH')
+            .reduce((s, p) => s + Math.max(0, (p.amount || 0) - ((p as any).tip || 0)), 0);
+          const changeAmount = Math.max(0, Number((cashFoodPaid - Math.max(0, totalAmount - nonCashFoodPaid)).toFixed(2)));
           const totalTip = onlineTogoSessionPayments.reduce((s, p) => s + (p.tip || 0), 0);
           const actualPayments = onlineTogoSessionPayments.length > 0
-            ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount }))
+            ? onlineTogoSessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: (p.tip || 0) }))
             : [{ method: 'PAID', amount: totalAmount }];
           const hasCash = onlineTogoSessionPayments.some(p => p.method === 'CASH');
-          
-          // onComplete fallback: Cash drawer 오픈 (onPaymentComplete 미호출 시)
-          try { await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
           
           // Save completion data for the close handler
           onlineTogoCompletionRef.current = {
@@ -9621,10 +11510,137 @@ const SalesPage: React.FC = () => {
       />
       </div>
 
+      {/* Order History Payment Modal */}
+      <div style={{ position: 'relative', zIndex: 70 }}>
+        <TablePaymentModal
+          isOpen={showOrderListPaymentModal}
+          onClose={() => {
+            setShowOrderListPaymentModal(false);
+            setOrderListPaymentOrder(null);
+            setOrderListPaymentSessionPayments([]);
+          }}
+          subtotal={Number(orderListPaymentOrder?.subtotal ?? 0)}
+          taxLines={
+            (orderListPaymentOrder as any)?.taxLines ||
+            (Number(orderListPaymentOrder?.tax ?? 0) ? [{ name: 'Tax', amount: Number(orderListPaymentOrder?.tax ?? 0) }] : [])
+          }
+          total={Number(orderListPaymentOrder?.total ?? 0)}
+          channel={String(orderListPaymentOrder?.orderType || orderListPaymentOrder?.type || 'pos').toLowerCase()}
+          customerName={String(orderListPaymentOrder?.name || '')}
+          tableName={`Order #${String(orderListPaymentOrder?.number ?? orderListPaymentOrder?.id ?? '')}`}
+          payments={orderListPaymentSessionPayments}
+          outstandingDue={(() => {
+            const total = Number(orderListPaymentOrder?.total ?? 0);
+            const paidSum = orderListPaymentSessionPayments.reduce((s, p) => s + (p.amount || 0), 0);
+            return Math.max(0, Number((total - paidSum).toFixed(2)));
+          })()}
+          paidSoFar={orderListPaymentSessionPayments.reduce((s, p) => s + (p.amount || 0), 0)}
+          onClearAllPayments={async () => {
+            try {
+              const ids = orderListPaymentSessionPayments
+                .map((p) => p.paymentId)
+                .filter((id) => typeof id === 'number' && Number.isFinite(id));
+              for (const pid of ids) {
+                try {
+                  await fetch(`${API_URL}/payments/${pid}/void`, { method: 'POST' });
+                } catch {}
+              }
+            } finally {
+              setOrderListPaymentSessionPayments([]);
+            }
+          }}
+          onClearScopedPayments={async (paymentIds: number[]) => {
+            const idSet = new Set((paymentIds || []).filter((id) => typeof id === 'number' && Number.isFinite(id)));
+            if (idSet.size === 0) return;
+            try {
+              for (const pid of Array.from(idSet)) {
+                try {
+                  await fetch(`${API_URL}/payments/${pid}/void`, { method: 'POST' });
+                } catch {}
+              }
+            } finally {
+              setOrderListPaymentSessionPayments((prev) => prev.filter((p) => !idSet.has(p.paymentId)));
+            }
+          }}
+          onConfirm={async (payload: { method: string; amount: number; tip: number }) => {
+            try {
+              const orderId = Number(orderListPaymentOrder?.id);
+              if (!Number.isFinite(orderId)) return;
+
+              const payRes = await fetch(`${API_URL}/payments`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  orderId,
+                  method: payload.method,
+                  amount: Number((payload.amount + payload.tip).toFixed(2)),
+                  tip: payload.tip,
+                  guestNumber: null,
+                }),
+              });
+              if (!payRes.ok) throw new Error('Failed to save payment');
+              const payData = await payRes.json();
+
+              setOrderListPaymentSessionPayments((prev) => ([
+                ...prev,
+                {
+                  paymentId: payData.paymentId,
+                  method: payload.method,
+                  amount: Number((payload.amount + payload.tip).toFixed(2)),
+                  tip: payload.tip,
+                },
+              ]));
+            } catch (e) {
+              console.error('[Order History Pay] Payment processing error:', e);
+              alert('An error occurred during payment processing.');
+            }
+          }}
+          onPaymentComplete={() => {
+            try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+            (async () => {
+              try {
+                const orderId = Number(orderListPaymentOrder?.id);
+                if (!Number.isFinite(orderId)) return;
+                await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' });
+              } catch (e) {
+                console.error('[Order History Pay] Failed to close order:', e);
+              } finally {
+                setShowOrderListPaymentModal(false);
+                setOrderListPaymentOrder(null);
+                setOrderListPaymentSessionPayments([]);
+                try { await fetchOrderList(orderListDate); } catch {}
+              }
+            })();
+          }}
+          onComplete={() => {
+            (async () => {
+              try {
+                const orderId = Number(orderListPaymentOrder?.id);
+                if (!Number.isFinite(orderId)) return;
+                await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' });
+              } catch (e) {
+                console.error('[Order History Pay] Failed to close order:', e);
+              } finally {
+                setShowOrderListPaymentModal(false);
+                setOrderListPaymentOrder(null);
+                setOrderListPaymentSessionPayments([]);
+                try { await fetchOrderList(orderListDate); } catch {}
+              }
+            })();
+          }}
+        />
+      </div>
+
       {/* Online/Togo Payment Complete Modal */}
       <PaymentCompleteModal
         isOpen={showOnlineTogoPaymentCompleteModal}
         onClose={handleOnlineTogoPaymentCompleteClose}
+        mode="receiptOnly"
+        onAddTips={(receiptCount) => {
+          setOnlineTogoPendingReceiptCountForTip(receiptCount);
+          setShowOnlineTogoPaymentCompleteModal(false);
+          setShowOnlineTogoTipEntryModal(true);
+        }}
         change={onlineTogoPaymentCompleteData?.change || 0}
         total={onlineTogoPaymentCompleteData?.total || 0}
         tip={onlineTogoPaymentCompleteData?.tip || 0}
@@ -9649,107 +11665,32 @@ const SalesPage: React.FC = () => {
         }}
       />
 
+      <TipEntryModal
+        isOpen={showOnlineTogoTipEntryModal}
+        onClose={() => {
+          setShowOnlineTogoTipEntryModal(false);
+          setShowOnlineTogoPaymentCompleteModal(true);
+        }}
+        onSave={async (tipAmount) => {
+          const orderId = onlineTogoCompletionRef.current?.orderId || onlineTogoSavedOrderIdRef.current;
+          if (!orderId || tipAmount <= 0) return;
+          try {
+            const payRes = await fetch(`${API_URL}/payments`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: null })
+            });
+            if (!payRes.ok) throw new Error('Failed to save cash tip');
+            const payData = await payRes.json();
+            setOnlineTogoSessionPayments(prev => ([...prev, { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount }]));
+          } catch (e) {
+            console.error('Failed to save cash tip:', e);
+          }
+          setShowOnlineTogoTipEntryModal(false);
+          await handleOnlineTogoPaymentCompleteClose(onlineTogoPendingReceiptCountForTip);
+        }}
+      />
 
-      {/* Pickup Complete í™•ì¸ ëª¨ë‹¬ - ê²°ì œ ì™„ë£Œ í›„ í‘œì‹œ */}
-      {showPickupConfirmModal && pickupConfirmOrder && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70]">
-          <div className="bg-white rounded-2xl shadow-2xl w-[400px] overflow-hidden">
-            {/* Header */}
-            <div className="bg-gradient-to-r from-green-500 to-green-600 text-white px-6 py-4 text-center">
-              <div className="text-2xl font-bold">Payment Complete</div>
-              <div className="text-green-100 mt-1">
-                Order #{pickupConfirmOrder.number || pickupConfirmOrder.id}
-              </div>
-            </div>
-            
-            {/* Content */}
-            <div className="p-6 text-center">
-              <div className="text-6xl mb-4">âœ“</div>
-              <div className="text-lg text-gray-600 mb-6">
-                Would you like to mark this order as picked up?
-              </div>
-              
-              {/* Buttons */}
-              <div className="space-y-3">
-                {/* Pickup Complete - í° ë²„íŠ¼ */}
-                <button
-                  onClick={async () => {
-                    const orderId = pickupConfirmOrder?.id;
-                    const localOrderId = pickupConfirmOrder?.localOrderId || pickupConfirmOrder?.fullOrder?.localOrderId;
-                    const orderType = pickupConfirmOrder?.orderType;
-                    
-                    if (orderId) {
-                      try {
-                        if (orderType === 'online') {
-                          // ì˜¨ë¼ì¸ ì£¼ë¬¸: Firebase ìƒíƒœë¥¼ picked_upìœ¼ë¡œ ë³€ê²½
-                          await fetch(`${API_URL}/online-orders/order/${orderId}/pickup`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                          });
-                          console.log('Firebase: Order marked as picked_up');
-                          
-                          // POS ë¡œì»¬ DB ìƒíƒœë„ ì—…ë°ì´íŠ¸ (localOrderIdê°€ ìžˆëŠ” ê²½ìš°)
-                          if (localOrderId) {
-                            await fetch(`${API_URL}/orders/${localOrderId}/status`, {
-                              method: 'PATCH',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ status: 'PICKED_UP' }),
-                            });
-                            console.log('POS DB: Order marked as PICKED_UP');
-                          }
-                          
-                          // ì˜¨ë¼ì¸ ì£¼ë¬¸ ëª©ë¡ì—ì„œ ì¦‰ì‹œ ì œê±°
-                          setOnlineQueueCards(prev => prev.filter(card => card.id !== orderId));
-                        } else if (orderType === 'togo') {
-                          // Togo ì£¼ë¬¸: POS DBë§Œ ì—…ë°ì´íŠ¸
-                          await fetch(`${API_URL}/orders/${orderId}/status`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ status: 'PICKED_UP' }),
-                          });
-                          console.log('POS DB: Togo order marked as PICKED_UP');
-                          
-                          // Togo ì£¼ë¬¸ ëª©ë¡ì—ì„œ ì¦‰ì‹œ ì œê±°
-                          setTogoOrders(prev => prev.filter(order => order.id !== orderId));
-                        }
-                      } catch (error) {
-                        console.error('Pickup complete error:', error);
-                      }
-                      
-                      // ì„ íƒëœ ì£¼ë¬¸ë„ ì´ˆê¸°í™”
-                      if (selectedOrderDetail?.id === orderId) {
-                        setSelectedOrderDetail(null);
-                      }
-                    }
-                    
-                    // ëª¨ë‹¬ ë‹«ê¸°
-                    setShowPickupConfirmModal(false);
-                    setPickupConfirmOrder(null);
-                    
-                    // ëª©ë¡ ìƒˆë¡œê³ ì¹¨
-                    loadOnlineOrders();
-                    loadTogoOrders();
-                  }}
-                  className="w-full py-4 bg-green-500 hover:bg-green-600 text-white text-xl font-bold rounded-xl transition-colors shadow-lg"
-                >
-                  Pickup Complete
-                </button>
-                
-                {/* Back to List - ìž‘ì€ ë²„íŠ¼ */}
-                <button
-                  onClick={() => {
-                    setShowPickupConfirmModal(false);
-                    setPickupConfirmOrder(null);
-                  }}
-                  className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-medium rounded-lg transition-colors"
-                >
-                  Back to List
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* UNPAID ì£¼ë¬¸ Pickup ì‹œë„ ì‹œ í™•ì¸ ëª¨ë‹¬ */}
       {showUnpaidPickupModal && unpaidPickupOrder && (
@@ -9829,7 +11770,8 @@ const SalesPage: React.FC = () => {
               <button
                 onClick={() => {
                   setShowExitModal(false);
-                  navigate('/backoffice');
+                  setBackofficePinError('');
+                  setShowBackofficePinModal(true);
                 }}
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
               >
@@ -9873,6 +11815,42 @@ const SalesPage: React.FC = () => {
         </div>
       )}
 
+      {/* BackOffice PIN 확인 모달 */}
+      <PinInputModal
+        isOpen={showBackofficePinModal}
+        onClose={() => {
+          setShowBackofficePinModal(false);
+          setBackofficePinError('');
+        }}
+        onSubmit={async (pin: string) => {
+          setBackofficePinLoading(true);
+          setBackofficePinError('');
+          try {
+            const res = await fetch(`${API_URL}/admin-settings/verify-backoffice-pin`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pin })
+            });
+            const data = await res.json();
+            if (data.success) {
+              setShowBackofficePinModal(false);
+              setBackofficePinError('');
+              navigate('/backoffice');
+            } else {
+              setBackofficePinError('Invalid PIN. Please try again.');
+            }
+          } catch (e) {
+            setBackofficePinError('Verification failed. Please try again.');
+          } finally {
+            setBackofficePinLoading(false);
+          }
+        }}
+        title="Back Office PIN"
+        message="Enter PIN to access Back Office"
+        isLoading={backofficePinLoading}
+        error={backofficePinError}
+      />
+
       {/* Order Detail Modal (Online/Togo ì¹´ë“œ í´ë¦­ ì‹œ) - ê³µìš© ì»´í¬ë„ŒíŠ¸ ì‚¬ìš© */}
       <OrderDetailModal
         isOpen={showOrderDetailModal}
@@ -9881,12 +11859,54 @@ const SalesPage: React.FC = () => {
           setSelectedOrderDetail(null);
           setSelectedOrderType(null);
         }}
+        onBackToOrder={handleBackToOrderFromDetailModal}
         onlineOrders={onlineQueueCards as OrderData[]}
         togoOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany) as OrderData[]}
         deliveryOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany) as OrderData[]}
         initialOrderType={(selectedOrderType as OrderChannelType) || 'togo'}
         initialSelectedOrder={selectedOrderDetail as OrderData}
         onPayment={(order, orderType) => {
+          const rawItems = (order.fullOrder?.items ?? order.items ?? []) as any[];
+          const t = (order as any)?.__togoTotals || (order?.fullOrder as any)?.__togoTotals || null;
+          const totals = t && typeof t.total === 'number'
+            ? t
+            : (() => {
+                // Fallback: compute (should be rare if OrderDetailModal attached totals correctly)
+                try {
+                  const normalizedItems = (rawItems || []).map((it: any) => {
+                    let discountObj: any = it.discount ?? null;
+                    if (!discountObj && it.discount_json) {
+                      try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
+                    }
+                    return {
+                      id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
+                      orderLineId: it.order_line_id ?? it.orderLineId,
+                      name: it.name,
+                      type: it.type,
+                      quantity: it.quantity,
+                      price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
+                      totalPrice: (it.total_price ?? it.totalPrice),
+                      modifiers: it.modifiers ?? it.options ?? [],
+                      memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+                      discount: discountObj,
+                      guestNumber: it.guestNumber ?? it.guest_number,
+                      taxGroupId: it.taxGroupId ?? it.tax_group_id,
+                      void_id: it.void_id,
+                      voidId: it.voidId,
+                      is_void: it.is_void,
+                    };
+                  });
+                  const pricing = calculateOrderPricing(normalizedItems as any);
+                  const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+                  const storedTotalRaw = Number((order.fullOrder?.total ?? order.total ?? pricing.totals.total ?? 0) as any);
+                  const storedTotal = Number.isFinite(storedTotalRaw) ? Number(storedTotalRaw.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
+                  const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+                  return { subtotal: netSubtotal, tax: derivedTax, taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [], total: storedTotal };
+                } catch {
+                  return { subtotal: 0, tax: 0, taxLines: [], total: 0 };
+                }
+              })();
+
           const orderForPayment = {
             id: order.id,
             type: orderType === 'online' ? 'Online' : 'Togo',
@@ -9897,10 +11917,12 @@ const SalesPage: React.FC = () => {
             time: order.time,
             phone: order.phone || order.customerPhone || '',
             name: order.name || order.customerName || '',
-            total: Number(order.fullOrder?.total || order.total || 0),
-            subtotal: Number(order.fullOrder?.subtotal || order.total || 0),
-            tax: Number(order.fullOrder?.tax || 0),
-            items: order.fullOrder?.items || order.items || [],
+            total: Number((totals.total || 0).toFixed(2)),
+            subtotal: Number((totals.subtotal || 0).toFixed(2)),
+            tax: Number((totals.tax || 0).toFixed(2)),
+            taxLines: Array.isArray(totals.taxLines) ? totals.taxLines : (Number(totals.tax || 0) ? [{ name: 'Tax', amount: Number((totals.tax || 0).toFixed(2)) }] : []),
+            __togoTotals: totals,
+            items: rawItems as any,
             localOrderId: order.localOrderId || order.fullOrder?.localOrderId || order.number,
             fullOrder: order.fullOrder,
             status: order.fullOrder?.status || order.status || 'pending',
@@ -9926,22 +11948,39 @@ const SalesPage: React.FC = () => {
                     body: JSON.stringify({ status: 'PICKED_UP' }),
                   });
                 }
-                setOnlineQueueCards(prev => prev.filter(card => card.id !== orderId));
+                setOnlineQueueCards(prev => prev.filter(card => String(card.id) !== String(orderId)));
               } else if (orderType === 'togo' || orderType === 'pickup') {
                 await fetch(`${API_URL}/orders/${orderId}/status`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ status: 'PICKED_UP' }),
                 });
-                setTogoOrders(prev => prev.filter(o => o.id !== orderId));
+                setTogoOrders(prev => prev.filter(o => String(o.id) !== String(orderId)));
               } else if (orderType === 'delivery') {
                 const actualOrderId = order.order_id || orderId;
-                await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ status: 'PICKED_UP' }),
-                });
-                setTogoOrders(prev => prev.filter(o => o.id !== orderId));
+                // If this delivery is not yet saved into orders table (meta-only), skip orders status update.
+                if (Number.isFinite(Number(actualOrderId))) {
+                  await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: 'PICKED_UP' }),
+                  });
+                }
+                // Delivery 목록은 delivery_orders 메타 테이블에서도 만들어지므로,
+                // 메타 상태도 함께 PICKED_UP 처리하지 않으면 모달에서 다시 나타날 수 있음.
+                const deliveryMetaId = (order as any).deliveryMetaId || (order as any).delivery_meta_id || null;
+                try {
+                  if (deliveryMetaId != null && String(deliveryMetaId).trim() !== '') {
+                    await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(deliveryMetaId))}/status`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ status: 'PICKED_UP' }),
+                    });
+                  }
+                } catch {}
+                setTogoOrders(prev =>
+                  prev.filter(o => String(o.id) !== String(orderId) && String((o as any).deliveryMetaId || '') !== String(deliveryMetaId || ''))
+                );
               }
             } catch (error) {
               console.error('Pickup complete error:', error);
@@ -9953,12 +11992,215 @@ const SalesPage: React.FC = () => {
           loadOnlineOrders();
           loadTogoOrders();
         }}
+        onVoid={async (order, orderType) => {
+          const orderId = orderType === 'delivery' ? (order.order_id || order.id) : order.id;
+          try {
+            let items: any[] = [];
+            const fullOrder = order.fullOrder;
+            if (fullOrder?.items && Array.isArray(fullOrder.items)) {
+              items = fullOrder.items;
+            } else {
+              const res = await fetch(`${API_URL}/orders/${orderId}`);
+              if (res.ok) {
+                const data = await res.json();
+                items = (data.items || []).map((it: any) => {
+                  let mods: any[] = [];
+                  try { if (it.modifiers_json) mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json; } catch {}
+                  return { ...it, modifiers: mods };
+                });
+              }
+            }
+            if (!items.length) { alert('No items to void.'); return; }
+            const sels: Record<string, { checked: boolean; qty: number }> = {};
+            items.forEach((it: any) => {
+              const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
+              sels[key] = { checked: true, qty: it.quantity || 1 };
+            });
+            setTogoVoidOrder(order);
+            setTogoVoidOrderType(orderType);
+            setTogoVoidItems(items);
+            setTogoVoidSelections(sels);
+            setTogoVoidPin('');
+            setTogoVoidPinError('');
+            setTogoVoidReason('');
+            setTogoVoidReasonPreset('');
+            setTogoVoidNote('');
+            setTogoVoidLoading(false);
+            setShowTogoVoidModal(true);
+          } catch (e) {
+            console.error('Failed to load items for void:', e);
+            alert('Failed to load order items.');
+          }
+        }}
         onOrdersRefresh={() => {
           loadOnlineOrders();
           loadTogoOrders();
         }}
       />
 
+      {/* Togo/Online Void Modal (Dine-in style) */}
+      {showTogoVoidModal && (() => {
+        const selectedItems = Object.entries(togoVoidSelections).filter(([, v]) => v.checked);
+        const selCount = selectedItems.reduce((s, [, v]) => s + v.qty, 0);
+        const selSubtotal = selectedItems.reduce((s, [k, v]) => {
+          const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
+          return s + (item ? (item.price || 0) * v.qty : 0);
+        }, 0);
+        const canConfirm = selCount > 0 && togoVoidPin.length >= 4 && !togoVoidLoading;
+        const orderId = togoVoidOrderType === 'delivery' ? (togoVoidOrder?.order_id || togoVoidOrder?.id) : togoVoidOrder?.id;
+        const orderLabel = togoVoidOrderType === 'delivery'
+          ? `${togoVoidOrder?.deliveryCompany || 'Delivery'} #${togoVoidOrder?.deliveryOrderNumber || orderId}`
+          : `#${(togoVoidOrderType === 'togo' || togoVoidOrderType === 'pickup') ? String(orderId).padStart(3, '0') : (togoVoidOrder?.number || orderId)}`;
+
+        const handleConfirmTogoVoid = async () => {
+          if (!canConfirm) return;
+          setTogoVoidLoading(true);
+          setTogoVoidPinError('');
+          try {
+            const lines = selectedItems.map(([k, v]) => {
+              const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
+              return {
+                order_line_id: item?.order_line_id || item?.orderLineId || null,
+                menu_id: item?.item_id || item?.id || null,
+                name: item?.name || '',
+                qty: v.qty,
+                amount: (item?.price || 0) * v.qty,
+                tax: (item?.tax || 0) * (v.qty / (item?.quantity || 1)),
+                printer_group_id: item?.printer_group_id || null,
+              };
+            });
+            const isEntire = selectedItems.length === togoVoidItems.length && selectedItems.every(([k, v]) => {
+              const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
+              return v.qty >= (item?.quantity || 1);
+            });
+            const res = await fetch(`${API_URL}/voids/orders/${orderId}/void`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lines,
+                reason: togoVoidReason || togoVoidReasonPreset || '',
+                note: togoVoidNote,
+                source: isEntire ? 'entire' : 'partial',
+                manager_pin: togoVoidPin,
+              }),
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ error: 'Void failed' }));
+              setTogoVoidPinError(err.error || 'Void failed');
+              setTogoVoidLoading(false);
+              return;
+            }
+            setShowTogoVoidModal(false);
+            setShowOrderDetailModal(false);
+            setSelectedOrderDetail(null);
+            setSelectedOrderType(null);
+            loadOnlineOrders();
+            loadTogoOrders();
+          } catch (e) {
+            console.error('Void error:', e);
+            setTogoVoidPinError('An error occurred.');
+            setTogoVoidLoading(false);
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black bg-opacity-50" onKeyDown={(e) => {
+            if (e.key === 'Escape') setShowTogoVoidModal(false);
+            if (e.key === 'Enter' && canConfirm) { e.preventDefault(); handleConfirmTogoVoid(); }
+          }}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-[720px] p-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-lg font-bold text-gray-900">Void Items — {orderLabel}</div>
+                <button className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-11 h-11 flex items-center justify-center rounded hover:bg-gray-100" onClick={() => setShowTogoVoidModal(false)}>×</button>
+              </div>
+              <div className="flex flex-col lg:flex-row gap-4">
+                <div className="w-full lg:max-w-[400px] lg:flex-none space-y-3">
+                  <div className="space-y-0">
+                    <div className="flex items-center justify-between pb-1.5 border-b-2 border-gray-300">
+                      <div className="text-sm font-bold text-gray-800">Select Items</div>
+                      <label className="text-sm flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" className="w-5 h-5 cursor-pointer" onChange={e => {
+                          const checked = e.target.checked;
+                          setTogoVoidSelections(prev => {
+                            const next = { ...prev };
+                            togoVoidItems.forEach((it: any) => {
+                              const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
+                              next[key] = { checked, qty: next[key]?.qty ?? (it.quantity || 1) };
+                            });
+                            return next;
+                          });
+                        }} />
+                        <span className="font-medium">Select All</span>
+                      </label>
+                    </div>
+                    {togoVoidItems.map((it: any) => {
+                      const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
+                      const sel = togoVoidSelections[key] || { checked: false, qty: it.quantity || 1 };
+                      const maxQty = it.quantity || 1;
+                      return (
+                        <div key={key} className="flex items-center gap-2 py-0 px-2 hover:bg-gray-50 rounded">
+                          <input type="checkbox" className="w-5 h-5 cursor-pointer flex-shrink-0" checked={!!sel.checked} onChange={e => setTogoVoidSelections(prev => ({ ...prev, [key]: { ...prev[key], checked: e.target.checked } }))} />
+                          <div className="flex-1 truncate text-sm font-medium">{it.name}</div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button type="button" className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-2xl disabled:opacity-30" onClick={() => setTogoVoidSelections(prev => ({ ...prev, [key]: { qty: Math.max(1, sel.qty - 1), checked: true } }))} disabled={sel.qty <= 1}>−</button>
+                            <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
+                            <button type="button" className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-2xl disabled:opacity-30" onClick={() => setTogoVoidSelections(prev => ({ ...prev, [key]: { qty: Math.min(maxQty, sel.qty + 1), checked: true } }))} disabled={sel.qty >= maxQty}>+</button>
+                            <span className="text-xs text-gray-500 ml-0.5 w-7">/ {maxQty}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-800 block mb-1">Reason</label>
+                      <select className="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 text-sm" value={togoVoidReasonPreset} onChange={e => { setTogoVoidReasonPreset(e.target.value); if (e.target.value !== 'Other') setTogoVoidReason(e.target.value); }}>
+                        <option value="">Select a reason</option>
+                        <option>Customer Cancel</option>
+                        <option>Wrong Item</option>
+                        <option>Kitchen Error</option>
+                        <option>Overcharge</option>
+                        <option>Other</option>
+                      </select>
+                      {togoVoidReasonPreset === 'Other' && (
+                        <input className="mt-1.5 w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 text-sm" value={togoVoidReason} onChange={e => setTogoVoidReason(e.target.value)} placeholder="Enter reason" />
+                      )}
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-gray-800 block mb-1">Note</label>
+                      <input className="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 text-sm" value={togoVoidNote} onChange={e => setTogoVoidNote(e.target.value)} placeholder="Note (optional)" />
+                    </div>
+                  </div>
+                  <div className="text-sm font-bold text-gray-900">
+                    Selected: {selCount} • Subtotal: ${selSubtotal.toFixed(2)}
+                  </div>
+                </div>
+                <div className="w-full lg:w-[280px] flex-shrink-0">
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 shadow-inner h-full">
+                    <p className="text-sm font-semibold text-gray-800 mb-2">Void Authorization PIN</p>
+                    <div className="flex flex-col gap-3 items-start w-full">
+                      <input className={`w-full border-2 rounded-lg px-3 py-2.5 text-sm font-medium ${togoVoidPinError ? 'border-red-500' : 'border-gray-300'}`} placeholder="Authorization PIN" value={togoVoidPin} onChange={e => { setTogoVoidPinError(''); setTogoVoidPin(e.target.value.replace(/[^0-9]/g, '')); }} inputMode="numeric" maxLength={4} />
+                      {togoVoidPinError && <span className="text-xs text-red-600 font-medium">{togoVoidPinError}</span>}
+                      <div className="grid grid-cols-3 gap-2 w-full">
+                        {[1,2,3,4,5,6,7,8,9].map(num => (
+                          <button key={num} type="button" className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200" onClick={() => { if (togoVoidPin.length < 4) setTogoVoidPin(prev => prev + num); setTogoVoidPinError(''); }}>{num}</button>
+                        ))}
+                        <button type="button" className="h-12 rounded-lg bg-white hover:bg-gray-100 font-semibold text-gray-800 shadow border border-gray-200" onClick={() => { setTogoVoidPin(''); setTogoVoidPinError(''); }}>Clear</button>
+                        <button type="button" className="h-12 rounded-lg bg-white hover:bg-gray-100 font-semibold text-gray-800 shadow border border-gray-200" onClick={() => { if (togoVoidPin.length < 4) setTogoVoidPin(prev => prev + '0'); setTogoVoidPinError(''); }}>0</button>
+                        <button type="button" className="h-12 rounded-lg bg-white hover:bg-gray-100 font-semibold text-gray-800 shadow border border-gray-200" onClick={() => { setTogoVoidPin(prev => prev.slice(0, -1)); setTogoVoidPinError(''); }}>←</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-3">
+                <button className="px-5 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-sm font-bold min-w-[110px]" onClick={() => setShowTogoVoidModal(false)}>Cancel</button>
+                <button className="px-5 py-2.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-300 disabled:text-gray-600 text-sm font-bold min-w-[110px]" disabled={!canConfirm} onClick={handleConfirmTogoVoid}>Void</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <ReservationCreateModal
         open={showReservationModal}
@@ -10010,10 +12252,27 @@ const SalesPage: React.FC = () => {
       )}
       
       {/* Day Opening Modal */}
+      {showOpeningModal && !requiresOpening && (
+        <div className="fixed inset-0 z-[999999] pointer-events-none flex items-center justify-center">
+          <div className="relative pointer-events-none flex flex-col items-center" style={{ width: '500px', height: '600px' }}>
+             {/* Position container */}
+             <div className="w-full relative h-[60px] pointer-events-none flex justify-end">
+              <button
+                onClick={() => setShowOpeningModal(false)}
+                className="absolute right-0 top-0 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[9999999] shadow-lg pointer-events-auto backdrop-blur-sm"
+                style={{ transform: 'translate(20px, -20px)' }}
+              >
+                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <DayOpeningModal 
         isOpen={showOpeningModal} 
         onClose={() => {
-          // requiresOpening이 true면 닫지 못함 (영업 시작 전 Opening 필수)
           if (!requiresOpening) {
             setShowOpeningModal(false);
           }
@@ -10069,9 +12328,18 @@ const SalesPage: React.FC = () => {
       {/* Clock In/Out Menu Modal */}
       {showClockInOutMenu && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">
-              â° Clock In/Out
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96 relative">
+            {/* Floating close button */}
+            <button
+              onClick={() => setShowClockInOutMenu(false)}
+              className="absolute top-2 right-2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg backdrop-blur-sm"
+            >
+              <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center pt-2">
+              ⏰ Clock In/Out
             </h2>
             
             <div className="space-y-3">
@@ -10083,7 +12351,7 @@ const SalesPage: React.FC = () => {
                 }}
                 className="w-full px-6 py-4 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
               >
-                â° Clock In
+                ⏰ Clock In
               </button>
               
               <button
@@ -10276,18 +12544,24 @@ const SalesPage: React.FC = () => {
         </div>
       )}
 
+
+
+      {/* Sold Out is handled in OrderPage - navigated via 'Sold Out' button */}
+
       {/* Gift Card Modal */}
       {showGiftCardModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden relative" style={{ transform: 'translateY(-70px)' }}>
             {/* Header */}
-            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3 flex justify-between items-center">
+            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3 flex justify-between items-center relative">
               <h3 className="text-lg font-bold text-white">Gift Card</h3>
-              <button 
-                onClick={() => setShowGiftCardModal(false)} 
-                className="text-white hover:text-gray-200 text-2xl font-bold leading-none"
+              <button
+                onClick={() => setShowGiftCardModal(false)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
               >
-                &times;
+                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </div>
 
@@ -11405,6 +13679,111 @@ const SalesPage: React.FC = () => {
         <div className="fixed inset-0 flex items-center justify-center z-[60] pointer-events-none" style={{ transform: 'translateY(-100px)' }}>
           <div className="bg-red-600 text-white px-12 py-6 rounded-2xl shadow-2xl">
             <div className="text-2xl font-bold text-center">{refundPinError}</div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================ */}
+      {/* Online Reservation Accept/Reject Popup */}
+      {/* ============================================ */}
+      {showOnlineReservationPopup && pendingOnlineReservation && (
+        <div className="fixed inset-0 flex items-center justify-center z-[9999]" style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}>
+          <div className="bg-white rounded-2xl shadow-2xl" style={{ width: '440px', maxHeight: '90vh', overflow: 'auto' }}>
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-200" style={{ background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)' }}>
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">🪑</span>
+                <div>
+                  <h2 className="text-xl font-bold text-white">New Online Reservation</h2>
+                  <p className="text-blue-200 text-sm">A customer has requested a table</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Reservation Details */}
+            <div className="p-6">
+              <div className="grid grid-cols-2 gap-4 mb-5">
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-xs text-gray-500 mb-1">Customer</div>
+                  <div className="text-base font-bold text-gray-900">{pendingOnlineReservation.customer_name}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-xs text-gray-500 mb-1">Phone</div>
+                  <div className="text-base font-bold text-gray-900">{pendingOnlineReservation.phone_number}</div>
+                </div>
+                <div className="bg-blue-50 rounded-xl p-3">
+                  <div className="text-xs text-blue-500 mb-1">📅 Date</div>
+                  <div className="text-base font-bold text-gray-900">{pendingOnlineReservation.reservation_date}</div>
+                </div>
+                <div className="bg-blue-50 rounded-xl p-3">
+                  <div className="text-xs text-blue-500 mb-1">🕐 Time</div>
+                  <div className="text-base font-bold text-gray-900">
+                    {(() => {
+                      const t = pendingOnlineReservation.reservation_time || '';
+                      const [h, m] = t.split(':').map(Number);
+                      if (isNaN(h)) return t;
+                      const ampm = h >= 12 ? 'PM' : 'AM';
+                      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+                      return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+                    })()}
+                  </div>
+                </div>
+                <div className="bg-green-50 rounded-xl p-3">
+                  <div className="text-xs text-green-600 mb-1">👥 Party Size</div>
+                  <div className="text-2xl font-extrabold text-gray-900">{pendingOnlineReservation.party_size}</div>
+                </div>
+                <div className="bg-yellow-50 rounded-xl p-3">
+                  <div className="text-xs text-yellow-600 mb-1">🪑 Tables Needed</div>
+                  <div className="text-2xl font-extrabold text-gray-900">{pendingOnlineReservation.tables_needed || 1}</div>
+                </div>
+              </div>
+
+              {pendingOnlineReservation.special_requests && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-5">
+                  <div className="text-xs text-amber-600 font-semibold mb-1">📝 Special Requests</div>
+                  <div className="text-sm text-amber-900">{pendingOnlineReservation.special_requests}</div>
+                </div>
+              )}
+
+              {pendingOnlineReservation.deposit_amount > 0 && (
+                <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 mb-5 flex justify-between items-center">
+                  <div className="text-sm text-purple-700 font-semibold">💳 Deposit</div>
+                  <div className="text-xl font-extrabold text-purple-700">${pendingOnlineReservation.deposit_amount?.toFixed(2)}</div>
+                </div>
+              )}
+
+              <div className="text-xs text-gray-400 text-center mb-4">
+                Ref: {pendingOnlineReservation.reservation_number}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={handleRejectOnlineReservation}
+                  disabled={onlineReservationProcessing}
+                  className="flex-1 py-4 rounded-xl font-bold text-lg transition-all"
+                  style={{
+                    backgroundColor: onlineReservationProcessing ? '#d1d5db' : '#fee2e2',
+                    color: onlineReservationProcessing ? '#9ca3af' : '#dc2626',
+                    border: '2px solid #fecaca',
+                    cursor: onlineReservationProcessing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {onlineReservationProcessing ? '...' : '✕  Reject'}
+                </button>
+                <button
+                  onClick={handleAcceptOnlineReservation}
+                  disabled={onlineReservationProcessing}
+                  className="flex-[2] py-4 rounded-xl font-bold text-lg text-white transition-all"
+                  style={{
+                    backgroundColor: onlineReservationProcessing ? '#9ca3af' : '#16a34a',
+                    cursor: onlineReservationProcessing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {onlineReservationProcessing ? 'Processing...' : '✓  Accept'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

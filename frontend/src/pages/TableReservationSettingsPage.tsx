@@ -67,7 +67,7 @@ const TableReservationSettingsPage = () => {
 
       // Fetch reservation settings (if exists)
       try {
-        const settingsResponse = await fetch('${API_URL}/admin-settings/reservation-settings');
+        const settingsResponse = await fetch(`${API_URL}/admin-settings/reservation-settings`);
         if (settingsResponse.ok) {
           const settingsData = await settingsResponse.json();
           if (settingsData.reservation_settings) {
@@ -102,7 +102,7 @@ const TableReservationSettingsPage = () => {
       setSuccess(null);
 
       // Save reservation settings
-      const settingsResponse = await fetch('${API_URL}/admin-settings/reservation-settings', {
+      const settingsResponse = await fetch(`${API_URL}/admin-settings/reservation-settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1345,7 +1345,7 @@ const NoShowHistory = () => {
     try {
       setLoading(true);
       // This would be a separate API endpoint for no-show history
-      const response = await fetch('${API_URL}/reservations?status=cancelled');
+      const response = await fetch(`${API_URL}/reservations?status=cancelled`);
       if (response.ok) {
         const data = await response.json();
         // Filter for no-shows (this is a simplified example)

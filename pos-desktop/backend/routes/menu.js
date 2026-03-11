@@ -103,6 +103,9 @@ const getExcelValue = (row, newName, legacyName = null) => {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadsDir = process.env.UPLOADS_PATH || path.join(__dirname, '../uploads/');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
@@ -236,8 +239,9 @@ router.get('/items', (req, res) => {
   // POST /api/menu/items
 router.post('/items', async (req, res) => {
     const { name, short_name, price, price2, description, category_id, menu_id } = req.body;
-    if (!name || price === undefined || !category_id || !menu_id) {
-      return res.status(400).json({ error: 'name, price, category_id, and menu_id are required.' });
+    // Allow blank item name ("") but require key fields.
+    if (name === undefined || name === null || price === undefined || !category_id || !menu_id) {
+      return res.status(400).json({ error: 'price, category_id, and menu_id are required.' });
     }
     
     // 가격 유효성 검증
@@ -257,12 +261,13 @@ router.post('/items', async (req, res) => {
     try {
       const newId = await generateMenuItemId(db);
       const sql = 'INSERT INTO menu_items (item_id, name, short_name, price, price2, description, category_id, menu_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-      db.run(sql, [newId, name, short_name || null, price, price2 || 0, description || '', category_id, menu_id], function(err) {
+      const safeName = (typeof name === 'string') ? name : '';
+      db.run(sql, [newId, safeName, short_name || null, price, price2 || 0, description || '', category_id, menu_id], function(err) {
         if (err) {
           console.error("SQL Error in POST /api/menu/items:", err.message);
           return res.status(500).json({ error: err.message });
         }
-        res.status(201).json({ item_id: newId, name, short_name, price, price2: price2 || 0, description, category_id, menu_id });
+        res.status(201).json({ item_id: newId, name: safeName, short_name, price, price2: price2 || 0, description, category_id, menu_id });
       });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -274,8 +279,9 @@ router.patch('/items/:id', (req, res) => {
     const { name, short_name, price, price2, description } = req.body;
     const { id } = req.params;
 
-    if (!name || price === undefined) {
-        return res.status(400).json({ error: 'Item name and price are required.' });
+    // Allow blank item name ("") but require price.
+    if (name === undefined || name === null || price === undefined) {
+        return res.status(400).json({ error: 'Item name (can be blank) and price are required.' });
     }
     
     // 가격 유효성 검증
@@ -292,8 +298,9 @@ router.patch('/items/:id', (req, res) => {
       return res.status(400).json({ error: 'Price cannot exceed 99999.99.' });
     }
 
+    const safeName = (typeof name === 'string') ? name : '';
     db.run('UPDATE menu_items SET name = ?, short_name = ?, price = ?, price2 = ?, description = ? WHERE item_id = ?', 
-      [name, short_name || null, price, price2 || 0, description || '', id], 
+      [safeName, short_name || null, price, price2 || 0, description || '', id], 
       function (err) {
         if (err) return res.status(500).json({ error: err.message });
         if (this.changes === 0) return res.status(404).json({ error: 'Item not found.' });
@@ -547,7 +554,7 @@ router.delete('/items/:id', (req, res) => {
           FROM menu_modifier_links mml
           LEFT JOIN modifier_groups mg ON mg.modifier_group_id = mml.modifier_group_id
           WHERE mml.item_id = ?
-          ORDER BY mg.name
+          ORDER BY COALESCE(mml.sort_order, 0), mg.name
         `, [id], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -572,7 +579,7 @@ router.delete('/items/:id', (req, res) => {
             AND mg.modifier_group_id NOT IN (
               SELECT modifier_group_id FROM menu_modifier_links WHERE item_id = ?
             )
-          ORDER BY mg.name
+          ORDER BY COALESCE(cml.sort_order, 0), mg.name
         `, [id, id], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -597,7 +604,8 @@ router.delete('/items/:id', (req, res) => {
               SELECT 
                 m.modifier_id,
                 m.name,
-                COALESCE(m.price_delta, 0) as price_adjustment
+                COALESCE(m.price_delta, 0) as price_adjustment,
+                m.button_color
               FROM modifiers m
               JOIN modifier_group_links mgl ON m.modifier_id = mgl.modifier_id
               WHERE mgl.modifier_group_id = ? AND COALESCE(m.is_deleted, 0) = 0
@@ -708,11 +716,18 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Modifier group is already linked to this item.' });
       }
 
-      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
+      // Determine next sort_order for this item
+      const maxOrder = await new Promise((resolve, reject) => {
+        db.get('SELECT COALESCE(MAX(sort_order), 0) as max_order FROM menu_modifier_links WHERE item_id = ?', [id], (err, row) => {
+          if (err) reject(err);
+          else resolve(row ? row.max_order : 0);
+        });
+      });
+
       const linkId = await generateModifierMenuLinkId(db);
       await new Promise((resolve, reject) => {
-        db.run('INSERT OR REPLACE INTO menu_modifier_links (link_id, item_id, modifier_group_id) VALUES (?, ?, ?)', 
-          [linkId, id, modifier_group_id], function(err) {
+        db.run('INSERT OR REPLACE INTO menu_modifier_links (link_id, item_id, modifier_group_id, sort_order) VALUES (?, ?, ?, ?)', 
+          [linkId, id, modifier_group_id, maxOrder + 1], function(err) {
           if (err) reject(err);
           else resolve(this);
         });
@@ -1007,7 +1022,7 @@ router.delete('/items/:id', (req, res) => {
           FROM category_modifier_links cml
           JOIN modifier_groups mg ON cml.modifier_group_id = mg.modifier_group_id
           WHERE cml.category_id = ?
-          ORDER BY mg.name
+          ORDER BY COALESCE(cml.sort_order, 0), mg.name
         `, [categoryId], (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1069,10 +1084,17 @@ router.delete('/items/:id', (req, res) => {
         return res.status(409).json({ error: 'Modifier group is already linked to this category.' });
       }
 
-      // Create link (Use INSERT OR REPLACE to prevent unique constraint errors)
+      // Determine next sort_order for this category
+      const maxCatOrder = await new Promise((resolve, reject) => {
+        db.get('SELECT COALESCE(MAX(sort_order), 0) as max_order FROM category_modifier_links WHERE category_id = ?', [categoryId], (err, row) => {
+          if (err) reject(err);
+          else resolve(row ? row.max_order : 0);
+        });
+      });
+
       const insertResult = await new Promise((resolve, reject) => {
-        db.run('INSERT OR REPLACE INTO category_modifier_links (category_id, modifier_group_id) VALUES (?, ?)', 
-          [categoryId, modifier_group_id], function(err) {
+        db.run('INSERT OR REPLACE INTO category_modifier_links (category_id, modifier_group_id, sort_order) VALUES (?, ?, ?)', 
+          [categoryId, modifier_group_id, maxCatOrder + 1], function(err) {
           if (err) reject(err);
           else resolve({ lastID: this.lastID });
         });
@@ -1621,7 +1643,7 @@ router.delete('/items/:id', (req, res) => {
           SELECT p.*, pgl.printer_group_id 
           FROM printers p 
           JOIN printer_group_links pgl ON p.printer_id = pgl.printer_id 
-          WHERE pgl.printer_group_id IN (${printerGroups.map(g => g.printer_group_id).join(',')}) AND p.is_deleted = 0
+          WHERE pgl.printer_group_id IN (${printerGroups.map(g => g.printer_group_id).join(',')}) AND p.is_active = 1
         `, (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
@@ -1868,7 +1890,6 @@ router.delete('/items/:id', (req, res) => {
       // Images are managed only through the POS interface
 
       // Process modifier groups for Modifiers sheet
-      let modifierNo = 1;
       for (const group of modifierGroups) {
         const groupModifiers = modifiersByGroup[group.modifier_group_id] || [];
         
@@ -1876,15 +1897,15 @@ router.delete('/items/:id', (req, res) => {
         const groupLabel = modifierLabels.find(label => label.modifier_group_id === group.modifier_group_id);
         
         const row = {
-          [EXCEL_COLUMNS.MODIFIER.NO]: modifierNo++,
+          [EXCEL_COLUMNS.MODIFIER.NO]: group.modifier_group_id,
           [EXCEL_COLUMNS.MODIFIER.GROUP_NAME]: group.name,
           [EXCEL_COLUMNS.MODIFIER.LABEL]: groupLabel ? groupLabel.label_name : '',
           [EXCEL_COLUMNS.MODIFIER.MIN]: group.min_selection || 0,
           [EXCEL_COLUMNS.MODIFIER.MAX]: group.max_selection || 0
         };
         
-        // Add modifiers dynamically (up to 20)
-        for (let i = 0; i < 20; i++) {
+        // Add modifiers dynamically (up to 50)
+        for (let i = 0; i < 50; i++) {
           row[`${EXCEL_COLUMNS.MODIFIER.MODIFIER} ${i + 1}`] = groupModifiers.length > i ? groupModifiers[i].name : '';
           row[`${EXCEL_COLUMNS.MODIFIER.PRICE} ${i + 1}`] = groupModifiers.length > i ? groupModifiers[i].price_delta : '';
         }
@@ -1893,12 +1914,11 @@ router.delete('/items/:id', (req, res) => {
       }
 
       // Process tax groups for Taxes sheet
-      let taxNo = 1;
       for (const group of taxGroups) {
         const groupTaxes = taxesByGroup[group.tax_group_id] || [];
         
         const row = {
-          [EXCEL_COLUMNS.TAX.NO]: taxNo++,
+          [EXCEL_COLUMNS.TAX.NO]: group.tax_group_id,
           [EXCEL_COLUMNS.TAX.GROUP_NAME]: group.name
         };
         
@@ -1912,12 +1932,11 @@ router.delete('/items/:id', (req, res) => {
       }
 
       // Process printer groups for Printers sheet
-      let printerNo = 1;
       for (const group of printerGroups) {
         const groupPrinters = printersByGroup[group.printer_group_id] || [];
         
         const row = {
-          [EXCEL_COLUMNS.PRINTER.NO]: printerNo++,
+          [EXCEL_COLUMNS.PRINTER.NO]: group.printer_group_id,
           [EXCEL_COLUMNS.PRINTER.GROUP_NAME]: group.name,
           [EXCEL_COLUMNS.PRINTER.KITCHEN_TYPE]: group.printer_type || ''
         };
@@ -2022,7 +2041,8 @@ router.delete('/items/:id', (req, res) => {
 
       // Set response headers for Excel download
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename=${menu.name || 'Menu'}.xlsx`);
+      const safeName = encodeURIComponent(menu.name || 'Menu').replace(/%20/g, '_');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.xlsx"`);
 
       // Write Excel file to response with styling options
       const buffer = XLSX.write(workbook, { 
@@ -2149,6 +2169,17 @@ router.delete('/items/:id', (req, res) => {
         );
       };
 
+      // Extract category header rows (rows where Item Name is empty and No equals Category)
+      const categoryHeaderRows = menuData.filter(item => {
+        const itemName = getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name');
+        const no = getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No');
+        const category = getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name');
+        return (!itemName || itemName.trim() === '') && category && category.trim() !== '';
+      }).map(item => ({
+        ...item,
+        _category: getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name')
+      }));
+
       // Filter out category header rows (support both new and legacy column names)
       const filteredMenuData = menuData.filter(item => {
         const itemName = getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name');
@@ -2225,7 +2256,75 @@ router.delete('/items/:id', (req, res) => {
           items: []
         };
 
-        // Clear existing data (optional - you might want to merge instead)
+        // Clear existing data - items, categories, and all related links/groups
+        const existingItemIds = (existingItems || []).map(i => i.item_id);
+        const existingCategoryIds = (existingCategories || []).map(c => c.category_id);
+
+        // Delete item-level links
+        if (existingItemIds.length > 0) {
+          const itemPlaceholders = existingItemIds.map(() => '?').join(',');
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM menu_modifier_links WHERE item_id IN (${itemPlaceholders})`, existingItemIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM menu_tax_links WHERE item_id IN (${itemPlaceholders})`, existingItemIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM menu_printer_links WHERE item_id IN (${itemPlaceholders})`, existingItemIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+        }
+
+        // Delete category-level links
+        if (existingCategoryIds.length > 0) {
+          const catPlaceholders = existingCategoryIds.map(() => '?').join(',');
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM category_modifier_links WHERE category_id IN (${catPlaceholders})`, existingCategoryIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM category_tax_links WHERE category_id IN (${catPlaceholders})`, existingCategoryIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM category_printer_links WHERE category_id IN (${catPlaceholders})`, existingCategoryIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+        }
+
+        // Delete existing modifier groups, modifiers, and their links for this menu
+        const existingModGroups = await new Promise((resolve, reject) => {
+          db.all('SELECT modifier_group_id FROM modifier_groups WHERE menu_id = ?', [menuId], (err, rows) => { if (err) reject(err); else resolve(rows || []); });
+        });
+        if (existingModGroups.length > 0) {
+          const mgIds = existingModGroups.map(g => g.modifier_group_id);
+          const mgPlaceholders = mgIds.map(() => '?').join(',');
+          // Delete modifier_group_links first (references both modifiers and groups)
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM modifier_group_links WHERE modifier_group_id IN (${mgPlaceholders})`, mgIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          // Delete modifier_labels
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM modifier_labels WHERE modifier_group_id IN (${mgPlaceholders})`, mgIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          // Delete the groups themselves
+          await new Promise((resolve, reject) => {
+            db.run('DELETE FROM modifier_groups WHERE menu_id = ?', [menuId], (err) => { if (err) reject(err); else resolve(); });
+          });
+        }
+
+        // Delete existing tax groups, taxes, and their links for this menu
+        const existingTaxGroups = await new Promise((resolve, reject) => {
+          db.all('SELECT tax_group_id FROM tax_groups WHERE menu_id = ?', [menuId], (err, rows) => { if (err) reject(err); else resolve(rows || []); });
+        });
+        if (existingTaxGroups.length > 0) {
+          const tgIds = existingTaxGroups.map(g => g.tax_group_id);
+          const tgPlaceholders = tgIds.map(() => '?').join(',');
+          await new Promise((resolve, reject) => {
+            db.run(`DELETE FROM tax_group_links WHERE tax_group_id IN (${tgPlaceholders})`, tgIds, (err) => { if (err) reject(err); else resolve(); });
+          });
+          await new Promise((resolve, reject) => {
+            db.run('DELETE FROM tax_groups WHERE menu_id = ?', [menuId], (err) => { if (err) reject(err); else resolve(); });
+          });
+        }
+
+        // Delete items and categories
         await new Promise((resolve, reject) => {
           db.run('DELETE FROM menu_items WHERE menu_id = ?', [menuId], (err) => {
             if (err) reject(err);
@@ -2289,83 +2388,8 @@ router.delete('/items/:id', (req, res) => {
           return parseInt(a._no) - parseInt(b._no);
         });
 
-        // Process category-group connections after all categories are created
-        for (const item of sortedMenuDataForImport) {
-          const categoryName = item._category;
-          const itemNo = item._no;
-
-          // Find the category ID
-          const category = uniqueCategories.find(c => c.name === categoryName);
-          if (!category) continue;
-
-          // Link modifier groups to category
-          for (let i = 1; i <= 5; i++) {
-            // Support both new and legacy column names
-            const linkedModifierGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} ${i}`, `Linked Modifier Group ${i}`);
-            if (linkedModifierGroupName && linkedModifierGroupName.trim() !== '') {
-              const modifierGroup = findModifierGroup(linkedModifierGroupName);
-              
-              if (modifierGroup) {
-                await new Promise((resolve, reject) => {
-                  db.run(
-                    'INSERT OR IGNORE INTO category_modifier_links (category_id, modifier_group_id, is_ambiguous) VALUES (?, ?, ?)',
-                    [category.categoryId, modifierGroup.no, 0],
-                    (err) => {
-                      if (err) reject(err);
-                      else resolve();
-                    }
-                  );
-                });
-              } else {
-                console.warn(`Warning: Modifier group "${linkedModifierGroupName}" not found in Modifiers sheet`);
-              }
-            }
-          }
-
-          // Link tax groups to category
-          for (let i = 1; i <= 3; i++) {
-            const linkedTaxGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.TAX_GROUP} ${i}`, `Linked Tax Group ${i}`);
-            if (linkedTaxGroupName && linkedTaxGroupName.trim() !== '') {
-              const taxGroup = findTaxGroup(linkedTaxGroupName);
-              if (taxGroup) {
-                await new Promise((resolve, reject) => {
-                  db.run(
-                    'INSERT OR IGNORE INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)',
-                    [category.categoryId, taxGroup.no],
-                    (err) => {
-                      if (err) reject(err);
-                      else resolve();
-                    }
-                  );
-                });
-              } else {
-                console.warn(`Warning: Tax group "${linkedTaxGroupName}" not found in Taxes sheet`);
-              }
-            }
-          }
-
-          // Link printer groups to category
-          for (let i = 1; i <= 3; i++) {
-            const linkedPrinterGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.PRINTER_GROUP} ${i}`, `Linked Printer Group ${i}`);
-            if (linkedPrinterGroupName && linkedPrinterGroupName.trim() !== '') {
-              const printerGroup = findPrinterGroup(linkedPrinterGroupName);
-              if (printerGroup) {
-                await new Promise((resolve, reject) => {
-                  db.run(
-                    'INSERT OR IGNORE INTO category_printer_links (category_id, printer_group_id) VALUES (?, ?)',
-                    [category.categoryId, printerGroup.no],
-                    (err) => {
-                      if (err) reject(err);
-                      else resolve();
-                    }
-                  );
-                });
-              } else {
-                console.warn(`Warning: Printer group "${linkedPrinterGroupName}" not found in Printers sheet`);
-              }
-            }
-          }
-        }
+        // NOTE: Category/item group connections are deferred until after
+        // modifier groups, tax groups, and printer groups are imported below.
 
         // Validate and fix No field issues
         const noValidationErrors = [];
@@ -2471,7 +2495,8 @@ router.delete('/items/:id', (req, res) => {
           sortedMenuData.push(...categoryItems);
         }
 
-        // Import items
+        // Import items (connections deferred until after groups are created)
+        const importedItems = [];
         for (const item of sortedMenuDataForImport) {
           const newItemId = await generateMenuItemId(db);
           const categoryId = uniqueCategories.find(c => c.name === item._category)?.categoryId;
@@ -2497,337 +2522,218 @@ router.delete('/items/:id', (req, res) => {
             );
           });
 
-          // Process linked groups for this item
-          const itemNo = item._no;
-          const categoryName = item._category;
-
-          // Link modifier groups (explicit + inherited from category)
-          const linkedModifierGroupNames = [];
-          
-          // 1. Check explicit links from Excel
-          for (let i = 1; i <= 5; i++) {
-            const linkedModifierGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} ${i}`, `Linked Modifier Group ${i}`);
-            if (linkedModifierGroupName && linkedModifierGroupName.trim() !== '') {
-              linkedModifierGroupNames.push(linkedModifierGroupName.trim());
-            }
-          }
-
-          // 2. If no explicit links, inherit from category
-          if (linkedModifierGroupNames.length === 0) {
-            // Get category's linked modifier groups
-            const categoryModifierGroups = await new Promise((resolve, reject) => {
-              db.all(
-                'SELECT mg.name FROM modifier_groups mg JOIN category_modifier_links cml ON mg.modifier_group_id = cml.modifier_group_id WHERE cml.category_id = ?',
-                [categoryId],
-                (err, rows) => {
-                  if (err) reject(err);
-                  else resolve(rows.map(row => row.name));
-                }
-              );
-            });
-            linkedModifierGroupNames.push(...categoryModifierGroups);
-          }
-
-          // 3. Apply all linked groups
-          for (const groupName of linkedModifierGroupNames) {
-            const modifierGroup = findModifierGroup(groupName);
-            if (modifierGroup) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT OR IGNORE INTO menu_modifier_links (item_id, modifier_group_id) VALUES (?, ?)',
-                  [newItemId, modifierGroup.no],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
-              });
-            } else {
-              console.warn(`Warning: Modifier group "${groupName}" not found in Modifiers sheet`);
-            }
-          }
-
-          // Link tax groups (explicit + inherited from category)
-          const linkedTaxGroupNames = [];
-          
-          // 1. Check explicit links from Excel
-          for (let i = 1; i <= 3; i++) {
-            const linkedTaxGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.TAX_GROUP} ${i}`, `Linked Tax Group ${i}`);
-            if (linkedTaxGroupName && linkedTaxGroupName.trim() !== '') {
-              linkedTaxGroupNames.push(linkedTaxGroupName.trim());
-            }
-          }
-
-          // 2. If no explicit links, inherit from category
-          if (linkedTaxGroupNames.length === 0) {
-            // Get category's linked tax groups
-            const categoryTaxGroupsDb = await new Promise((resolve, reject) => {
-              db.all(
-                'SELECT tg.name FROM tax_groups tg JOIN category_tax_links ctl ON tg.tax_group_id = ctl.tax_group_id WHERE ctl.category_id = ?',
-                [categoryId],
-                (err, rows) => {
-                  if (err) reject(err);
-                  else resolve(rows.map(row => row.name));
-                }
-              );
-            });
-            linkedTaxGroupNames.push(...categoryTaxGroupsDb);
-          }
-
-          // 3. Apply all linked groups
-          for (const groupName of linkedTaxGroupNames) {
-            const taxGroup = findTaxGroup(groupName);
-            if (taxGroup) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT OR IGNORE INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)',
-                  [newItemId, taxGroup.no],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
-              });
-            } else {
-              console.warn(`Warning: Tax group "${groupName}" not found in Taxes sheet`);
-            }
-          }
-
-          // Link printer groups (explicit + inherited from category)
-          const linkedPrinterGroupNames = [];
-          
-          // 1. Check explicit links from Excel
-          for (let i = 1; i <= 3; i++) {
-            const linkedPrinterGroupName = getExcelValue(item, `${EXCEL_COLUMNS.MENU.PRINTER_GROUP} ${i}`, `Linked Printer Group ${i}`);
-            if (linkedPrinterGroupName && linkedPrinterGroupName.trim() !== '') {
-              linkedPrinterGroupNames.push(linkedPrinterGroupName.trim());
-            }
-          }
-
-          // 2. If no explicit links, inherit from category
-          if (linkedPrinterGroupNames.length === 0) {
-            // Get category's linked printer groups
-            const categoryPrinterGroupsDb = await new Promise((resolve, reject) => {
-              db.all(
-                'SELECT pg.name FROM printer_groups pg JOIN category_printer_links cpl ON pg.printer_group_id = cpl.printer_group_id WHERE cpl.category_id = ?',
-                [categoryId],
-                (err, rows) => {
-                  if (err) reject(err);
-                  else resolve(rows.map(row => row.name));
-                }
-              );
-            });
-            linkedPrinterGroupNames.push(...categoryPrinterGroupsDb);
-          }
-
-          // 3. Apply all linked groups
-          for (const groupName of linkedPrinterGroupNames) {
-            const printerGroup = findPrinterGroup(groupName);
-            if (printerGroup) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT OR IGNORE INTO menu_printer_links (item_id, printer_group_id) VALUES (?, ?)',
-                  [newItemId, printerGroup.no],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
-              });
-            } else {
-              console.warn(`Warning: Printer group "${groupName}" not found in Printers sheet`);
-            }
-          }
+          importedItems.push({ newItemId, excelRow: item });
         }
 
-        // Import modifier groups
+        // Import modifier groups with new IDs; build name→newId map
+        const modGroupNameToId = {};
         for (const group of modifierGroups) {
-          console.log('Processing modifier group:', group);
-          
-          // Check if required fields exist (using normalized groupName)
           if (!group.groupName) {
             console.warn('Skipping modifier group - missing name:', group);
             continue;
           }
           
+          const newGroupId = await generateNextId(db, ID_RANGES.MODIFIER_GROUP);
+          modGroupNameToId[group.groupName.trim()] = newGroupId;
+          group._newId = newGroupId;
+          
           await new Promise((resolve, reject) => {
             db.run(
               'INSERT INTO modifier_groups (modifier_group_id, name, selection_type, min_selection, max_selection, menu_id) VALUES (?, ?, ?, ?, ?, ?)',
-              [
-                group.no || 0,
-                group.groupName,
-                'single',
-                group.min || 0,
-                group.max || 1,
-                menuId
-              ],
-              (err) => {
-                if (err) reject(err);
-                else resolve();
-              }
+              [newGroupId, group.groupName, 'single', group.min || 0, group.max || 1, menuId],
+              (err) => { if (err) reject(err); else resolve(); }
             );
           });
+
+          // Import label if present
+          if (group.label && group.label.trim() !== '') {
+            await new Promise((resolve, reject) => {
+              db.run(
+                'INSERT INTO modifier_labels (modifier_group_id, label_name) VALUES (?, ?)',
+                [newGroupId, group.label.trim()],
+                (err) => { if (err) reject(err); else resolve(); }
+              );
+            });
+          }
         }
 
         // Import modifiers from modifier groups
         for (const group of modifierGroups) {
-          console.log('Processing modifiers for group:', group.groupName);
+          if (!group._newId) continue;
           
-          // Process each modifier in the group (support both new and legacy column names)
-          for (let i = 1; i <= 20; i++) {
+          for (let i = 1; i <= 50; i++) {
             const modifierName = getExcelValue(group, `${EXCEL_COLUMNS.MODIFIER.MODIFIER} ${i}`, `Modifier ${i}`);
             const modifierPrice = getExcelValue(group, `${EXCEL_COLUMNS.MODIFIER.PRICE} ${i}`, `Price ${i}`);
             
             if (modifierName && modifierName.trim() !== '') {
-              console.log(`Processing modifier: ${modifierName} (Price: ${modifierPrice})`);
-              
               const newModifierId = await generateNextId(db, ID_RANGES.MODIFIER);
               
               await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO modifiers (modifier_id, name, price_delta) VALUES (?, ?, ?)',
+                db.run('INSERT INTO modifiers (modifier_id, name, price_delta) VALUES (?, ?, ?)',
                   [newModifierId, modifierName, parseFloat(modifierPrice) || 0],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
+                  (err) => { if (err) reject(err); else resolve(); });
               });
 
-              // Link modifier to group
               await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO modifier_group_links (modifier_group_id, modifier_id) VALUES (?, ?)',
-                  [group.no, newModifierId],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
+                db.run('INSERT INTO modifier_group_links (modifier_group_id, modifier_id) VALUES (?, ?)',
+                  [group._newId, newModifierId],
+                  (err) => { if (err) reject(err); else resolve(); });
               });
             }
           }
         }
 
-        // Import tax groups
+        // Import tax groups with new IDs; build name→newId map
+        const taxGroupNameToId = {};
         for (const group of taxGroups) {
-          console.log('Processing tax group:', group);
-          
-          // Check if required fields exist (using normalized groupName)
           if (!group.groupName) {
             console.warn('Skipping tax group - missing name:', group);
             continue;
           }
           
+          const newGroupId = await generateNextId(db, ID_RANGES.TAX_GROUP);
+          taxGroupNameToId[group.groupName.trim()] = newGroupId;
+          group._newId = newGroupId;
+          
           await new Promise((resolve, reject) => {
-            db.run(
-              'INSERT INTO tax_groups (tax_group_id, name, menu_id) VALUES (?, ?, ?)',
-              [group.no || 0, group.groupName, menuId],
-              (err) => {
-                if (err) reject(err);
-                else resolve();
-              }
-            );
+            db.run('INSERT INTO tax_groups (tax_group_id, name, menu_id) VALUES (?, ?, ?)',
+              [newGroupId, group.groupName, menuId],
+              (err) => { if (err) reject(err); else resolve(); });
           });
         }
 
         // Import taxes from tax groups
         for (const group of taxGroups) {
-          console.log('Processing taxes for group:', group.groupName);
+          if (!group._newId) continue;
           
-          // Process each tax in the group (support both new and legacy column names)
           for (let i = 1; i <= 10; i++) {
             const taxName = getExcelValue(group, `${EXCEL_COLUMNS.TAX.TAX} ${i}`, `Tax ${i}`);
             const taxRate = getExcelValue(group, `${EXCEL_COLUMNS.TAX.RATE} ${i}`, `Rate ${i}`);
             
             if (taxName && taxName.trim() !== '') {
-              console.log(`Processing tax: ${taxName} (Rate: ${taxRate})`);
-              
               const newTaxId = await generateNextId(db, ID_RANGES.TAX);
               
               await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO taxes (tax_id, name, rate) VALUES (?, ?, ?)',
+                db.run('INSERT INTO taxes (tax_id, name, rate) VALUES (?, ?, ?)',
                   [newTaxId, taxName, parseFloat(taxRate) || 0],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
+                  (err) => { if (err) reject(err); else resolve(); });
               });
 
-              // Link tax to group
               await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)',
-                  [group.no, newTaxId],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
+                db.run('INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (?, ?)',
+                  [group._newId, newTaxId],
+                  (err) => { if (err) reject(err); else resolve(); });
               });
             }
           }
         }
 
-        // Import printer groups
-        for (const group of printerGroups) {
-          console.log('Processing printer group:', group);
-          
-          // Check if required fields exist (using normalized groupName)
-          if (!group.groupName) {
-            console.warn('Skipping printer group - missing name:', group);
-            continue;
-          }
-          
-          await new Promise((resolve, reject) => {
-            db.run(
-              'INSERT INTO printer_groups (printer_group_id, name, menu_id) VALUES (?, ?, ?)',
-              [group.no || 0, group.groupName, menuId],
-              (err) => {
-                if (err) reject(err);
-                else resolve();
-              }
-            );
-          });
+        // Printer groups: keep existing ones (they are global, not per-menu)
+        // Build name→id map from existing DB printer groups
+        const printerGroupNameToId = {};
+        const existingPrinterGroups = await new Promise((resolve, reject) => {
+          db.all('SELECT * FROM printer_groups WHERE is_active = 1', [], (err, rows) => { if (err) reject(err); else resolve(rows || []); });
+        });
+        for (const pg of existingPrinterGroups) {
+          printerGroupNameToId[pg.name.trim()] = pg.printer_group_id;
         }
 
-        // Import printers from printer groups
-        for (const group of printerGroups) {
-          console.log('Processing printers for group:', group.groupName);
-          
-          // Process each printer in the group (support both new and legacy column names)
-          for (let i = 1; i <= 30; i++) {
-            const printerName = getExcelValue(group, `${EXCEL_COLUMNS.PRINTER.PRINTER} ${i}`, `Printer ${i}`);
-            
-            if (printerName && printerName.trim() !== '') {
-              console.log(`Processing printer: ${printerName}`);
-              
-              const newPrinterId = await generateNextId(db, ID_RANGES.PRINTER);
-              
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO printers (printer_id, name, type) VALUES (?, ?, ?)',
-                  [newPrinterId, printerName, group.kitchenType || 'ORDER'],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
-              });
+        // Now that all groups are created, link categories to groups using category header rows
+        for (const headerRow of categoryHeaderRows) {
+          const categoryName = headerRow._category;
+          const category = uniqueCategories.find(c => c.name === categoryName);
+          if (!category) continue;
 
-              // Link printer to group
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO printer_group_links (printer_group_id, printer_id) VALUES (?, ?)',
-                  [group.no, newPrinterId],
-                  (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  }
-                );
-              });
+          for (let i = 1; i <= 5; i++) {
+            const linkedModifierGroupName = getExcelValue(headerRow, `${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} ${i}`, `Linked Modifier Group ${i}`);
+            if (linkedModifierGroupName && linkedModifierGroupName.trim() !== '') {
+              const newModGroupId = modGroupNameToId[linkedModifierGroupName.trim()];
+              if (newModGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO category_modifier_links (category_id, modifier_group_id, is_ambiguous) VALUES (?, ?, ?)',
+                    [category.categoryId, newModGroupId, 0],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              } else {
+                console.warn(`Warning: Modifier group "${linkedModifierGroupName}" not found in Modifiers sheet`);
+              }
+            }
+          }
+
+          for (let i = 1; i <= 3; i++) {
+            const linkedTaxGroupName = getExcelValue(headerRow, `${EXCEL_COLUMNS.MENU.TAX_GROUP} ${i}`, `Linked Tax Group ${i}`);
+            if (linkedTaxGroupName && linkedTaxGroupName.trim() !== '') {
+              const newTaxGroupId = taxGroupNameToId[linkedTaxGroupName.trim()];
+              if (newTaxGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO category_tax_links (category_id, tax_group_id) VALUES (?, ?)',
+                    [category.categoryId, newTaxGroupId],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              } else {
+                console.warn(`Warning: Tax group "${linkedTaxGroupName}" not found in Taxes sheet`);
+              }
+            }
+          }
+
+          for (let i = 1; i <= 3; i++) {
+            const linkedPrinterGroupName = getExcelValue(headerRow, `${EXCEL_COLUMNS.MENU.PRINTER_GROUP} ${i}`, `Linked Printer Group ${i}`);
+            if (linkedPrinterGroupName && linkedPrinterGroupName.trim() !== '') {
+              const printerGroupId = printerGroupNameToId[linkedPrinterGroupName.trim()];
+              if (printerGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO category_printer_links (category_id, printer_group_id) VALUES (?, ?)',
+                    [category.categoryId, printerGroupId],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              } else {
+                console.warn(`Warning: Printer group "${linkedPrinterGroupName}" not found in DB`);
+              }
+            }
+          }
+        }
+
+        // Now link items to groups
+        for (const { newItemId, excelRow } of importedItems) {
+          for (let i = 1; i <= 5; i++) {
+            const linkedModifierGroupName = getExcelValue(excelRow, `${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} ${i}`, `Linked Modifier Group ${i}`);
+            if (linkedModifierGroupName && linkedModifierGroupName.trim() !== '') {
+              const newModGroupId = modGroupNameToId[linkedModifierGroupName.trim()];
+              if (newModGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO menu_modifier_links (item_id, modifier_group_id) VALUES (?, ?)',
+                    [newItemId, newModGroupId],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              }
+            }
+          }
+
+          for (let i = 1; i <= 3; i++) {
+            const linkedTaxGroupName = getExcelValue(excelRow, `${EXCEL_COLUMNS.MENU.TAX_GROUP} ${i}`, `Linked Tax Group ${i}`);
+            if (linkedTaxGroupName && linkedTaxGroupName.trim() !== '') {
+              const newTaxGroupId = taxGroupNameToId[linkedTaxGroupName.trim()];
+              if (newTaxGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO menu_tax_links (item_id, tax_group_id) VALUES (?, ?)',
+                    [newItemId, newTaxGroupId],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              }
+            }
+          }
+
+          for (let i = 1; i <= 3; i++) {
+            const linkedPrinterGroupName = getExcelValue(excelRow, `${EXCEL_COLUMNS.MENU.PRINTER_GROUP} ${i}`, `Linked Printer Group ${i}`);
+            if (linkedPrinterGroupName && linkedPrinterGroupName.trim() !== '') {
+              const printerGroupId = printerGroupNameToId[linkedPrinterGroupName.trim()];
+              if (printerGroupId) {
+                await new Promise((resolve, reject) => {
+                  db.run('INSERT OR IGNORE INTO menu_printer_links (item_id, printer_group_id) VALUES (?, ?)',
+                    [newItemId, printerGroupId],
+                    (err) => { if (err) reject(err); else resolve(); });
+                });
+              }
             }
           }
         }
@@ -2850,7 +2756,7 @@ router.delete('/items/:id', (req, res) => {
         
         // Count modifiers from groups (support both new and legacy column names)
         for (const group of modifierGroups) {
-          for (let i = 1; i <= 20; i++) {
+          for (let i = 1; i <= 50; i++) {
             const modName = getExcelValue(group, `${EXCEL_COLUMNS.MODIFIER.MODIFIER} ${i}`, `Modifier ${i}`);
             if (modName && modName.trim() !== '') {
               totalModifiers++;
@@ -3233,5 +3139,41 @@ router.delete('/items/:id', (req, res) => {
 
   return router;
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

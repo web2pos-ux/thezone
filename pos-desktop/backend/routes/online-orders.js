@@ -343,9 +343,6 @@ function startOrderListener(restaurantId) {
             printReq.write(printData);
             printReq.end();
 
-            // 🧾 온라인 주문 수신 시 Bill 1장 출력 (결제 여부와 관계없이)
-            console.log(`🧾 온라인 주문 Bill 출력: ${localOrderNumber}`);
-            
             // Bill 데이터 구성
             const taxLines = [];
             if (order.taxBreakdown && Array.isArray(order.taxBreakdown)) {
@@ -441,30 +438,6 @@ function startOrderListener(restaurantId) {
               total: order.total || 0,
               footer: {}
             };
-
-            // Bill 출력 (1장만)
-            const billPrintData = JSON.stringify({ billData, copies: 1 });
-            const billReq = http.request({
-              hostname: 'localhost',
-              port: 3177,
-              path: '/api/printers/print-bill',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(billPrintData)
-              }
-            }, (billRes) => {
-              let billResponseData = '';
-              billRes.on('data', chunk => { billResponseData += chunk; });
-              billRes.on('end', () => {
-                console.log(`🧾 온라인 주문 Bill 출력 완료 (1장): ${localOrderNumber}`);
-              });
-            });
-            billReq.on('error', (err) => {
-              console.error('🧾 온라인 주문 Bill 출력 오류:', err.message);
-            });
-            billReq.write(billPrintData);
-            billReq.end();
 
             // 🧾 온라인 결제 완료 시 Receipt도 출력 + Cash Drawer 열기
             if (orderIsPaid) {

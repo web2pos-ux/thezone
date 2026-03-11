@@ -40,6 +40,9 @@ interface DailyTrendData {
 
 const PaymentReportPage = () => {
   const [selectedPeriod, setSelectedPeriod] = useState('week');
+  const [customDateMode, setCustomDateMode] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [customEndDate, setCustomEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(true);
   
   // 실제 데이터 상태
@@ -59,6 +62,10 @@ const PaymentReportPage = () => {
 
   // 날짜 범위 계산
   const getDateRange = useCallback((period: string) => {
+    if (customDateMode) {
+      return { startDate: customStartDate, endDate: customEndDate };
+    }
+    
     const today = new Date();
     const endDate = today.toISOString().split('T')[0];
     let startDate = endDate;
@@ -89,7 +96,7 @@ const PaymentReportPage = () => {
         break;
     }
     return { startDate, endDate };
-  }, []);
+  }, [customDateMode, customStartDate, customEndDate]);
 
   // 데이터 가져오기
   const fetchData = useCallback(async () => {
@@ -190,22 +197,65 @@ const PaymentReportPage = () => {
       </div>
 
       {/* Period Selector */}
-      <div className="mb-6">
-        <div className="flex space-x-2">
-          {['day', 'week', 'month', 'quarter', 'year'].map((period) => (
+      <div className="mb-6 bg-white rounded-lg shadow-md p-4">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex space-x-2">
+            {['day', 'week', 'month', 'quarter', 'year'].map((period) => (
+              <button
+                key={period}
+                onClick={() => {
+                  setCustomDateMode(false);
+                  setSelectedPeriod(period);
+                }}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  !customDateMode && selectedPeriod === period
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {period.charAt(0).toUpperCase() + period.slice(1)}
+              </button>
+            ))}
+          </div>
+          
+          <div className="h-8 w-px bg-gray-300" />
+          
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600 font-medium">Custom:</span>
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-gray-400">to</span>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+            />
             <button
-              key={period}
-              onClick={() => setSelectedPeriod(period)}
+              onClick={() => {
+                setCustomDateMode(true);
+                fetchData();
+              }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                selectedPeriod === period
+                customDateMode
                   ? 'bg-blue-500 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-100'
+                  : 'bg-green-500 text-white hover:bg-green-600'
               }`}
             >
-              {period.charAt(0).toUpperCase() + period.slice(1)}
+              Apply
             </button>
-          ))}
+          </div>
         </div>
+        
+        {customDateMode && (
+          <div className="mt-2 text-sm text-blue-600 font-medium">
+            Showing data from {customStartDate} to {customEndDate}
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -224,7 +274,7 @@ const PaymentReportPage = () => {
                 <div className="ml-4">
                   <p className="text-sm font-medium text-gray-600">Total Revenue</p>
                   <p className="text-2xl font-bold text-gray-900">${summary.totalRevenue.toFixed(2)}</p>
-                  <p className="text-xs text-gray-500">{selectedPeriod === 'day' ? 'Today' : `Last ${selectedPeriod}`}</p>
+                  <p className="text-xs text-gray-500">{customDateMode ? `${customStartDate} ~ ${customEndDate}` : (selectedPeriod === 'day' ? 'Today' : `Last ${selectedPeriod}`)}</p>
                 </div>
               </div>
             </div>

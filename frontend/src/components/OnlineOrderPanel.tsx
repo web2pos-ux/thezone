@@ -95,7 +95,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
   // 오디오 초기화 (한 번만)
   useEffect(() => {
     if (!audioRef.current) {
-      audioRef.current = new Audio('/sounds/new-order.mp3');
+      audioRef.current = new Audio('/sounds/Online_Order.mp3');
       audioRef.current.preload = 'auto';
       audioRef.current.volume = 1.0;
     }
@@ -134,7 +134,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
     
     try {
       if (!audioRef.current) {
-        audioRef.current = new Audio('/sounds/new-order.mp3');
+        audioRef.current = new Audio('/sounds/Online_Order.mp3');
       }
       audioRef.current.currentTime = 0;
       audioRef.current.volume = 1.0;

@@ -1,0 +1,41 @@
+---
+description: CRITICAL - Menu management code is HARD-LOCKED. Absolutely no edits without explicit user approval.
+globs: frontend/src/pages/MenuListPage.tsx,frontend/src/pages/MenuEditPage.tsx,frontend/src/pages/MenuAnalysisPage.tsx,frontend/src/pages/MenuItemOptionsPage.tsx,frontend/src/components/MenuGrid.tsx,frontend/src/components/MenuSidebar.tsx,frontend/src/components/MenuOptionsPanel.tsx,frontend/src/components/MenuItemList.tsx,frontend/src/components/SortableMenuItem.tsx,frontend/src/components/order/MenuItemGrid.tsx,frontend/src/components/CategorySidebar.tsx,frontend/src/components/order/CategoryBar.tsx,frontend/src/components/order/ModifierPanel.tsx,frontend/src/components/CategoryModifierConnector.tsx,frontend/src/components/ModifierGroupManager.tsx,frontend/src/hooks/useMenuData.ts,frontend/src/contexts/MenuCacheContext.tsx,frontend/src/utils/menuIdentifier.ts,frontend/src/utils/menuDataFetcher.ts,backend/routes/menu.js,backend/routes/menus.js,backend/routes/menu-sync.js,backend/routes/menu-visibility.js,backend/routes/menuIndependentOptions.js,backend/routes/modifierGroups.js,backend/routes/openPrice.js,backend/routes/sold-out.js,pos-desktop/backend/routes/menu.js,pos-desktop/backend/routes/menus.js,pos-desktop/backend/routes/menu-sync.js,pos-desktop/backend/routes/menu-visibility.js,pos-desktop/backend/routes/menuIndependentOptions.js,pos-desktop/backend/routes/modifierGroups.js,pos-desktop/backend/routes/openPrice.js,pos-desktop/backend/routes/sold-out.js
+alwaysApply: true
+---
+
+# MENU CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Areas
+
+### Frontend Pages
+- `MenuListPage.tsx` - 메뉴 목록
+- `MenuEditPage.tsx` - 메뉴 편집
+- `MenuAnalysisPage.tsx` - 메뉴 분석
+- `MenuItemOptionsPage.tsx` - 메뉴 옵션
+
+### Frontend Components
+- `MenuGrid.tsx`, `MenuSidebar.tsx`, `MenuOptionsPanel.tsx`, `MenuItemList.tsx`, `SortableMenuItem.tsx`
+- `MenuItemGrid.tsx`, `CategoryBar.tsx`, `CategorySidebar.tsx`, `ModifierPanel.tsx`
+- `CategoryModifierConnector.tsx`, `ModifierGroupManager.tsx`
+
+### Frontend Hooks/Utils/Context
+- `useMenuData.ts`, `MenuCacheContext.tsx`, `menuIdentifier.ts`, `menuDataFetcher.ts`
+
+### Backend Routes
+- `menu.js`, `menus.js`, `menu-sync.js`, `menu-visibility.js`, `menuIndependentOptions.js`
+- `modifierGroups.js`, `openPrice.js`, `sold-out.js`
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: 다른 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
+5. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
+   - **WHY**: 왜 이 변경이 필요한지
+   - **IMPACT**: 메뉴 표시, 메뉴 편집, 메뉴 동기화, 카테고리/수정자 연결 등에 미치는 영향
+   - 승인 요청: "이 변경을 진행해도 될까요?"
+6. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
+7. 다른 작업의 "부수 효과로 메뉴 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.

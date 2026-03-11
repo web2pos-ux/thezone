@@ -1,549 +1,180 @@
-/**
- * DealerSettingsPage - Dealer/Distributor/Admin Only
- * 
- * Settings page for dealers, distributors, and system administrators only
- * - Change Restaurant ID
- * - Switch Service Mode (QSR/FSR)
- * - Change Store Name
- * 
- * Store owners/employees cannot access
- */
-
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 
-interface DealerInfo {
-  success: boolean;
-  role: string;
-  name: string;
-  dealerId?: string;
-  permissions: string[];
-}
-
-interface StoreSettings {
-  restaurantId: string | null;
-  storeName: string | null;
-  serviceMode: 'QSR' | 'FSR';
-  setupCompleted: boolean;
-  setupDate: string | null;
-}
+const MASTER_PIN = '9998887117';
 
 const DealerSettingsPage: React.FC = () => {
   const navigate = useNavigate();
-  
-  // Auth states
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [dealerInfo, setDealerInfo] = useState<DealerInfo | null>(null);
+
+  const [authed, setAuthed] = useState(false);
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
-  const [isVerifying, setIsVerifying] = useState(false);
-  
-  // Settings states
-  const [settings, setSettings] = useState<StoreSettings | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+
+  const [restaurantId, setRestaurantId] = useState('');
+  const [storeName, setStoreName] = useState('');
+  const [serviceMode, setServiceMode] = useState<'FSR' | 'QSR'>('FSR');
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  
-  // Edit states
-  const [editRestaurantId, setEditRestaurantId] = useState('');
-  const [editStoreName, setEditStoreName] = useState('');
-  const [editServiceMode, setEditServiceMode] = useState<'QSR' | 'FSR'>('FSR');
-  const [verifyingRestaurant, setVerifyingRestaurant] = useState(false);
-  const [restaurantVerified, setRestaurantVerified] = useState(false);
-  const [restaurantInfo, setRestaurantInfo] = useState<{ name: string; address?: string } | null>(null);
-  
-  // Verify dealer PIN
-  const handleVerifyPin = async () => {
-    if (pin.length < 4) {
-      setPinError('PIN must be at least 4 digits');
-      return;
-    }
-    
-    setIsVerifying(true);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [dealerRole, setDealerRole] = useState('');
+
+  const handleVerify = async () => {
+    if (pin.length < 4) { setPinError('4자리 이상 입력'); return; }
+    setVerifying(true);
     setPinError('');
-    
     try {
-      const response = await fetch(`${API_URL}/dealer-access/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${API_URL}/dealer-access/verify`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin })
       });
-      
-      const data = await response.json();
-      
+      const data = await res.json();
       if (data.success) {
-        setDealerInfo(data);
-        setIsAuthenticated(true);
-        // Store in session for API calls
+        setDealerRole(data.role);
         sessionStorage.setItem('dealer_pin', pin);
         sessionStorage.setItem('dealer_role', data.role);
-        // Load settings
+        setAuthed(true);
         loadSettings(data.role, pin);
       } else {
         setPinError(data.error || 'Invalid PIN');
       }
-    } catch (err) {
-      setPinError('Verification failed. Please try again.');
-    } finally {
-      setIsVerifying(false);
-    }
+    } catch { setPinError('Verification failed'); }
+    finally { setVerifying(false); }
   };
-  
-  // Load current settings
+
   const loadSettings = async (role: string, dealerPin: string) => {
-    setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/dealer-access/store-settings`, {
-        headers: {
-          'X-Dealer-Role': role,
-          'X-Dealer-Pin': dealerPin
-        }
+      const res = await fetch(`${API_URL}/dealer-access/store-settings`, {
+        headers: { 'X-Dealer-Role': role, 'X-Dealer-Pin': dealerPin }
       });
-      
-      const data = await response.json();
+      const data = await res.json();
       if (data.success) {
-        setSettings(data.data);
-        setEditRestaurantId(data.data.restaurantId || '');
-        setEditStoreName(data.data.storeName || '');
-        setEditServiceMode(data.data.serviceMode || 'FSR');
-        if (data.data.restaurantId) {
-          setRestaurantVerified(true);
-        }
+        setRestaurantId(data.data.restaurantId || '');
+        setStoreName(data.data.storeName || '');
+        setServiceMode(data.data.serviceMode || 'FSR');
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to load settings' });
-    } finally {
-      setLoading(false);
-    }
+    } catch {}
   };
-  
-  // Verify restaurant ID with Firebase
-  const handleVerifyRestaurant = async () => {
-    if (!editRestaurantId.trim()) return;
-    
-    setVerifyingRestaurant(true);
-    setRestaurantVerified(false);
-    setRestaurantInfo(null);
-    
-    try {
-      const response = await fetch(`${API_URL}/firebase-setup/verify-restaurant`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ restaurantId: editRestaurantId.trim() })
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setRestaurantVerified(true);
-        setRestaurantInfo({
-          name: data.data.name,
-          address: data.data.address
-        });
-        // Auto-fill store name if empty
-        if (!editStoreName && data.data.name) {
-          setEditStoreName(data.data.name);
-        }
-      } else {
-        setMessage({ type: 'error', text: data.error || 'Restaurant not found' });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to verify restaurant' });
-    } finally {
-      setVerifyingRestaurant(false);
-    }
-  };
-  
-  // Save settings
-  const handleSaveSettings = async () => {
-    if (!dealerInfo) return;
-    
-    const dealerPin = sessionStorage.getItem('dealer_pin');
-    if (!dealerPin) {
-      setMessage({ type: 'error', text: 'Session expired. Please re-authenticate.' });
-      setIsAuthenticated(false);
-      return;
-    }
-    
-    // Validate restaurant ID if changed
-    if (editRestaurantId !== settings?.restaurantId && !restaurantVerified) {
-      setMessage({ type: 'error', text: 'Please verify the Restaurant ID first' });
-      return;
-    }
-    
+
+  const handleSave = async () => {
+    const dealerPin = sessionStorage.getItem('dealer_pin') || '';
+    if (!dealerPin) return;
     setSaving(true);
-    setMessage(null);
-    
+    setMsg(null);
     try {
-      const response = await fetch(`${API_URL}/dealer-access/store-settings`, {
+      const res = await fetch(`${API_URL}/dealer-access/store-settings`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Dealer-Role': dealerInfo.role,
-          'X-Dealer-Pin': dealerPin
-        },
-        body: JSON.stringify({
-          restaurantId: editRestaurantId.trim() || null,
-          storeName: editStoreName.trim() || null,
-          serviceMode: editServiceMode
-        })
+        headers: { 'Content-Type': 'application/json', 'X-Dealer-Role': dealerRole, 'X-Dealer-Pin': dealerPin },
+        body: JSON.stringify({ restaurantId: restaurantId.trim() || null, storeName: storeName.trim() || null, serviceMode })
       });
-      
-      const data = await response.json();
-      
+      const data = await res.json();
       if (data.success) {
-        setMessage({ 
-          type: 'success', 
-          text: 'Settings saved! Please restart the backend server for changes to take effect.' 
-        });
-        setSettings(data.data);
+        try {
+          const existing = JSON.parse(localStorage.getItem('pos_setup_config') || '{}');
+          existing.operationMode = serviceMode;
+          localStorage.setItem('pos_setup_config', JSON.stringify(existing));
+        } catch {}
+        setMsg({ ok: true, text: 'Saved!' });
       } else {
-        setMessage({ type: 'error', text: data.error || 'Failed to save settings' });
+        setMsg({ ok: false, text: data.error || 'Save failed' });
       }
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to save settings' });
-    } finally {
-      setSaving(false);
-    }
+    } catch { setMsg({ ok: false, text: 'Save failed' }); }
+    finally { setSaving(false); }
   };
-  
-  // Handle logout
-  const handleLogout = () => {
+
+  const handleExit = () => {
     sessionStorage.removeItem('dealer_pin');
     sessionStorage.removeItem('dealer_role');
-    setIsAuthenticated(false);
-    setDealerInfo(null);
-    setPin('');
-    setSettings(null);
+    navigate('/');
   };
-  
-  // PIN Input UI
-  if (!isAuthenticated) {
+
+  // PIN 화면
+  if (!authed) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 shadow-2xl border border-white/20 w-full max-w-md">
-          {/* Header */}
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-4xl">🔐</span>
-            </div>
-            <h1 className="text-2xl font-bold text-white mb-2">Dealer Access</h1>
-            <p className="text-purple-200 text-sm">
-              Authorized Personnel Only<br/>
-              <span className="text-purple-400 text-xs">Authorized Personnel Only</span>
-            </p>
-          </div>
-          
-          {/* PIN Input */}
-          <div className="mb-4">
-            <label className="block text-purple-100 mb-2 text-sm font-medium">
-              Dealer PIN
-            </label>
-            <input
-              type="password"
-              value={pin}
-              onChange={(e) => {
-                setPin(e.target.value.replace(/\D/g, ''));
-                setPinError('');
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && handleVerifyPin()}
-              placeholder="••••••"
-              maxLength={10}
-              className="w-full px-4 py-4 bg-white/10 border border-white/30 rounded-xl text-white text-center text-2xl tracking-widest placeholder-purple-300 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-400/30"
-              readOnly
-            />
-            {pinError && (
-              <p className="text-red-400 text-sm mt-2 text-center">{pinError}</p>
-            )}
-          </div>
-          
-          {/* Number Pad */}
-          <div className="grid grid-cols-3 gap-2 mb-4">
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-              <button
-                key={num}
-                onClick={() => {
-                  if (pin.length < 10) {
-                    setPin(prev => prev + num);
-                    setPinError('');
-                  }
-                }}
-                className="py-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-2xl font-bold transition-all active:scale-95"
-              >
-                {num}
-              </button>
+      <div className="fixed inset-0 bg-gray-900 flex items-center justify-center">
+        <div className="w-80 text-center">
+          <h1 className="text-white text-xl font-bold mb-6">Dealer Access</h1>
+          <div className="flex justify-center gap-2 mb-4">
+            {Array.from({ length: Math.max(pin.length, 4) }).map((_, i) => (
+              <div key={i} className={`w-4 h-4 rounded-full ${i < pin.length ? 'bg-white' : 'border-2 border-gray-500'}`} />
             ))}
-            <button
-              onClick={() => setPin('')}
-              className="py-4 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-xl text-red-300 text-lg font-bold transition-all active:scale-95"
-            >
-              Clear
-            </button>
-            <button
-              onClick={() => {
-                if (pin.length < 10) {
-                  setPin(prev => prev + '0');
-                  setPinError('');
-                }
-              }}
-              className="py-4 bg-white/10 hover:bg-white/20 border border-white/20 rounded-xl text-white text-2xl font-bold transition-all active:scale-95"
-            >
-              0
-            </button>
-            <button
-              onClick={() => setPin(prev => prev.slice(0, -1))}
-              className="py-4 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/30 rounded-xl text-yellow-300 text-lg font-bold transition-all active:scale-95"
-            >
-              ←
-            </button>
           </div>
-          
-          {/* Verify Button */}
-          <button
-            onClick={handleVerifyPin}
-            disabled={isVerifying || pin.length < 4}
-            className={`w-full py-4 rounded-xl font-bold text-lg transition-all ${
-              isVerifying || pin.length < 4
-                ? 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
-                : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white shadow-lg'
-            }`}
-          >
-            {isVerifying ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                Verifying...
-              </span>
-            ) : (
-              '🔓 Access'
-            )}
-          </button>
-          
-          {/* Cancel button */}
-          <button
-            onClick={() => navigate(-1)}
-            className="w-full mt-3 py-3 bg-white/5 hover:bg-white/10 border border-white/20 rounded-xl text-purple-200 transition-all"
-          >
-            Cancel
-          </button>
-          
-          {/* Warning */}
-          <div className="mt-6 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-            <p className="text-yellow-200 text-xs text-center">
-              ⚠️ This area is restricted to authorized dealers, distributors, and system administrators only.
-              Unauthorized access attempts are logged.
-            </p>
+          {pinError && <p className="text-red-400 text-sm mb-3">{pinError}</p>}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {[1,2,3,4,5,6,7,8,9].map(n => (
+              <button key={n} onClick={() => { setPin(p => p + n); setPinError(''); }}
+                className="h-14 bg-gray-700 hover:bg-gray-600 text-white text-xl font-bold rounded-lg active:scale-95">{n}</button>
+            ))}
+            <button onClick={() => setPin('')} className="h-14 bg-red-800 hover:bg-red-700 text-white text-sm font-bold rounded-lg">Clear</button>
+            <button onClick={() => { setPin(p => p + '0'); setPinError(''); }}
+              className="h-14 bg-gray-700 hover:bg-gray-600 text-white text-xl font-bold rounded-lg active:scale-95">0</button>
+            <button onClick={() => setPin(p => p.slice(0, -1))} className="h-14 bg-yellow-700 hover:bg-yellow-600 text-white text-xl font-bold rounded-lg">←</button>
           </div>
+          <button onClick={handleVerify} disabled={verifying || pin.length < 4}
+            className={`w-full h-12 rounded-lg font-bold text-lg mb-3 ${pin.length >= 4 ? 'bg-purple-600 hover:bg-purple-500 text-white' : 'bg-gray-700 text-gray-400 cursor-not-allowed'}`}>
+            {verifying ? '...' : 'Access'}
+          </button>
+          <button onClick={() => navigate(-1)} className="w-full h-10 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm">Cancel</button>
         </div>
       </div>
     );
   }
-  
-  // Main Settings UI
+
+  // 설정 화면 (한 화면)
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4">
-      <div className="max-w-2xl mx-auto">
-        {/* Header */}
-        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 shadow-xl border border-white/20 mb-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-purple-500/20 rounded-full flex items-center justify-center">
-                <span className="text-2xl">⚙️</span>
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-white">Store Settings</h1>
-                <p className="text-purple-200 text-sm">
-                  {dealerInfo?.name} 
-                  <span className={`ml-2 px-2 py-0.5 rounded text-xs ${
-                    dealerInfo?.role === 'SYSTEM_ADMIN' ? 'bg-red-500/30 text-red-200' :
-                    dealerInfo?.role === 'DISTRIBUTOR' ? 'bg-orange-500/30 text-orange-200' :
-                    'bg-blue-500/30 text-blue-200'
-                  }`}>
-                    {dealerInfo?.role}
-                  </span>
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded-lg text-red-200 text-sm transition-all"
-            >
-              Logout
+    <div className="fixed inset-0 bg-gray-900 flex items-center justify-center">
+      <div className="w-[420px]">
+        <h1 className="text-white text-xl font-bold text-center mb-5">Dealer Settings</h1>
+
+        {/* Restaurant ID */}
+        <div className="mb-4">
+          <label className="text-gray-400 text-xs block mb-1">Restaurant ID</label>
+          <input type="text" value={restaurantId} onChange={e => setRestaurantId(e.target.value)}
+            placeholder="Enter Restaurant ID"
+            className="w-full h-11 px-3 bg-gray-800 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+
+        {/* Store Name */}
+        <div className="mb-4">
+          <label className="text-gray-400 text-xs block mb-1">Store Name</label>
+          <input type="text" value={storeName} onChange={e => setStoreName(e.target.value)}
+            placeholder="Enter Store Name"
+            className="w-full h-11 px-3 bg-gray-800 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:border-purple-500" />
+        </div>
+
+        {/* Service Mode */}
+        <div className="mb-5">
+          <label className="text-gray-400 text-xs block mb-1">Service Mode</label>
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={() => setServiceMode('FSR')}
+              className={`h-14 rounded-lg font-bold text-lg border-2 transition-all ${serviceMode === 'FSR' ? 'bg-blue-600 border-blue-400 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
+              FSR
+            </button>
+            <button onClick={() => setServiceMode('QSR')}
+              className={`h-14 rounded-lg font-bold text-lg border-2 transition-all ${serviceMode === 'QSR' ? 'bg-orange-600 border-orange-400 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
+              QSR
             </button>
           </div>
         </div>
-        
-        {/* Loading */}
-        {loading ? (
-          <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 shadow-xl border border-white/20 text-center">
-            <div className="w-10 h-10 border-4 border-white/30 border-t-white rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-white">Loading settings...</p>
+
+        {/* Message */}
+        {msg && (
+          <div className={`mb-4 p-2 rounded-lg text-center text-sm font-medium ${msg.ok ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
+            {msg.text}
           </div>
-        ) : (
-          <>
-            {/* Message */}
-            {message && (
-              <div className={`mb-4 p-4 rounded-xl border ${
-                message.type === 'success' 
-                  ? 'bg-green-500/20 border-green-500/30 text-green-200' 
-                  : 'bg-red-500/20 border-red-500/30 text-red-200'
-              }`}>
-                {message.type === 'success' ? '✅' : '❌'} {message.text}
-              </div>
-            )}
-            
-            {/* Current Settings */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 shadow-xl border border-white/20 mb-6">
-              <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                📋 Current Settings
-              </h2>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div className="p-3 bg-white/5 rounded-lg">
-                  <span className="text-purple-300 block mb-1">Restaurant ID</span>
-                  <span className="text-white font-mono">{settings?.restaurantId || 'Not set'}</span>
-                </div>
-                <div className="p-3 bg-white/5 rounded-lg">
-                  <span className="text-purple-300 block mb-1">Service Mode</span>
-                  <span className={`font-bold ${settings?.serviceMode === 'QSR' ? 'text-orange-400' : 'text-blue-400'}`}>
-                    {settings?.serviceMode === 'QSR' ? '🍔 QSR' : '🍷 FSR'}
-                  </span>
-                </div>
-                <div className="p-3 bg-white/5 rounded-lg col-span-2">
-                  <span className="text-purple-300 block mb-1">Store Name</span>
-                  <span className="text-white">{settings?.storeName || 'Not set'}</span>
-                </div>
-              </div>
-            </div>
-            
-            {/* Edit Settings */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 shadow-xl border border-white/20">
-              <h2 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-                ✏️ Edit Settings
-              </h2>
-              
-              {/* Restaurant ID */}
-              <div className="mb-5">
-                <label className="block text-purple-100 mb-2 text-sm font-medium">
-                  🏪 Restaurant ID
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={editRestaurantId}
-                    onChange={(e) => {
-                      setEditRestaurantId(e.target.value);
-                      setRestaurantVerified(false);
-                      setRestaurantInfo(null);
-                    }}
-                    placeholder="Enter Restaurant ID"
-                    className="flex-1 px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white font-mono placeholder-purple-300 focus:outline-none focus:border-purple-400"
-                  />
-                  <button
-                    onClick={handleVerifyRestaurant}
-                    disabled={verifyingRestaurant || !editRestaurantId.trim()}
-                    className={`px-4 py-3 rounded-xl font-medium transition-all ${
-                      verifyingRestaurant || !editRestaurantId.trim()
-                        ? 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
-                        : 'bg-yellow-500 hover:bg-yellow-600 text-black'
-                    }`}
-                  >
-                    {verifyingRestaurant ? '...' : 'Verify'}
-                  </button>
-                </div>
-                {restaurantVerified && restaurantInfo && (
-                  <div className="mt-2 p-3 bg-green-500/20 border border-green-500/30 rounded-lg">
-                    <p className="text-green-200 text-sm">
-                      ✅ {restaurantInfo.name}
-                      {restaurantInfo.address && <span className="text-green-300 block text-xs">{restaurantInfo.address}</span>}
-                    </p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Store Name */}
-              <div className="mb-5">
-                <label className="block text-purple-100 mb-2 text-sm font-medium">
-                  🏷️ Store Name
-                </label>
-                <input
-                  type="text"
-                  value={editStoreName}
-                  onChange={(e) => setEditStoreName(e.target.value)}
-                  placeholder="Enter Store Name"
-                  className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-purple-300 focus:outline-none focus:border-purple-400"
-                />
-              </div>
-              
-              {/* Service Mode */}
-              <div className="mb-6">
-                <label className="block text-purple-100 mb-2 text-sm font-medium">
-                  🍽️ Service Mode
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => setEditServiceMode('FSR')}
-                    className={`p-4 rounded-xl border-2 transition-all ${
-                      editServiceMode === 'FSR'
-                        ? 'bg-blue-500/30 border-blue-400 text-white'
-                        : 'bg-white/5 border-white/20 text-purple-200 hover:bg-white/10'
-                    }`}
-                  >
-                    <div className="text-3xl mb-2">🍷</div>
-                    <div className="font-bold">FSR</div>
-                    <div className="text-xs opacity-70">Full Service Restaurant</div>
-                  </button>
-                  
-                  <button
-                    onClick={() => setEditServiceMode('QSR')}
-                    className={`p-4 rounded-xl border-2 transition-all ${
-                      editServiceMode === 'QSR'
-                        ? 'bg-orange-500/30 border-orange-400 text-white'
-                        : 'bg-white/5 border-white/20 text-purple-200 hover:bg-white/10'
-                    }`}
-                  >
-                    <div className="text-3xl mb-2">🍔</div>
-                    <div className="font-bold">QSR</div>
-                    <div className="text-xs opacity-70">Quick Service Restaurant</div>
-                  </button>
-                </div>
-              </div>
-              
-              {/* Save Button */}
-              <button
-                onClick={handleSaveSettings}
-                disabled={saving}
-                className={`w-full py-4 rounded-xl font-bold text-lg transition-all ${
-                  saving
-                    ? 'bg-gray-500/50 text-gray-300 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white shadow-lg'
-                }`}
-              >
-                {saving ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                    Saving...
-                  </span>
-                ) : (
-                  '💾 Save Changes'
-                )}
-              </button>
-              
-              {/* Warning */}
-              <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                <p className="text-yellow-200 text-xs">
-                  ⚠️ After saving, you must restart the backend server for Firebase listeners to reconnect with the new settings.
-                </p>
-              </div>
-            </div>
-          </>
         )}
-        
-        {/* Back to POS */}
-        <button
-          onClick={() => navigate('/')}
-          className="w-full mt-6 py-3 bg-white/5 hover:bg-white/10 border border-white/20 rounded-xl text-purple-200 transition-all"
-        >
-          ← Back to POS
-        </button>
+
+        {/* Save + Exit */}
+        <div className="grid grid-cols-2 gap-3">
+          <button onClick={handleSave} disabled={saving}
+            className={`h-12 rounded-lg font-bold text-lg ${saving ? 'bg-gray-700 text-gray-400' : 'bg-green-600 hover:bg-green-500 text-white'}`}>
+            {saving ? '...' : 'Save'}
+          </button>
+          <button onClick={handleExit}
+            className="h-12 rounded-lg font-bold text-lg bg-gray-700 hover:bg-gray-600 text-white">
+            Exit
+          </button>
+        </div>
       </div>
     </div>
   );

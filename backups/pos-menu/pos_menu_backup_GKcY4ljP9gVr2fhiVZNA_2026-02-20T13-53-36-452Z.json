@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-02-20T13:53:36.448Z",
+  "restaurantId": "GKcY4ljP9gVr2fhiVZNA",
+  "backupType": "pre_download",
+  "categories": [],
+  "items": [],
+  "modifierGroups": [],
+  "taxGroups": [
+    {
+      "tax_group_id": 385000,
+      "name": "US Sales Tax",
+      "menu_id": null,
+      "is_deleted": 0,
+      "firebase_id": null
+    },
+    {
+      "tax_group_id": 385001,
+      "name": "Canadian GST+PST",
+      "menu_id": null,
+      "is_deleted": 0,
+      "firebase_id": null
+    },
+    {
+      "tax_group_id": 385002,
+      "name": "Canadian HST",
+      "menu_id": null,
+      "is_deleted": 0,
+      "firebase_id": null
+    }
+  ],
+  "printerGroups": []
+}

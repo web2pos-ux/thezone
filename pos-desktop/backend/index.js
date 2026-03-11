@@ -471,6 +471,7 @@ const layoutSettingsRoutes = require('./routes/layout-settings');
 const orderPageSetupsRoutes = require('./routes/order-page-setups')(db);
 const ordersRoutes = require('./routes/orders')(db);
 const paymentsRoutes = require('./routes/payments')(db);
+const tipsRoutes = require('./routes/tips')(db);
 const refundsRoutes = require('./routes/refunds')(db);
 const promotionsRoutes = require('./routes/promotions')(db);
 const voidsRoutes = require('./routes/voids');
@@ -491,6 +492,9 @@ const deliveryChannelsRoutes = require('./routes/delivery-channels')(db);
 const menuVisibilityRoutes = require('./routes/menu-visibility')(db);
 const dailyClosingsRoutes = require('./routes/daily-closings')(db);
 const appSettingsRoutes = require('./routes/app-settings');
+const diagnosticsRoutes = require('./routes/diagnostics')(db);
+const serverSettlementsRoutes = require('./routes/server-settlements');
+const settingsTransferRoutes = require('./routes/settings-transfer');
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -511,6 +515,7 @@ app.use('/api/layout-settings', layoutSettingsRoutes);
 app.use('/api/order-page-setups', orderPageSetupsRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/tips', tipsRoutes);
 app.use('/api/refunds', refundsRoutes);
 app.use('/api/promotions', promotionsRoutes);
 app.use('/api', voidsRoutes);
@@ -531,6 +536,9 @@ app.use('/api/delivery-channels', deliveryChannelsRoutes);
 app.use('/api/menu-visibility', menuVisibilityRoutes);
 app.use('/api/daily-closings', dailyClosingsRoutes);
 app.use('/api/app-settings', appSettingsRoutes);
+app.use('/api/diagnostics', diagnosticsRoutes);
+app.use('/api/server-settlements', serverSettlementsRoutes);
+app.use('/api/settings-transfer', settingsTransferRoutes);
 
 // App Update Routes (앱 자동 업데이트)
 const appUpdateRoutes = require('./routes/app-update');
@@ -547,6 +555,103 @@ app.use('/api/remote-sync', remoteSyncRoutes);
 // Dealer Access Routes (딜러/총판/시스템 관리자 전용)
 const dealerAccessRoutes = require('./routes/dealer-access');
 app.use('/api/dealer-access', dealerAccessRoutes);
+
+// --- 태블릿 다운로드 페이지 ---
+app.get('/table', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Table Order Setup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{max-width:420px;width:100%;padding:32px 24px;text-align:center}
+.logo{font-size:28px;font-weight:700;color:#60a5fa;margin-bottom:8px}
+.subtitle{color:#94a3b8;font-size:14px;margin-bottom:32px}
+.input-group{margin-bottom:16px;text-align:left}
+.input-group label{display:block;font-size:13px;color:#94a3b8;margin-bottom:6px;font-weight:500}
+.input-group input{width:100%;padding:14px 16px;border:1px solid #334155;border-radius:10px;background:#1e293b;color:#f1f5f9;font-size:16px;outline:none;transition:border .2s}
+.input-group input:focus{border-color:#60a5fa}
+.input-group input::placeholder{color:#475569}
+.btn{width:100%;padding:14px;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;transition:all .2s;margin-top:8px}
+.btn-primary{background:#3b82f6;color:#fff}
+.btn-primary:hover{background:#2563eb}
+.btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.status{margin-top:20px;padding:14px;border-radius:10px;font-size:14px;display:none}
+.status.error{display:block;background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b}
+.status.success{display:block;background:#14532d;color:#86efac;border:1px solid #166534}
+.status.info{display:block;background:#1e3a5f;color:#93c5fd;border:1px solid #1e40af}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;margin-right:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+.step-info{margin-top:24px;text-align:left;padding:16px;background:#1e293b;border-radius:10px;font-size:13px;color:#94a3b8;line-height:1.6}
+.step-info b{color:#60a5fa}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="logo">Table Order Setup</div>
+  <div class="subtitle">Enter pairing code to download the app</div>
+
+  <div class="input-group">
+    <label>Pairing Code</label>
+    <input id="code" type="text" maxlength="10" placeholder="Enter pairing code" autocomplete="off">
+  </div>
+
+  <button class="btn btn-primary" id="downloadBtn" onclick="startDownload()">Download APK</button>
+
+  <div id="status" class="status"></div>
+
+  <div class="step-info">
+    <b>After download:</b><br>
+    1. Open the downloaded APK file<br>
+    2. Allow "Install from unknown sources" if prompted<br>
+    3. Install and open the app<br>
+    4. Enter the pairing code in the app<br>
+    5. The app will auto-configure itself
+  </div>
+</div>
+
+<script>
+function showStatus(msg,type){var s=document.getElementById('status');s.className='status '+type;s.innerHTML=msg;}
+function startDownload(){
+  var code=document.getElementById('code').value.trim();
+  if(!code){showStatus('Please enter a pairing code','error');return;}
+  var btn=document.getElementById('downloadBtn');
+  btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Verifying...';
+  showStatus('Verifying pairing code...','info');
+  var x=new XMLHttpRequest();
+  x.open('GET','/api/devices/download/apk?code='+encodeURIComponent(code));
+  x.responseType='blob';
+  x.onload=function(){
+    if(x.status===200){
+      showStatus('Pairing code verified! Starting download...','success');
+      var a=document.createElement('a');var url=URL.createObjectURL(x.response);
+      a.href=url;a.download='table-order-app-release.apk';document.body.appendChild(a);a.click();
+      setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);btn.disabled=false;btn.innerHTML='Download APK';},3000);
+    } else {
+      var reader=new FileReader();reader.onload=function(){
+        try{var j=JSON.parse(reader.result);
+          if(x.status===401)showStatus('Invalid pairing code. Please check and try again.','error');
+          else if(x.status===404)showStatus('APK file not found on server. Please contact support.','error');
+          else showStatus(j.error||'Unknown error','error');
+        }catch(e){
+          if(x.status===401)showStatus('Invalid pairing code. Please check and try again.','error');
+          else showStatus('Server error ('+x.status+'). Please try again.','error');
+        }
+        btn.disabled=false;btn.innerHTML='Download APK';
+      };reader.readAsText(x.response);
+    }
+  };
+  x.onerror=function(){showStatus('Connection error.','error');btn.disabled=false;btn.innerHTML='Download APK';};
+  x.send();
+}
+document.getElementById('code').addEventListener('keypress',function(e){if(e.key==='Enter')startDownload();});
+</script>
+</body>
+</html>`);
+});
 
 // --- Basic Endpoints ---
 // 주의: '/' 핸들러는 프론트엔드 서빙과 충돌하므로 /api/status로 변경
@@ -571,18 +676,61 @@ app.get('/api/menu-item-colors', (req, res) => {
 app.put('/api/menu-item-colors', (req, res) => {
   const body = req.body || {};
   const entries = Object.entries(body);
-  const stmt = db.prepare('INSERT INTO menu_item_colors (item_id, color, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(item_id) DO UPDATE SET color=excluded.color, updated_at=CURRENT_TIMESTAMP');
+
+  // Allow empty payloads (no-op)
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.json({ ok: true, updated: 0, deleted: 0 });
+  }
+
+  const upsertStmt = db.prepare(
+    'INSERT INTO menu_item_colors (item_id, color, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ' +
+    'ON CONFLICT(item_id) DO UPDATE SET color=excluded.color, updated_at=CURRENT_TIMESTAMP'
+  );
+  const deleteStmt = db.prepare('DELETE FROM menu_item_colors WHERE item_id = ?');
+
+  let updated = 0;
+  let deleted = 0;
+  let responded = false;
+  const fail = (message) => {
+    if (responded) return;
+    responded = true;
+    res.status(500).json({ error: message || 'DB update failed' });
+  };
+  const ok = () => {
+    if (responded) return;
+    responded = true;
+    res.json({ ok: true, updated, deleted });
+  };
+
   db.serialize(() => {
     try {
-      entries.forEach(([itemId, color]) => {
-        stmt.run(itemId, color);
-      });
-      stmt.finalize((err) => {
-        if (err) return res.status(500).json({ error: 'DB update failed' });
-        res.json({ ok: true, updated: entries.length });
+      for (const [rawItemId, rawColor] of entries) {
+        const itemId = String(rawItemId || '').trim();
+        if (!itemId) continue;
+
+        // Treat null/empty string as "reset to default" (delete override)
+        if (rawColor == null || String(rawColor).trim() === '') {
+          deleteStmt.run(itemId);
+          deleted += 1;
+          continue;
+        }
+
+        const color = String(rawColor);
+        upsertStmt.run(itemId, color);
+        updated += 1;
+      }
+
+      upsertStmt.finalize((err) => {
+        if (err) return fail('DB update failed');
+        deleteStmt.finalize((err2) => {
+          if (err2) return fail('DB update failed');
+          ok();
+        });
       });
     } catch (e) {
-      res.status(500).json({ error: 'DB update failed' });
+      try { upsertStmt.finalize(() => {}); } catch {}
+      try { deleteStmt.finalize(() => {}); } catch {}
+      fail('DB update failed');
     }
   });
 });
@@ -591,8 +739,41 @@ app.put('/api/menu-item-colors', (req, res) => {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3088", "http://localhost:3000", "http://127.0.0.1:3088"],
-    methods: ["GET", "POST"]
+    origin: function(origin, callback) {
+      // Allow requests with no origin (native apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      try {
+        const u = new URL(origin);
+        const host = u.hostname || '';
+        const port = u.port || '';
+        const isLocalhost = host === 'localhost' || host === '127.0.0.1';
+        const isPrivateIp =
+          /^10\./.test(host) ||
+          /^192\.168\./.test(host) ||
+          /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+        const isFirebaseOrTzo =
+          /\.thezoneorder\.com$/.test(host) ||
+          /\.firebaseapp\.com$/.test(host) ||
+          /\.web\.app$/.test(host);
+        const isSamePortAsBackend = port === String(PORT) || port === '3177';
+        const isDevFrontendPort = port === '3000' || port === '3088' || port === '5173';
+
+        if (isLocalhost || isPrivateIp || isFirebaseOrTzo || isSamePortAsBackend || isDevFrontendPort) {
+          return callback(null, true);
+        }
+
+        if (process.env.NODE_ENV !== 'production') {
+          return callback(null, true);
+        }
+
+        return callback(new Error('Not allowed by CORS'));
+      } catch {
+        // If origin cannot be parsed, allow (best-effort for LAN scenarios)
+        return callback(null, true);
+      }
+    },
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -863,12 +1044,34 @@ server.listen(PORT, async () => {
 
   // Background printer dispatcher (simple interval)
   try {
-    setInterval(async () => {
+    const DISABLE_PRINTER_DISPATCHER = String(process.env.DISABLE_PRINTER_DISPATCHER || '').trim() === '1';
+    const DISPATCH_TIMEOUT_MS = 4000;
+    let dispatchInFlight = false;
+
+    const dispatchOnce = async () => {
+      if (DISABLE_PRINTER_DISPATCHER) return;
+      if (dispatchInFlight) return;
+      dispatchInFlight = true;
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
       try {
-        const res = await fetch(`http://localhost:${PORT}/api/printers/jobs/dispatch`, { method: 'POST' });
+        const res = await fetch(`http://127.0.0.1:${PORT}/api/printers/jobs/dispatch`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' },
+        });
         if (!res.ok) throw new Error('dispatch failed');
-      } catch {}
-    }, 5000);
+      } catch {
+        // Intentionally ignore: dispatcher is best-effort and must never block the server.
+      } finally {
+        clearTimeout(t);
+        dispatchInFlight = false;
+      }
+    };
+
+    // Fire once shortly after boot, then on interval.
+    setTimeout(() => { dispatchOnce(); }, 1000);
+    setInterval(() => { dispatchOnce(); }, 5000);
   } catch {}
 });
 startServer();

@@ -170,9 +170,9 @@ input[type="range"]::-ms-thumb {
   --neumo-accent-3: #059669; /* green-600 */
 }
 
-/* Target the action buttons grid (BottomActionBar) - match Print/Payment/OK style */
+/* OLD Bottom Action Bar styles - commented out as now using SquareNeumorphicButton component */
+/*
 .orderpage-scope .bottom-action-bar .grid > button {
-  /* keep original bg color class (e.g., bg-gray-500, bg-green-500) and overlay gradients like menu buttons */
   background-image:
     linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)),
     linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18)) !important;
@@ -199,25 +199,22 @@ input[type="range"]::-ms-thumb {
     0 1px 0 rgba(255,255,255,0.15) inset !important;
 }
 
-/* BottomActionBar buttons - single row, equal widths */
 .orderpage-scope .bottom-action-bar {
   overflow: visible !important;
-  padding-top: 2px !important;    /* minimize top spacing */
-  padding-bottom: 2px !important; /* minimize bottom spacing */
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
 }
 .orderpage-scope .bottom-action-bar > .flex {
   display: grid !important;
-  grid-template-columns: repeat(8, minmax(0, 1fr)) !important; /* 8 buttons */
-  column-gap: 0.25rem !important; /* halved spacing */
+  grid-template-columns: repeat(8, minmax(0, 1fr)) !important;
+  column-gap: 0.25rem !important;
   row-gap: 0 !important;
   align-items: stretch !important;
 }
-/* Remove residual margins added by space-x utilities to ensure equal gaps */
 .orderpage-scope .bottom-action-bar > .flex > * { margin-left: 0 !important; margin-right: 0 !important; }
-/* Flatten the trailing group so its two buttons also participate in the grid */
 .orderpage-scope .bottom-action-bar .ml-auto { display: contents !important; margin-left: 0 !important; }
 .orderpage-scope .bottom-action-bar button {
-  box-sizing: border-box !important;  /* include border/padding in width */
+  box-sizing: border-box !important;
   background-image:
     linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)),
     linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18)) !important;
@@ -226,19 +223,19 @@ input[type="range"]::-ms-thumb {
   box-shadow:
     0 4px 10px rgba(0,0,0,0.35),
     inset 0 1px 0 rgba(255,255,255,0.30) !important;
-  height: 52px !important;           /* unified height (1.3x) */
-  min-width: 0 !important;           /* allow shrink to fit grid */
-  width: 95% !important;             /* shrink width by ~5% */
-  margin-left: auto !important;      /* center within grid cell */
+  height: 52px !important;
+  min-width: 0 !important;
+  width: 95% !important;
+  margin-left: auto !important;
   margin-right: auto !important;
-  padding-left: 12px !important;      /* normalize padding */
+  padding-left: 12px !important;
   padding-right: 12px !important;
-  text-align: center !important;       /* center multi-line text */
-  white-space: normal !important;      /* allow wrapping */
-  display: -webkit-box !important;     /* enable line clamp */
-  -webkit-line-clamp: 2;               /* clamp to 2 lines */
-  -webkit-box-orient: vertical;        /* vertical orientation */
-  overflow: hidden;                    /* hide overflow beyond 2 lines */
+  text-align: center !important;
+  white-space: normal !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   transform: translateY(0);
   transition: transform .25s cubic-bezier(0.22,1,0.36,1), box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
 }
@@ -254,6 +251,104 @@ input[type="range"]::-ms-thumb {
     inset 0 3px 10px rgba(0,0,0,0.55),
     0 1px 0 rgba(255,255,255,0.15) inset !important;
 }
+*/
+
+/* ===== 16:9 Widescreen responsive CSS variables ===== */
+:root {
+  --action-btn-height: 48px;        /* OrderPage Print Bill / Payment / OK */
+  --bottom-bar-btn-height: clamp(44px, 6vh, 68px);  /* BottomActionBar buttons */
+  --bottom-bar-btn-font: clamp(12px, 1.8vh, 16px);
+  /* Order list text defaults (original sizes — overridden at 1600px+) */
+  --order-label-font: 14px;
+  --order-value-font: 16px;
+  --order-header-font: 14px;
+  --order-item-font: 16px;
+  --order-mod-font: 14px;
+  --order-summary-font: 12px;
+  --order-total-font: 16px;
+}
+
+/* 16:9 같은 와이드스크린에서 버튼 높이 30% 증가 (4:3 비율은 기본값 유지) */
+@media (min-aspect-ratio: 3/2) {
+  :root {
+    --action-btn-height: 62px;
+    --bottom-bar-btn-height: clamp(57px, 7.8vh, 88px);
+    --bottom-bar-btn-font: clamp(14px, 2.3vh, 19px);
+  }
+}
+
+/* POS typography/button lock for 1024x768 (4:3) to prevent accidental UI drift. */
+@media (width: 1024px) and (height: 768px) {
+  /* OrderPage (FSR) - locked typography */
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-server-label"],
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-channel-label"] {
+    font-size: 14px !important; /* Tailwind text-sm */
+    line-height: 1.2 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-server-value"],
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-channel-value"] {
+    font-size: 16px !important; /* default */
+    line-height: 1.2 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-items-header"] {
+    font-size: 14px !important; /* Tailwind text-sm */
+    line-height: 1.2 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-item-name"] {
+    font-size: 16px !important; /* Tailwind text-base */
+    line-height: 1.2 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-item-modline"],
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-item-memoline"],
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-discount-row"] {
+    font-size: 14px !important; /* Tailwind text-sm */
+    line-height: 1.1 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-summary"] {
+    font-size: 12px !important; /* Tailwind text-xs */
+    line-height: 1.2 !important;
+  }
+
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-summary-total"] {
+    font-size: 16px !important; /* Tailwind text-base */
+    line-height: 1.2 !important;
+  }
+
+  /* OrderPage - bottom primary action buttons (Print Bill / Payment / OK) */
+  .orderpage-scope[data-pos-page="order"] [data-pos-lock="order-primary-actions"] > button {
+    height: 48px !important;
+    font-size: 14.59px !important; /* 1.9vh at 768px height */
+    line-height: 1.2 !important;
+  }
+
+  /* OrderPage - BottomActionBar (7 buttons) */
+  .orderpage-scope[data-pos-page="order"] .bottom-action-bar button {
+    height: 46.08px !important; /* 6vh at 768px height */
+    font-size: 14.59px !important; /* 1.9vh at 768px height */
+    line-height: 1.2 !important;
+  }
+
+  /* SalesPage (Table map) - footer bar (10 buttons) */
+  [data-pos-lock="sales-footer"] {
+    height: 70px !important;
+  }
+
+  [data-pos-lock="sales-footer-btn"] {
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    border-radius: 14px !important;
+    background: #e0e5ec !important;
+  }
+}
+
+/* POS typography/button sizing: 앱 창 크기(뷰포트) 기준 vh/vw clamp 적용.
+   applyScreenSizeVars() in App.tsx는 JS 고정값 오버라이드를 제거하여
+   이 CSS 변수들이 항상 적용되도록 함. */
 
 /* Generic Neumorphism button variants - can be used anywhere */
 .neu-ring {
@@ -309,3 +404,63 @@ input[type="range"]::-ms-thumb {
     6px 6px 14px var(--neumo-shadow-dark),
     -6px -6px 14px var(--neumo-shadow-light);
 }
+
+/* Square neumorphic buttons (icon / icon+label) used for action buttons */
+.neu-square {
+  background: linear-gradient(180deg, #f3f6fb 0%, #e9eef6 100%);
+  color: #0f172a;
+  border-radius: 14px;
+  border: 1px solid rgba(71,85,105,0.12);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  box-shadow:
+    8px 10px 20px rgba(96, 123, 150, 0.18),
+    -6px -6px 14px rgba(255,255,255,0.95),
+    inset 0 1px 0 rgba(255,255,255,0.7);
+  transition: transform .18s ease, box-shadow .18s ease, background-color .12s ease;
+}
+.neu-square::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: 10px;
+  box-shadow: inset 6px 6px 14px rgba(0,0,0,0.06), inset -6px -6px 12px rgba(255,255,255,0.9);
+  pointer-events: none;
+}
+.neu-square:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    10px 12px 24px rgba(96, 123, 150, 0.22),
+    -8px -8px 18px rgba(255,255,255,0.95),
+    inset 0 1px 0 rgba(255,255,255,0.75);
+}
+.neu-square:active {
+  transform: translateY(1px);
+  box-shadow: inset 6px 6px 12px rgba(0,0,0,0.12), inset -6px -6px 10px rgba(255,255,255,0.92);
+}
+
+/* Icon styles inside neo buttons - allow gradients via svg or font color */
+.neu-square > svg, .neu-square > span > svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* Square 4-icon neumorphic style (light rounded square with soft ambient shadow) */
+.square-neu {
+  background: linear-gradient(180deg, #f1f4f8 0%, #edf1f6 100%);
+  border-radius: 18px;
+  padding: 8px;
+  box-shadow: 10px 12px 22px rgba(96, 123, 150, 0.12), -8px -8px 18px rgba(255,255,255,0.95);
+  border: 2px solid rgba(156, 163, 175, 0.3);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.square-neu:active { transform: translateY(1px); box-shadow: inset 6px 8px 16px rgba(0,0,0,0.08); }
+.square-neu:hover { transform: translateY(-2px); box-shadow: 12px 14px 28px rgba(96,123,150,0.16), -10px -10px 20px rgba(255,255,255,0.95); }
+
+/* inner gradient circle that contains the colored icon */
+.square-neu > div { box-shadow: 0 6px 14px rgba(13,27,40,0.06), inset 0 1px 0 rgba(255,255,255,0.6); }
+
+

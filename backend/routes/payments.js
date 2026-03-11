@@ -37,24 +37,30 @@ module.exports = (db) => {
 		FOREIGN KEY(order_id) REFERENCES orders(id)
 	)`);
 
-	// attempt to add guest_number column if missing (for existing DBs)
+	// attempt to add missing columns for existing DBs
 	(async () => {
-		try {
-			await dbRun(`ALTER TABLE payments ADD COLUMN guest_number INTEGER`);
-		} catch (e) {
-			// ignore if already exists
-		}
+		try { await dbRun(`ALTER TABLE payments ADD COLUMN guest_number INTEGER`); } catch (e) { /* already exists */ }
+		try { await dbRun(`ALTER TABLE payments ADD COLUMN change_amount REAL DEFAULT 0`); } catch (e) { /* already exists */ }
 	})();
 
 	// create payment
 	router.post('/', async (req, res) => {
 		try {
-			const { orderId, method, amount, tip=0, ref=null, status='APPROVED', guestNumber=null } = req.body || {};
+			const { orderId, method, amount, tip = 0, ref=null, status='APPROVED', guestNumber=null, changeAmount = 0 } = req.body || {};
+			const tipAmount = Number(tip);
+			const changeVal = Number(changeAmount) || 0;
 			if (!orderId || !method || typeof amount !== 'number') {
 				return res.status(400).json({ success:false, error:'orderId, method, amount are required' });
 			}
+			if (!Number.isFinite(tipAmount) || tipAmount < 0) {
+				return res.status(400).json({ success:false, error:'tip must be a valid number (>= 0)' });
+			}
 			const createdAt = new Date().toISOString();
-			const result = await dbRun(`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at) VALUES(?,?,?,?,?,?,?,?)`, [orderId, method, amount, tip, ref, status, guestNumber, createdAt]);
+			const result = await dbRun(
+				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at, change_amount)
+				 VALUES(?,?,?,?,?,?,?,?,?)`,
+				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeVal]
+			);
 			
 			// Firebase에도 결제 데이터 저장
 			try {
@@ -65,7 +71,7 @@ module.exports = (db) => {
 						orderId,
 						method,
 						amount,
-						tip,
+						tip: tipAmount,
 						ref,
 						status,
 						guestNumber,
@@ -85,6 +91,40 @@ module.exports = (db) => {
 		} catch (e) {
 			console.error('Failed to create payment:', e);
 			res.status(500).json({ success:false, error:'Failed to create payment' });
+		}
+	});
+
+	// list all payments (with optional date filter)
+	router.get('/', async (req, res) => {
+		try {
+			const { startDate, endDate, method, status } = req.query;
+			let sql = `SELECT * FROM payments WHERE 1=1`;
+			const params = [];
+			
+			if (startDate) {
+				sql += ` AND DATE(created_at) >= ?`;
+				params.push(startDate);
+			}
+			if (endDate) {
+				sql += ` AND DATE(created_at) <= ?`;
+				params.push(endDate);
+			}
+			if (method) {
+				sql += ` AND UPPER(payment_method) = ?`;
+				params.push(String(method).toUpperCase());
+			}
+			if (status) {
+				sql += ` AND UPPER(status) = ?`;
+				params.push(String(status).toUpperCase());
+			}
+			
+			sql += ` ORDER BY created_at DESC`;
+			
+			const rows = await dbAll(sql, params);
+			res.json({ success: true, payments: rows });
+		} catch (e) {
+			console.error('Failed to fetch payments:', e);
+			res.status(500).json({ success: false, error: 'Failed to fetch payments' });
 		}
 	});
 

@@ -16,7 +16,7 @@ interface SplitBillModalProps {
 	onMoveItem: (rowIndex: number, targetGuest: number) => void;
 	onReorderLeft: (sourceRowIndex: number, destIndex: number) => void;
 	onSplitItemEqual: (rowIndex: number) => void;
-	onShareSelected?: (rowIndex: number, guests: number[]) => void;
+	onShareSelected?: (rowIndices: number[], guests: number[]) => void;
 	onResetSplit?: () => void;
   modalWidth?: number;
   modalHeight?: number;
@@ -28,8 +28,7 @@ const DraggableRow: React.FC<{ id: string; rowIndex: number; className?: string;
 		transform: transform ? CSS.Translate.toString(transform) : undefined,
 		opacity: isDragging ? 0.6 : 1,
 		transition: isDragging ? 'transform 150ms cubic-bezier(0.2, 0, 0, 1)' : undefined,
-		cursor: disabled ? ('not-allowed' as const) : (isDragging ? ('grabbing' as const) : ('grab' as const)),
-		pointerEvents: disabled ? 'none' as const : undefined,
+		cursor: disabled ? ('default' as const) : (isDragging ? ('grabbing' as const) : ('grab' as const)),
 	};
 			return (
 		<div ref={setNodeRef} style={style} className={className} onClick={onClick} {...(!disabled ? listeners : {})} {...(!disabled ? attributes : {})}>
@@ -81,8 +80,8 @@ const SplitBillPayCard: React.FC<{
   guestStatusMap?: Record<number, 'PAID' | 'PARTIAL' | 'UNPAID'>;
   itemsByGuest: Record<string, Array<{ rowIndex: number; item: OrderItem }>>;
   isShareSelectedMode: boolean;
-  shareSelectedRowIndex: number | null;
-  setShareSelectedRowIndex: React.Dispatch<React.SetStateAction<number | null>>;
+  shareSelectedIndices: Set<number>;
+  setShareSelectedIndices: React.Dispatch<React.SetStateAction<Set<number>>>;
   shareTargetGuests: Set<number>;
   toggleShareTargetGuest: (guest: number) => void;
   isMoveMode: boolean;
@@ -108,8 +107,8 @@ const SplitBillPayCard: React.FC<{
   guestStatusMap,
   itemsByGuest,
   isShareSelectedMode,
-  shareSelectedRowIndex,
-  setShareSelectedRowIndex,
+  shareSelectedIndices,
+  setShareSelectedIndices,
   shareTargetGuests,
   toggleShareTargetGuest,
   isMoveMode,
@@ -232,11 +231,21 @@ const SplitBillPayCard: React.FC<{
     const subtotal = guestSubtotals[cellKey] || 0;
 
     // Logic to group items for the guest card (reused from main render)
-    const byKey: Record<string, { name: string; representRowIndex: number; wholeQty: number; splitNum: number; splitDen: number | undefined; amount: number; splitOrderMin?: number; hasSplit?: boolean }>= {};
+    const byKey: Record<string, { name: string; representRowIndex: number; wholeQty: number; splitNum: number; splitDen: number | undefined; amount: number; splitOrderMin?: number; hasSplit?: boolean; modifiers?: any[]; memo?: string; discount?: any }>= {};
     (list || []).forEach(({ rowIndex, item }) => {
       const key = getBaseId(item);
-      const entry = byKey[key] || { name: item.name, representRowIndex: rowIndex, wholeQty: 0, splitNum: 0, splitDen: undefined, amount: 0 } as any;
+      const entry = byKey[key] || { name: item.name, representRowIndex: rowIndex, wholeQty: 0, splitNum: 0, splitDen: undefined, amount: 0, modifiers: [], memo: '', discount: null } as any;
       if (!entry.splitDen && !(item as any).splitDenominator) { entry.representRowIndex = rowIndex; }
+      // 모디파이어, 메모, 디스카운트 저장
+      if (item.modifiers && item.modifiers.length > 0 && (!entry.modifiers || entry.modifiers.length === 0)) {
+        entry.modifiers = item.modifiers;
+      }
+      if (item.memo && !entry.memo) {
+        entry.memo = typeof item.memo === 'string' ? item.memo : (item.memo as any)?.text || '';
+      }
+      if ((item as any).discount && !entry.discount) {
+        entry.discount = (item as any).discount;
+      }
       if ((item as any).splitDenominator) {
         entry.splitDen = entry.splitDen || (item as any).splitDenominator;
         entry.splitNum += (item.quantity || 1);
@@ -303,16 +312,46 @@ const SplitBillPayCard: React.FC<{
                 <div className="text-xs text-gray-400 text-center mt-2">No items</div>
               ) : (
                 grouped.map((g, idx2) => (
-                  <DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-0 ${isShareSelectedMode && shareSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareActionActive) { return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isShareSelectedMode) { setShareSelectedRowIndex(g.representRowIndex); toggleShareTargetGuest(splitGuestId); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
+                  <DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-0 ${isShareSelectedMode && shareSelectedIndices.has(g.representRowIndex) ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareSelectedMode) { setShareSelectedIndices(prev => { const next = new Set(prev); if (next.has(g.representRowIndex)) next.delete(g.representRowIndex); else next.add(g.representRowIndex); return next; }); if (!shareTargetGuests.has(Number(cell))) toggleShareTargetGuest(Number(cell)); return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
                     <div className="flex flex-col w-full">
                       <div className="text-base text-gray-800 flex items-center gap-2 break-words">
                         <span className={`font-medium ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{g.name}</span>
                       </div>
+                      {/* 모디파이어 표시 */}
+                      {Array.isArray(g.modifiers) && g.modifiers.length > 0 && (
+                        <div className="text-xs text-gray-500 pl-2 -mt-0.5 flex flex-wrap">
+                          {g.modifiers.flatMap((mod: any, mi: number) => {
+                            if (mod?.selectedEntries && Array.isArray(mod.selectedEntries)) {
+                              return mod.selectedEntries.map((entry: any, ei: number) => (
+                                <span key={`${mi}-e${ei}`} className="mr-1 whitespace-nowrap">
+                                  + {entry.name}{entry.price_delta > 0 ? ` (+$${Number(entry.price_delta).toFixed(2)})` : ''}
+                                </span>
+                              ));
+                            }
+                            if (mod?.modifierNames && Array.isArray(mod.modifierNames)) {
+                              return mod.modifierNames.map((mname: string, ni: number) => (
+                                <span key={`${mi}-n${ni}`} className="mr-1 whitespace-nowrap">+ {mname}</span>
+                              ));
+                            }
+                            const modName = mod?.name || mod?.label || mod?.groupName || (typeof mod === 'string' ? mod : '');
+                            if (!modName) return [];
+                            return [<span key={mi} className="mr-1 whitespace-nowrap">+ {modName}</span>];
+                          })}
+                        </div>
+                      )}
                       <div className="mt-0 flex items-center justify-start gap-1.5 -translate-y-[3px]">
                         {(() => {
-                          // 규칙 1-3: 쉐어된 아이템은 항상 1/N 형식으로 표시 (N = splitDenominator)
-                          if (g.splitDen) {
-                            return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
+                          if (g.hasSplit || g.splitDen) {
+                            const ns = normalizeShare(g.wholeQty, g.splitNum, g.splitDen);
+                            let label = '';
+                            if (ns.num > 0 && ns.whole > 0) {
+                              label = `${ns.whole}x${ns.num}/${ns.den}`;
+                            } else if (ns.num > 0) {
+                              label = `${ns.num}/${ns.den}`;
+                            } else {
+                              label = String(ns.whole);
+                            }
+                            return <span className={`text-xs font-normal text-blue-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{label}</span>;
                           }
                           return <span className={`text-xs font-normal text-gray-800 -translate-y-[3px] inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
                         })()}
@@ -550,7 +589,7 @@ const payLayout = useMemo(() => {
 	const [isSplitSelectMode, setIsSplitSelectMode] = useState<boolean>(false);
 	const [preselectedRowIndex, setPreselectedRowIndex] = useState<number | null>(null);
 	const [isShareSelectedMode, setIsShareSelectedMode] = useState<boolean>(false);
-	const [shareSelectedRowIndex, setShareSelectedRowIndex] = useState<number | null>(null);
+	const [shareSelectedIndices, setShareSelectedIndices] = useState<Set<number>>(new Set());
 	const [shareTargetGuests, setShareTargetGuests] = useState<Set<number>>(new Set());
 	const [isMoveMode, setIsMoveMode] = useState<boolean>(false);
 	const [moveSelectedRowIndex, setMoveSelectedRowIndex] = useState<number | null>(null);
@@ -601,8 +640,8 @@ const payLayout = useMemo(() => {
 	}, [isOpen, orderItems, isShareSelectedMode, isSplitSelectMode, payLayout.totalSlots]);
 
 	const isShareActionActive = useMemo(() => {
-		return isShareSelectedMode && shareSelectedRowIndex !== null;
-	}, [isShareSelectedMode, shareSelectedRowIndex]);
+		return isShareSelectedMode;
+	}, [isShareSelectedMode]);
 
 	const precedingGuestSlot = payLayout.guestSlots[payLayout.guestSlots.length - 1];
 	const shouldShowSplitGuest =
@@ -698,21 +737,23 @@ const payLayout = useMemo(() => {
 									onClick={() => {
 										if (!isShareSelectedMode) {
 											setIsShareSelectedMode(true);
-											if (preselectedRowIndex !== null) setShareSelectedRowIndex(preselectedRowIndex);
-											// Auto-select the guest of the selected item as initial target
 											if (preselectedRowIndex !== null) {
+												setShareSelectedIndices(new Set([preselectedRowIndex]));
+												// Auto-select the guest of the selected item as initial target
 												const item = orderItems[preselectedRowIndex];
 												const g = (item && typeof item.guestNumber === 'number') ? item.guestNumber : 1;
 												setShareTargetGuests(new Set<number>([g]));
+											} else {
+												setShareSelectedIndices(new Set());
 											}
 										} else {
-											// Apply if we have item and at least one guest
-											if (shareSelectedRowIndex !== null && shareTargetGuests.size > 0) {
-												if (onShareSelected) onShareSelected(shareSelectedRowIndex, Array.from(shareTargetGuests));
+											// Apply if we have items and at least one guest
+											if (shareSelectedIndices.size > 0 && shareTargetGuests.size > 0) {
+												if (onShareSelected) onShareSelected(Array.from(shareSelectedIndices), Array.from(shareTargetGuests));
 											}
 											// reset state
 											setIsShareSelectedMode(false);
-											setShareSelectedRowIndex(null);
+											setShareSelectedIndices(new Set());
 											setShareTargetGuests(new Set());
 										}
 									}}
@@ -746,7 +787,7 @@ const payLayout = useMemo(() => {
 									Show Share
 								</button>
 								<button
-									onClick={() => { if (onResetSplit) onResetSplit(); setIsSplitSelectMode(false); setIsShareSelectedMode(false); setShareSelectedRowIndex(null); setShareTargetGuests(new Set()); setIsMoveMode(false); setMoveSelectedRowIndex(null); setMoveTargetGuest(null); setIsShowShare(false); setShowShareBlinkOn(false); }}
+									onClick={() => { if (onResetSplit) onResetSplit(); setIsSplitSelectMode(false); setIsShareSelectedMode(false); setShareSelectedIndices(new Set()); setShareTargetGuests(new Set()); setIsMoveMode(false); setMoveSelectedRowIndex(null); setMoveTargetGuest(null); setIsShowShare(false); setShowShareBlinkOn(false); }}
 									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
 								>
 									Reset Split
@@ -865,7 +906,7 @@ const payLayout = useMemo(() => {
 														return (<div className="text-xs text-gray-400 text-center">No items</div>);
 													}
 													return grouped.map((g, idx2) => (
-														<DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-1 mb-1 ${isShareSelectedMode && shareSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareActionActive) { return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isShareSelectedMode) { setShareSelectedRowIndex(g.representRowIndex); toggleShareTargetGuest(Number(cell)); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
+														<DraggableRow key={`g-${cellKey}-${g.representRowIndex}-${idx2}`} id={`g-${cellKey}-${g.representRowIndex}`} rowIndex={g.representRowIndex} className={`px-2 py-1 mb-1 ${isShareSelectedMode && shareSelectedIndices.has(g.representRowIndex) ? 'ring-4 ring-indigo-500 ring-offset-2 bg-indigo-50 rounded' : ''} ${isMoveMode && moveSelectedRowIndex===g.representRowIndex ? 'ring-4 ring-purple-500 ring-offset-2 bg-purple-50 rounded' : ''} ${isSplitSelectMode && preselectedRowIndex===g.representRowIndex ? 'ring-4 ring-blue-500 ring-offset-2 bg-blue-50 rounded' : ''} ${(!isShareSelectedMode && !isSplitSelectMode && !isMoveMode && preselectedRowIndex===g.representRowIndex) ? 'bg-blue-50 ring-2 ring-blue-400 rounded' : ''}`} disabled={isShareActionActive} onClick={(e)=>{ e.stopPropagation(); if (isShareSelectedMode) { setShareSelectedIndices(prev => { const next = new Set(prev); if (next.has(g.representRowIndex)) next.delete(g.representRowIndex); else next.add(g.representRowIndex); return next; }); if (!shareTargetGuests.has(Number(cell))) toggleShareTargetGuest(Number(cell)); return; } if (isSplitSelectMode) { setPreselectedRowIndex(g.representRowIndex); onSplitItemEqual(g.representRowIndex); setIsSplitSelectMode(false); } else if (isMoveMode) { setMoveSelectedRowIndex(g.representRowIndex); } else { setPreselectedRowIndex(g.representRowIndex); } }}>
 															<div className="flex flex-col w-full">
 																<div className="text-sm text-gray-800 flex items-center gap-2 break-words">
 																	<span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} font-medium ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{g.name}</span>
@@ -873,15 +914,22 @@ const payLayout = useMemo(() => {
 																{/* 모디파이어 표시 */}
 																{Array.isArray(g.modifiers) && g.modifiers.length > 0 && (
 																	<div className="text-xs text-gray-500 pl-2 -mt-0.5 flex flex-wrap">
-																		{g.modifiers.map((mod: any, mi: number) => {
-																			const modName = mod?.name || mod?.label || mod?.modifierName || (typeof mod === 'string' ? mod : '');
-																			const modPrice = Number(mod?.price || mod?.totalModifierPrice || 0);
-																			if (!modName) return null;
-																			return (
-																				<span key={mi} className="mr-1 whitespace-nowrap">
-																					+ {modName}{modPrice > 0 ? ` ($${modPrice.toFixed(2)})` : ''}
-																				</span>
-																			);
+																		{g.modifiers.flatMap((mod: any, mi: number) => {
+																			if (mod?.selectedEntries && Array.isArray(mod.selectedEntries)) {
+																				return mod.selectedEntries.map((entry: any, ei: number) => (
+																					<span key={`${mi}-e${ei}`} className="mr-1 whitespace-nowrap">
+																						+ {entry.name}{entry.price_delta > 0 ? ` (+$${Number(entry.price_delta).toFixed(2)})` : ''}
+																					</span>
+																				));
+																			}
+																			if (mod?.modifierNames && Array.isArray(mod.modifierNames)) {
+																				return mod.modifierNames.map((mname: string, ni: number) => (
+																					<span key={`${mi}-n${ni}`} className="mr-1 whitespace-nowrap">+ {mname}</span>
+																				));
+																			}
+																			const modName = mod?.name || mod?.label || mod?.groupName || (typeof mod === 'string' ? mod : '');
+																			if (!modName) return [];
+																			return [<span key={mi} className="mr-1 whitespace-nowrap">+ {modName}</span>];
 																		})}
 																	</div>
 																)}
@@ -899,11 +947,19 @@ const payLayout = useMemo(() => {
 																)}
 																<div className="mt-0 flex items-center justify-start gap-1.5">
 																	{(() => {
-																		// 규칙 1-3: 쉐어된 아이템은 항상 1/N 형식으로 표시 (N = splitDenominator)
-																		if (g.splitDen) {
-																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>1/{g.splitDen}</span>;
+																		if (g.hasSplit || g.splitDen) {
+																			const ns = normalizeShare(g.wholeQty, g.splitNum, g.splitDen);
+																			let label = '';
+																			if (ns.num > 0 && ns.whole > 0) {
+																				label = `${ns.whole}x${ns.num}/${ns.den}`;
+																			} else if (ns.num > 0) {
+																				label = `${ns.num}/${ns.den}`;
+																			} else {
+																				label = String(ns.whole);
+																			}
+																			return <span className={`${showShareBlinkOn ? 'bg-yellow-200' : ''} text-xs font-normal text-blue-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>{label}</span>;
 																	}
-																	return <span className={`${showShareBlinkOn && (g.hasSplit || g.splitDen) ? 'bg-yellow-200' : ''} text-xs font-normal text-gray-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
+																	return <span className={`text-xs font-normal text-gray-800 inline-block ${preselectedRowIndex===g.representRowIndex ? 'text-blue-900' : ''}`}>x{g.wholeQty}</span>;
 																})()}
 																{(() => {
 																	const isShared = !!g.splitDen || !!g.hasSplit;
@@ -945,8 +1001,8 @@ const payLayout = useMemo(() => {
 										guestStatusMap={guestStatusMap}
 										itemsByGuest={itemsByGuest}
 										isShareSelectedMode={isShareSelectedMode}
-										shareSelectedRowIndex={shareSelectedRowIndex}
-										setShareSelectedRowIndex={setShareSelectedRowIndex}
+										shareSelectedIndices={shareSelectedIndices}
+										setShareSelectedIndices={setShareSelectedIndices}
 										shareTargetGuests={shareTargetGuests}
 										toggleShareTargetGuest={toggleShareTargetGuest}
 										isMoveMode={isMoveMode}

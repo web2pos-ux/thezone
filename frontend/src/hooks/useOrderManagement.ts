@@ -18,6 +18,57 @@ export interface UseOrderManagementResult {
   updateQuantityByLineId: (orderLineId: string, change: number) => void;
   removeItemByLineId: (orderLineId: string) => void;
   initializeSplitGuests: (guestNumbers: number[]) => void;
+  mergeIdenticalItems: (items: OrderItem[]) => OrderItem[];
+  getMergedOrderItems: () => OrderItem[];
+}
+
+/**
+ * 동일 아이템 병합 유틸리티 함수 (독립적으로 사용 가능)
+ * 같은 메뉴 + 같은 옵션(모디파이어) + 같은 메모 + 같은 게스트 → 수량 합산
+ * 다른 옵션이면 별도 줄 유지
+ */
+export function mergeOrderItems(items: OrderItem[]): OrderItem[] {
+  const result: OrderItem[] = [];
+  const mergeMap = new Map<string, number>(); // signature → index in result
+
+  for (const item of items) {
+    if (item.type === 'separator' || item.type === 'discount' || item.type === 'void') {
+      result.push(item);
+      // separator에서 merge map 초기화하여 게스트 블록 독립 유지
+      if (item.type === 'separator') {
+        mergeMap.clear();
+      }
+      continue;
+    }
+
+    // 병합 키 생성: item_id + guestNumber + modifiers + memo + discount + togoLabel
+    const modKey = JSON.stringify(
+      ((item.modifiers || []) as any[]).map((m: any) => ({
+        groupId: m.groupId,
+        modifierIds: [...(m.modifierIds || [])].sort(),
+      })).sort((a, b) => (a.groupId || '').localeCompare(b.groupId || ''))
+    );
+    const memoKey = JSON.stringify((item as any).memo || null);
+    const discountKey = JSON.stringify((item as any).discount || null);
+    const togoKey = (item as any).togoLabel ? 1 : 0;
+    const preSplitKey = (item as any)._preSplit ? 1 : 0;
+    const key = `${item.id}|${item.guestNumber || 1}|${modKey}|${memoKey}|${discountKey}|${togoKey}|${preSplitKey}`;
+
+    if (mergeMap.has(key)) {
+      const existingIdx = mergeMap.get(key)!;
+      const existingItem = result[existingIdx];
+      // 수량 합산
+      result[existingIdx] = {
+        ...existingItem,
+        quantity: (existingItem.quantity || 1) + (item.quantity || 1),
+      } as OrderItem;
+    } else {
+      mergeMap.set(key, result.length);
+      result.push({ ...item });
+    }
+  }
+
+  return result;
 }
 
 export function useOrderManagement(): UseOrderManagementResult {
@@ -229,60 +280,21 @@ export function useOrderManagement(): UseOrderManagementResult {
     });
   }, [guestCount]);
 
+  // ── 동일 아이템 병합 유틸리티 (내부용 - 외부 함수 mergeOrderItems 사용) ──
+  const mergeIdenticalItems = useCallback((items: OrderItem[]): OrderItem[] => {
+    return mergeOrderItems(items);
+  }, []);
+
+  // ── 병합된 주문 아이템 반환 (저장 전 호출용) ──
+  const getMergedOrderItems = useCallback((): OrderItem[] => {
+    return mergeOrderItems(orderItems);
+  }, [orderItems]);
+
   const addToOrder = useCallback((item: MenuItem) => {
     setOrderItems(prev => {
-      const enabled = isSplitV2Enabled();
-      const hasSeparators = prev.some(it => it.type === 'separator');
-      const uniqueGuests = new Set<number>(prev.filter(it => it.type !== 'separator').map(it => (it.guestNumber || 1)));
-      const isSplitMode = enabled ? ((guestCount > 1) || hasSeparators || (uniqueGuests.size > 1)) : ((guestCount > 1) || hasSeparators);
-
-      if (!isSplitMode) {
-        if (enabled) {
-          const existingIndex = prev.findIndex(it => it.type === 'item' && it.id === item.id && (it.guestNumber || 1) === (activeGuestNumber || 1));
-          if (existingIndex !== -1) {
-            const merged = prev.map((it, idx) => idx === existingIndex ? ({ ...it, quantity: (it.quantity || 0) + 1 } as OrderItem) : it as any);
-            return cleanupEmptySeparators(merged);
-          }
-        } else {
-          const existingIndex = prev.findIndex(it => it.type === 'item' && it.id === item.id);
-          if (existingIndex !== -1) {
-            const merged = prev.map((it, idx) => idx === existingIndex ? ({ ...it, quantity: (it.quantity || 0) + 1 } as OrderItem) : it as any);
-            return cleanupEmptySeparators(merged);
-          }
-        }
-      }
-
-      if (isSplitMode) {
-        const sepIndexes = prev.reduce((acc: Array<{ guest: number; index: number }>, cur, idx) => {
-          if (cur.type === 'separator' && typeof cur.guestNumber === 'number') acc.push({ guest: cur.guestNumber, index: idx });
-          return acc;
-        }, []);
-        let blockStart = 0;
-        let blockEnd = prev.length;
-        const activeSep = sepIndexes.find(s => s.guest === activeGuestNumber);
-        if (activeSep) {
-          blockStart = activeSep.index + 1;
-          const nextSep = sepIndexes.find(s => s.index > activeSep.index);
-          blockEnd = nextSep ? nextSep.index : prev.length;
-        }
-        const mergeIndex = (() => {
-          for (let i = blockStart; i < blockEnd; i++) {
-            const cur = prev[i];
-            if (!cur || cur.type === 'separator') continue;
-            if (enabled && (cur.guestNumber || 1) !== (activeGuestNumber || 1)) continue;
-            if (cur.id !== item.id) continue;
-            const sameModifiers = JSON.stringify(cur.modifiers || []) === JSON.stringify([]);
-            const sameMemo = JSON.stringify((cur as any).memo || null) === JSON.stringify(null);
-            if (sameModifiers && sameMemo) return i;
-          }
-          return -1;
-        })();
-        if (mergeIndex !== -1) {
-          const merged = prev.map((it, idx) => idx === mergeIndex ? { ...it, quantity: (it.quantity || 0) + 1 } : it);
-          return cleanupEmptySeparators(merged);
-        }
-      }
-
+      // 동일 아이템을 여러 번 누르면 새 줄을 만들지 않고 수량을 증가시킴
+      // (메뉴 + 옵션(모디파이어) + 메모 + 게스트가 모두 같을 때만 병합)
+      const orderLineId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const newOrderItem: OrderItem = {
         id: item.id,
         name: item.name,
@@ -293,10 +305,16 @@ export function useOrderManagement(): UseOrderManagementResult {
         totalPrice: item.price,
         type: 'item',
         guestNumber: activeGuestNumber || 1,
+        orderLineId,
+        togoLabel: !!(item as any).togoLabel,
+        ...(Array.isArray((item as any).printer_groups) && (item as any).printer_groups.length > 0
+          ? { printer_groups: (item as any).printer_groups }
+          : {}),
       };
-      return cleanupEmptySeparators([...prev, newOrderItem]);
+      const next = cleanupEmptySeparators([...prev, newOrderItem]);
+      return mergeOrderItems(next);
     });
-  }, [activeGuestNumber, cleanupEmptySeparators, guestCount]);
+  }, [activeGuestNumber, cleanupEmptySeparators]);
 
   const updateQuantity = useCallback((itemId: string, change: number) => {
     setOrderItems(prev => {
@@ -423,6 +441,8 @@ export function useOrderManagement(): UseOrderManagementResult {
           if (cur.type !== 'item') continue;
           const curBaseId = getBaseIdFromId(cur.id);
           if (curBaseId !== sourceBaseId) continue;
+          const sameTogoLabel = !!(cur as any).togoLabel === !!(sourceItem as any).togoLabel;
+          if (!sameTogoLabel) continue;
           const sameModifiers = JSON.stringify(cur.modifiers || []) === JSON.stringify(sourceItem.modifiers || []);
           const sameMemo = JSON.stringify((cur as any).memo || null) === JSON.stringify((sourceItem as any).memo || null);
           if (!sameModifiers || !sameMemo) continue;
@@ -505,5 +525,7 @@ export function useOrderManagement(): UseOrderManagementResult {
     updateQuantityByLineId,
     removeItemByLineId,
     initializeSplitGuests,
+    mergeIdenticalItems,
+    getMergedOrderItems,
   };
 } 

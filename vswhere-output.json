@@ -1,0 +1,2134 @@
+﻿[
+  {
+    "instanceId": "1dfbffbc",
+    "installDate": "2026-02-16T17:56:15Z",
+    "installationName": "VisualStudio/17.14.26+36930.0",
+    "installationPath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools",
+    "installationVersion": "17.14.36930.0",
+    "productId": "Microsoft.VisualStudio.Product.BuildTools",
+    "productPath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\LaunchDevCmd.bat",
+    "state": 4294967295,
+    "isComplete": true,
+    "isLaunchable": true,
+    "isPrerelease": false,
+    "isRebootRequired": false,
+    "displayName": "Visual Studio Build Tools 2022",
+    "description": "The Visual Studio Build Tools allows you to build native and managed MSBuild-based applications without requiring the Visual Studio IDE. There are options to install the Visual C++ compilers and libraries, MFC, ATL, and C++/CLI support.",
+    "channelId": "VisualStudio.17.Release",
+    "channelUri": "https://aka.ms/vs/17/release/channel",
+    "enginePath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\resources\\app\\ServiceHub\\Services\\Microsoft.VisualStudio.Setup.Service",
+    "installedChannelId": "VisualStudio.17.Release",
+    "installedChannelUri": "https://aka.ms/vs/17/release/channel",
+    "releaseNotes": "https://docs.microsoft.com/en-us/visualstudio/releases/2022/release-notes-v17.14#17.14.26",
+    "resolvedInstallationPath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools",
+    "thirdPartyNotices": "https://go.microsoft.com/fwlink/?LinkId=661288",
+    "updateDate": "2026-02-16T17:56:15.604356Z",
+    "catalog": {
+      "buildBranch": "d17.14",
+      "buildVersion": "17.14.36930.0",
+      "id": "VisualStudio/17.14.26+36930.0",
+      "localBuild": "build-lab",
+      "manifestName": "VisualStudio",
+      "manifestType": "installer",
+      "productDisplayVersion": "17.14.26",
+      "productLine": "Dev17",
+      "productLineVersion": "2022",
+      "productMilestone": "RTW",
+      "productMilestoneIsPreRelease": "False",
+      "productName": "Visual Studio",
+      "productPatchVersion": "26",
+      "productPreReleaseMilestoneSuffix": "1.0",
+      "productSemanticVersion": "17.14.26+36930.0",
+      "requiredEngineVersion": "3.14.2086.54749"
+    },
+    "properties": {
+      "appLocalWPF": "true",
+      "campaignId": "",
+      "channelManifestId": "VisualStudio.17.Release/17.14.26+36930.0",
+      "includeRecommended": "0",
+      "nickname": "",
+      "setupEngineFilePath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\setup.exe"
+    },
+    "packages": [
+      {
+        "id": "Microsoft.VisualStudio.Workload.VCTools",
+        "version": "17.14.36331.10",
+        "type": "Workload"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.Vcpkg",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Vcpkg",
+        "version": "17.14.36809.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.Native",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Linux.ConnectionManager",
+        "version": "17.14.36203.30",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Linux.Shared",
+        "version": "17.14.36109.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Linux.Shared.Resources",
+        "version": "17.14.36511.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Linux.ConnectionManager.Resources",
+        "version": "17.14.36511.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.Core",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.TestPlatform.IDE",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TestWIExtension",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TestPlatform.IDE",
+        "version": "17.14.0.2551503",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Templates.UnitTest",
+        "version": "17.14.36327.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Templates.UnitTest.Resources",
+        "version": "17.14.36324.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Templates.Desktop",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.CoreIde",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Pro",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Pro.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Templates.General",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Templates.General.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Items.Pro",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.VC.CoreIDE.Reduced",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.MDD",
+        "version": "17.14.36301.6",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Core",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.CodeSense.Community",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TeamFoundationClient",
+        "version": "17.14.36802.14",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.PackageGroup.ClientDiagnostics",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.AppResponsiveness",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.AppResponsiveness.Targeted",
+        "version": "17.14.36015.10",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.AppResponsiveness.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ClientDiagnostics",
+        "version": "17.14.36414.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ClientDiagnostics.Targeted",
+        "version": "17.14.36414.8",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ClientDiagnostics.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.CommunityCore",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ProjectSystem.Full",
+        "version": "17.14.145.11861",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.LiveShareApi",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ProjectSystem.Query",
+        "version": "17.14.145.11861",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ProjectSystem",
+        "version": "17.14.145.11861",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.x86",
+        "version": "17.14.36015.10",
+        "chip": "x86",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.x64",
+        "version": "17.14.36015.10",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.VB.Targeted",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.VB.Neutral",
+        "version": "17.14.36906.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.CSharp.Targeted",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.CSharp.Neutral",
+        "version": "17.14.36906.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.TargetedExtra",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.Targeted",
+        "version": "17.14.36811.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.NeutralExtra",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.IntelliTrace.CollectorCab",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.VB.Resources.Targeted",
+        "version": "17.14.36511.2",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.VB.Resources.Neutral",
+        "version": "17.14.36930.0",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.CSharp.Resources.Targeted",
+        "version": "17.14.36511.2",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.CSharp.Resources.Neutral",
+        "version": "17.14.36928.5",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.Resources.Targeted",
+        "version": "17.14.36804.3",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.Resources.NeutralExtra",
+        "version": "17.14.36511.14",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.Resources.Neutral",
+        "version": "17.14.36511.14",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.WebSiteProject.DTE",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Diagnostics.AspNetHelper",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.MSHtml",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Platform.CallHierarchy",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.ProductArch.Neutral",
+        "version": "17.14.36811.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.Msi.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.Msi",
+        "version": "17.14.36025.13",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Community.Shared.Msi",
+        "version": "17.14.36025.13",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Interop.Msi",
+        "version": "17.14.36015.10",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Interop.Shared.Msi",
+        "version": "17.14.36015.10",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.CoreEditor",
+        "version": "17.14.36017.18",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.PackageGroup.StandardCollectorMinRelease",
+        "version": "17.14.36017.18",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.DiagnosticsHub.Runtime",
+        "version": "17.14.36710.3",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.DiagnosticsHub.Collection",
+        "version": "17.14.36710.3",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.DiagnosticsHub.Collection.Service",
+        "version": "17.14.36412.1",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.WebView2",
+        "version": "131.0.2903.86",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ScriptedHost",
+        "version": "17.14.137.33083",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ScriptedHost.Targeted",
+        "version": "17.14.137.33083",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VirtualTree",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Progression",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PerformanceProvider",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.GraphModel",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.GraphProvider",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.GraphProvider.Auto",
+        "version": "17.13.35507.71",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TextMateGrammars",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Platform.Markdown",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TeamExplorer.Common",
+        "version": "17.14.36926.9",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.ServiceHub",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.ServiceHub.Node",
+        "version": "4.6.2052.911",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.ServiceHub.Managed",
+        "version": "4.6.2052.911",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.OpenFolder.VSIX",
+        "version": "17.14.4.40987",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.FileHandler.Msi",
+        "version": "17.14.36024.20",
+        "chip": "x64",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.FileHandler.Msi",
+        "version": "17.14.36024.20",
+        "chip": "x86",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.MinShell",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Msi",
+        "version": "17.14.36301.6",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Shared.Msi",
+        "version": "17.14.36024.20",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Msi.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Interop",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.NgenRunner",
+        "version": "17.14.36904.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "CoreEditorFonts",
+        "version": "17.7.40001.1",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Log",
+        "version": "17.14.36623.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Log.Targeted",
+        "version": "17.14.36623.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Log.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Finalizer",
+        "version": "17.14.36107.29",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ErrorList",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.CoreEditor",
+        "version": "17.14.36414.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.CoreEditor.UserProfiles",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Platform.NavigateTo",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Connected",
+        "version": "17.14.36804.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Identity",
+        "version": "17.14.86.43228",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.Developer.IdentityServiceGS",
+        "version": "17.14.86.43228",
+        "type": "Vsix"
+      },
+      {
+        "id": "SQLitePCLRaw",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "SQLitePCLRaw.Targeted",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Connected.Auto",
+        "version": "17.14.36804.3",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Connected.Auto.Resources",
+        "version": "17.14.36804.3",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Connected.Resources",
+        "version": "17.14.36804.3",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.x64",
+        "version": "17.14.36413.42",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.VC.CoreIDE.Express",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Debugger.Script",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Msi",
+        "version": "17.14.36015.10",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Remote",
+        "version": "17.14.36015.10",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Remote",
+        "version": "17.14.36015.10",
+        "chip": "x86",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Remote.Resources",
+        "version": "17.14.36015.10",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Script.Remote.Resources",
+        "version": "17.14.36015.10",
+        "chip": "x86",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.WinXPlus",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Dskx",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Dskx.Resources",
+        "version": "17.14.36517.40",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Base",
+        "version": "17.14.36414.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.LanguageService",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Copilot.Setup",
+        "version": "17.14.35806.103",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.VCPkgDatabase",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.ResourceEditor",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.ResourceEditor.Resources",
+        "version": "17.14.36517.40",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.LanguageService.Dependencies",
+        "version": "17.13.35602.182",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Core",
+        "version": "17.14.36414.6",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VisualC.Utilities",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VisualC.Utilities.Resources",
+        "version": "17.14.36511.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.ProjectSystem",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.ProjectSystem.Resources",
+        "version": "17.14.36511.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Core.VCProjectEngine",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Core.VCProjectEngine.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.LanguageService.Resources",
+        "version": "17.14.36930.0",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Llvm.Base",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Base.Resources",
+        "version": "17.14.36804.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.TextTemplating",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Debugger.Core",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.BrokeredServices",
+        "version": "17.13.0.2520101",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.VSCodeDebuggerHost",
+        "version": "17.14.10522.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.AzureAttach",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Web.Azure.Common",
+        "version": "17.14.133.46758",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.WebTools.Shared",
+        "version": "17.14.133.46758",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.WebTools.DotNet.Core.ItemTemplates",
+        "version": "17.11.2.25503",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Debugger.TimeTravel.Replay",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Debugger",
+        "version": "17.14.36603.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Debugger.Concord",
+        "version": "17.14.36509.38",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Debugger.Concord.Resources",
+        "version": "17.14.36509.38",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Debugger.Resources",
+        "version": "17.14.36511.2",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Common",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Ide.Common.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.CollectionAgents",
+        "version": "17.14.36509.38",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Parallel",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Parallel.Resources",
+        "version": "17.14.36804.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Managed",
+        "version": "17.14.36212.18",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.DiaSymReader",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.CodeAnalysis.ExpressionEvaluator",
+        "version": "4.14.0.2541206",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Managed",
+        "version": "17.14.36509.38",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Managed.Resources",
+        "version": "17.14.36509.38",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Managed.Resources",
+        "version": "17.14.36212.18",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.TargetComposition",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.TargetComposition.Remote",
+        "version": "17.14.36015.10",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.TargetComposition.Remote",
+        "version": "17.14.36015.10",
+        "chip": "x86",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote",
+        "version": "17.14.36414.6",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Remote",
+        "version": "17.14.36509.38",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Remote.Resources",
+        "version": "17.14.36509.38",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote",
+        "version": "17.14.36414.6",
+        "chip": "x86",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Remote",
+        "version": "17.14.36509.38",
+        "chip": "x86",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Remote.Resources",
+        "version": "17.14.36509.38",
+        "chip": "x86",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote.Resources",
+        "version": "17.14.36510.44",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote.Resources",
+        "version": "17.14.36510.44",
+        "chip": "x86",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger",
+        "version": "17.14.36717.7",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.AzureSDK",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Editors",
+        "version": "17.14.15.26328",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSVCDis",
+        "version": "17.14.36413.42",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.IntelliTrace.DiagnosticsHub",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell",
+        "version": "17.14.36930.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.OpenTelemetry.Collector.netfx",
+        "version": "0.2.104.22364",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.OpenTelemetry.ClientExtensions.netfx",
+        "version": "0.2.104.22364",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Copilot.Contracts",
+        "version": "17.14.1584.41681",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Licensing",
+        "version": "17.14.36716.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.IdentityDependencies",
+        "version": "17.14.36717.7",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.GitHubProtocolHandler.Msi",
+        "version": "17.14.36015.10",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VsWebProtocolSelector.Msi",
+        "version": "17.14.36323.16",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Extensibility.Container",
+        "version": "17.14.2098.19097",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.LanguageServer",
+        "version": "17.14.63.3079",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MefHosting",
+        "version": "17.14.434.5694",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Initializer",
+        "version": "17.14.36015.10",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ExtensionManager",
+        "version": "17.14.2142.8518",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.ExtensionManager.Auto",
+        "version": "17.14.2142.8518",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Platform.Editor",
+        "version": "17.14.301.4982",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Targeted",
+        "version": "17.14.36915.13",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Devenv.Config",
+        "version": "17.14.36025.13",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Resources",
+        "version": "17.14.36930.0",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.UIInternal.Guide",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.UIInternal",
+        "version": "17.14.36915.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.UIInternal.Resources",
+        "version": "17.14.36915.8",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.CoreDotNet",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Auto",
+        "version": "17.14.36908.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.MinShell.Auto.Resources",
+        "version": "17.14.36908.2",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord",
+        "version": "17.14.36509.38",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Concord.Resources",
+        "version": "17.14.36509.38",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Resources",
+        "version": "17.14.36804.4",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.DiaSymReader.PortablePdb",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PerfLib",
+        "version": "17.14.36413.42",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Package.DiagHub.Client",
+        "version": "17.14.36716.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote.DiagnosticsHub.Client",
+        "version": "17.14.36716.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Debugger.Remote.DiagnosticsHub.Client",
+        "version": "17.14.36716.0",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TextTemplating.MSBuild",
+        "version": "17.14.36908.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TextTemplating.Integration",
+        "version": "17.14.36908.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TextTemplating.Core",
+        "version": "17.14.36906.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Roslyn.LanguageServices",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.CodeAnalysis.VisualStudio.Setup",
+        "version": "4.14.0.2541206",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TextTemplating.Integration.Resources",
+        "version": "17.14.36908.2",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.ASAN",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualCpp.ASAN.X86",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.ASAN.X86.OneCore",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.ASAN.X86.OneCore.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.ASAN.X86.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.ASAN.X64.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.ASAN.Headers.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.TestTools.BuildTools",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.BuildTools",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.CodeCoverage",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.DynamicCodeCoverage",
+        "version": "17.14.3.2532702",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.InstrumentationEngine",
+        "version": "1.0.45",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.CodeCoverage.Console.Targeted",
+        "version": "17.14.3.2532702",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TestPlatform.V1.CLI",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.TestTools.TestPlatform.V2.CLI",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TestPlatform.V2.CLI",
+        "version": "17.14.0.2520301",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.CMake.Project",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.CMake",
+        "version": "17.14.36017.18",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.ExternalBuildFramework",
+        "version": "17.14.36109.1",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+        "version": "17.14.36907.17",
+        "type": "Component"
+      },
+      {
+        "id": "Win11SDK_10.0.26100",
+        "version": "10.0.26100.14",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.UnitTest.Desktop.Build.Core",
+        "version": "17.14.36324.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.TestTools.TestPlatform.V1.CPP",
+        "version": "17.14.36327.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CodeAnalysis.Extensions",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CA.Ext.Hostx86.Targetx64",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx86.Targetx64.base",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx86.Targetx64.Res.base",
+        "version": "14.44.35214",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CA.Ext.Hostx86.Targetx86",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx86.Targetx86.base",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx86.Targetx86.Res.base",
+        "version": "14.44.35214",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CA.Ext.Hostx64.Targetx64",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx64.Targetx64.base",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx64.Targetx64.Res.base",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CA.Ext.Hostx64.Targetx86",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx64.Targetx86.base",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Rulesets.base",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Servicing.CARulesets",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Servicing.CAExtensions",
+        "version": "14.44.35214",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CA.Ext.Hostx64.Targetx86.Res.base",
+        "version": "14.44.35214",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.StaticAnalysis",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.IDE",
+        "version": "17.14.36025.13",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.IDE.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.FxCop",
+        "version": "17.14.36414.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.FxCop.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.auxil",
+        "version": "17.14.36025.13",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.StaticAnalysis.auxil.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.HostX64.TargetX86",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX64.TargetX86.base",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX64.TargetX86.Res.base",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.HostX64.TargetX64",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX64.TargetX64.base",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX64.TargetX64.Res.base",
+        "version": "14.44.35222",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Premium.Tools.HostX86.TargetX64",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Premium.Tools.HostX86.TargetX64.base",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Prem.Hostx86.Targetx64.Res.base",
+        "version": "14.44.35219",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Premium.Tools.HostX86.TargetX86",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Premium.Tools.HostX86.TargetX86.base",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Prem.HostX86.TargetX86.Res.base",
+        "version": "14.44.35219",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Premium.Tools.HostX64.TargetX86",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Premium.Tools.HostX64.TargetX86.base",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Prem.HostX64.TargetX86.Res.base",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Premium.Tools.HostX64.TargetX64",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Premium.Tools.HostX64.TargetX64.base",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Prem.HostX64.TargetX64.Res.base",
+        "version": "14.44.35219",
+        "chip": "x64",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.PGO.X86",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.PGO.X86.base",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.PGO.X64",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.PGO.X64.base",
+        "version": "14.44.35219",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.PGO.Headers",
+        "version": "14.44.35208",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.PGO.Headers.base",
+        "version": "14.44.35208",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x86.Store",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x86.Store.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x86.OneCore.Desktop",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x86.OneCore.Desktop.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x64.Store",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x64.Store.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x64.OneCore.Desktop",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x64.OneCore.Desktop.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Redist.x86.OneCore.Desktop",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Redist.x86.OneCore.Desktop.base",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Redist.x64.OneCore.Desktop",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Redist.x64.OneCore.Desktop.base",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.ClickOnce.Msi",
+        "version": "14.44.35211",
+        "language": "en-US",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.VC.Tools.x86",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.Hostx86.Targetx64.Res",
+        "version": "14.44.35222",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.HostX86.TargetX64",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX86.TargetX64.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Props.x64",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.Hostx86.Targetx64.Res.base",
+        "version": "14.44.35222",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.HostX86.TargetX86.Res",
+        "version": "14.44.35222",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.HostX86.TargetX86",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX86.TargetX86.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Servicing.Compilers",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Props.x86",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Props",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.HostX86.TargetX86.Res.base",
+        "version": "14.44.35222",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.Core.Resources",
+        "version": "14.44.35208",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.Core.x86",
+        "version": "14.44.35208",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Tools.Core.Props",
+        "version": "14.44.35208",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.Common.Utils",
+        "version": "14.44.35208",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Tools.Common.Utils.Resources",
+        "version": "14.44.35208",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.DIA.SDK",
+        "version": "14.44.35215",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Servicing.DIASDK",
+        "version": "14.44.35215",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x86.Desktop",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x86.Desktop.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.x64.Desktop",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.x64.Desktop.base",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Source",
+        "version": "14.44.35220",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Source.base",
+        "version": "14.44.35220",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Redist.X86",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Redist.X86.base",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Redist.X64",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Redist.Resources",
+        "version": "14.44.35211",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Redist.X64.base",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.RuntimeDebug.14",
+        "version": "14.44.35211",
+        "chip": "x64",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualCpp.RuntimeDebug.14",
+        "version": "14.44.35211",
+        "chip": "x86",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Redist.14.Latest",
+        "version": "14.44.35211",
+        "chip": "x64",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Redist.14.Latest",
+        "version": "14.44.35211",
+        "chip": "x86",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Redist.14",
+        "version": "14.44.35211",
+        "chip": "x64",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Redist.14",
+        "version": "14.44.35211",
+        "chip": "x86",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualCpp.Servicing.Redist",
+        "version": "14.44.35211",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualCpp.CRT.Headers",
+        "version": "14.44.35220",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Headers.Resources",
+        "version": "14.44.35220",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Headers.Resources.base",
+        "version": "14.44.35220",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.CRT.Headers.base",
+        "version": "14.44.35220",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Servicing.CrtHeaders",
+        "version": "14.44.35220",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VC.14.44.17.14.Servicing",
+        "version": "14.44.35222",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.VC.CoreBuildTools",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.vcvars",
+        "version": "17.14.36518.7",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VS.VC.vcvars.x86.Shortcuts",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VS.VC.vcvars.x64.Shortcuts",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.Windows10SDK",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.Windows.UniversalCRT.Redistributable.Msi",
+        "version": "10.0.26624",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.x86.v143",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.X86",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.X64.v143",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.X64",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.ARM.v143",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.ARM",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.Base",
+        "version": "17.14.36518.7",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.MSBuild.v170.Base.Resources",
+        "version": "17.14.36804.3",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Product.BuildTools",
+        "version": "17.14.36930.0",
+        "type": "Product"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Workload.MSBuildTools",
+        "version": "17.14.36015.10",
+        "type": "Workload"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.CoreBuildTools",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.Setup.Common",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Setup.WMIProvider",
+        "version": "3.12.2140.44225",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Setup.Configuration.Interop",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Setup.Configuration",
+        "version": "3.12.2140.44225",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.VsDevCmd",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VsDevCmd.Ext.NetFxSdk",
+        "version": "17.14.36130.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VsDevCmd.Core.WinSdk",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VsDevCmd.Core.DotNet",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.DevCmd",
+        "version": "17.14.36130.4",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.DevCmd.Resources",
+        "version": "17.14.36802.14",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.BuildTools.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Net.Eula.Resources",
+        "version": "17.14.36015.10",
+        "language": "en-US",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.Build.Dependencies",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.Build.FileTracker.Msi",
+        "version": "17.14.36015.10",
+        "type": "Msi"
+      },
+      {
+        "id": "Microsoft.Component.MSBuild",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.PythonTools.BuildCore.Vsix",
+        "version": "17.0.25079.8",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.NuGet.Build.Tasks.Setup",
+        "version": "17.2.0.2311601",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.Component.Roslyn.Compiler",
+        "version": "17.14.36510.44",
+        "type": "Component"
+      },
+      {
+        "id": "Microsoft.CodeAnalysis.Compilers",
+        "version": "4.14.0.2541206",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.NativeImageSupport",
+        "version": "17.14.36906.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.Build",
+        "version": "17.14.40.2560911",
+        "chip": "neutral",
+        "language": "neutral",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.VisualStudio.PackageGroup.NuGet",
+        "version": "17.14.36015.10",
+        "type": "Group"
+      },
+      {
+        "id": "Microsoft.VisualStudio.NuGet.BuildTools",
+        "version": "17.0.601402.2",
+        "type": "Vsix"
+      },
+      {
+        "id": "Microsoft.Build.UnGAC",
+        "version": "17.14.40.2560911",
+        "chip": "neutral",
+        "language": "neutral",
+        "type": "Exe"
+      },
+      {
+        "id": "Microsoft.VisualStudio.VC.Icons",
+        "version": "17.14.36015.10",
+        "type": "Vsix"
+      }
+    ]
+  }
+]

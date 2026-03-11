@@ -339,7 +339,7 @@ const QsrPage: React.FC = () => {
   // Audio initialization
   useEffect(() => {
     if (!audioRef.current) {
-      audioRef.current = new Audio('/sounds/new-order.mp3');
+      audioRef.current = new Audio('/sounds/Online_Order.mp3');
       audioRef.current.preload = 'auto';
       audioRef.current.volume = 1.0;
     }
@@ -1157,7 +1157,7 @@ const QsrPage: React.FC = () => {
       
       if (orderType === 'forhere') {
         orderTypeStr = 'DINE_IN';
-        tableLabel = `FOR HERE #${orderNumber}`;
+        tableLabel = `EAT IN #${orderNumber}`;
       } else if (orderType === 'togo') {
         orderTypeStr = 'TOGO';
         tableLabel = `TOGO #${orderNumber}`;
@@ -1517,7 +1517,7 @@ const QsrPage: React.FC = () => {
             <div>
               <span className="font-bold">#{orderNumber}</span>
               <span className="ml-1 px-1.5 py-0.5 bg-white/20 rounded text-xs font-semibold uppercase">
-                {orderType === 'forhere' ? 'FOR HERE' : 
+                {orderType === 'forhere' ? 'EAT IN' : 
                  orderType === 'togo' ? 'TOGO' :
                  orderType === 'pickup' ? 'PICKUP' : 
                  orderType === 'delivery' ? `${deliveryChannel}` : ''}
@@ -1717,7 +1717,7 @@ const QsrPage: React.FC = () => {
             
             {/* Order Type Buttons */}
             <div className="flex gap-1">
-              {/* For Here */}
+              {/* Eat In */}
               <button
                 onClick={() => setOrderType('forhere')}
                 className={`flex items-center gap-1.5 px-4 py-2.5 rounded-lg font-bold transition ${
@@ -1727,7 +1727,7 @@ const QsrPage: React.FC = () => {
                 }`}
               >
                 <Coffee className="w-5 h-5" />
-                For Here
+                Eat In
               </button>
               {/* Togo */}
               <button
@@ -1797,7 +1797,7 @@ const QsrPage: React.FC = () => {
           
           {/* Right: Settings */}
           <div className="flex items-center gap-2">
-            {/* Customer Name Input - For Here/Togo only */}
+            {/* Customer Name Input - Eat In/Togo only */}
             {(orderType === 'forhere' || orderType === 'togo') && (
               <div className="flex items-center gap-2">
                 <User className="w-4 h-4 text-gray-400" />

@@ -64,6 +64,46 @@ cd android
 # android/app/build/outputs/apk/release/app-release.apk
 ```
 
+## 📦 Play Store 없이 설치(사이드로드)로 배포하기 (권장)
+
+Play Store 등록 없이 태블릿에 설치하려면 **서명된 APK**를 만들어 배포하면 됩니다.
+
+### 1) 릴리즈 서명(keystore) 설정 (업데이트 설치 가능하게 “고정 서명”)
+
+1. `android-app/android/keystore.properties.example`를 복사해서
+   `android-app/android/keystore.properties`로 만듭니다. (커밋 금지)
+2. keystore 파일 경로/비밀번호/alias를 채웁니다.
+
+> keystore가 매번 바뀌면, 태블릿에 **업데이트 설치(덮어쓰기)** 가 실패합니다.
+
+### 2) APK 만들기 (Windows)
+
+`android-app` 폴더에서 아래 배치파일을 실행합니다:
+
+```bat
+build-apk-sideload.bat
+```
+
+이 스크립트는 빌드 전에 현재 PC의 Android SDK 경로를 기준으로 `android/local.properties`의 `sdk.dir`을 자동으로 맞춰줍니다.
+
+결과물:
+- `android-app/dist-apk/table-order-app-release.apk`
+
+## 🧰 빌드 환경 자동 세팅 (Android Studio 없이도 가능)
+
+현재 PC에 **JDK 17 / Android SDK**가 없어서 빌드가 막히는 경우, 아래 스크립트가 필요한 도구를
+`android-app/.build-tools/` 안에 자동으로 설치하고 환경을 준비합니다.
+
+```bat
+setup-android-build.bat
+```
+
+도구 설치 후 APK까지 바로 만들고 싶으면:
+
+```bat
+setup-android-build.bat -BuildApk
+```
+
 ## 📱 태블릿 설치 방법
 
 ### APK 직접 설치

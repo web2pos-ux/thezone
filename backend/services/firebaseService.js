@@ -4,8 +4,11 @@
 const admin = require('firebase-admin');
 const path = require('path');
 
-// 서비스 계정 키 경로
-const serviceAccountPath = path.join(__dirname, '..', 'config', 'firebase-service-account.json');
+// 서비스 계정 키 경로 (읽기 전용 파일 - 빌드 리소스에서 읽음)
+// 패키징된 앱에서는 resources/backend/config에, 개발 모드에서는 backend/config에 위치
+const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
+const CONFIG_DIR = process.env.CONFIG_PATH || RESOURCES_CONFIG_DIR;
+const serviceAccountPath = path.join(RESOURCES_CONFIG_DIR, 'firebase-service-account.json');
 
 let db = null;
 let isInitialized = false;
@@ -294,6 +297,20 @@ async function uploadOrder(restaurantId, orderData) {
     // 필수 필드 확인
     if (!restaurantId) throw new Error('restaurantId is required');
     
+    const ensureLineId = (it, idx = 0) => {
+      try {
+        const existing = it?.orderLineId ?? it?.order_line_id ?? it?.order_lineId ?? null;
+        if (existing != null && String(existing).trim() !== '') return String(existing).trim();
+      } catch {}
+      const base = (it && (it.id || it.itemId || it.item_id)) ? String(it.id || it.itemId || it.item_id) : 'ITEM';
+      return `POS-${base}-${Date.now()}-${Number(idx) || 0}-${Math.random().toString(36).slice(2, 8)}`;
+    };
+    const rawItems = Array.isArray(orderData.items) ? orderData.items : [];
+    const normalizedItems = rawItems.map((it, idx) => ({
+      ...it,
+      orderLineId: ensureLineId(it, idx),
+    }));
+
     const orderDoc = {
       restaurantId,
       orderNumber: orderData.orderNumber || orderData.order_number,
@@ -301,7 +318,7 @@ async function uploadOrder(restaurantId, orderData) {
       customerPhone: orderData.customerPhone || orderData.customer_phone || '',
       orderType: (orderData.orderType || orderData.order_type || 'dine_in').toLowerCase(),
       status: (orderData.status || 'pending').toLowerCase(),
-      items: orderData.items || [],
+      items: normalizedItems,
       subtotal: parseFloat(orderData.subtotal) || 0,
       tax: parseFloat(orderData.tax || orderData.tax_total) || 0,
       total: parseFloat(orderData.total) || 0,
@@ -1038,6 +1055,42 @@ async function savePaymentToFirebase(restaurantId, paymentData) {
   }
 }
 
+// 팁 데이터 Firebase 저장 (tips는 sales/payments와 분리 저장)
+async function saveTipToFirebase(restaurantId, tipData) {
+  if (!restaurantId) {
+    console.warn('⚠️ saveTipToFirebase: restaurantId is required');
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+
+    // restaurants/{restaurantId}/tips/{tipId}
+    const tipsRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('tips');
+
+    const dataToSave = {
+      ...tipData,
+      syncedFromPOS: true,
+      syncedAt: new Date().toISOString()
+    };
+
+    if (tipData.tipId) {
+      await tipsRef.doc(String(tipData.tipId)).set(dataToSave, { merge: true });
+    } else {
+      await tipsRef.add(dataToSave);
+    }
+
+    console.log(`✅ Tip saved to Firebase: ${restaurantId}/tips/${tipData.tipId || 'auto'}`);
+    return { success: true };
+  } catch (error) {
+    console.error('saveTipToFirebase error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // 게스트 결제 상태 Firebase 저장
 async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status) {
   if (!restaurantId || !orderId) {
@@ -1072,6 +1125,42 @@ async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status
   }
 }
 
+// VOID 데이터 Firebase 저장
+async function saveVoidToFirebase(restaurantId, voidData) {
+  if (!restaurantId) {
+    console.warn('⚠️ saveVoidToFirebase: restaurantId is required');
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+
+  try {
+    const firestore = getFirestore();
+    
+    // restaurants/{restaurantId}/voids/{voidId}
+    const voidsRef = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('voids');
+
+    const dataToSave = {
+      ...voidData,
+      syncedFromPOS: true,
+      syncedAt: new Date().toISOString()
+    };
+
+    if (voidData.voidId) {
+      await voidsRef.doc(String(voidData.voidId)).set(dataToSave, { merge: true });
+    } else {
+      await voidsRef.add(dataToSave);
+    }
+    
+    console.log(`✅ Void saved to Firebase: ${restaurantId}/voids/${voidData.voidId || 'auto'}`);
+    return { success: true };
+  } catch (error) {
+    console.error('saveVoidToFirebase error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
@@ -1102,6 +1191,9 @@ module.exports = {
   getDailyClosingHistory,
   // Payments
   savePaymentToFirebase,
-  saveGuestPaymentStatus
+  saveTipToFirebase,
+  saveGuestPaymentStatus,
+  // Voids
+  saveVoidToFirebase
 };
 

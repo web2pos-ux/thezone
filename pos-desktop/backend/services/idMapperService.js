@@ -6,6 +6,45 @@ const { v4: uuidv4 } = require('uuid');
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
 const { db, dbRun, dbAll, dbGet } = require('../db');
 
+// 테이블 자동 생성 (없으면 생성) + UNIQUE 인덱스 마이그레이션
+let tableEnsured = false;
+async function ensureTable() {
+  if (tableEnsured) return;
+  try {
+    await dbRun(`CREATE TABLE IF NOT EXISTS id_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      local_id TEXT NOT NULL,
+      firebase_id TEXT,
+      uuid TEXT NOT NULL,
+      external_ids TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(entity_type, local_id)
+    )`);
+
+    // 기존 테이블에 UNIQUE 인덱스가 없는 경우 추가 (마이그레이션)
+    try {
+      await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mappings_entity_local
+        ON id_mappings(entity_type, local_id)`);
+    } catch (idxErr) {
+      // 중복 데이터가 있으면 정리 후 재시도
+      if (idxErr.message && idxErr.message.includes('UNIQUE')) {
+        console.log('[IdMapperService] Cleaning duplicate mappings before creating index...');
+        await dbRun(`DELETE FROM id_mappings WHERE id NOT IN (
+          SELECT MIN(id) FROM id_mappings GROUP BY entity_type, local_id
+        )`);
+        await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_id_mappings_entity_local
+          ON id_mappings(entity_type, local_id)`).catch(() => {});
+      }
+    }
+
+    tableEnsured = true;
+  } catch (e) {
+    console.error('[IdMapperService] Failed to ensure table:', e.message);
+  }
+}
+
 /**
  * ID Mapper Service
  * - UUID를 기반으로 다양한 시스템의 ID를 관리
@@ -21,6 +60,7 @@ class IdMapperService {
    * @returns {Promise<{uuid: string, mapping: object}>}
    */
   async createMapping(entityType, localId, firebaseId = null) {
+    await ensureTable();
     const uuid = uuidv4();
     
     await dbRun(
@@ -42,6 +82,7 @@ class IdMapperService {
    * @param {string} firebaseId
    */
   async updateFirebaseId(entityType, localId, firebaseId) {
+    await ensureTable();
     await dbRun(
       `UPDATE id_mappings 
        SET firebase_id = ?, updated_at = CURRENT_TIMESTAMP
@@ -80,6 +121,7 @@ class IdMapperService {
    * @returns {Promise<object|null>}
    */
   async getByUUID(uuid) {
+    await ensureTable();
     const mapping = await dbGet(
       'SELECT * FROM id_mappings WHERE uuid = ?',
       [uuid]
@@ -99,6 +141,7 @@ class IdMapperService {
    * @returns {Promise<object|null>}
    */
   async getByLocalId(entityType, localId) {
+    await ensureTable();
     const mapping = await dbGet(
       'SELECT * FROM id_mappings WHERE entity_type = ? AND local_id = ?',
       [entityType, String(localId)]
@@ -118,6 +161,7 @@ class IdMapperService {
    * @returns {Promise<object|null>}
    */
   async getByFirebaseId(entityType, firebaseId) {
+    await ensureTable();
     const mapping = await dbGet(
       'SELECT * FROM id_mappings WHERE entity_type = ? AND firebase_id = ?',
       [entityType, firebaseId]
@@ -138,6 +182,7 @@ class IdMapperService {
    * @returns {Promise<object|null>}
    */
   async getByExternalId(entityType, provider, externalId) {
+    await ensureTable();
     const mappings = await dbAll(
       'SELECT * FROM id_mappings WHERE entity_type = ?',
       [entityType]
@@ -315,6 +360,7 @@ class IdMapperService {
    * @returns {Promise<object>}
    */
   async syncExistingItems() {
+    await ensureTable();
     const results = {
       menu_item: 0,
       category: 0,
@@ -356,11 +402,11 @@ class IdMapperService {
     
     // 3. Modifier Groups
     try {
-      const groups = await dbAll('SELECT group_id FROM modifier_groups WHERE is_deleted = 0');
+      const groups = await dbAll('SELECT modifier_group_id FROM modifier_groups WHERE is_deleted = 0');
       for (const group of groups) {
-        const existing = await this.getByLocalId('modifier_group', group.group_id);
+        const existing = await this.getByLocalId('modifier_group', group.modifier_group_id);
         if (!existing) {
-          await this.createMapping('modifier_group', group.group_id, null);
+          await this.createMapping('modifier_group', group.modifier_group_id, null);
           results.modifier_group++;
         }
       }
@@ -370,11 +416,11 @@ class IdMapperService {
     
     // 4. Tax Groups
     try {
-      const taxes = await dbAll('SELECT id FROM tax_groups WHERE is_active = 1');
+      const taxes = await dbAll('SELECT tax_group_id FROM tax_groups WHERE is_deleted = 0');
       for (const tax of taxes) {
-        const existing = await this.getByLocalId('tax_group', tax.id);
+        const existing = await this.getByLocalId('tax_group', tax.tax_group_id);
         if (!existing) {
-          await this.createMapping('tax_group', tax.id, null);
+          await this.createMapping('tax_group', tax.tax_group_id, null);
           results.tax_group++;
         }
       }
@@ -384,11 +430,11 @@ class IdMapperService {
     
     // 5. Printer Groups
     try {
-      const printers = await dbAll('SELECT id FROM printer_groups WHERE is_active = 1');
+      const printers = await dbAll('SELECT printer_group_id FROM printer_groups WHERE is_active = 1');
       for (const printer of printers) {
-        const existing = await this.getByLocalId('printer_group', printer.id);
+        const existing = await this.getByLocalId('printer_group', printer.printer_group_id);
         if (!existing) {
-          await this.createMapping('printer_group', printer.id, null);
+          await this.createMapping('printer_group', printer.printer_group_id, null);
           results.printer_group++;
         }
       }

@@ -11,6 +11,21 @@ interface SetupConfig {
 }
 
 const STORAGE_KEY = 'sub-pos-setup';
+const SUB_POS_MODE_KEY = 'sub-pos-mode-active';
+const HANDHELD_MODE_KEY = 'handheld-mode-active';
+
+function activateSubPosMode(config: SetupConfig) {
+  localStorage.setItem(SUB_POS_MODE_KEY, JSON.stringify({
+    active: true,
+    posHost: config.posHost,
+    deviceName: config.deviceName,
+    deviceId: config.deviceId,
+  }));
+  localStorage.setItem(HANDHELD_MODE_KEY, JSON.stringify({
+    active: true,
+    posHost: config.posHost,
+  }));
+}
 
 const SubPosSetupPage: React.FC = () => {
   const navigate = useNavigate();
@@ -36,9 +51,8 @@ const SubPosSetupPage: React.FC = () => {
         
         // If already configured, auto-navigate to sub pos main
         if (parsed.configured && parsed.posHost && parsed.deviceName) {
-          setTimeout(() => {
-            navigate('/sub-pos');
-          }, 500);
+          activateSubPosMode(parsed);
+          setTimeout(() => navigate('/sales', { replace: true }), 300);
         }
       } catch (e) {
         console.error('Failed to parse saved config:', e);
@@ -95,9 +109,8 @@ const SubPosSetupPage: React.FC = () => {
 
     const configToSave = { ...config, configured: true };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(configToSave));
-    
-    // Navigate to sub pos main page
-    navigate('/sub-pos');
+    activateSubPosMode(configToSave);
+    navigate('/sales', { replace: true });
   };
 
   // Reset configuration

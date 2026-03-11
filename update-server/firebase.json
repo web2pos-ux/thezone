@@ -6,6 +6,20 @@
       "**/.*",
       "**/node_modules/**"
     ],
+    "rewrites": [
+      {
+        "source": "/dashboard/**",
+        "destination": "/dashboard/index.html"
+      },
+      {
+        "source": "/download/tableorder",
+        "destination": "/download/tableorder/index.html"
+      },
+      {
+        "source": "/download/table",
+        "destination": "/download/table/index.html"
+      }
+    ],
     "headers": [
       {
         "source": "**/*.json",
@@ -30,6 +44,36 @@
           {
             "key": "Access-Control-Allow-Origin",
             "value": "*"
+          }
+        ]
+      },
+      {
+        "source": "**/*.apk",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/vnd.android.package-archive"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "**/*.exe",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "key": "Content-Disposition",
+            "value": "attachment"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
           }
         ]
       }

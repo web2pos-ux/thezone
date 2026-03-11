@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSerialPorts, SerialPort } from '../hooks/useSerialPorts';
+import PrintLayoutEditor from '../components/PrintLayoutEditor';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
@@ -24,7 +25,7 @@ interface SerialPrinterSettings {
 }
 
 const HardwareManagerPage = () => {
-  const [activeTab, setActiveTab] = useState<'printer' | 'creditCard' | 'scanner' | 'display'>('creditCard');
+  const [activeTab, setActiveTab] = useState<'printer' | 'printLayout' | 'creditCard' | 'scanner' | 'display'>('creditCard');
   
   // Kitchen Printer Settings
   const [kitchenPrinterShowGuest, setKitchenPrinterShowGuest] = useState<boolean>(() => {
@@ -160,6 +161,7 @@ const HardwareManagerPage = () => {
 
   const tabs = [
     { id: 'printer', label: 'Receipt Printer', icon: '🖨️' },
+    { id: 'printLayout', label: 'Print Layout', icon: '📝' },
     { id: 'creditCard', label: 'Credit Card Reader', icon: '💳' },
     { id: 'scanner', label: 'Barcode Scanner', icon: '📷' },
     { id: 'display', label: 'Customer Display', icon: '🖥️' },
@@ -467,6 +469,17 @@ const HardwareManagerPage = () => {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Print Layout Tab */}
+            {activeTab === 'printLayout' && (
+              <div className="bg-white rounded-xl shadow-sm p-6" style={{ height: 'calc(100vh - 200px)' }}>
+                <div className="mb-4">
+                  <h2 className="text-xl font-bold text-gray-800">Print Layout Settings</h2>
+                  <p className="text-gray-600">Customize the layout for receipts, bills, and kitchen tickets.</p>
+                </div>
+                <PrintLayoutEditor />
               </div>
             )}
 
