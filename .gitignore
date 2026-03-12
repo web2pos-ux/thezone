@@ -34,7 +34,11 @@ android-app/android/.gradle/
 *.exe
 *.apk
 *.zip
+*.7z
 Download/
+pos-desktop/Thezone_v1_0/
+pos-desktop/node.exe
+backend/uploads/
 
 # Logs
 *.log
