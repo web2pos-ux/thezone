@@ -20,24 +20,37 @@ backend/.env
 **/serviceAccountKey.json
 **/*-firebase-adminsdk-*.json
 
-# Build
+# Build (빌드 결과물 - 업로드 제외)
 build/
 dist/
 */build/
 */dist/
+android-app/android/.gradle/
+
+# === 업로드 제외: 빌드/설치/압축 파일 (프로그램 소스만 업로드) ===
+# 설치 파일
+*.exe
+*.msi
+*.dmg
+*.pkg
+# 압축 파일
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.gz
+# 앱 패키지
+*.apk
+*.aab
+*.ipa
+# 기타 대용량 바이너리
+pos-desktop/node.exe
+pos-desktop/Thezone_v1_0/
 pos-desktop/dist20/
 pos-desktop/dist22/
 pos-desktop/win-unpacked/
-android-app/android/.gradle/
-
-# Large binaries (GitHub 100MB limit)
-*.exe
-*.apk
-*.zip
-*.7z
 Download/
-pos-desktop/Thezone_v1_0/
-pos-desktop/node.exe
 backend/uploads/
 
 # Logs
