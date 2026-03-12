@@ -25,6 +25,16 @@ build/
 dist/
 */build/
 */dist/
+pos-desktop/dist20/
+pos-desktop/dist22/
+pos-desktop/win-unpacked/
+android-app/android/.gradle/
+
+# Large binaries (GitHub 100MB limit)
+*.exe
+*.apk
+*.zip
+Download/
 
 # Logs
 *.log
