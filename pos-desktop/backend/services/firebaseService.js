@@ -104,6 +104,21 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
   return unsubscribe;
 }
 
+// 주문 결제 완료 업데이트 (paymentStatus, tip, paidAt)
+async function updateOrderAsPaid(restaurantId, orderId, { paymentMethod, tip }) {
+  const firestore = getFirestore();
+  if (!restaurantId || !orderId) return;
+  const orderRef = firestore.collection('restaurants').doc(restaurantId).collection('orders').doc(String(orderId));
+  await orderRef.update({
+    paymentStatus: 'paid',
+    paymentMethod: paymentMethod || 'unknown',
+    tip: Number(tip || 0),
+    paidAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+  console.log(`✅ Order ${orderId} marked as paid`);
+}
+
 // 주문 상태 변경 (서브컬렉션 우선, 글로벌 fallback)
 async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
   const firestore = getFirestore();
@@ -311,23 +326,32 @@ async function uploadOrder(restaurantId, orderData) {
       orderLineId: ensureLineId(it, idx),
     }));
 
+    const status = (orderData.status || 'pending').toLowerCase();
     const orderDoc = {
       restaurantId,
       orderNumber: orderData.orderNumber || orderData.order_number,
       customerName: orderData.customerName || orderData.customer_name || 'Walk-in',
       customerPhone: orderData.customerPhone || orderData.customer_phone || '',
       orderType: (orderData.orderType || orderData.order_type || 'dine_in').toLowerCase(),
-      status: (orderData.status || 'pending').toLowerCase(),
+      status,
       items: normalizedItems,
       subtotal: parseFloat(orderData.subtotal) || 0,
       tax: parseFloat(orderData.tax || orderData.tax_total) || 0,
       total: parseFloat(orderData.total) || 0,
+      tip: parseFloat(orderData.tip || 0),
       notes: orderData.notes || orderData.customer_note || '',
       tableId: orderData.tableId || orderData.table_id || '',
       source: orderData.source || 'POS',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      paymentMethod: orderData.paymentMethod || orderData.payment_method || 'unknown',
+      paymentStatus: orderData.paymentStatus || (status === 'completed' ? 'paid' : 'pending'),
+      createdAt: orderData.createdAt ? admin.firestore.Timestamp.fromDate(new Date(orderData.createdAt)) : admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
+    if (orderData.paidAt) {
+      orderDoc.paidAt = admin.firestore.Timestamp.fromDate(new Date(orderData.paidAt));
+    } else if (status === 'completed') {
+      orderDoc.paidAt = admin.firestore.FieldValue.serverTimestamp();
+    }
     
     // Delivery 주문 추가 필드
     if (orderData.deliveryCompany) {
@@ -1125,6 +1149,33 @@ async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status
   }
 }
 
+// REFUND 데이터 Firebase 저장
+async function saveRefundToFirebase(restaurantId, refundData) {
+  if (!restaurantId) {
+    console.warn('⚠️ saveRefundToFirebase: restaurantId is required');
+    return { success: false, error: 'Restaurant ID is required' };
+  }
+  try {
+    const firestore = getFirestore();
+    const refundsRef = firestore.collection('restaurants').doc(restaurantId).collection('refunds');
+    const dataToSave = {
+      ...refundData,
+      syncedFromPOS: true,
+      syncedAt: new Date().toISOString()
+    };
+    if (refundData.refundId) {
+      await refundsRef.doc(String(refundData.refundId)).set(dataToSave, { merge: true });
+    } else {
+      await refundsRef.add(dataToSave);
+    }
+    console.log(`✅ Refund saved to Firebase: ${restaurantId}/refunds/${refundData.refundId || 'auto'}`);
+    return { success: true };
+  } catch (error) {
+    console.error('saveRefundToFirebase error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // VOID 데이터 Firebase 저장
 async function saveVoidToFirebase(restaurantId, voidData) {
   if (!restaurantId) {
@@ -1166,6 +1217,7 @@ module.exports = {
   getFirestore,
   listenToOnlineOrders,
   updateOrderStatus,
+  updateOrderAsPaid,
   acceptOrder,
   getOnlineOrders,
   getOrderById,
@@ -1193,7 +1245,8 @@ module.exports = {
   savePaymentToFirebase,
   saveTipToFirebase,
   saveGuestPaymentStatus,
-  // Voids
+  // Refunds & Voids
+  saveRefundToFirebase,
   saveVoidToFirebase
 };
 

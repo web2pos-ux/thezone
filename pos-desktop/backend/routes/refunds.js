@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 
+let firebaseService = null;
+try { firebaseService = require('../services/firebaseService'); } catch (e) { /* Firebase 없이도 동작 */ }
+
 module.exports = (db) => {
   const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
     db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
@@ -11,6 +14,16 @@ module.exports = (db) => {
   const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => { if (err) reject(err); else resolve(row); });
   });
+
+  let cachedRestaurantId = null;
+  const getRestaurantId = async () => {
+    if (cachedRestaurantId) return cachedRestaurantId;
+    try {
+      const setting = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
+      if (setting && setting.value) { cachedRestaurantId = setting.value; return cachedRestaurantId; }
+    } catch (e) { /* ignore */ }
+    return null;
+  };
 
   // Create refunds table if not exists
   dbRun(`CREATE TABLE IF NOT EXISTS refunds (
@@ -271,6 +284,31 @@ module.exports = (db) => {
       // Get the created refund with items
       const refund = await dbGet(`SELECT * FROM refunds WHERE id = ?`, [refundId]);
       const refundItems = await dbAll(`SELECT * FROM refund_items WHERE refund_id = ?`, [refundId]);
+
+      // Firebase Refund 동기화
+      if (firebaseService) {
+        const restaurantId = await getRestaurantId() || process.env.FIREBASE_RESTAURANT_ID;
+        if (restaurantId) {
+          const orderRow = await dbGet('SELECT firebase_order_id FROM orders WHERE id = ?', [orderId]);
+          firebaseService.saveRefundToFirebase(restaurantId, {
+            refundId,
+            orderId,
+            orderNumber: order.order_number,
+            firebaseOrderId: orderRow?.firebase_order_id,
+            refundType,
+            subtotal: refund.subtotal,
+            tax: refund.tax,
+            total: refund.total,
+            paymentMethod: refund.payment_method,
+            refundedBy: refund.refunded_by,
+            reason: refund.reason,
+            notes: refund.notes,
+            status: refund.status,
+            items: refundItems,
+            createdAt: refund.created_at
+          }).catch(err => console.warn('[Firebase] Refund sync error:', err.message));
+        }
+      }
 
       res.json({
         success: true,

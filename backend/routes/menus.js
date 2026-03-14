@@ -132,12 +132,13 @@ module.exports = (db) => {
 
       const [categories, items] = await Promise.all([categoriesPromise, itemsPromise]);
 
+      const allItemIds = items.map(i => i.item_id);
+      const placeholders = allItemIds.length > 0 ? allItemIds.map(() => '?').join(',') : '';
+
       // 아이템별 printer_groups 조회 (menu_printer_links)
       let printerLinksMap = {};
       try {
-        const allItemIds = items.map(i => i.item_id);
         if (allItemIds.length > 0) {
-          const placeholders = allItemIds.map(() => '?').join(',');
           const printerLinks = await new Promise((resolve, reject) => {
             db.all(
               `SELECT item_id, GROUP_CONCAT(printer_group_id) as printer_groups FROM menu_printer_links WHERE item_id IN (${placeholders}) GROUP BY item_id`,
@@ -153,14 +154,56 @@ module.exports = (db) => {
         console.warn('Failed to load printer links for structure:', plErr.message);
       }
 
+      // 아이템별 modifier_groups 조회 (menu_modifier_links)
+      let modifierLinksMap = {};
+      try {
+        if (allItemIds.length > 0) {
+          const modifierLinks = await new Promise((resolve, reject) => {
+            db.all(
+              `SELECT item_id, GROUP_CONCAT(modifier_group_id) as modifier_groups FROM menu_modifier_links WHERE item_id IN (${placeholders}) GROUP BY item_id`,
+              allItemIds,
+              (err, rows) => err ? reject(err) : resolve(rows || [])
+            );
+          });
+          modifierLinks.forEach(row => {
+            modifierLinksMap[row.item_id] = row.modifier_groups ? row.modifier_groups.split(',').map(Number) : [];
+          });
+        }
+      } catch (mlErr) {
+        console.warn('Failed to load modifier links for structure:', mlErr.message);
+      }
+
+      // 아이템별 tax_groups 조회 (menu_tax_links)
+      let taxLinksMap = {};
+      try {
+        if (allItemIds.length > 0) {
+          const taxLinks = await new Promise((resolve, reject) => {
+            db.all(
+              `SELECT item_id, GROUP_CONCAT(tax_group_id) as tax_groups FROM menu_tax_links WHERE item_id IN (${placeholders}) GROUP BY item_id`,
+              allItemIds,
+              (err, rows) => err ? reject(err) : resolve(rows || [])
+            );
+          });
+          taxLinks.forEach(row => {
+            taxLinksMap[row.item_id] = row.tax_groups ? row.tax_groups.split(',').map(Number) : [];
+          });
+        }
+      } catch (tlErr) {
+        console.warn('Failed to load tax links for structure:', tlErr.message);
+      }
+
       const itemsByCategoryId = items.reduce((acc, item) => {
         if (!acc[item.category_id]) {
           acc[item.category_id] = [];
         }
         const printerGroups = printerLinksMap[item.item_id];
+        const modifierGroups = modifierLinksMap[item.item_id];
+        const taxGroups = taxLinksMap[item.item_id];
         acc[item.category_id].push({
           ...item,
-          ...(printerGroups && printerGroups.length > 0 ? { printer_groups: printerGroups } : {})
+          ...(printerGroups && printerGroups.length > 0 ? { printer_groups: printerGroups } : {}),
+          ...(modifierGroups && modifierGroups.length > 0 ? { modifier_groups: modifierGroups } : {}),
+          ...(taxGroups && taxGroups.length > 0 ? { tax_groups: taxGroups } : {})
         });
         return acc;
       }, {});

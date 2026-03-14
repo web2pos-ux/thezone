@@ -376,6 +376,29 @@ router.post('/orders/:orderId/void', async (req, res) => {
       [ 'void', String(voidId), 'create', JSON.stringify({ orderId, lines, reason, note, source, totals: { subtotal, tax_total, grand_total } }), created_by || null ]
     );
 
+    // Firebase Void 동기화
+    if (firebaseService) {
+      const restaurantId = await getRestaurantId() || process.env.FIREBASE_RESTAURANT_ID;
+      if (restaurantId) {
+        const orderRow = await dbGet('SELECT order_number, firebase_order_id FROM orders WHERE id = ?', [orderId]);
+        firebaseService.saveVoidToFirebase(restaurantId, {
+          voidId,
+          orderId,
+          orderNumber: orderRow?.order_number,
+          firebaseOrderId: orderRow?.firebase_order_id,
+          subtotal,
+          taxTotal: tax_total,
+          grandTotal: grand_total,
+          reason,
+          note,
+          source,
+          lines,
+          createdBy: created_by || null,
+          createdAt: new Date().toISOString()
+        }).catch(err => console.warn('[Firebase] Void sync error:', err.message));
+      }
+    }
+
     // 프린터 통지: 스테이션별 페이로드 (주문번호/테이블명 포함)
     let orderNumber = '';
     let tableName = '';

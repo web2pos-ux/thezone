@@ -1,0 +1,91 @@
+# SPLIT PAYMENT CODE LOCK - DO NOT MODIFY WITHOUT APPROVAL
+
+## Protected Files
+
+### Split Display Helpers (접촉면 줄이기 모듈)
+- `frontend/src/pages/order/splitDisplayHelpers.tsx` - Split 수량/가격 표시 헬퍼 함수 및 컴포넌트
+  - `getSplitQtyDisplay()` - 수량 표시 계산 (isSplit, qty, remaining, total)
+  - `getSplitPriceDisplay()` - 가격 표시 계산 (isSplit, originalPrice, displayPrice)
+  - `isItemLockedForSplit()` - Equal Split 모드에서 아이템별 lock 판정 (새 아이템 _preSplit=false → lock 제외)
+  - `SplitQtyLabel` - 수량 표시 컴포넌트 (2/3, 2(2/3) 등)
+  - `SplitPriceLabel` - 가격 표시 컴포넌트 (strikethrough + 잔액)
+
+### OrderPage.tsx 내 Split 관련 코드
+- `adhocSplitCount` state 및 관련 setter
+- `guestPaymentMode` state 및 관련 setter
+- `persistedPaidGuests` state 및 관련 setter/ref
+- `effectiveSplitCount` useMemo
+- `guestStatusMap` useMemo
+- `isGuestLocked` 함수
+- Equal Split 모드 아이템 추가 로직 (미결제 게스트 자동 전환, _preSplit: false 설정)
+- `guestIds` useMemo
+- `splitGuestTotals` useMemo
+- `balanceTotalsAll` useMemo
+- `paymentModalCalc`의 split 분기 (`guestPaymentMode === 'ALL'` vs guest-specific)
+- `handleAddPayment`의 Equal Split fair-share 로직
+- `handleCompletePayment`의 split 분기
+- `handlePaymentCompleteClose`의 split 분기
+- `handlePartialPrintReceipt` 함수
+- `handleClearScopedPayments` 함수
+- `loadPersistedPaidGuests` 함수
+- `paidGuests_order_${orderId}` localStorage 읽기/쓰기 useEffect
+- `splitGuests_${tableId}` localStorage 읽기/쓰기
+- `_preSplit` 플래그 설정/복원 로직
+- `onCreateAdhocGuests` 콜백
+- `onSelectGuestMode` 콜백
+- SplitQtyLabel / SplitPriceLabel 사용처 (수량/가격 렌더링)
+
+### Backend
+- `backend/routes/orders.js` - guest-status/bulk API
+- `backend/routes/payments.js` - guest_number 포함 결제 저장
+
+### Related Components (간접 보호)
+- `frontend/src/components/PaymentModal.tsx` - Even Split N-way UI, calcFairShare
+- `frontend/src/components/SplitBillModal.tsx` - 아이템 분배 UI
+- `frontend/src/pages/order/modules/PaymentSplitModals.tsx` - Split 모달 브릿지
+
+## Rules
+
+1. **절대 금지**: 사용자 승인 없이 보호 파일/코드를 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
+2. **사소한 변경도 금지**: 공백/포맷팅/변수명/임포트 정리/주석/타입 수정 등 "기능 영향이 없어 보이는 변경"도 승인 없이는 절대 불가.
+3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
+4. **간접 수정 금지**: Split에 영향을 주는 다른 코드 변경 (orderItems 구조, guestNumber 할당, payment 저장 형식 등)도 승인 없이는 금지.
+5. **계산 로직 변경 금지**: getSplitQtyDisplay, getSplitPriceDisplay의 계산 공식을 변경하지 마라. 이 함수들은 5곳에서 공유되므로 하나를 바꾸면 전부 영향받음.
+6. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
+   - **WHY**: 왜 이 변경이 필요한지
+   - **IMPACT**: Split 표시, Split 결제, Split 상태 유지, 게스트 잠금 등에 미치는 영향
+   - 승인 요청: "Split의 [기능명]을 수정해도 될까요?"
+7. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
+8. 다른 작업의 "부수 효과로 Split 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+
+## Split 수정 시 필수 테스트 체크리스트
+
+Split 관련 코드 수정 후 반드시 아래 시나리오를 모두 검증해야 한다:
+
+| # | 시나리오 | 확인 항목 |
+|---|---------|----------|
+| 1 | 1/3P Split → Guest 1 결제 → Cancel | 수량 2/3 표시, 가격 strikethrough + 잔액, Paid/Balance 유지 |
+| 2 | Guest 1 결제 → Bill 출력 → 테이블맵 → 다시 진입 | 수량 2/3, 가격 strikethrough 유지 |
+| 3 | Guest 1 결제 → Cancel → 새 아이템 추가 | 새 아이템 수량 "1", 수량 증감 버튼 활성화, 기존 아이템 2/3 유지 |
+| 3-1 | 3번 후 → 테이블맵 → 다시 진입 | 기존 아이템 2/3 유지 (리셋 안 됨) |
+| 4 | 전체 Guest 결제 완료 | 테이블 Available 전환 |
+| 5 | Split 없이 일반 결제 | 수량/가격 정상 표시 (regression 없음) |
+| 6 | 1/2P Split → Guest 1 결제 → Split 타입 변경 (1/3P) | 이전 결제 초기화, 새 Split 적용 |
+| 7 | Cash 결제 시 Change Due | 음식값보다 큰 Cash → Change Due 활성화, 거스름돈 입력 가능 |
+
+## Example
+
+```
+❌ BAD: Silently editing splitDisplayHelpers.tsx
+❌ BAD: "I'll fix a small display bug" then editing getSplitQtyDisplay
+❌ BAD: Changing effectiveSplitCount calculation without approval
+❌ BAD: Modifying _preSplit flag assignment logic
+
+✅ GOOD:
+"Split의 수량 표시를 수정해야 합니다.
+- 변경 내용: getSplitQtyDisplay()에서 remaining 계산 조건 수정
+- 변경 이유: 새 아이템 추가 후 기존 아이템의 수량이 리셋되는 버그
+- 영향 범위: 수량 표시 3곳 (일반 아이템 2곳, TOGO 1곳) 모두 영향
+Split의 수량 표시를 수정해도 될까요?"
+```

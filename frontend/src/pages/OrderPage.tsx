@@ -7,6 +7,7 @@ import { PointerSensor, useSensor, useSensors, closestCenter, pointerWithin } fr
 // import { CSS } from '@dnd-kit/utilities';
 import { LibraryTaxGroup, LibraryPrinterGroup } from '../types';
 import { OrderItem, MenuItem, Category, LayoutSettings } from './order/orderTypes';
+import { getSplitPriceDisplay, SplitQtyLabel, SplitPriceLabel, isItemLockedForSplit } from './order/splitDisplayHelpers';
 import { useMenuData } from '../hooks/useMenuData';
 import { useOrderManagement } from '../hooks/useOrderManagement';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
@@ -1370,14 +1371,21 @@ const handleVoidPinClear = useCallback(() => {
   }, [guestIds, paymentsByGuest, orderItems, promotionEnabled, promotionType, promotionValue, promotionEligibleItemIds, promotionRules, persistedPaidGuests, computeGuestTotals, location.state, adhocSplitCount]);
 
   const effectiveSplitCount: number = useMemo(() => {
-    if (adhocSplitCount > 1) return adhocSplitCount;
+    if (adhocSplitCount > 1) {
+      console.log(`🔍 [SPLIT DEBUG] effectiveSplitCount = ${adhocSplitCount} (from adhocSplitCount)`);
+      return adhocSplitCount;
+    }
     try {
       const orderId = savedOrderIdRef.current || (location.state && (location.state as any).orderId) || null;
-      if (!orderId) return 0;
+      if (!orderId) { console.log(`🔍 [SPLIT DEBUG] effectiveSplitCount = 0 (no orderId, ref=${savedOrderIdRef.current})`); return 0; }
       const raw = localStorage.getItem(`paidGuests_order_${orderId}`);
-      if (!raw) return 0;
+      if (!raw) { console.log(`🔍 [SPLIT DEBUG] effectiveSplitCount = 0 (no localStorage for order ${orderId})`); return 0; }
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.splitCount > 1) return parsed.splitCount;
+      if (parsed && parsed.splitCount > 1) {
+        console.log(`🔍 [SPLIT DEBUG] effectiveSplitCount = ${parsed.splitCount} (from localStorage, paidGuests=${JSON.stringify(parsed.paidGuests)}, persistedPaidGuests=${JSON.stringify(persistedPaidGuests)})`);
+        return parsed.splitCount;
+      }
+      console.log(`🔍 [SPLIT DEBUG] effectiveSplitCount = 0 (localStorage splitCount=${parsed?.splitCount})`);
     } catch {}
     return 0;
   }, [adhocSplitCount, persistedPaidGuests, location.state]);
@@ -2415,13 +2423,26 @@ const handleVoidPinClear = useCallback(() => {
       }
       lastGuestReceiptPrintRef.current = { key: dedupeKey, ts: now };
 
-      const isEvenSplit = adhocSplitCount > 0;
-      const splitCount = adhocSplitCount;
+      const isEvenSplit = adhocSplitCount > 0 || effectiveSplitCount > 1;
+      const splitCount = adhocSplitCount > 0 ? adhocSplitCount : effectiveSplitCount;
       const splitIndex = Number(guestNum);
 
-      // Equal Split(adhoc) mode: receipt should show the SAME form for every guest.
-      // - Items list: show full order items (same as Guest 1 typically has)
-      // - Totals: show THIS guest's 1/N share (fair penny distribution)
+      // preSplit 아이템의 원래 splitCount를 localStorage에서 복원
+      // 두 번째 결제에서 다른 N으로 split해도, 기존 아이템은 원래 N 기준으로 표시
+      let originalSplitCount = splitCount;
+      try {
+        const orderId = savedOrderIdRef.current || orderIdFromState || null;
+        if (orderId) {
+          const lsRaw = localStorage.getItem(`paidGuests_order_${orderId}`);
+          if (lsRaw) {
+            const lsParsed = JSON.parse(lsRaw);
+            if (lsParsed && lsParsed.splitCount > 1) {
+              originalSplitCount = lsParsed.splitCount;
+            }
+          }
+        }
+      } catch {}
+      console.log(`🧾 [RECEIPT DEBUG] splitCount=${splitCount}, originalSplitCount=${originalSplitCount}, adhocSplitCount=${adhocSplitCount}, effectiveSplitCount=${effectiveSplitCount}`);
       let guestSubtotal = 0;
       let guestTaxLines: any[] = [];
       let guestTaxTotal = 0;
@@ -2431,30 +2452,44 @@ const handleVoidPinClear = useCallback(() => {
       const pmDiscount = paymentCompleteData?.discount;
       const hasPaymentDiscount = pmDiscount && pmDiscount.percent > 0;
 
+      // preSplit 아이템의 잔여 share 비율 계산 (원래 splitCount 기준)
+      // 예: 원래 1/3P → Guest 1 결제 → 잔여분 = (3-1)/3 = 2/3
+      const allPaidGuests = Array.from(new Set([...persistedPaidGuests, ...(paymentCompleteData?.currentGuestNumber ? [paymentCompleteData.currentGuestNumber] : [])]));
+      const previouslyPaidCount = allPaidGuests.filter(g => g !== guestNum).length;
+      const myShareNumerator = previouslyPaidCount > 0 ? Math.max(1, originalSplitCount - previouslyPaidCount) : 1;
+      console.log(`🧾 [RECEIPT DEBUG] guestNum=${guestNum}, splitCount=${splitCount}, originalSplitCount=${originalSplitCount}, previouslyPaidCount=${previouslyPaidCount}, myShareNumerator=${myShareNumerator}, allPaidGuests=${JSON.stringify(allPaidGuests)}, persistedPaidGuests=${JSON.stringify(persistedPaidGuests)}`);
+
       if (isEvenSplit && splitCount > 1 && Number.isFinite(splitIndex) && splitIndex >= 1) {
-        // 할인 적용된 grand 사용 (PaymentModal에서 할인 적용 시)
-        const effectiveGrand = hasPaymentDiscount
-          ? Number((pmDiscount.discountedSubtotal + pmDiscount.taxesTotal).toFixed(2))
-          : Number(payGrandAll || 0);
-        const grandCents = Math.round(effectiveGrand * 100);
-        const baseGrand = Math.floor(grandCents / splitCount);
-        const remGrand = grandCents % splitCount;
-        guestTotal = (baseGrand + (splitIndex <= remGrand ? 1 : 0)) / 100;
-
-        // Tax share per line (할인 적용된 세금 사용)
-        const effectiveTaxLines = hasPaymentDiscount ? pmDiscount.taxLines : (Array.isArray(payTaxLinesAll) ? payTaxLinesAll : []);
-        guestTaxLines = effectiveTaxLines.map((t: any) => {
-          const amt = Number(t?.amount || 0);
-          const tCents = Math.round(amt * 100);
-          const tBase = Math.floor(tCents / splitCount);
-          const tRem = tCents % splitCount;
-          const myT = (tBase + (splitIndex <= tRem ? 1 : 0)) / 100;
-          return { ...t, amount: myT };
+        // preSplit 아이템의 share 합계 + 새 아이템 전액으로 subtotal 계산
+        const allItems = (orderItems || []).filter(it => it.type === 'item');
+        let preSplitSubtotal = 0;
+        let newItemSubtotal = 0;
+        allItems.forEach((it: any) => {
+          const unitPrice = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0);
+          const memoAdd = (it.memo && typeof it.memo.price === 'number') ? Number(it.memo.price) : 0;
+          const itemTotal = (unitPrice + memoAdd) * (it.quantity || 1);
+          if (it._preSplit !== false) {
+            // 기존 아이템: share 가격 (원래 splitCount 기준)
+            const cents = Math.round(itemTotal * 100);
+            const sharePrice = Math.round(cents * myShareNumerator / originalSplitCount) / 100;
+            preSplitSubtotal += sharePrice;
+          } else {
+            newItemSubtotal += itemTotal;
+          }
         });
-        guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        guestSubtotal = Number((preSplitSubtotal + newItemSubtotal).toFixed(2));
 
-        // Subtotal = Total - Tax
-        guestSubtotal = Number((guestTotal - guestTaxTotal).toFixed(2));
+        // Tax: subtotal 비율로 재계산
+        const fullTotals = computeGuestTotals('ALL');
+        const fullSubtotal = Number((fullTotals.subtotal || 0).toFixed(2));
+        const fullTaxLines = fullTotals.taxLines || [];
+        const taxRatio = fullSubtotal > 0 ? guestSubtotal / fullSubtotal : (1 / splitCount);
+        guestTaxLines = fullTaxLines.map((t: any) => ({
+          ...t,
+          amount: Number((Number(t.amount || 0) * taxRatio).toFixed(2))
+        }));
+        guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+        guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
       } else {
         const guestTotals = computeGuestTotals(guestNum);
         guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
@@ -2463,14 +2498,54 @@ const handleVoidPinClear = useCallback(() => {
         guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
       }
 
+      // 아이템 목록: _preSplit 아이템은 분수 수량/가격, 새 아이템은 그대로
       const guestItems = (orderItems || []).filter(it =>
         it.type !== 'separator' && (isEvenSplit ? true : ((it.guestNumber || 1) === guestNum))
       );
+
+      const receiptItems = (isEvenSplit && splitCount > 1) ? guestItems.map((item: any) => {
+        const unitPrice = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0);
+        const memoAdd = (item.memo && typeof item.memo.price === 'number') ? Number(item.memo.price) : 0;
+        const perUnit = unitPrice + memoAdd;
+        const fullTotal = perUnit * (item.quantity || 1);
+        if (item._preSplit !== false) {
+          const shareCents = Math.round(Math.round(fullTotal * 100) * myShareNumerator / originalSplitCount);
+          return {
+            name: item.name,
+            displayQty: `${myShareNumerator}/${originalSplitCount}`,
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            totalPrice: item.totalPrice || item.price || 0,
+            lineTotal: shareCents / 100,
+            modifiers: item.modifiers || [],
+            memo: item.memo,
+            togoLabel: !!(item as any).togoLabel
+          };
+        }
+        return {
+          name: item.name,
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          totalPrice: item.totalPrice || item.price || 0,
+          lineTotal: fullTotal,
+          modifiers: item.modifiers || [],
+          memo: item.memo,
+          togoLabel: !!(item as any).togoLabel
+        };
+      }) : guestItems.map(item => ({
+        name: item.name,
+        quantity: item.quantity || 1,
+        price: item.price || 0,
+        totalPrice: item.totalPrice || item.price || 0,
+        modifiers: item.modifiers || [],
+        memo: item.memo,
+        togoLabel: !!(item as any).togoLabel
+      }));
       
-      // 해당 게스트의 모든 결제 내역 수집
+      // 해당 게스트의 모든 결제 내역 수집 (amount = 음식값 + 팁, PAID에 반영)
       const guestPaymentsList = sessionPayments
         .filter(p => p.guestNumber === guestNum)
-        .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+        .map(p => ({ method: p.method, amount: (p.amount || 0) + (p.tip || 0), tip: p.tip || 0 }));
       
       const guestReceiptData = {
         header: {
@@ -2492,30 +2567,13 @@ const handleVoidPinClear = useCallback(() => {
         items: [],
         guestSections: [{
           guestNumber: guestNum,
-          items: guestItems.map(item => ({
-            name: item.name,
-            quantity: item.quantity || 1,
-            price: item.price || 0,
-            totalPrice: item.totalPrice || item.price || 0,
-            modifiers: item.modifiers || [],
-            memo: item.memo,
-            togoLabel: !!(item as any).togoLabel
-          }))
+          items: receiptItems
         }],
-        // Receipt: show item-level TOGO label and hide TOGO separator line
         togoDisplayMode: 'per_item',
         showTogoSeparator: false,
-        subtotal: (() => {
-          if (!hasPaymentDiscount || !isEvenSplit) return guestSubtotal;
-          // 할인 전 원래 subtotal의 1/N (fair penny)
-          const origSubCents = Math.round(Number(pmDiscount.originalSubtotal || 0) * 100);
-          const bSub = Math.floor(origSubCents / splitCount);
-          const rSub = origSubCents % splitCount;
-          return (bSub + (splitIndex <= rSub ? 1 : 0)) / 100;
-        })(),
+        subtotal: guestSubtotal,
         adjustments: (() => {
           if (!hasPaymentDiscount || !isEvenSplit) return [] as any[];
-          // 할인 금액의 1/N (fair penny)
           const discCents = Math.round(Number(pmDiscount.amount || 0) * 100);
           const bDisc = Math.floor(discCents / splitCount);
           const rDisc = discCents % splitCount;
@@ -4274,10 +4332,56 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       console.log(baseMsg);
     }
 
-    // 메뉴 아이템을 바로 주문에 추가 (기본 가격으로)
     // Block adding when active guest is locked (PAID)
-    if (adhocSplitCount > 1) {
-      // Equal Split: 새 아이템은 전체 주문에 추가 (특정 게스트에 속하지 않음)
+    if (effectiveSplitCount > 1) {
+      // Equal Split (active or restored): 미결제 게스트를 찾아서 새 아이템 추가
+      let targetGuest = activeGuestNumber || 1;
+      if (isGuestLocked(targetGuest)) {
+        const allGuests = Array.isArray(guestIds) && guestIds.length > 0
+          ? guestIds
+          : Array.from({ length: effectiveSplitCount }, (_, i) => i + 1);
+        const firstUnpaid = allGuests.find(g => !isGuestLocked(g));
+        if (typeof firstUnpaid === 'number') {
+          targetGuest = firstUnpaid;
+          setActiveGuestNumber(firstUnpaid);
+        }
+      }
+      const isTogoItem = !!(item as any).togoLabel;
+      setOrderItems(prev => {
+        const existingIdx = prev.findIndex((it: any) =>
+          it.type === 'item' &&
+          String(it.id) === String(item.id) &&
+          it.guestNumber === targetGuest &&
+          !it._preSplit &&
+          !!(it.togoLabel) === isTogoItem &&
+          (!it.modifiers || it.modifiers.length === 0)
+        );
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = { ...updated[existingIdx], quantity: (updated[existingIdx].quantity || 1) + 1 } as any;
+          return updated;
+        }
+        const orderLineId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        return [...prev, {
+          id: item.id,
+          name: item.name,
+          short_name: (item as any).short_name,
+          quantity: 1,
+          price: item.price,
+          modifiers: [],
+          totalPrice: item.price,
+          type: 'item' as const,
+          guestNumber: targetGuest,
+          orderLineId,
+          togoLabel: isTogoItem,
+          _preSplit: false,
+          ...(Array.isArray((item as any).printer_groups) && (item as any).printer_groups.length > 0
+            ? { printer_groups: (item as any).printer_groups }
+            : {}),
+        } as any];
+      });
+      lastAddedItemIdRef.current = item.id;
+      return;
     } else if (isGuestLocked(activeGuestNumber)) {
       try { alert('Cannot add to a guest that has already paid.'); } catch {}
       return;
@@ -6981,11 +7085,30 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const st = String(row.status || 'UNPAID').toUpperCase();
         if (st === 'PAID' || row.locked) paidFromDb.push(g);
       });
+      // DB에 결과가 없으면 localStorage fallback
+      if (paidFromDb.length === 0) {
+        try {
+          const lsRaw = localStorage.getItem(`paidGuests_order_${orderId}`);
+          if (lsRaw) {
+            const lsParsed = JSON.parse(lsRaw);
+            if (lsParsed && Array.isArray(lsParsed.paidGuests)) {
+              lsParsed.paidGuests.forEach((g: any) => {
+                const num = Number(g);
+                if (Number.isFinite(num) && num > 0) paidFromDb.push(num);
+              });
+            }
+          }
+        } catch {}
+      }
       const sorted = Array.from(new Set(paidFromDb)).sort((a,b)=>a-b);
       console.log(`📥 Loaded paid guests from DB:`, sorted);
       setPersistedPaidGuests(sorted);
+      splitDataRestoredRef.current = true;
+      console.log(`🔍 [SPLIT DEBUG] splitDataRestoredRef = true (DB load done, paid=${JSON.stringify(sorted)})`);
     } catch {
       setPersistedPaidGuests([]);
+      splitDataRestoredRef.current = true;
+      console.log(`🔍 [SPLIT DEBUG] splitDataRestoredRef = true (DB load failed/empty)`);
     }
   }, [orderIdFromState]);
 
@@ -7040,15 +7163,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     } catch {}
   }, [orderItems, paymentsByGuest, guestStatusMap, persistedPaidGuests]);
   // Clear stale persisted PAID flags when starting a brand new unpaid order on same table
+  // DB에서 결제 데이터가 복원 완료될 때까지 localStorage 조작을 방지
+  const splitDataRestoredRef = React.useRef(false);
   React.useEffect(() => {
+    if (!splitDataRestoredRef.current) {
+      console.log(`🔍 [SPLIT DEBUG] Clear-stale skip (DB restore not done)`);
+      return;
+    }
     try {
       const anyPaidSession = Object.values(paymentsByGuest).some(v => (v || 0) > 0);
       const orderId = savedOrderIdRef.current || ((location.state && (location.state as any).orderId) || null);
       
-      // 모든 게스트가 실제로 UNPAID 상태이고 결제 내역도 없을 때만 삭제
       const allGuestsUnpaid = Object.values(guestStatusMap).every(st => st === 'UNPAID');
       
-      if (!anyPaidSession && allGuestsUnpaid && orderId) {
+      const hasPersistedPaid = Array.isArray(persistedPaidGuests) && persistedPaidGuests.length > 0;
+      console.log(`🔍 [SPLIT DEBUG] Clear-stale check: anyPaid=${anyPaidSession}, allUnpaid=${allGuestsUnpaid}, hasPersistedPaid=${hasPersistedPaid}, orderId=${orderId}, guestStatusMap=${JSON.stringify(guestStatusMap)}, paymentsByGuest=${JSON.stringify(paymentsByGuest)}`);
+      
+      if (!anyPaidSession && allGuestsUnpaid && !hasPersistedPaid && orderId) {
+        console.log(`🔍 [SPLIT DEBUG] ⚠️ CLEARING localStorage paidGuests_order_${orderId}`);
         try { 
           localStorage.removeItem(`paidGuests_order_${orderId}`); 
         } catch {}
@@ -7057,30 +7189,36 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   }, [orderIdFromState, paymentsByGuest, guestStatusMap]);
 
   // Persist PAID guests so UI lock survives navigation back to table map and return
+  // DB에서 결제 데이터가 복원 완료될 때까지 빈 paidGuests로 덮어쓰기 방지
   React.useEffect(() => {
+    if (!splitDataRestoredRef.current) {
+      console.log(`🔍 [SPLIT DEBUG] Persist-paid skip (DB restore not done)`);
+      return;
+    }
     try {
       const orderId = savedOrderIdRef.current;
-      // orderId가 있을 때만 localStorage에 저장
       if (!orderId) return;
       
-      // 실제 결제 내역이 있는 게스트만 저장
       const paidGuests = Object.entries(guestStatusMap)
         .filter(([g, st]) => st === 'PAID')
         .map(([g]) => Number(g))
         .filter(g => {
-           // 한번 더 검증: 결제액이 없으면 저장하지 않음
            const paidAmount = Number((paymentsByGuest[String(g)] || 0).toFixed(2));
            return paidAmount > 0.01;
         });
 
       let splitN = adhocSplitCount > 1 ? adhocSplitCount : (guestIds.length > 1 ? guestIds.length : 0);
       const orderKey = `paidGuests_order_${orderId}`;
+      let existingPaidGuests: number[] | undefined;
       let existingPreSplitLineIds: string[] | undefined;
       let existingSplitCount = 0;
       try {
         const existingRaw = localStorage.getItem(orderKey);
         if (existingRaw) {
           const existingParsed = JSON.parse(existingRaw);
+          if (existingParsed && Array.isArray(existingParsed.paidGuests)) {
+            existingPaidGuests = existingParsed.paidGuests;
+          }
           if (existingParsed && Array.isArray(existingParsed.preSplitLineIds)) {
             existingPreSplitLineIds = existingParsed.preSplitLineIds;
           }
@@ -7092,8 +7230,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (splitN <= 0 && existingSplitCount > 1) {
         splitN = existingSplitCount;
       }
+      // paymentsByGuest가 아직 비어있고, 기존 localStorage에 paidGuests가 있으면 보존
+      const totalPayments = Object.values(paymentsByGuest).reduce((s: number, v: any) => s + (Number(v) || 0), 0);
+      const finalPaidGuests = (paidGuests.length === 0 && totalPayments < 0.01 && Array.isArray(existingPaidGuests) && existingPaidGuests.length > 0)
+        ? existingPaidGuests
+        : paidGuests;
       const preSplitLineIds = existingPreSplitLineIds || (orderItems || []).filter((it: any) => it && it.orderLineId && it.type === 'item').map((it: any) => it.orderLineId);
-      const payload = { paidGuests, ts: Date.now(), orderId: orderId, splitCount: splitN, preSplitLineIds };
+      const payload = { paidGuests: finalPaidGuests, ts: Date.now(), orderId: orderId, splitCount: splitN, preSplitLineIds };
+      console.log(`🔍 [SPLIT DEBUG] Persist-paid: saving paidGuests=${JSON.stringify(finalPaidGuests)}, splitN=${splitN}, totalPayments=${totalPayments}, existingPaid=${JSON.stringify(existingPaidGuests)}`);
       localStorage.setItem(orderKey, JSON.stringify(payload));
     } catch {}
   }, [guestStatusMap, paymentsByGuest]);
@@ -9636,7 +9780,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         <button
                           disabled={!canDecrement}
                           onClick={() => { 
-                            if (isGuestLocked(item.guestNumber) || !canDecrement) return; 
+                            if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : []) || !canDecrement) return; 
                             preserveOrderListScroll(() => updateQuantityByLineId(orderLineId, -1)); 
                           }}
                           className={`text-white rounded-md transition-colors flex items-center justify-center text-lg font-bold ${canDecrement ? 'hover:bg-red-600' : 'opacity-30 cursor-not-allowed'}`}
@@ -9653,21 +9797,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       );
                     })()}
-                    {(() => {
-                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
-                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
-                      const qty = item.quantity || 1;
-                      return remaining > 0 ? (
-                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
-                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
-                        </span>
-                      ) : (
-                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
-                      );
-                    })()}
+                    <SplitQtyLabel item={item as any} effectiveSplitCount={effectiveSplitCount} paidGuestsCount={Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0} />
                     <button
                       onClick={() => {
-                        if (isGuestLocked(item.guestNumber)) return;
+                        if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [])) return;
                         const orderLineIdRaw = (item as any).orderLineId;
                         const orderLineId = (orderLineIdRaw != null && String(orderLineIdRaw).trim() !== '') ? String(orderLineIdRaw) : '';
                         if (!orderLineId) return;
@@ -9692,7 +9825,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <button
                       onClick={(e) => { 
                         e.stopPropagation();
-                        if (isGuestLocked(item.guestNumber)) return; 
+                        if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [])) return; 
                         preserveOrderListScroll(() => {
                           setOrderItems(prev => {
                             const updated = prev.map((it, idx) => {
@@ -9719,22 +9852,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     >
                       -
                     </button>
-                    {(() => {
-                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
-                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
-                      const qty = item.quantity || 1;
-                      return remaining > 0 ? (
-                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
-                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
-                        </span>
-                      ) : (
-                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
-                      );
-                    })()}
+                    <SplitQtyLabel item={item as any} effectiveSplitCount={effectiveSplitCount} paidGuestsCount={Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0} />
                     <button
                       onClick={(e) => { 
                         e.stopPropagation();
-                        if (isGuestLocked(item.guestNumber)) return; 
+                        if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [])) return; 
                         preserveOrderListScroll(() => {
                           setOrderItems(prev => {
                             return prev.map((it, idx) => {
@@ -9776,11 +9898,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                       const line = getPricingLineForItem(item as any);
                                       const itemBasePrice = line ? Number(line.lineGross || 0) : (Number(item.price || 0) * Number(item.quantity || 1));
                                       const disc = line ? Number(line.itemDiscount || 0) : computeItemDiscountAmount(item as any);
-                                      const splitPaidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
-                                      const splitRemaining = effectiveSplitCount > 1 && splitPaidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - splitPaidCount : 0;
+                                      const sp = getSplitPriceDisplay(itemBasePrice, effectiveSplitCount, Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0, !!(item as any)._preSplit);
                                       if (disc > 0) {
                                         const after = Math.max(0, Number((itemBasePrice - disc).toFixed(2)));
-                                        const displayPrice = splitRemaining > 0 ? Number((after * splitRemaining / effectiveSplitCount).toFixed(2)) : after;
+                                        const spDisc = getSplitPriceDisplay(after, effectiveSplitCount, Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0, !!(item as any)._preSplit);
                                         const d = (item as any).discount || {};
                                         return (
                                            <div>
@@ -9790,8 +9911,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                  <div className="text-red-600 text-xs">
                                                    {`${Math.max(0, Math.min(100, Number(d.value || 0)))}% -${disc.toFixed(2)}`}
                                                  </div>
-                                                {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
-                                                <div className={`text-sm font-medium ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
+                                                {spDisc.isSplit && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
+                                                <div className={`text-sm font-medium ${spDisc.isSplit ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{spDisc.displayPrice.toFixed(2)}</div>
                                                </>
                                             ) : (
                                               <>
@@ -9799,18 +9920,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                 <div className="text-red-600 text-xs">
                                                   -${disc.toFixed(2)}
                                                 </div>
-                                                {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
-                                                <div className={`text-sm font-bold ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
+                                                {spDisc.isSplit && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{after.toFixed(2)}</div>}
+                                                <div className={`text-sm font-bold ${spDisc.isSplit ? 'text-orange-600' : 'text-gray-900'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{spDisc.displayPrice.toFixed(2)}</div>
                                               </>
                                             )}
                                            </div>
                                          );
                                       }
-                                      const displayPrice = splitRemaining > 0 ? Number((itemBasePrice * splitRemaining / effectiveSplitCount).toFixed(2)) : itemBasePrice;
                                       return (
                                         <div>
-                                          {splitRemaining > 0 && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{itemBasePrice.toFixed(2)}</div>}
-                                          <div className={`font-medium text-sm ${splitRemaining > 0 ? 'text-orange-600' : 'text-gray-800'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
+                                          {sp.isSplit && <div className="text-gray-400 line-through text-xs" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{sp.originalPrice.toFixed(2)}</div>}
+                                          <div className={`font-medium text-sm ${sp.isSplit ? 'text-orange-600' : 'text-gray-800'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{sp.displayPrice.toFixed(2)}</div>
                                         </div>
                                       );
                                     })()}
@@ -9948,7 +10068,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                       disabled={!togoCanDecrement}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        if (isGuestLocked(item.guestNumber) || !togoCanDecrement) return;
+                                        if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : []) || !togoCanDecrement) return;
                                         preserveOrderListScroll(() => {
                                           setOrderItems(prev => {
                                             const updated = prev.map((it, i) => {
@@ -9968,22 +10088,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     >-</button>
                                       );
                                     })()}
-                                    {(() => {
-                                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
-                                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
-                                      const qty = item.quantity || 1;
-                                      return remaining > 0 ? (
-                                        <span className="w-14 text-center font-bold text-base text-orange-600 leading-tight" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>
-                                          {qty > 1 ? <>{qty}<span className="text-xs text-gray-400">({remaining}/{effectiveSplitCount})</span></> : <>{remaining}/{effectiveSplitCount}</>}
-                                        </span>
-                                      ) : (
-                                        <span className="w-8 text-center font-medium text-base" style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{qty}</span>
-                                      );
-                                    })()}
+                                    <SplitQtyLabel item={item as any} effectiveSplitCount={effectiveSplitCount} paidGuestsCount={Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0} />
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        if (isGuestLocked(item.guestNumber)) return;
+                                        if (isItemLockedForSplit(item.guestNumber, !!(item as any)._preSplit, effectiveSplitCount, guestStatusMap, Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [])) return;
                                         preserveOrderListScroll(() => {
                                           setOrderItems(prev => prev.map((it, i) => {
                                             if (i === index && it.id === item.id && (it.guestNumber || 1) === (item.guestNumber || 1)) {
@@ -9998,18 +10107,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     >+</button>
                                   </div>
                                   <div className="col-span-3 text-right">
-                                    {(() => {
-                                      const togoBasePrice = (((item.totalPrice || item.price || 0) + ((item.memo?.price || 0))) * (item.quantity || 1));
-                                      const paidCount = Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0;
-                                      const remaining = effectiveSplitCount > 1 && paidCount > 0 && (item as any)._preSplit ? effectiveSplitCount - paidCount : 0;
-                                      const displayPrice = remaining > 0 ? Number((togoBasePrice * remaining / effectiveSplitCount).toFixed(2)) : togoBasePrice;
-                                      return (
-                                        <div data-pos-lock="order-item-total">
-                                          {remaining > 0 && <div className="text-gray-400 line-through text-xs text-right" style={{ fontSize: 'calc(var(--order-item-font) - 4px)' }}>{togoBasePrice.toFixed(2)}</div>}
-                                          <div className={`font-medium text-right ${remaining > 0 ? 'text-orange-600' : 'text-gray-800'}`} style={{ fontSize: 'calc(var(--order-item-font) - 2px)' }}>{displayPrice.toFixed(2)}</div>
-                                        </div>
-                                      );
-                                    })()}
+                                    <div data-pos-lock="order-item-total">
+                                      <SplitPriceLabel
+                                        basePrice={(((item.totalPrice || item.price || 0) + ((item.memo?.price || 0))) * (item.quantity || 1))}
+                                        effectiveSplitCount={effectiveSplitCount}
+                                        paidGuestsCount={Array.isArray(persistedPaidGuests) ? persistedPaidGuests.length : 0}
+                                        isPreSplit={!!(item as any)._preSplit}
+                                        align="right"
+                                      />
+                                    </div>
                                   </div>
                                 </div>
                                 {/* 모디파이어 및 메모 정보 (TOGO 아이템 - <<TOGO>> 아래 표시) */}
@@ -10546,7 +10652,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onApplyGratuity: (gratuityAmount: number) => {
                       gratuityAmountRef.current = gratuityAmount;
                     },
-                    initialSplitN: adhocSplitCount > 1 ? adhocSplitCount : undefined,
+                    initialSplitN: undefined,
                   }}
                   splitBillModalProps={{
                     isOpen: showSplitBillModal,
@@ -10749,8 +10855,33 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               try {
                 const item = (menuItems || []).find(m => String(m.id) === String(it.id));
                 if (item) {
-                  if (!(adhocSplitCount > 1) && isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
-                  addToOrder(item);
+                  if (effectiveSplitCount > 1) {
+                    let targetGuest = activeGuestNumber || 1;
+                    if (isGuestLocked(targetGuest)) {
+                      const allGuests = Array.isArray(guestIds) && guestIds.length > 0
+                        ? guestIds
+                        : Array.from({ length: effectiveSplitCount }, (_, i) => i + 1);
+                      const firstUnpaid = allGuests.find(g => !isGuestLocked(g));
+                      if (typeof firstUnpaid === 'number') { targetGuest = firstUnpaid; setActiveGuestNumber(firstUnpaid); }
+                    }
+                    const isTogoItem = !!(item as any).togoLabel;
+                    setOrderItems(prev => {
+                      const existingIdx = prev.findIndex((it: any) =>
+                        it.type === 'item' && String(it.id) === String(item.id) && it.guestNumber === targetGuest &&
+                        !it._preSplit && !!(it.togoLabel) === isTogoItem && (!it.modifiers || it.modifiers.length === 0)
+                      );
+                      if (existingIdx >= 0) {
+                        const updated = [...prev];
+                        updated[existingIdx] = { ...updated[existingIdx], quantity: (updated[existingIdx].quantity || 1) + 1 } as any;
+                        return updated;
+                      }
+                      const olId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                      return [...prev, { id: item.id, name: item.name, short_name: (item as any).short_name, quantity: 1, price: item.price, modifiers: [], totalPrice: item.price, type: 'item' as const, guestNumber: targetGuest, orderLineId: olId, togoLabel: isTogoItem, _preSplit: false, ...(Array.isArray((item as any).printer_groups) && (item as any).printer_groups.length > 0 ? { printer_groups: (item as any).printer_groups } : {}) } as any];
+                    });
+                  } else {
+                    if (isGuestLocked(activeGuestNumber)) { try { alert('Cannot add to a guest that has already paid.'); } catch {} return; }
+                    addToOrder(item);
+                  }
                   setShowSearchModal(false);
                   setSoftKbTarget(null);
                 }

@@ -36,8 +36,9 @@ function getHourString(date = new Date()) {
  * @param {Object} orderData - 주문 정보
  * @param {Object} paymentData - 결제 정보
  * @param {string} restaurantId - Firebase 레스토랑 ID
+ * @param {Object} options - { skipDailySales: true } orders 업로드 시 dailySales 중복 방지
  */
-async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
+async function syncPaymentToFirebase(orderData, paymentData, restaurantId, options = {}) {
   const db = getFirestore();
   if (!db) {
     console.warn('[SalesSync] Firebase not available');
@@ -52,10 +53,11 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
 
     // 레스토랑 참조
     const restaurantRef = db.collection('restaurants').doc(restaurantId);
+    const skipDailySales = options.skipDailySales === true;
 
-    // 1. 일별 매출 요약 업데이트
+    // 1. 일별 매출 요약 업데이트 (skipDailySales 시 orders→aggregateDailySalesOnOrderWrite가 처리)
+    if (!skipDailySales) {
     const dailySalesRef = restaurantRef.collection('dailySales').doc(dateStr);
-    
     await db.runTransaction(async (transaction) => {
       const dailyDoc = await transaction.get(dailySalesRef);
       
@@ -108,6 +110,7 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId) {
         transaction.set(dailySalesRef, setData);
       }
     });
+    }
 
     // 2. 월별 요약 업데이트
     const monthlySalesRef = restaurantRef.collection('monthlySales').doc(monthStr);

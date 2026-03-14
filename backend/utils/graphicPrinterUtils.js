@@ -1838,7 +1838,7 @@ function renderReceiptGraphic(receiptData) {
         sectionItems.forEach(item => {
           const qty = item.quantity || item.qty || 1;
           const price = Number(item.price || item.itemPrice || 0);
-          guestSubtotal += price * qty;
+          guestSubtotal += item.lineTotal != null ? Number(item.lineTotal) : price * qty;
           const mods = Array.isArray(item.modifiers) ? item.modifiers : (Array.isArray(item.modifier) ? item.modifier : []);
           mods.forEach(mod => {
             if (mod && typeof mod === 'object') {
@@ -1900,9 +1900,10 @@ function renderReceiptGraphic(receiptData) {
       const itemName = entry.name || entry.itemName || '';
       const quantity = entry.quantity || entry.qty || 1;
       const basePrice = Number(entry.price || entry.itemPrice || 0);
-      const itemOnlyTotal = basePrice * quantity;
+      const itemOnlyTotal = entry.lineTotal != null ? Number(entry.lineTotal) : basePrice * quantity;
+      const qtyLabel = entry.displayQty || `${quantity}`;
       
-      const unitLabel = quantity > 1 ? ` @$${basePrice.toFixed(2)}` : '';
+      const unitLabel = (quantity > 1 && !entry.displayQty) ? ` @$${basePrice.toFixed(2)}` : '';
       const stItems = getGraphicElementStyle(layout, 'items', {
         fontSize: 26,
         fontWeight: 'bold',
@@ -1912,7 +1913,7 @@ function renderReceiptGraphic(receiptData) {
       });
       if (stItems.visible) {
         y += stItems.lineSpacing;
-        y = drawLeftRightText(ctx, `${quantity}x ${itemName}${unitLabel}`, `$${itemOnlyTotal.toFixed(2)}`, y, {
+        y = drawLeftRightText(ctx, `${qtyLabel}x ${itemName}${unitLabel}`, `$${itemOnlyTotal.toFixed(2)}`, y, {
           // 최소 폰트 크기 보장 (이전 깔끔한 폼 기준)
           fontSize: Math.max(Number(stItems.fontSize) || 0, 26),
           fontWeight: stItems.fontWeight,

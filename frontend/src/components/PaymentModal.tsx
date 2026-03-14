@@ -1034,6 +1034,14 @@ useEffect(() => {
     return Math.max(0, Number((grand - confirmedTotal).toFixed(2)));
   }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, outstandingDue, onCreateAdhocGuests, isSplitActive, splitNActive, effectiveGuestMode]);
 
+  // Split 게스트 모드: 1/3P 선택 시 Amount를 0으로 리셋하여 Due$에 1/N 금액이 표시되도록 함
+  useEffect(() => {
+    if (!isOpen || splitNActive < 2) return;
+    setRawAmountDigits('');
+    setAmount('0.00');
+    setInputTarget('AMOUNT');
+  }, [isOpen, splitNActive]);
+
   const change = useMemo(() => {
     // Change 표시 규칙:
     // - CASH: 실제 거스름돈(초과분) 표시
@@ -1543,6 +1551,21 @@ const addQuick = async (q: number) => {
 			} else {
 				// 현재 금액 = 0이면: 결제 수단만 활성화
 				setMethod(clickedMethod);
+				// Split 게스트 모드: 금액 0이면 Due 자동 채우기 → OK 버튼 활성화
+				if (onCreateAdhocGuests && isSplitActive && splitNActive >= 2) {
+					const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
+					const grandCents = Math.round(grand * 100);
+					const guestIdx = typeof effectiveGuestMode === 'number' ? effectiveGuestMode : 1;
+					const dueFoodFull = Math.max(0, Number((calcFairShare(grandCents, splitNActive, guestIdx) - confirmedTotal).toFixed(2)));
+					const remaining = Math.max(0, Number(dueFoodFull.toFixed(2)));
+					if (remaining > 0.001) {
+						const cents = Math.round(remaining * 100);
+						setRawAmountDigits(String(cents));
+						setAmount(remaining.toFixed(2));
+						setLastChange(null);
+						setInputTarget('AMOUNT');
+					}
+				}
 			}
 		} catch (e) {
 			// 에러 시 optimisticPayments 정리 및 상태 초기화

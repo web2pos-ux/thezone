@@ -260,46 +260,60 @@ module.exports = (db) => {
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
 			
-			// Firebase 실시간 매출 동기화
+			// Firebase 주문/매출 동기화 (POS → Firebase orders → aggregateDailySalesOnOrderWrite)
 			try {
-				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || 
-					require('fs').existsSync(require('path').join(__dirname, '..', '.env')) 
-						? process.env.FIREBASE_RESTAURANT_ID 
-						: null;
-				
+				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || null;
 				if (restaurantId) {
-					// 주문 정보 조회
 					const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [orderId]);
-					// 결제 정보 조회
 					const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [orderId]);
-					// 주문 아이템 조회
-					const items = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
-					
+					const orderItems = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
 					if (orderData && payments.length > 0) {
-						// 총 결제 금액 계산
 						const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 						const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
-						const paymentMethod = payments[0]?.method || 'CASH';
-						
-						// Firebase 동기화 (비동기, 실패해도 결제는 성공)
+						const paymentMethod = (payments[0]?.method || 'CASH').toLowerCase().replace(/\s+/g, '_');
+						const firebaseOrderId = orderData.firebase_order_id;
+						if (firebaseOrderId) {
+							await firebaseService.updateOrderStatus(firebaseOrderId, 'completed', restaurantId);
+							await firebaseService.updateOrderAsPaid(restaurantId, firebaseOrderId, {
+								paymentMethod,
+								tip: totalTips
+							});
+						} else {
+							const items = orderItems.map(oi => ({
+								name: oi.name,
+								quantity: oi.quantity || 1,
+								price: oi.price || 0,
+								subtotal: (oi.quantity || 1) * (oi.price || 0),
+								menuItemId: oi.item_id
+							}));
+							const payload = {
+								...orderData,
+								items,
+								status: 'completed',
+								paymentStatus: 'paid',
+								paymentMethod,
+								tip: totalTips,
+								paidAt: orderData.closed_at || orderData.created_at,
+								source: 'POS'
+							};
+							firebaseService.uploadOrder(restaurantId, payload).catch(err => console.warn('[Firebase] Order upload error:', err.message));
+						}
 						salesSyncService.syncPaymentToFirebase(
-							{ ...orderData, items },
-							{ amount: totalPayment, tip: totalTips, method: paymentMethod },
-							restaurantId
+							{ ...orderData, items: orderItems },
+							{ amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
+							restaurantId,
+							{ skipDailySales: true }
 						).catch(err => console.warn('[SalesSync] Background sync error:', err.message));
-						
-						// 아이템별 매출 동기화
-						if (items.length > 0) {
+						if (orderItems.length > 0) {
 							salesSyncService.syncOrderItemsToFirebase(
-								{ ...orderData, items },
+								{ ...orderData, items: orderItems },
 								restaurantId
 							).catch(err => console.warn('[SalesSync] Item sync error:', err.message));
 						}
 					}
 				}
 			} catch (syncErr) {
-				// Firebase 동기화 실패해도 결제는 성공 처리
-				console.warn('[SalesSync] Sync skipped:', syncErr.message);
+				console.warn('[Firebase] Sync skipped:', syncErr.message);
 			}
 			
 			res.json({ success: true, closedAt });

@@ -6654,11 +6654,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           result.push(val);
         }
       }
-      Array.from(availableIds).forEach((id) => {
-        if (!result.includes(id) && result.length < capacity) {
+      const missingIds = Array.from(availableIds).filter(id => !result.includes(id));
+      for (const id of missingIds) {
+        const emptyIdx = result.findIndex(v => v.startsWith('EMPTY:'));
+        if (emptyIdx !== -1) {
+          result[emptyIdx] = id;
+        } else if (result.length < capacity) {
           result.push(id);
         }
-      });
+      }
       if (result.length > capacity) {
         result.length = capacity;
       }
