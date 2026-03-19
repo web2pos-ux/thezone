@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
-const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -38,29 +37,31 @@ module.exports = (db) => {
 		FOREIGN KEY(order_id) REFERENCES orders(id)
 	)`);
 
-	// attempt to add missing columns for existing DBs
+	// attempt to add guest_number column if missing (for existing DBs)
 	(async () => {
-		try { await dbRun(`ALTER TABLE payments ADD COLUMN guest_number INTEGER`); } catch (e) { /* already exists */ }
-		try { await dbRun(`ALTER TABLE payments ADD COLUMN change_amount REAL DEFAULT 0`); } catch (e) { /* already exists */ }
+		try {
+			await dbRun(`ALTER TABLE payments ADD COLUMN guest_number INTEGER`);
+		} catch (e) {
+			// ignore if already exists
+		}
 	})();
 
 	// create payment
 	router.post('/', async (req, res) => {
 		try {
-			const { orderId, method, amount, tip = 0, ref=null, status='APPROVED', guestNumber=null, changeAmount = 0 } = req.body || {};
+			const { orderId, method, amount, tip = 0, ref=null, status='APPROVED', guestNumber=null } = req.body || {};
 			const tipAmount = Number(tip);
-			const changeVal = Number(changeAmount) || 0;
 			if (!orderId || !method || typeof amount !== 'number') {
 				return res.status(400).json({ success:false, error:'orderId, method, amount are required' });
 			}
 			if (!Number.isFinite(tipAmount) || tipAmount < 0) {
 				return res.status(400).json({ success:false, error:'tip must be a valid number (>= 0)' });
 			}
-			const createdAt = getLocalDatetimeString();
+			const createdAt = new Date().toISOString();
 			const result = await dbRun(
-				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at, change_amount)
-				 VALUES(?,?,?,?,?,?,?,?,?)`,
-				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeVal]
+				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
+				 VALUES(?,?,?,?,?,?,?,?)`,
+				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt]
 			);
 			
 			// Firebase에도 결제 데이터 저장

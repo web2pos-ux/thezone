@@ -1769,6 +1769,21 @@ router.delete('/items/:id', (req, res) => {
       // Process each item for Menu Data sheet (sorted by category and then by sort_order)
       let rowNo = 1;
       const categoryHeaderRowIndices = []; // Track category header row indices
+
+      // Pre-calculate max KTE count across all items (minimum 1)
+      let maxKteCount = 1;
+      for (const catName of categoryNames) {
+        for (const item of itemsByCategory[catName]) {
+          let kteLen = 0;
+          try {
+            const raw = item.kitchen_ticket_elements;
+            const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw || '[]') : []);
+            kteLen = (arr || []).filter(e => e && String(e.name || '').trim()).length;
+          } catch { kteLen = 0; }
+          if (kteLen > maxKteCount) maxKteCount = kteLen;
+        }
+      }
+      if (maxKteCount > 10) maxKteCount = 10;
       
       for (const categoryName of categoryNames) {
         // Add category header row with connected options
@@ -1793,7 +1808,7 @@ router.delete('/items/:id', (req, res) => {
           .filter(Boolean);
 
         const kteCols = {};
-        for (let i = 1; i <= 10; i++) {
+        for (let i = 1; i <= maxKteCount; i++) {
           kteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = '';
           kteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = '';
         }
@@ -1880,7 +1895,7 @@ router.delete('/items/:id', (req, res) => {
             kteArr = (kteArr || []).filter(e => e && String(e.name || '').trim()).slice(0, 10);
           } catch { kteArr = []; }
           const itemKteCols = {};
-          for (let i = 1; i <= 10; i++) {
+          for (let i = 1; i <= maxKteCount; i++) {
             const el = kteArr[i - 1];
             itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = el ? String(el.name || '').trim() : '';
             itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = el ? (el.qty || 1) : '';

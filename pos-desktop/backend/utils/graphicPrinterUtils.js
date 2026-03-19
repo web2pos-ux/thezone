@@ -352,9 +352,8 @@ function drawTextBlock(ctx, block, y) {
     strikethrough = false
   } = block;
   
-  const fontScale = Number(ctx?._fontScale || 1);
-  const fontSize = Math.max(6, Math.round(rawFontSize * fontScale));
-  const actualLineHeight = lineHeight ? Math.round(lineHeight * fontScale) : fontSize + paddingY * 2;
+  const fontSize = rawFontSize;
+  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
   const width = ctx._receiptWidth || PRINTER_CONFIG.width;
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   const rightPadding = Number(ctx._receiptRightPadding || 0);
@@ -432,8 +431,7 @@ function drawSeparator(ctx, y, style = 'solid') {
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   const rightPadding = Number(ctx._receiptRightPadding || 0);
   const effectiveRightPad = Math.max(padding, rightPadding);
-  const fontScale = Number(ctx?._fontScale || 1);
-  const gap = Math.round(8 * fontScale);
+  const gap = 8;
   const lineY = y + gap;
   
   ctx.strokeStyle = '#000000';
@@ -455,10 +453,10 @@ function drawSeparator(ctx, y, style = 'solid') {
     ctx.moveTo(padding, lineY + 4);
     ctx.lineTo(width - effectiveRightPad, lineY + 4);
     ctx.stroke();
-    return y + Math.round(20 * fontScale);
+    return y + 20;
   }
   
-  return y + Math.round(16 * fontScale);
+  return y + 16;
 }
 
 /**
@@ -479,9 +477,8 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
     paddingY = 4
   } = options;
   
-  const fontScale = Number(ctx?._fontScale || 1);
-  const fontSize = Math.max(6, Math.round(rawFontSize * fontScale));
-  const actualLineHeight = lineHeight ? Math.round(lineHeight * fontScale) : fontSize + paddingY * 2;
+  const fontSize = rawFontSize;
+  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
   const width = ctx._receiptWidth || PRINTER_CONFIG.width;
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   
@@ -570,8 +567,7 @@ function renderKitchenTicketGraphic(orderData) {
   // 캔버스 생성
   const canvas = createCanvas(PRINTER_CONFIG.width, estimatedHeight);
   const ctx = canvas.getContext('2d');
-
-  ctx._fontScale = getGraphicScaleFromData(orderData);
+  
   ctx._receiptWidth = PRINTER_CONFIG.width;
   ctx._receiptPadding = PRINTER_CONFIG.padding;
   const kitchenRightPad = (() => {
@@ -581,7 +577,7 @@ function renderKitchenTicketGraphic(orderData) {
     return 0;
   })();
   ctx._receiptRightPadding = kitchenRightPad;
-
+  
   // 배경 흰색
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, PRINTER_CONFIG.width, estimatedHeight);
@@ -762,10 +758,8 @@ function renderKitchenTicketGraphic(orderData) {
   // Header boxes: [Channel/Table(or Takeout#)] + [Order#] should touch (붙여서 출력)
   const isTwoBoxLayout = !!(headerText && rightHeaderText);
   const headerStartY = y;
-  const headerFontScale = Number(ctx?._fontScale || 1);
-  // IMPORTANT: Kitchen header is drawn manually (not via drawTextBlock),
-  // so we must apply `graphicScale` here too; otherwise POSX scaling has no effect.
-  const headerFontSize = Math.max(8, Math.round(PRINTER_CONFIG.fontSize.xxlarge * headerFontScale));
+  const headerFontScale = 1;
+  const headerFontSize = PRINTER_CONFIG.fontSize.xxlarge;
   const orderNumberFontSize = Math.max(8, Math.round(headerFontSize * 0.78));
   const orderNumberHashFontSize = Math.max(6, Math.round(headerFontSize * 0.52));
   const eatInOrderNumFontSize = Math.max(8, Math.round(headerFontSize * 0.878));
@@ -863,6 +857,7 @@ function renderKitchenTicketGraphic(orderData) {
     orderBoxW = orderBoxText ? Math.min(desiredOrderBoxW, maxOrderBoxW > 0 ? maxOrderBoxW : headerW) : 0;
     const orderMaxTextW = Math.max(0, orderBoxW - orderHeaderPadX * 2);
     fittedOrderBoxText = fitTextToWidthNoEllipsis(orderBoxText, orderMaxTextW);
+    // Recompute width based on fitted text so we don't waste space / overflow.
     const fittedOrderTextW = fittedOrderBoxText ? ctx.measureText(fittedOrderBoxText).width : 0;
     orderBoxW = fittedOrderBoxText ? Math.min(Math.ceil(fittedOrderTextW + orderHeaderPadX * 2), headerW) : 0;
     leftBoxW = Math.max(0, headerW - orderBoxW);
@@ -1142,10 +1137,9 @@ function renderKitchenTicketGraphic(orderData) {
     // Increase spacing around the first separator:
     // - header → separator: 2x
     // - separator → first item: 2x
-    const fs = Number(ctx?._fontScale || 1);
-    const lineOffset = Math.max(4, Math.round(8 * fs));
-    const advance = Math.max(12, Math.round(20 * fs)); // drawSeparator('double') return delta
-    const afterGap = Math.max(0, advance - lineOffset); // line → content gap
+    const lineOffset = 8;
+    const advance = 20;
+    const afterGap = advance - lineOffset;
     y += lineOffset;
     y = drawSeparator(ctx, y, 'double');
     // Increase separator → first item spacing by +30% from current.
@@ -1307,10 +1301,9 @@ function renderKitchenTicketGraphic(orderData) {
     const drawGuestInlineSeparator = (yPos, guestNum) => {
       const width = ctx._receiptWidth || PRINTER_CONFIG.width;
       const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
-      const fs = Number(ctx?._fontScale || 1);
-      const fontSize = Math.max(6, Math.round(PRINTER_CONFIG.fontSize.large * fs));
+      const fontSize = PRINTER_CONFIG.fontSize.large;
       const text = `Guest ${guestNum}`;
-      const lineY = yPos + Math.round(16 * fs);
+      const lineY = yPos + 16;
 
       ctx.save();
       ctx.strokeStyle = '#000000';
@@ -1451,6 +1444,7 @@ function renderReceiptGraphic(receiptData) {
     if (Number.isFinite(n) && n >= 0) return n;
     return paperWidth === 384 ? 30 : 10;
   })();
+  console.log(`🔍 [RENDER] rightPaddingPx=${receiptData?.rightPaddingPx}, RECEIPT_RIGHT_PADDING=${RECEIPT_RIGHT_PADDING}, paperWidth=${paperWidth}, RECEIPT_WIDTH=${RECEIPT_WIDTH}`);
   
   // 상단 마진 (mm를 픽셀로 변환)
   // Priority: payload(receiptData.topMargin) > layout(topMargin) > default(5mm)
@@ -1571,9 +1565,7 @@ function renderReceiptGraphic(receiptData) {
   const canvas = createCanvas(RECEIPT_WIDTH, estimatedHeight);
   const ctx = canvas.getContext('2d');
   
-  ctx._fontScale = getGraphicScaleFromData(receiptData);
   
-  // 동적 용지 너비를 컨텍스트에 저장
   ctx._receiptWidth = RECEIPT_WIDTH;
   // Treat leftMargin as extra padding so all x positions shift consistently.
   ctx._receiptPadding = RECEIPT_PADDING + leftMarginPx;
@@ -2193,10 +2185,8 @@ function renderReceiptGraphic(receiptData) {
     // PAID $XX.XX (검은 띠 반전 바) — 실제 지불한 총액 (결제금액 + 팁)
     {
       const paidText = `PAID  $${Number(grossPaidTotal).toFixed(2)}`;
-      const fontScale = Number(ctx?._fontScale || 1);
-      // Slightly larger than TOTAL for readability in print.
-      const paidFontSize = Math.max(6, Math.round((ITEM_BASE_FONT_SIZE + 6) * fontScale));
-      const paddingY = Math.max(1, Math.round(4 * fontScale));
+      const paidFontSize = ITEM_BASE_FONT_SIZE + 6;
+      const paddingY = 4;
       const width = ctx._receiptWidth || PRINTER_CONFIG.width;
       const lineH = paidFontSize + paddingY * 2;
 
@@ -2239,9 +2229,8 @@ function renderReceiptGraphic(receiptData) {
     // 거스름돈 — PAID와 동일한 검은 띠 반전 바 스타일
     if (receiptData.change && Number(receiptData.change) > 0) {
       const changeText = `CHANGE  $${Number(receiptData.change).toFixed(2)}`;
-      const fontScale = Number(ctx?._fontScale || 1);
-      const changeFontSize = Math.max(6, Math.round((ITEM_BASE_FONT_SIZE + 6) * fontScale));
-      const paddingY = Math.max(1, Math.round(4 * fontScale));
+      const changeFontSize = ITEM_BASE_FONT_SIZE + 6;
+      const paddingY = 4;
       const width = ctx._receiptWidth || PRINTER_CONFIG.width;
       const lineH = changeFontSize + paddingY * 2;
 
@@ -2513,7 +2502,6 @@ function renderVoidTicketGraphic(voidData) {
   const canvas = createCanvas(PRINTER_CONFIG.width, estimatedHeight);
   const ctx = canvas.getContext('2d');
 
-  ctx._fontScale = getGraphicScaleFromData(voidData);
   ctx._receiptWidth = PRINTER_CONFIG.width;
   ctx._receiptPadding = PRINTER_CONFIG.padding;
   ctx._receiptRightPadding = (() => {
@@ -2650,7 +2638,6 @@ function renderVoidTicketGraphic(voidData) {
   const imageData = ctx.getImageData(0, 0, PRINTER_CONFIG.width, y);
   return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y, voidData?.graphicScale);
 }
-
 /**
  * 그래픽 모드로 VOID 티켓 출력 데이터 생성
  * @param {Object} voidData - VOID 티켓 데이터
@@ -2702,7 +2689,6 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
 
   const canvas = createCanvas(WIDTH, estH);
   const ctx = canvas.getContext('2d');
-  ctx._fontScale = getGraphicScaleFromData(zReportData);
   ctx._receiptWidth = WIDTH;
   ctx._receiptPadding = PADDING;
   ctx._receiptRightPadding = 10;

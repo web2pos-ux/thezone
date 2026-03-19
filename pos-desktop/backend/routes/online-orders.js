@@ -112,6 +112,26 @@ function startOrderListener(restaurantId) {
       // [DISABLED] 3rd party delivery 연동이 완료되기 전까지 Firebase 리스너에서 orders 테이블에 자동 INSERT하지 않음.
       // 수동으로 POS에서 입력한 주문만 orders 테이블에 저장됨.
       // 연동 완료 시 이 블록의 주석을 해제하면 됨.
+      /*
+      // SQLite에 저장하고 localOrderId 생성
+      const firebaseOrderId = order.id;
+      let localOrder = null;
+      
+      try {
+        // 이미 저장된 주문인지 확인
+        localOrder = await dbGet(
+          'SELECT id FROM orders WHERE firebase_order_id = ?',
+          [firebaseOrderId]
+        );
+        
+        // 없으면 새로 생성
+        if (!localOrder) {
+          ... (auto-insert logic disabled) ...
+        }
+      } catch (saveError) {
+        console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
+      }
+      */
       
       // SSE 브로드캐스트는 유지 (OnlineOrderPanel에서 실시간 표시용)
       const formatted = formatOrderForFrontend(order);
