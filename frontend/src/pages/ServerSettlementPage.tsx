@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ServerSelectionModal from '../components/ServerSelectionModal';
+import { getLocalDateString } from '../utils/datetimeUtils';
 import clockInOutApi, { type ClockedInEmployee } from '../services/clockInOutApi';
 import { getAPI_URL } from '../config/constants';
 
@@ -46,7 +47,7 @@ const ServerSettlementPage: React.FC = () => {
 
   const [serverSalesDate, setServerSalesDate] = useState<string>(() => {
     try {
-      return new Date().toISOString().slice(0, 10);
+      return getLocalDateString();
     } catch {
       return '';
     }

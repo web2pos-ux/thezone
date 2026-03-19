@@ -3,6 +3,7 @@ const router = express.Router();
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // Firebase 동기화 서비스
 let firebaseService = null;
@@ -39,7 +40,7 @@ async function syncPolicyToFirebase(policyData) {
         normalMaxPerSlot: policyData.normal_max_per_slot || 8,
         onlineQuotaPct: policyData.online_quota_pct || 100,
         enabled: true,
-        updated_at: new Date().toISOString(),
+        updated_at: getLocalDatetimeString(),
       }, { merge: true });
     console.log('[Firebase] Reservation policy synced successfully');
   } catch (err) {
@@ -419,7 +420,7 @@ router.post('/business-hours/bulk', async (req, res) => {
           }
           await firestore.collection('restaurants').doc(restaurantId).set({
             businessHours: bhObj,
-            updated_at: new Date().toISOString(),
+            updated_at: getLocalDatetimeString(),
           }, { merge: true });
           console.log('[Firebase] Business hours synced for online reservation');
         }

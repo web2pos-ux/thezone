@@ -7,6 +7,7 @@ import {
   ChevronRight, Phone, MapPin, AlertCircle, Volume2, Globe
 } from 'lucide-react';
 import { API_URL } from '../config/constants';
+import { getLocalDateString, getLocalDatetimeString } from '../utils/datetimeUtils';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 
@@ -176,7 +177,7 @@ const QsrPage: React.FC = () => {
   // Bottom Function Button States
   const [showOrderHistoryModal, setShowOrderHistoryModal] = useState(false);
   const [orderHistoryList, setOrderHistoryList] = useState<any[]>([]);
-  const [orderHistoryDate, setOrderHistoryDate] = useState(new Date().toISOString().split('T')[0]);
+  const [orderHistoryDate, setOrderHistoryDate] = useState(getLocalDateString());
   const [showOpenPriceModal, setShowOpenPriceModal] = useState(false);
   const [openPriceName, setOpenPriceName] = useState('');
   const [openPriceAmount, setOpenPriceAmount] = useState('');
@@ -426,7 +427,7 @@ const QsrPage: React.FC = () => {
         if (onlineAcceptMode === 'auto') {
           // Auto accept
           const prepMinutes = parseInt(autoPrepTime.replace('m', '')) || 15;
-          const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+          const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
           
           fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
             method: 'POST',
@@ -474,7 +475,7 @@ const QsrPage: React.FC = () => {
             
             if (onlineAcceptMode === 'auto') {
               const prepMinutes = parseInt(autoPrepTime.replace('m', '')) || 15;
-              const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+              const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
               
               fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
                 method: 'POST',
@@ -530,7 +531,7 @@ const QsrPage: React.FC = () => {
   // Accept online order
   const acceptOnlineOrder = async (orderId: string, prepTime: number) => {
     try {
-      const pickupTime = new Date(Date.now() + prepTime * 60000).toISOString();
+      const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepTime * 60000));
       
       const res = await fetch(`${API_URL}/online-orders/order/${orderId}/accept`, {
         method: 'POST',
@@ -651,7 +652,7 @@ const QsrPage: React.FC = () => {
   
   const loadOrderNumber = async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const today = getLocalDateString();
       const storedDate = localStorage.getItem('qsr-order-date');
       const storedNumber = localStorage.getItem('qsr-order-number');
       
@@ -1210,7 +1211,7 @@ const QsrPage: React.FC = () => {
       if (orderType === 'pickup') {
         orderData.prep_time = pickupPrepTime;
         const pickupTime = new Date(Date.now() + pickupPrepTime * 60000);
-        orderData.ready_time = pickupTime.toISOString();
+        orderData.ready_time = getLocalDatetimeString(pickupTime);
       }
       
       // Submit to backend
@@ -1876,7 +1877,7 @@ const QsrPage: React.FC = () => {
                 className="bg-gradient-to-b from-amber-100 to-amber-200 rounded-lg px-2 py-1.5 shadow-md hover:shadow-lg transition-all duration-150 active:scale-[0.97] border border-amber-300 hover:border-amber-500 group flex flex-col justify-center overflow-hidden"
               >
                 <h3 
-                  className={`${layoutSettings.menuFontBold ? 'font-bold' : 'font-semibold'} text-amber-900 leading-tight line-clamp-2 group-hover:text-amber-700 transition-colors text-center`}
+                  className={`${layoutSettings.menuFontExtraBold ? 'font-black' : layoutSettings.menuFontBold ? 'font-bold' : 'font-semibold'} text-amber-900 leading-tight line-clamp-2 group-hover:text-amber-700 transition-colors text-center`}
                   style={{ fontSize: `${layoutSettings.menuFontSize || 14}px` }}
                 >
                   {layoutSettings.useShortName ? (item.short_name || item.name) : item.name}

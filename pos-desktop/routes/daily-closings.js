@@ -1260,6 +1260,12 @@ module.exports = (db) => {
         await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
       } catch (e) { /* */ }
 
+      // 테이블-주문 연결 해제: 마감 후 테이블 클릭 시 이전 주문(#695 등) 로드 방지 → 새 주문이 #001부터 시작
+      try {
+        await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
+        console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
+      } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
+
       // Firebase 동기화
       try {
         const restaurantId = await getRestaurantId();

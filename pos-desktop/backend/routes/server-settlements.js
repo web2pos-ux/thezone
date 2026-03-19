@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { dbRun, dbAll, dbGet } = require('../db');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 const fmtLocalBusinessDate = (d = new Date()) => {
   const yyyy = d.getFullYear();
@@ -21,7 +22,7 @@ const writeAudit = async ({
   beforeValue,
   afterValue,
 }) => {
-  const ts = new Date().toISOString();
+  const ts = getLocalDatetimeString();
   try {
     await dbRun(
       `INSERT INTO audit_log (user_id, role, action_type, reference_id, before_value, after_value, timestamp)
@@ -580,7 +581,7 @@ router.post('/safe-drop', async (req, res) => {
     if (!shiftId || !serverId || !Number.isFinite(amt) || amt <= 0) {
       return res.status(400).json({ success: false, error: 'shift_id, server_id, amount (>0) are required' });
     }
-    const ts = new Date().toISOString();
+    const ts = getLocalDatetimeString();
     await dbRun(
       `INSERT INTO server_cash_drops (shift_id, server_id, amount, note, created_by_id, created_by_name, timestamp)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -859,7 +860,7 @@ router.post('/mid-settlement', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Mid-Settlement already completed for this server today' });
     }
 
-    const now = new Date().toISOString();
+    const now = getLocalDatetimeString();
     const calc = await calcSettlement({ serverId, shiftId: shift.shift_id, businessDate });
     const diff = Number((actualCash - (calc.cash.expectedCash || 0)).toFixed(2));
 

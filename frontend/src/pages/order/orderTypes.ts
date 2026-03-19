@@ -75,6 +75,7 @@ export interface LayoutSettings {
   categoryNormalColor: string;
   categorySelectedColor: string;
   categoryFontBold?: boolean;
+  categoryFontExtraBold?: boolean;
   mergedGroups?: Array<{ id: string; name: string; categoryNames: string[] }>;
   categoryBarOrder?: string[];
   menuGridColumns: number;
@@ -87,6 +88,7 @@ export interface LayoutSettings {
   menuItemHeight: number;
   menuFontSize: number;
   menuFontBold?: boolean;
+  menuFontExtraBold?: boolean;
   menuDefaultColor: string;
   menuSelectedColor: string;
   showPrices: boolean;
@@ -101,6 +103,7 @@ export interface LayoutSettings {
   modifierItemHeight: number;
   modifierFontSize: number;
   modifierFontBold?: boolean;
+  modifierFontExtraBold?: boolean;
   modifierDefaultColor: string;
   modifierShowPrices: boolean;
   /**

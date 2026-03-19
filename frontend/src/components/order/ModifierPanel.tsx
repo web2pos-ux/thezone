@@ -118,7 +118,7 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
       {...attributes}
       {...listeners}
     >
-      <div className={`${layoutSettings.modifierFontBold ? 'font-medium' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
+      <div className={`${layoutSettings.modifierFontExtraBold ? 'font-black' : layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
         <span>{label}</span>
         {layoutSettings.modifierShowPrices && price !== undefined && price !== 0 && (
           <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">
@@ -277,7 +277,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                         const style: React.CSSProperties = {
                           height: '100%',
                           fontSize: `${layoutSettings.modifierFontSize}px`,
-                          fontWeight: layoutSettings.modifierFontBold ? '500' : '400',
+                          fontWeight: layoutSettings.modifierFontExtraBold ? '900' : layoutSettings.modifierFontBold ? '700' : '400',
                           backgroundImage: isExtra1Active
                             ? 'linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.25))'
                             : 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))',
@@ -300,7 +300,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                             onClick={(e) => { e.stopPropagation(); if (disabled) return; onAddAdhocModifier!({ name: extraButton1.name || 'Extra 1', price: Number(extraButton1.price || 0) }); }}
                             title={extraButton1.name || 'Extra 1'}
                           >
-                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '500' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
+                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontExtraBold ? '900' : layoutSettings.modifierFontBold ? '700' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
                               {extraButton1.name || 'Extra 1'}
                             </div>
                           </button>
@@ -314,7 +314,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                         const style: React.CSSProperties = {
                           height: '100%',
                           fontSize: `${layoutSettings.modifierFontSize}px`,
-                          fontWeight: layoutSettings.modifierFontBold ? '500' : '400',
+                          fontWeight: layoutSettings.modifierFontExtraBold ? '900' : layoutSettings.modifierFontBold ? '700' : '400',
                           backgroundImage: isExtra2Active
                             ? 'linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.25))'
                             : 'linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.06)), linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.18))',
@@ -337,7 +337,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                             onClick={(e) => { e.stopPropagation(); if (disabled) return; onAddAdhocModifier!({ name: extraButton2.name || 'Extra 2', price: Number(extraButton2.price || 0) }); }}
                             title={extraButton2.name || 'Extra 2'}
                           >
-                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontBold ? '500' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
+                            <div style={{ fontSize: `${layoutSettings.modifierFontSize}px`, fontWeight: layoutSettings.modifierFontExtraBold ? '900' : layoutSettings.modifierFontBold ? '700' : '400', textAlign: 'center', wordBreak: 'break-word' }}>
                               {extraButton2.name || 'Extra 2'}
                             </div>
                           </button>

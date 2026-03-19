@@ -16,6 +16,7 @@ import ServerSelectionModal from '../components/ServerSelectionModal';
 import { clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
+import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { printReceipt, printKitchenTicket, printBill, openCashDrawer } from '../utils/printUtils';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
@@ -534,7 +535,7 @@ const SalesPage: React.FC = () => {
   const [refundGiftCardNumber, setRefundGiftCardNumber] = useState('');
   const [refundPendingData, setRefundPendingData] = useState<any>(null);
   const [refundLoading, setRefundLoading] = useState(false);
-  const [refundSearchDate, setRefundSearchDate] = useState(new Date().toISOString().split('T')[0]);
+  const [refundSearchDate, setRefundSearchDate] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
   const [refundSearchText, setRefundSearchText] = useState('');
   const [showRefundSuccessPopup, setShowRefundSuccessPopup] = useState(false);
   const [refundResult, setRefundResult] = useState<any | null>(null);
@@ -561,9 +562,9 @@ const SalesPage: React.FC = () => {
   const [isBillPrintMode, setIsBillPrintMode] = useState<boolean>(false);
   const [billPrintStatus, setBillPrintStatus] = useState<string>('');
 
-  // Online Settings modal state (Prep Time, Pause, Day Off, Menu Hide tabs)
+  // Online Settings modal state (Prep Time, Pause, Day Off, Menu Hide, Utility tabs)
   const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
-  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide'>('preptime');
+  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide' | 'utility'>('preptime');
   
   // Menu Hide tab state
   const [menuHideCategories, setMenuHideCategories] = useState<Array<{
@@ -588,6 +589,12 @@ const SalesPage: React.FC = () => {
   const [menuHideLoading, setMenuHideLoading] = useState<boolean>(false);
   const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
   const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
+  // Utility Settings (Bag Fee, Utensils) - Firebase 연동
+  const [utilitySettings, setUtilitySettings] = useState<{ bagFee: { enabled: boolean; amount: number }; utensils: { enabled: boolean } }>({
+    bagFee: { enabled: false, amount: 0.10 },
+    utensils: { enabled: false },
+  });
+  const [savingUtility, setSavingUtility] = useState<boolean>(false);
   
   // Pause ì„¤ì • state (ê° ì±„ë„ë³„ pause ìƒíƒœì™€ ë‚¨ì€ ì‹œê°„)
   const [pauseSettings, setPauseSettings] = useState<{
@@ -672,7 +679,7 @@ const SalesPage: React.FC = () => {
 
   // Order List modal state
   const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
-  const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [orderListDate, setOrderListDate] = useState<string>(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
   const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
   const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
   const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
@@ -1111,7 +1118,7 @@ const SalesPage: React.FC = () => {
   useEffect(() => {
     const loadTodayReservations = async () => {
       try {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         const res = await fetch(`${API_URL}/reservations?date=${today}`);
         if (!res.ok) return;
         const data = await res.json();
@@ -1219,7 +1226,7 @@ const SalesPage: React.FC = () => {
         setShowOnlineReservationPopup(false);
         setPendingOnlineReservation(null);
         // Reload today reservations
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         const rRes = await fetch(`${API_URL}/reservations?date=${today}`);
         if (rRes.ok) {
           const rData = await rRes.json();
@@ -1948,7 +1955,7 @@ const SalesPage: React.FC = () => {
           // Auto ëª¨ë“œ: ìžë™ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
           const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
           const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
-          const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+          const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
           
           console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
           
@@ -2224,6 +2231,90 @@ const SalesPage: React.FC = () => {
     }
   }, [onlineModalTab, showPrepTimeModal, loadMenuHideCategories]);
 
+  // Online Settings 모달 열릴 때 Firebase에서 전체 설정 로드
+  const loadAllOnlineSettings = useCallback(async () => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      if (!restaurantId) return;
+      const res = await fetch(`${API_URL}/online-orders/online-settings?restaurantId=${restaurantId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.settings) return;
+      const s = data.settings;
+      if (s.prepTimeSettings) {
+        const def = { thezoneorder: { mode: 'auto' as const, time: '15m' }, ubereats: { mode: 'auto' as const, time: '15m' }, doordash: { mode: 'auto' as const, time: '15m' }, skipthedishes: { mode: 'auto' as const, time: '15m' } };
+        setPrepTimeSettings({ ...def, ...s.prepTimeSettings });
+        localStorage.setItem('prepTimeSettings', JSON.stringify({ ...def, ...s.prepTimeSettings }));
+      }
+      if (s.pauseSettings) {
+        const chs = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const;
+        const next = chs.reduce((acc, ch) => {
+          const p = s.pauseSettings[ch];
+          acc[ch] = { paused: p?.paused ?? false, pauseUntil: p?.pausedUntil ? new Date(p.pausedUntil) : null };
+          return acc;
+        }, {} as { thezoneorder: { paused: boolean; pauseUntil: Date | null }; ubereats: { paused: boolean; pauseUntil: Date | null }; doordash: { paused: boolean; pauseUntil: Date | null }; skipthedishes: { paused: boolean; pauseUntil: Date | null } });
+        setPauseSettings(next);
+      }
+      if (s.dayOffDates && Array.isArray(s.dayOffDates)) {
+        setDayOffDates(s.dayOffDates);
+      }
+      if (s.utilitySettings) {
+        setUtilitySettings({
+          bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+          utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load online settings:', error);
+    }
+  }, [API_URL]);
+
+  useEffect(() => {
+    if (showPrepTimeModal) loadAllOnlineSettings();
+  }, [showPrepTimeModal, loadAllOnlineSettings]);
+
+  const loadUtilitySettings = useCallback(async () => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.utilitySettings) {
+          setUtilitySettings({
+            bagFee: { enabled: data.utilitySettings.bagFee?.enabled ?? false, amount: data.utilitySettings.bagFee?.amount ?? 0.10 },
+            utensils: { enabled: data.utilitySettings.utensils?.enabled ?? false },
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load utility settings:', error);
+    }
+  }, [API_URL]);
+
+  const saveUtilitySettings = async () => {
+    setSavingUtility(true);
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ utilitySettings, restaurantId }),
+      });
+      const data = await res.json();
+      if (data.success) alert('Utility settings saved!');
+      else alert('Failed to save: ' + (data.error || 'Unknown error'));
+    } catch (error) {
+      alert('Failed to save utility settings');
+    } finally {
+      setSavingUtility(false);
+    }
+  };
+
+  useEffect(() => {
+    if (onlineModalTab === 'utility' && showPrepTimeModal) loadUtilitySettings();
+  }, [onlineModalTab, showPrepTimeModal, loadUtilitySettings]);
+
   // ì¹´í…Œê³ ë¦¬ ì„ íƒ ì‹œ ì•„ì´í…œ ë¡œë“œ
   useEffect(() => {
     if (menuHideSelectedCategory) {
@@ -2231,7 +2322,12 @@ const SalesPage: React.FC = () => {
     }
   }, [menuHideSelectedCategory, loadMenuHideItems]);
 
-  // SSE ì‹¤ì‹œê°„ í‘¸ì‹œ ì—°ê²° - ìƒˆ ì£¼ë¬¸ ì¦‰ì‹œ ê°ì§€
+  const menuHideRefreshRef = React.useRef({ tab: 'preptime' as string, modalOpen: false, category: null as string | null });
+  useEffect(() => {
+    menuHideRefreshRef.current = { tab: onlineModalTab, modalOpen: showPrepTimeModal, category: menuHideSelectedCategory };
+  }, [onlineModalTab, showPrepTimeModal, menuHideSelectedCategory]);
+
+  // SSE
   useEffect(() => {
     const restaurantId = localStorage.getItem('firebaseRestaurantId');
     if (!restaurantId) return;
@@ -2256,7 +2352,7 @@ const SalesPage: React.FC = () => {
               // Auto ëª¨ë“œ: ìžë™ìœ¼ë¡œ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
               const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
               const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
-              const pickupTime = new Date(Date.now() + prepMinutes * 60000).toISOString();
+              const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
               
               console.log(`[SSE] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min`);
               
@@ -2280,8 +2376,36 @@ const SalesPage: React.FC = () => {
             // ëª©ë¡ ì¦‰ì‹œ ê°±ì‹ 
             loadOnlineOrders();
           } else if (data.type === 'order_updated') {
-            // ì£¼ë¬¸ ìƒíƒœ ë³€ê²½ ì‹œ ëª©ë¡ ê°±ì‹ 
             loadOnlineOrders();
+          } else if (data.type === 'online_settings_changed' && data.settings) {
+            const s = data.settings;
+            if (s.prepTimeSettings) {
+              const def = { thezoneorder: { mode: 'auto' as const, time: '15m' }, ubereats: { mode: 'auto' as const, time: '15m' }, doordash: { mode: 'auto' as const, time: '15m' }, skipthedishes: { mode: 'auto' as const, time: '15m' } };
+              setPrepTimeSettings({ ...def, ...s.prepTimeSettings });
+              localStorage.setItem('prepTimeSettings', JSON.stringify({ ...def, ...s.prepTimeSettings }));
+            }
+            if (s.pauseSettings) {
+              const chs = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const;
+              const next = chs.reduce((acc, ch) => {
+                const p = s.pauseSettings[ch];
+                acc[ch] = { paused: p?.paused ?? false, pauseUntil: p?.pausedUntil ? new Date(p.pausedUntil) : null };
+                return acc;
+              }, {} as { thezoneorder: { paused: boolean; pauseUntil: Date | null }; ubereats: { paused: boolean; pauseUntil: Date | null }; doordash: { paused: boolean; pauseUntil: Date | null }; skipthedishes: { paused: boolean; pauseUntil: Date | null } });
+              setPauseSettings(next);
+            }
+            if (s.dayOffDates && Array.isArray(s.dayOffDates)) setDayOffDates(s.dayOffDates);
+            if (s.utilitySettings) {
+              setUtilitySettings({
+                bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+                utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+              });
+            }
+          } else if (data.type === 'menu_visibility_changed') {
+            const { tab, modalOpen, category } = menuHideRefreshRef.current;
+            if (tab === 'menuhide' && modalOpen) {
+              loadMenuHideCategories();
+              if (category) loadMenuHideItems(category);
+            }
           }
         } catch (error) {
           console.warn('[SSE] Parse error:', error);
@@ -4539,7 +4663,7 @@ const SalesPage: React.FC = () => {
           title: store.name, 
           address: store.address, 
           phone: store.phone, 
-          dateTime: now.toISOString(), 
+          dateTime: getLocalDatetimeString(now), 
           orderNumber: order.order_number ? `#${order.order_number}` : orderId 
         },
         orderInfo: { 
@@ -4884,9 +5008,9 @@ const SalesPage: React.FC = () => {
   }, [orderListTab, showOrderListModal, fetchLiveOrders]);
 
   const handleOrderListDateChange = (days: number) => {
-    const current = new Date(orderListDate);
+    const current = new Date(orderListDate + 'T00:00:00');
     current.setDate(current.getDate() + days);
-    const newDate = current.toISOString().split('T')[0];
+    const newDate = `${current.getFullYear()}-${String(current.getMonth()+1).padStart(2,'0')}-${String(current.getDate()).padStart(2,'0')}`;
     setOrderListDate(newDate);
     setOrderListSelectedOrder(null);
     setOrderListSelectedItems([]);
@@ -4943,7 +5067,7 @@ const SalesPage: React.FC = () => {
           title: store.name, 
           address: store.address, 
           phone: store.phone, 
-          dateTime: now.toISOString(), 
+          dateTime: getLocalDatetimeString(now), 
           orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id 
         },
         orderInfo: { 
@@ -5260,6 +5384,7 @@ const SalesPage: React.FC = () => {
         (rawOrderType === 'TOGO' || rawOrderType === 'TAKEOUT' || rawOrderType === 'TO GO' || rawOrderType === 'TO-GO') ? 'TOGO' :
         rawOrderType === 'ONLINE' ? 'ONLINE' :
         rawOrderType === 'PICKUP' ? 'PICKUP' :
+        (rawOrderType === 'FORHERE' || rawOrderType === 'EAT IN' || rawOrderType === 'EATIN' || rawOrderType === 'FOR HERE') ? 'EAT IN' :
         'DINE-IN';
 
       const isOnlineOrDelivery = orderTypeDisplay === 'ONLINE' || orderTypeDisplay === 'TOGO' || orderTypeDisplay === 'DELIVERY' || orderTypeDisplay === 'PICKUP';
@@ -5360,7 +5485,15 @@ const SalesPage: React.FC = () => {
   // Order List Modal Helper Functions (moved outside to prevent re-creation on every render)
   const orderListFormatTime = (dateStr: string) => {
       if (!dateStr) return '--:--';
-      const d = new Date(dateStr);
+      let d: Date;
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateStr)) {
+        const [datePart, timePart] = dateStr.split(' ');
+        const [year, month, day] = datePart.split('-').map(Number);
+        const [h, m, s] = timePart.split(':').map(Number);
+        d = new Date(year, month - 1, day, h, m, s);
+      } else {
+        d = new Date(dateStr);
+      }
       return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
     };
 
@@ -5374,6 +5507,12 @@ const SalesPage: React.FC = () => {
       if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
         const [year, month, day] = dateStr.split('-').map(Number);
         d = new Date(year, month - 1, day);
+      } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateStr)) {
+        // YYYY-MM-DD HH:mm:ss (로컬 저장 형식) - 로컬 시간으로 파싱
+        const [datePart, timePart] = dateStr.split(' ');
+        const [year, month, day] = datePart.split('-').map(Number);
+        const [h, m, s] = timePart.split(':').map(Number);
+        d = new Date(year, month - 1, day, h, m, s);
       } else {
         // 다른 형식 (ISO 타임스탬프 등)은 그대로 파싱
         d = new Date(dateStr);
@@ -5585,7 +5724,7 @@ const SalesPage: React.FC = () => {
     };
 
   const orderListHandleCalendarDateSelect = (date: Date) => {
-      const dateStr = date.toISOString().split('T')[0];
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
       setOrderListDate(dateStr);
       setShowOrderListCalendar(false);
       setOrderListSelectedOrder(null);
@@ -6404,7 +6543,7 @@ const SalesPage: React.FC = () => {
         // Print Z-Report when closing
         await handlePrintZReport();
         
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         localStorage.setItem('pos_last_closed_date', today);
         setIsDayClosed(true);
         setShowClosingModal(false);
@@ -6971,7 +7110,7 @@ const SalesPage: React.FC = () => {
           customer_phone: giftCardCustomerPhone || null,
           sold_by: 'Staff',
           seller_pin: giftCardSellerPin,
-          created_at: new Date().toISOString()
+          created_at: getLocalDatetimeString()
         })
       });
       if (response.ok) {
@@ -7631,12 +7770,12 @@ const SalesPage: React.FC = () => {
                 const pickupAmPmForOrder = clockApplied?.ampm ?? pickupAmPm;
                 const pickupDateLabelForOrder = clockApplied?.dateLabel ?? pickupDateLabel;
                 const readyTimeLabel = clockApplied?.readyDisplay ?? computeReadyDisplayFromNow(pickupMinutesForOrder);
-                const createdIso = new Date().toISOString();
+                const createdLocal = getLocalDatetimeString();
                 const newOrder = {
                     id: Date.now(),
                   type: togoOrderMode === 'delivery' ? 'Delivery' : 'Togo',
                     time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-                  createdAt: createdIso,
+                  createdAt: createdLocal,
                     phone: customerPhone,
                   phoneRaw,
                   name: sanitizedCustomerName,
@@ -8806,6 +8945,12 @@ const SalesPage: React.FC = () => {
                 >
                   Menu Hide
                 </button>
+                <button
+                  onClick={() => setOnlineModalTab('utility')}
+                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'utility' ? 'bg-white text-violet-700 shadow-md border-2 border-violet-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                >
+                  Utility
+                </button>
               </div>
               
               {/* Tab Content - ê³ ì • ë†’ì´ (15% ì¦ê°€) */}
@@ -9254,7 +9399,7 @@ const SalesPage: React.FC = () => {
                             const month = dayOffCalendarMonth.getMonth();
                             const firstDay = new Date(year, month, 1).getDay();
                             const daysInMonth = new Date(year, month + 1, 0).getDate();
-                            const today = new Date().toISOString().split('T')[0];
+                            const today = getLocalDateString();
                             const cells = [];
                             
                             // ë¹ˆ ì…€ (ì´ì „ ë‹¬)
@@ -9397,14 +9542,14 @@ const SalesPage: React.FC = () => {
                     {/* í•˜ë‹¨: Scheduled ëª©ë¡ */}
                     <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-200">
                       <div className="text-sm font-bold text-gray-700 mb-2">
-                        Scheduled ({dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length})
+                        Scheduled ({dayOffDates.filter(d => d.date >= getLocalDateString()).length})
                       </div>
-                      {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length === 0 ? (
+                      {dayOffDates.filter(d => d.date >= getLocalDateString()).length === 0 ? (
                         <div className="text-sm text-gray-400 text-center py-2">No scheduled day offs</div>
                       ) : (
                         <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
                           {dayOffDates
-                            .filter(d => d.date >= new Date().toISOString().split('T')[0])
+                            .filter(d => d.date >= getLocalDateString())
                             .sort((a, b) => a.date.localeCompare(b.date))
                             .map((d) => {
                               const typeColor = d.type === 'closed' ? 'bg-red-100 text-red-700 border-red-300' 
@@ -9851,10 +9996,51 @@ const SalesPage: React.FC = () => {
                     </div>
                   </div>
                 )}
+                {/* Utility Tab - Bag Fee, Utensils (Firebase 연동) */}
+                {onlineModalTab === 'utility' && (
+                  <div className="flex flex-col h-full">
+                    <p className="text-sm text-gray-500 mb-4">Configure utility options shown to customers at checkout on the online order page.</p>
+                    <div className="border border-gray-200 rounded-lg p-4 mb-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <div className="text-base font-bold text-gray-800">🛍️ Bag Fee</div>
+                          <div className="text-xs text-gray-500 mt-0.5">Charge customers a bag fee at checkout (GST included)</div>
+                        </div>
+                        <button onClick={() => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, enabled: !prev.bagFee.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.bagFee.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
+                          <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.bagFee.enabled ? 'left-7' : 'left-0.5'}`} />
+                        </button>
+                      </div>
+                      {utilitySettings.bagFee.enabled && (
+                        <div className="flex items-center gap-2 mt-2">
+                          <label className="text-sm font-semibold text-gray-700 min-w-[80px]">Fee Amount</label>
+                          <div className="flex items-center border border-gray-300 rounded-md overflow-hidden">
+                            <span className="px-2.5 py-2 bg-gray-50 text-sm text-gray-500 border-r border-gray-300">$</span>
+                            <input type="number" min="0" step="0.01" value={utilitySettings.bagFee.amount} onChange={(e) => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, amount: parseFloat(e.target.value) || 0 } }))} className="px-2.5 py-2 border-none outline-none text-sm w-[90px]" />
+                          </div>
+                          <span className="text-xs text-gray-400">+GST 5% will be added</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="border border-gray-200 rounded-lg p-4 mb-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-base font-bold text-gray-800">🥢 Utensils</div>
+                          <div className="text-xs text-gray-500 mt-0.5">Ask customers how many utensil sets they need</div>
+                        </div>
+                        <button onClick={() => setUtilitySettings(prev => ({ ...prev, utensils: { enabled: !prev.utensils.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.utensils.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
+                          <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.utensils.enabled ? 'left-7' : 'left-0.5'}`} />
+                        </button>
+                      </div>
+                    </div>
+                    <button onClick={saveUtilitySettings} disabled={savingUtility} className={`w-full py-3 rounded-lg font-bold text-base transition-all ${savingUtility ? 'bg-gray-400 text-white cursor-wait' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>
+                      {savingUtility ? 'Saving...' : 'Save Utility Settings'}
+                    </button>
+                  </div>
+                )}
                 
               </div>
               
-              {/* Footer - Close ë²„íŠ¼ë§Œ */}
+              {/* Footer - Close */}
               <div className="flex justify-end gap-2 px-4 py-3 bg-gray-100 rounded-b-xl border-t">
                 <button
                   onClick={() => setShowPrepTimeModal(false)}
@@ -9965,7 +10151,7 @@ const SalesPage: React.FC = () => {
                   onClick={async () => {
                     // Accept: ì£¼ë¬¸ ìˆ˜ë½
                     try {
-                      const pickupTime = new Date(Date.now() + selectedPrepTime * 60000).toISOString();
+                      const pickupTime = getLocalDatetimeString(new Date(Date.now() + selectedPrepTime * 60000));
                       await fetch(`${API_URL}/online-orders/order/${newOrderAlertData.id}/accept`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -10095,7 +10281,7 @@ const SalesPage: React.FC = () => {
                               disabled={!day}
                               className={`p-2 rounded-lg text-sm font-medium ${
                                 !day ? '' :
-                                day.toISOString().split('T')[0] === orderListDate 
+                                getLocalDateString(day) === orderListDate 
                                   ? 'bg-blue-600 text-white' 
                                   : 'hover:bg-gray-100'
                               }`}
@@ -10978,7 +11164,7 @@ const SalesPage: React.FC = () => {
                         id: Date.now(),
                         type: 'Delivery',
                         time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-                        createdAt: new Date().toISOString(),
+                        createdAt: getLocalDatetimeString(),
                         phone: '',
                         name: `${deliveryCompany} #${deliveryOrderNumberTrimmed}`,
                         status: 'pending',
@@ -13003,7 +13189,7 @@ const SalesPage: React.FC = () => {
                               for (let day = 1; day <= daysInMonth; day++) {
                                 const dateStr = `${year}-${(month + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
                                 const isSelected = dateStr === refundSearchDate;
-                                const isToday = dateStr === new Date().toISOString().split('T')[0];
+                                const isToday = dateStr === getLocalDateString();
                                 
                                 days.push(
                                   <button

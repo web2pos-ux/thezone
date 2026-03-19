@@ -32,6 +32,7 @@ import TaxGroupManager, { TaxGroupEditor } from '../components/TaxGroupManager';
 import PrinterGroupManager, { PrinterGroupEditor } from '../components/PrinterGroupManager';
 import { Menu, Category, MenuItem, TaxGroup, PrinterGroup } from '../types';
 import { getDarkerHexColor } from '../utils/colorUtils';
+import { getLocalTimestampForFilename } from '../utils/datetimeUtils';
 
 import { API_URL, API_BASE } from '../config/constants';
 import DangerousActionModal from '../components/DangerousActionModal';
@@ -127,12 +128,20 @@ const MenuEditPage = () => {
     price2: 0
   });
   const [showInlineForm, setShowInlineForm] = useState<number | null>(null);
-  const [inlineFormData, setInlineFormData] = useState({
+  const [inlineFormData, setInlineFormData] = useState<{
+    name: string;
+    short_name: string;
+    description: string;
+    price: number;
+    price2: number;
+    kitchen_ticket_elements: { name: string; qty: number }[];
+  }>({
     name: '',
     short_name: '',
     description: '',
     price: 0,
-    price2: 0
+    price2: 0,
+    kitchen_ticket_elements: [] as { name: string; qty: number }[]
   });
 
   // Expanded/collapsed state management
@@ -307,7 +316,7 @@ const MenuEditPage = () => {
     if (!selectedCategoryId && categories.length > 0) {
       setSelectedCategoryId(categories[0].id);
       setShowInlineForm(categories[0].id);
-      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
       // focus the first inline input on next tick
       setTimeout(() => {
         const input = document.querySelector('input[name="name"]') as HTMLInputElement | null;
@@ -315,7 +324,7 @@ const MenuEditPage = () => {
       }, 0);
     } else if (selectedCategoryId) {
       setShowInlineForm(selectedCategoryId);
-      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
       setTimeout(() => {
         const input = document.querySelector('input[name="name"]') as HTMLInputElement | null;
         input?.focus();
@@ -1764,7 +1773,7 @@ const MenuEditPage = () => {
     if (menuEditLocked) { alert('Editing is locked.'); return; }
     setSelectedCategoryId(categoryId);
     setShowInlineForm(categoryId);
-    setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+    setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
   };
 
   const handleAddItemSubmit = () => {
@@ -1797,10 +1806,11 @@ const MenuEditPage = () => {
         inlineFormData.short_name,
         inlineFormData.description,
         inlineFormData.price,
-        inlineFormData.price2
+        inlineFormData.price2,
+        inlineFormData.kitchen_ticket_elements
       );
       setShowInlineForm(null);
-      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
     } else {
       // Add new menu item
       handleAddItem(
@@ -1812,7 +1822,7 @@ const MenuEditPage = () => {
       );
       
       // Open new New Item window immediately after resetting form
-      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+      setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
       
       // Focus on Item Name input in next tick
       setTimeout(() => {
@@ -1826,24 +1836,26 @@ const MenuEditPage = () => {
 
   const handleInlineFormCancel = () => {
     setShowInlineForm(null);
-    setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+    setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
   };
 
-  const handleUpdateItem = async (id: number, name: string, short_name: string, description: string, price: number, price2: number = 0) => {
+  const handleUpdateItem = async (id: number, name: string, short_name: string, description: string, price: number, price2: number = 0, kitchen_ticket_elements?: { name: string; qty: number }[]) => {
     try {
+      const body: Record<string, unknown> = { name, short_name, description, price, price2 };
+      if (kitchen_ticket_elements) body.kitchen_ticket_elements = kitchen_ticket_elements;
       const response = await fetch(`${API_URL}/menu/items/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, short_name, description, price, price2 })
+        body: JSON.stringify(body)
       });
       
       if (!response.ok) throw new Error('Failed to update item');
       
       setAllMenuItems(prev => prev.map(item => 
-        item.id === id ? { ...item, name, short_name, description, price, price2 } : item
+        item.id === id ? { ...item, name, short_name, description, price, price2, kitchen_ticket_elements } : item
       ));
       setMenuItems(prev => prev.map(item => 
-        item.id === id ? { ...item, name, short_name, description, price, price2 } : item
+        item.id === id ? { ...item, name, short_name, description, price, price2, kitchen_ticket_elements } : item
       ));
     } catch (error) {
       console.error(error);
@@ -1989,7 +2001,7 @@ const MenuEditPage = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `menu-${menuId}-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`;
+      a.download = `menu-${menuId}-${getLocalTimestampForFilename()}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -2567,7 +2579,6 @@ const MenuEditPage = () => {
         className={`bg-white rounded-lg shadow-sm border mb-0 transition-all duration-200
           ${isDragging ? 'scale-[1.02] shadow-xl opacity-90 border-blue-400' : 
             isOver ? 'border-2 border-green-500 bg-green-50 shadow-md' : 'border-gray-200'}`}
-        {...attributes}
       >
         {/* Category header */}
         <div className={`relative flex items-center justify-between py-1 px-2 border-b border-gray-100 bg-gray-200 rounded-t-lg transition-all duration-200 ${
@@ -2584,7 +2595,7 @@ const MenuEditPage = () => {
             />
           )}
           <div className="flex items-center space-x-3">
-            <div {...listeners} className="cursor-grab p-1.5 self-stretch flex items-center hover:bg-gray-200 rounded-full transition-colors">
+            <div {...attributes} {...listeners} className="cursor-grab p-1.5 self-stretch flex items-center hover:bg-gray-200 rounded-full transition-colors">
               <GripVertical size={20} className="text-slate-400" />
             </div>
             {/* Category image preview and upload/delete */}
@@ -2871,7 +2882,7 @@ const MenuEditPage = () => {
                   handleAddItem(name, short_name, description, price, price2, isOpenPrice);
                   // Keep form open for the same category, reset, and focus Item Name
                   setShowInlineForm(category.id);
-                  setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0 });
+                  setInlineFormData({ name: '', short_name: '', description: '', price: 0, price2: 0, kitchen_ticket_elements: [] });
                   // reset DOM form and focus name
                   formEl.reset();
                  setTimeout(() => {
@@ -3113,9 +3124,8 @@ const MenuEditPage = () => {
         ${highlightedElements.items.includes(item.id) ? 'ring-4 ring-green-500 ring-opacity-50 border-green-500' : ''}`}
         data-highlighted={highlightedElements.items.includes(item.id)}
         data-item-id={item.id}
-        {...attributes}
       >
-      <div {...listeners} className="cursor-grab p-1.5 flex items-center hover:bg-gray-200 rounded-full transition-colors mr-2">
+      <div {...attributes} {...listeners} className="cursor-grab p-1.5 flex items-center hover:bg-gray-200 rounded-full transition-colors mr-2">
         <GripVertical size={18} className="text-slate-400" />
       </div>
       <div className="flex items-center space-x-3 flex-1">
@@ -3210,6 +3220,63 @@ const MenuEditPage = () => {
                 placeholder="Description"
                 rows={2}
               />
+              {/* Kitchen Ticket Elements - dynamic add/remove */}
+              <div className="mt-2">
+                <span className="text-xs font-medium text-gray-600 block mb-1">Kitchen Ticket Elements (name + qty)</span>
+                {(inlineFormData.kitchen_ticket_elements.length > 0 ? inlineFormData.kitchen_ticket_elements : []).map((el: { name: string; qty: number }, idx: number) => (
+                  <div key={idx} className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] text-gray-400 w-3 text-right">{idx + 1}</span>
+                    <input
+                      type="text"
+                      value={el.name}
+                      onChange={(e) => {
+                        const next = [...inlineFormData.kitchen_ticket_elements];
+                        next[idx] = { ...next[idx], name: e.target.value };
+                        setInlineFormData({ ...inlineFormData, kitchen_ticket_elements: next });
+                      }}
+                      className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder={`Element ${idx + 1} name`}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={el.qty}
+                      onChange={(e) => {
+                        const next = [...inlineFormData.kitchen_ticket_elements];
+                        next[idx] = { ...next[idx], qty: Math.max(1, parseInt(e.target.value, 10) || 1) };
+                        setInlineFormData({ ...inlineFormData, kitchen_ticket_elements: next });
+                      }}
+                      className="w-14 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Qty"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = inlineFormData.kitchen_ticket_elements.filter((_: any, i: number) => i !== idx);
+                        setInlineFormData({ ...inlineFormData, kitchen_ticket_elements: next });
+                      }}
+                      className="p-1 text-red-500 hover:bg-red-100 rounded text-sm font-bold"
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {inlineFormData.kitchen_ticket_elements.length < 10 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineFormData({
+                        ...inlineFormData,
+                        kitchen_ticket_elements: [...inlineFormData.kitchen_ticket_elements, { name: '', qty: 1 }]
+                      });
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 rounded"
+                  >
+                    + Add Element
+                  </button>
+                )}
+              </div>
               {/* Option label + button (same line) */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-1">
@@ -3377,12 +3444,23 @@ const MenuEditPage = () => {
           <button 
             onClick={() => {
               setShowInlineForm(item.id);
+              let kte: { name: string; qty: number }[] = [];
+              try {
+                const raw = (item as any).kitchen_ticket_elements;
+                if (Array.isArray(raw)) {
+                  kte = raw.filter((e: any) => e && String(e?.name || '').trim()).map((e: any) => ({ name: String(e?.name || ''), qty: Math.max(1, parseInt(e?.qty, 10) || 1) }));
+                } else if (typeof raw === 'string' && raw) {
+                  const parsed = JSON.parse(raw);
+                  if (Array.isArray(parsed)) kte = parsed.filter((e: any) => e && String(e?.name || '').trim()).map((e: any) => ({ name: String(e?.name || ''), qty: Math.max(1, parseInt(e?.qty, 10) || 1) }));
+                }
+              } catch {}
               setInlineFormData({
                 name: item.name,
                 short_name: item.short_name || '',
                 description: item.description || '',
                 price: item.price,
-                price2: item.price2 || 0
+                price2: item.price2 || 0,
+                kitchen_ticket_elements: kte
               });
             }}
             className="p-1 hover:bg-blue-100 rounded-full transition-colors"

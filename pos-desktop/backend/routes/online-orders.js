@@ -7,9 +7,11 @@ const firebaseService = require('../services/firebaseService');
 const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
+const activeSettingsListeners = new Map();
 
 // 연결된 SSE 클라이언트들
 const sseClients = new Map();
@@ -77,6 +79,9 @@ router.get('/stream/:restaurantId', (req, res) => {
   if (!activeListeners.has(restaurantId)) {
     startOrderListener(restaurantId);
   }
+  if (!activeSettingsListeners.has(restaurantId)) {
+    startSettingsListener(restaurantId);
+  }
 
   // 연결 종료 시 정리
   req.on('close', () => {
@@ -87,6 +92,7 @@ router.get('/stream/:restaurantId', (req, res) => {
       // 해당 레스토랑에 연결된 클라이언트가 없으면 리스너 중지
       if (sseClients.get(restaurantId).size === 0) {
         stopOrderListener(restaurantId);
+        stopSettingsListener(restaurantId);
         sseClients.delete(restaurantId);
       }
     }
@@ -103,413 +109,13 @@ function startOrderListener(restaurantId) {
 
   const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
-      // SQLite에 저장하고 localOrderId 생성
-      const firebaseOrderId = order.id;
-      let localOrder = null;
+      // [DISABLED] 3rd party delivery 연동이 완료되기 전까지 Firebase 리스너에서 orders 테이블에 자동 INSERT하지 않음.
+      // 수동으로 POS에서 입력한 주문만 orders 테이블에 저장됨.
+      // 연동 완료 시 이 블록의 주석을 해제하면 됨.
       
-      try {
-        // 이미 저장된 주문인지 확인
-        localOrder = await dbGet(
-          'SELECT id FROM orders WHERE firebase_order_id = ?',
-          [firebaseOrderId]
-        );
-        
-        // 없으면 새로 생성
-        if (!localOrder) {
-          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-          const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
-          
-          // 세금 정보 추출
-          const taxAmount = order.tax || 0;
-          const taxRate = order.taxRate || 0;
-          const taxBreakdown = order.taxBreakdown ? JSON.stringify(order.taxBreakdown) : null;
-          
-          // 프로모션 정보 추출 (Firebase에서 온 주문에 포함됨)
-          const adjustments = [];
-          if (order.discountAmount && order.discountAmount > 0) {
-            adjustments.push({
-              kind: 'PROMOTION',
-              mode: order.promotionType || 'percent',
-              value: order.discountAmount,
-              amountApplied: order.discountAmount,
-              label: order.promotionName || 'Promotion',
-              promotionId: order.promotionId || null
-            });
-          }
-          const adjustmentsJson = adjustments.length > 0 ? JSON.stringify(adjustments) : null;
-          
-          // prepTime 추출 (Firebase에서 온 주문에 포함됨)
-          const prepTime = order.prepTime || order.prep_time || 20; // 기본 20분
-          
-          const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, adjustments_json, pickup_minutes, order_source, kitchen_note)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              orderNumber,
-              'ONLINE',
-              order.total || 0,
-              'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
-              order.customerPhone || null,
-              order.customerName || null,
-              firebaseOrderId,
-              taxAmount,
-              taxRate,
-              taxBreakdown,
-              adjustmentsJson,
-              prepTime,                                    // pickup_minutes
-              'THEZONE',                                   // order_source
-              order.notes || order.specialInstructions || null  // kitchen_note
-            ]
-          );
-          localOrder = { id: result.lastID, adjustments };
-          
-          // 주문 아이템도 저장 (모디파이어 포함, order_line_id 생성하여 이미 프린트된 것으로 표시)
-          if (Array.isArray(order.items)) {
-            let itemIndex = 0;
-            for (const item of order.items) {
-              // 모디파이어(options)를 modifiers_json 형식으로 변환
-              const modifiersJson = (item.options || []).length > 0 
-                ? JSON.stringify(item.options.map((opt) => ({
-                    name: opt.choiceName || opt.name || '',
-                    groupName: opt.optionName || '',
-                    price: opt.price || 0
-                  })))
-                : null;
-              
-              // order_line_id 생성 (머지 시 ADDITIONAL 프린트 방지)
-              const orderLineId = `ONLINE-${localOrder.id}-${itemIndex++}`;
-              
-              await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json, order_line_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  localOrder.id, 
-                  item.posItemId || item.id || null, 
-                  item.name || '', 
-                  item.quantity || 1, 
-                  item.price || 0,
-                  modifiersJson,
-                  orderLineId
-                ]
-              );
-            }
-          }
-          console.log(`📦 새 온라인 주문 SQLite 저장: #${localOrder.id} (모디파이어 포함)`);
-          
-          // 🖨️ 자동 출력 - 새 주문이 들어오면 바로 프린터로 전송
-          try {
-            const http = require('http');
-            
-            // 메뉴 아이템별 프린터 그룹 조회
-            const printItems = [];
-            for (const item of (order.items || [])) {
-              let printerGroupIds = [];
-              let itemId = item.posItemId || null;
-              let categoryId = item.posCategoryId || null;
-              
-              // posItemId가 있으면 직접 사용, 없으면 이름으로 검색
-              if (!itemId) {
-                const menuItem = await dbGet(
-                  'SELECT item_id, category_id FROM menu_items WHERE name = ? OR short_name = ?',
-                  [item.name, item.name]
-                );
-                if (menuItem) {
-                  itemId = menuItem.item_id;
-                  categoryId = menuItem.category_id;
-                }
-              }
-              
-              if (itemId) {
-                // 1. 아이템 직접 연결된 프린터 그룹 조회
-                const itemPrinterLinks = await dbAll(
-                  'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
-                  [itemId]
-                );
-                
-                if (itemPrinterLinks && itemPrinterLinks.length > 0) {
-                  printerGroupIds = itemPrinterLinks.map(l => l.printer_group_id);
-                } else if (categoryId) {
-                  // 2. 카테고리 프린터 그룹 조회
-                  const categoryPrinterLinks = await dbAll(
-                    'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
-                    [categoryId]
-                  );
-                  if (categoryPrinterLinks && categoryPrinterLinks.length > 0) {
-                    printerGroupIds = categoryPrinterLinks.map(l => l.printer_group_id);
-                  }
-                }
-              }
-              
-              // 프린터 그룹을 찾지 못한 경우 기본 Kitchen 사용
-              if (printerGroupIds.length === 0) {
-                const defaultGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
-                if (defaultGroup) {
-                  printerGroupIds.push(defaultGroup.id);
-                  console.log(`⚠️ 아이템 "${item.name}" - 프린터 그룹 없음, 기본 Kitchen 사용`);
-                }
-              }
-              
-              console.log(`🖨️ 아이템 "${item.name}" - posItemId: ${itemId}, categoryId: ${categoryId}, printerGroups: [${printerGroupIds.join(', ')}]`);
-              
-              printItems.push({
-                id: itemId || 0,
-                name: item.name || 'Unknown Item',
-                quantity: item.quantity || 1,
-                price: item.price || 0,
-                printerGroupIds: printerGroupIds,
-                // 프린터가 "modifiers"를 기대함 - options를 modifiers로 변환
-                modifiers: (item.options || []).map(opt => ({
-                  name: opt.choiceName || opt.name || '',
-                  price: opt.price || 0
-                })),
-                specialInstructions: item.specialInstructions || ''
-              });
-            }
-
-            // 로컬 POS 주문번호 사용 (#912 형식)
-            const localOrderNumber = localOrder?.id ? `#${localOrder.id}` : orderNumber;
-            
-            // Pickup 시간 계산 (현재시간 + prepTime)
-            const prepTime = order.prepTime || order.prep_time || 20; // 기본 20분
-            const pickupDate = new Date(Date.now() + prepTime * 60000);
-            const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-            
-            // 결제 상태 확인 (Firebase에서 온라인 결제 완료 여부)
-            const orderIsPaid = order.status === 'paid' || 
-                               order.paymentStatus === 'PAID' || 
-                               order.paymentStatus === 'completed' ||
-                               order.paymentStatus === 'COMPLETED' ||
-                               order.paid === true;
-            
-            // 프로모션 adjustments 생성 (출력용)
-            const printAdjustments = [];
-            if (order.discountAmount && order.discountAmount > 0) {
-              printAdjustments.push({
-                kind: 'PROMOTION',
-                mode: order.promotionType || 'percent',
-                value: order.discountAmount,
-                amountApplied: order.discountAmount,
-                label: order.promotionName || 'Promotion'
-              });
-            }
-            
-            const printData = JSON.stringify({
-              orderInfo: {
-                orderNumber: localOrderNumber,
-                externalOrderNumber: localOrderNumber, // TZO는 POS 주문번호 사용
-                orderType: 'ONLINE',
-                table: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
-                customerName: order.customerName || '',
-                customerPhone: order.customerPhone || '',
-                notes: order.notes || '',
-                specialInstructions: order.notes || order.specialInstructions || '', // Footer에 출력될 Special Instructions
-                channel: 'THEZONE',
-                deliveryChannel: 'THEZONE', // 출력물에 표시될 채널명
-                orderSource: 'THEZONE',
-                firebaseOrderNumber: orderNumber, // Firebase 주문번호는 별도 보관
-                prepTime: prepTime,
-                pickupMinutes: prepTime,
-                pickupTime: pickupTimeStr // 계산된 Pickup 시간
-              },
-              items: printItems,
-              adjustments: printAdjustments, // 프로모션 할인 정보
-              isAdditionalOrder: false,
-              isPaid: orderIsPaid, // Firebase 결제 상태에 따라 PAID/UNPAID 출력
-              isReprint: false
-            });
-
-            const printReq = http.request({
-              hostname: 'localhost',
-              port: 3177,
-              path: '/api/printers/print-order',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(printData)
-              }
-            }, (printRes) => {
-              let responseData = '';
-              printRes.on('data', chunk => { responseData += chunk; });
-              printRes.on('end', () => {
-                console.log(`🖨️ 온라인 주문 자동 출력 완료: ${localOrderNumber} (Firebase: ${orderNumber})`);
-              });
-            });
-
-            printReq.on('error', (err) => {
-              console.error('🖨️ 온라인 주문 자동 출력 오류:', err.message);
-            });
-
-            printReq.write(printData);
-            printReq.end();
-
-            // Bill 데이터 구성
-            const taxLines = [];
-            if (order.taxBreakdown && Array.isArray(order.taxBreakdown)) {
-              order.taxBreakdown.forEach(tax => {
-                taxLines.push({ name: tax.name || 'Tax', amount: tax.amount || 0 });
-              });
-            } else if (order.tax) {
-              taxLines.push({ name: 'Tax', amount: order.tax });
-            }
-            
-            // 원본 소계 계산 (할인 전): 아이템 가격 합계를 먼저 계산
-            const itemsSubtotal = (order.items || []).reduce((sum, item) => {
-              const itemPrice = Number(item.price || item.unitPrice || 0);
-              const qty = Number(item.quantity || 1);
-              const modifiersTotal = (item.options || []).reduce((s, opt) => s + Number(opt.price || 0), 0);
-              const lineTotal = Number(item.subtotal || item.totalPrice || ((itemPrice + modifiersTotal) * qty));
-              return sum + lineTotal;
-            }, 0);
-            
-            // order.subtotal이 있으면 사용, 없으면 아이템에서 계산한 값 사용
-            // total - tax 는 할인 후 금액이므로 사용하지 않음
-            const subtotal = Number(order.subtotal || itemsSubtotal) || 0;
-            
-            // Bill용 adjustments 구성 (프로모션 할인 포함)
-            const billAdjustments = [];
-            
-            // 할인 금액 계산
-            const taxAmount = Number(order.tax || 0);
-            const actualTotal = Number(order.total || 0);
-            const discountAmount = Number(order.discountAmount || 0);
-            
-            // 명시적 할인 정보가 있는 경우
-            if (discountAmount > 0) {
-              billAdjustments.push({
-                kind: 'PROMOTION',
-                label: order.promotionName || 'Promotion',
-                mode: order.promotionType || 'amount',
-                value: discountAmount,
-                amount: -discountAmount // 마이너스로 표시
-              });
-              console.log(`🧾 명시적 할인 적용: ${order.promotionName || 'Promotion'} -$${discountAmount.toFixed(2)}`);
-            } else {
-              // 명시적 할인 정보가 없지만 subtotal과 total 차이가 있는 경우 할인 자동 계산
-              const expectedTotal = subtotal + taxAmount;
-              const impliedDiscount = Number((expectedTotal - actualTotal).toFixed(2));
-              
-              if (impliedDiscount > 0.01) { // 1센트 이상의 차이가 있으면 할인으로 표시
-                billAdjustments.push({
-                  kind: 'DISCOUNT',
-                  label: order.promotionName || 'Discount',
-                  amount: -impliedDiscount // 마이너스로 표시
-                });
-                console.log(`🧾 암시적 할인 감지: ${order.promotionName || 'Discount'} -$${impliedDiscount.toFixed(2)} (subtotal: $${subtotal.toFixed(2)}, tax: $${taxAmount.toFixed(2)}, expected: $${expectedTotal.toFixed(2)}, actual: $${actualTotal.toFixed(2)})`);
-              }
-            }
-            
-            const billData = {
-              header: {
-                orderNumber: localOrderNumber,
-                channel: 'ONLINE',
-                tableName: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
-                serverName: ''
-              },
-              orderInfo: {
-                channel: 'ONLINE',
-                tableName: order.orderType === 'pickup' ? 'PICKUP' : 'ONLINE',
-                serverName: '',
-                customerName: order.customerName || '',
-                customerPhone: order.customerPhone || ''
-              },
-              items: (order.items || []).map(item => {
-                const itemPrice = item.price || item.unitPrice || item.subtotal || 0;
-                const qty = item.quantity || 1;
-                const modifiersTotal = (item.options || []).reduce((sum, opt) => sum + (opt.price || 0), 0);
-                const lineTotal = item.subtotal || item.totalPrice || ((itemPrice + modifiersTotal) * qty);
-                return {
-                  name: item.name || 'Unknown',
-                  quantity: qty,
-                  price: itemPrice,
-                  totalPrice: lineTotal,
-                  lineTotal: lineTotal,
-                  modifiers: (item.options || []).map(opt => ({
-                    name: opt.choiceName || opt.name || '',
-                    price: opt.price || 0
-                  }))
-                };
-              }),
-              guestSections: [],
-              subtotal: subtotal,
-              adjustments: billAdjustments,
-              taxLines: taxLines,
-              taxesTotal: order.tax || 0,
-              total: order.total || 0,
-              footer: {}
-            };
-
-            // 🧾 온라인 결제 완료 시 Receipt도 출력 + Cash Drawer 열기
-            if (orderIsPaid) {
-              console.log(`💳 온라인 결제 완료 주문 - Receipt 출력: ${localOrderNumber}`);
-
-              // Receipt 출력 (결제 정보 포함)
-              const receiptData = {
-                ...billData,
-                payments: [{
-                  method: order.paymentMethod || 'Credit Card',
-                  amount: order.total || 0
-                }],
-                change: 0
-              };
-
-              const receiptPrintData = JSON.stringify({ receiptData });
-              const receiptReq = http.request({
-                hostname: 'localhost',
-                port: 3177,
-                path: '/api/printers/print-receipt',
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Content-Length': Buffer.byteLength(receiptPrintData)
-                }
-              }, (receiptRes) => {
-                let receiptResponseData = '';
-                receiptRes.on('data', chunk => { receiptResponseData += chunk; });
-                receiptRes.on('end', () => {
-                  console.log(`🧾 온라인 주문 Receipt 출력 완료: ${localOrderNumber}`);
-                });
-              });
-              receiptReq.on('error', (err) => {
-                console.error('🧾 온라인 주문 Receipt 출력 오류:', err.message);
-              });
-              receiptReq.write(receiptPrintData);
-              receiptReq.end();
-
-              // 💰 온라인 결제 완료 시 Cash Drawer 열기
-              console.log(`💰 온라인 결제 완료 - Cash Drawer 열기: ${localOrderNumber}`);
-              const drawerReq = http.request({
-                hostname: 'localhost',
-                port: 3177,
-                path: '/api/printers/open-drawer',
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Content-Length': 2
-                }
-              }, (drawerRes) => {
-                drawerRes.on('data', () => {});
-                drawerRes.on('end', () => {
-                  console.log(`💰 온라인 주문 Cash Drawer 열기 완료: ${localOrderNumber}`);
-                });
-              });
-              drawerReq.on('error', (err) => {
-                console.error('💰 온라인 주문 Cash Drawer 열기 오류:', err.message);
-              });
-              drawerReq.write('{}');
-              drawerReq.end();
-            }
-          } catch (printError) {
-            console.error('🖨️ 자동 출력 중 오류:', printError.message);
-          }
-        }
-      } catch (saveError) {
-        console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
-      }
-      
-      // localOrderId 포함하여 브로드캐스트
+      // SSE 브로드캐스트는 유지 (OnlineOrderPanel에서 실시간 표시용)
       const formatted = formatOrderForFrontend(order);
-      formatted.localOrderId = localOrder?.id || null;
+      formatted.localOrderId = null;
       
       broadcastToClients(restaurantId, {
         type: 'new_order',
@@ -540,6 +146,67 @@ function stopOrderListener(restaurantId) {
     unsubscribe();
     activeListeners.delete(restaurantId);
     console.log(`🛑 주문 리스너 중지: ${restaurantId}`);
+  }
+}
+
+// Firebase Online Settings 리스너 시작 (Prep Time, Pause, Day Off, Utility)
+function startSettingsListener(restaurantId) {
+  if (activeSettingsListeners.has(restaurantId)) return;
+  if (!ensureFirebaseInit()) return;
+
+  const firestore = firebaseService.getFirestore();
+  const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+
+  let isInitial = true;
+  const unsubscribe = settingsRef.onSnapshot(
+    async (docSnap) => {
+      if (!docSnap.exists) return;
+      const data = docSnap.data();
+
+      const prepTimeRaw = data?.prepTimeSettings;
+      const prepTimeSettings = prepTimeRaw?.settings || prepTimeRaw || null;
+      const pauseSettings = data?.pauseSettings || null;
+      const dayOffDates = (data?.dayOffSettings?.dates || []).map((d) => ({
+        date: d.date,
+        channels: d.channels || 'all',
+        type: d.type || 'closed',
+      }));
+      const utilitySettings = data?.utilitySettings || null;
+
+      const payload = {
+        type: 'online_settings_changed',
+        settings: {
+          prepTimeSettings,
+          pauseSettings,
+          dayOffDates,
+          utilitySettings,
+        },
+      };
+
+      if (isInitial) {
+        isInitial = false;
+        console.log(`📦 Online Settings 초기 로드: ${restaurantId}`);
+      } else {
+        console.log(`🔄 Online Settings 변경 감지: ${restaurantId}`);
+      }
+
+      broadcastToClients(restaurantId, payload);
+    },
+    (error) => {
+      console.error('❌ Online Settings 리스너 오류:', error);
+    }
+  );
+
+  activeSettingsListeners.set(restaurantId, unsubscribe);
+  console.log(`👂 Online Settings 리스너 시작: ${restaurantId}`);
+}
+
+function stopSettingsListener(restaurantId) {
+  const unsubscribe = activeSettingsListeners.get(restaurantId);
+  if (unsubscribe) {
+    unsubscribe();
+    activeSettingsListeners.delete(restaurantId);
+    console.log(`🛑 Online Settings 리스너 중지: ${restaurantId}`);
   }
 }
 
@@ -805,78 +472,13 @@ router.get('/:restaurantId', async (req, res) => {
         return null; // 테이블로 이동된 주문은 온라인 목록에서 제외
       }
       
-      // 없으면 새로 생성
+      // [DISABLED] 3rd party delivery 연동이 완료되기 전까지 orders 테이블에 자동 INSERT하지 않음.
+      // 연동 완료 시 이 블록의 주석을 해제하면 됨.
+      /*
       if (!localOrder) {
-        const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-        const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
-        
-        // 세금 정보 추출
-        const taxAmount = order.tax || 0;
-        const taxRate = order.taxRate || 0;
-        const taxBreakdown = order.taxBreakdown ? JSON.stringify(order.taxBreakdown) : null;
-        
-        try {
-          // prepTime 추출
-          const prepTime = order.prepTime || order.prep_time || 20;
-          
-          const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, tax, tax_rate, tax_breakdown, pickup_minutes, order_source, kitchen_note)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              orderNumber,
-              'ONLINE',
-              order.total || 0,
-              'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
-              order.customerPhone || null,
-              order.customerName || null,
-              firebaseOrderId,
-              taxAmount,
-              taxRate,
-              taxBreakdown,
-              prepTime,                                    // pickup_minutes
-              'THEZONE',                                   // order_source
-              order.notes || order.specialInstructions || null  // kitchen_note
-            ]
-          );
-          localOrder = { id: result.lastID };
-          
-          // 주문 아이템도 저장 (모디파이어 포함, order_line_id 생성하여 이미 프린트된 것으로 표시)
-          if (Array.isArray(order.items)) {
-            let itemIndex = 0;
-            for (const item of order.items) {
-              // 모디파이어(options)를 modifiers_json 형식으로 변환
-              const modifiersJson = (item.options || []).length > 0 
-                ? JSON.stringify(item.options.map((opt) => ({
-                    name: opt.choiceName || opt.name || '',
-                    groupName: opt.optionName || '',
-                    price: opt.price || 0
-                  })))
-                : null;
-              
-              // order_line_id 생성 (머지 시 ADDITIONAL 프린트 방지)
-              const orderLineId = `ONLINE-${localOrder.id}-${itemIndex++}`;
-              
-              await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price, modifiers_json, order_line_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [
-                  localOrder.id, 
-                  item.posItemId || item.id || null, 
-                  item.name || '', 
-                  item.quantity || 1, 
-                  item.price || 0,
-                  modifiersJson,
-                  orderLineId
-                ]
-              );
-            }
-          }
-        } catch (insertError) {
-          console.error('온라인 주문 SQLite 저장 실패:', insertError.message);
-          // 저장 실패해도 계속 진행 (Firebase ID 사용)
-        }
+        ... (auto-insert logic disabled) ...
       }
+      */
       
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
@@ -1022,7 +624,7 @@ router.post('/order/:orderId/complete', async (req, res) => {
     // 로컬 SQLite 데이터베이스도 PAID 상태로 업데이트
     let localOrderId = null;
     try {
-      const closedAt = new Date().toISOString();
+      const closedAt = getLocalDatetimeString();
       await dbRun(
         `UPDATE orders SET status = 'PAID', closed_at = ? WHERE firebase_order_id = ?`,
         [closedAt, orderId]
@@ -1713,6 +1315,94 @@ router.post('/prep-time-settings', async (req, res) => {
 });
 
 // ============================================
+// Online Settings 전체 조회 (Firebase → POS) - 모달 열 때 로드
+// ============================================
+
+router.get('/online-settings', async (req, res) => {
+  try {
+    const reqRestaurantId = req.query.restaurantId || req.headers['x-restaurant-id'];
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+
+    if (!restaurantId) {
+      return res.json({ success: true, settings: null });
+    }
+
+    if (!ensureFirebaseInit()) {
+      return res.json({ success: true, settings: null });
+    }
+
+    const settings = await firebaseService.getOnlineSettings(restaurantId);
+    res.json({ success: true, settings: settings || {} });
+  } catch (error) {
+    console.error('[ONLINE SETTINGS] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// Utility Settings (Bag Fee, Utensils) - Firebase 연동
+// ============================================
+
+// GET /online-orders/utility-settings - Firebase에서 조회
+router.get('/utility-settings', async (req, res) => {
+  try {
+    const reqRestaurantId = req.query.restaurantId || req.headers['x-restaurant-id'];
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+
+    if (!restaurantId) {
+      return res.json({ success: true, utilitySettings: null });
+    }
+
+    if (!ensureFirebaseInit()) {
+      return res.json({ success: true, utilitySettings: null });
+    }
+
+    const utilitySettings = await firebaseService.getUtilitySettings(restaurantId);
+    const defaults = { bagFee: { enabled: false, amount: 0.10 }, utensils: { enabled: false } };
+    res.json({ success: true, utilitySettings: utilitySettings || defaults });
+  } catch (error) {
+    console.error('[UTILITY] Get error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /online-orders/utility-settings - Firebase에 저장
+router.post('/utility-settings', async (req, res) => {
+  try {
+    const { utilitySettings, restaurantId: reqRestaurantId } = req.body;
+    const restaurantIdRow = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    const restaurantId = reqRestaurantId || restaurantIdRow?.firebase_restaurant_id;
+
+    if (!restaurantId) {
+      return res.status(400).json({ success: false, error: 'Restaurant ID not found' });
+    }
+
+    if (!ensureFirebaseInit()) {
+      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+    }
+
+    const payload = {
+      bagFee: {
+        enabled: Boolean(utilitySettings?.bagFee?.enabled),
+        amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
+      },
+      utensils: {
+        enabled: Boolean(utilitySettings?.utensils?.enabled),
+      },
+    };
+
+    await firebaseService.syncUtilitySettings(restaurantId, payload);
+    console.log('[UTILITY] Synced to Firebase');
+    res.json({ success: true, message: 'Utility settings saved', firebaseSynced: true });
+  } catch (error) {
+    console.error('[UTILITY] Save error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
 // Promotion API for Online/Table Orders
 // ============================================
 
@@ -1897,8 +1587,14 @@ router.get('/promotions/:channel', async (req, res) => {
   }
 });
 
+// 외부에서 SSE 브로드캐스트 (Menu Visibility 등)
+function broadcastToRestaurant(restaurantId, data) {
+  broadcastToClients(restaurantId, data);
+}
+
 module.exports = {
   router,
-  startOrderListener
+  startOrderListener,
+  broadcastToRestaurant
 };
 

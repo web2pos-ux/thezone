@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Edit, Trash2 } from 'lucide-react';
+import { Edit, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import PrintLayoutEditor from '../components/PrintLayoutEditor';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
@@ -29,6 +29,7 @@ interface PrinterGroup {
   printerIds: number[]; // PrinterSlot IDs
   printers?: GroupPrinter[]; // 프린터 상세 정보 (copies 포함)
   show_label?: boolean; // 라벨 출력 여부
+  display_order?: number; // 출력 순서 (작을수록 먼저)
 }
 
 // 시스템 프린터 타입
@@ -192,6 +193,7 @@ interface KitchenPrinterLayout {
   items: KitchenElementStyle;
   modifiers: KitchenElementStyle & { prefix: string };
   itemNote: KitchenElementStyle & { prefix: string };
+  kitchenTicketElements?: KitchenElementStyle & { prefix: string; visible?: boolean };
   // Kitchen Note (Body 하단 고정)
   kitchenNote: KitchenElementStyle;    // 주방용 메모 출력
   // Status
@@ -254,6 +256,7 @@ interface KitchenLayoutSettings {
   items: KitchenElementStyle;
   modifiers: KitchenElementStyle & { prefix: string };
   itemNote: KitchenElementStyle & { prefix: string };
+  kitchenTicketElements?: KitchenElementStyle & { prefix: string; visible?: boolean };
   // Online/Delivery specific
   pickupTime: KitchenElementStyle;     // 픽업/배달 시간
   deliveryChannel: KitchenElementStyle; // DoorDash, UberEats 등
@@ -645,6 +648,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 9, inverse: false },
       itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 10, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(12), prefix: '  - ', order: 10.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 11, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -671,6 +675,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(12), order: 8, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 9, inverse: false },
       itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 10, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(10), prefix: '  - ', order: 10.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 11, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -709,6 +714,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 102, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(12), prefix: '  - ', order: 102.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -740,6 +746,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 102, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(10), prefix: '  - ', order: 102.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -778,6 +785,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(12), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(12), prefix: '->', isItalic: true, order: 102, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(12), prefix: '  - ', order: 102.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(16), fontWeight: 'bold', order: 13, inverse: true, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 200, inverse: false, visible: true, text: '' },
@@ -809,6 +817,7 @@ const defaultLayoutSettings: PrintLayoutSettings = {
       items: { ...createDefaultElementStyle(12), order: 100, inverse: false },
       modifiers: { ...createDefaultElementStyle(10), prefix: '>>', order: 101, inverse: false },
       itemNote: { ...createDefaultElementStyle(10), prefix: '->', isItalic: true, order: 102, inverse: false },
+      kitchenTicketElements: { ...createDefaultElementStyle(10), prefix: '  - ', order: 102.5, inverse: false, visible: true },
       kitchenNote: { ...createDefaultElementStyle(12), fontWeight: 'bold', order: 150, inverse: false, visible: true },
       paidStatus: { ...createDefaultElementStyle(14), fontWeight: 'bold', order: 13, inverse: false, showInHeader: true, showInFooter: false },
       specialInstructions: { ...createDefaultElementStyle(10), order: 200, inverse: false, visible: true, text: '' },
@@ -960,6 +969,7 @@ const kitchenElementLabels: Record<string, string> = {
   items: 'Items',
   modifiers: 'Modifiers',
   itemNote: 'Memo',
+  kitchenTicketElements: 'Kitchen Ticket Elements (On/Off)',
   paidStatus: 'PAID/UNPAID Status',
   pickupTime: 'Pickup Time',
   deliveryChannel: 'Delivery Channel',
@@ -971,7 +981,7 @@ const kitchenElementLabels: Record<string, string> = {
 
 
 export default function PrinterPage() {
-  const [activeTab, setActiveTab] = useState<'printers' | 'newPrinter' | 'bill' | 'receipt' | 'kitchen' | 'externalKitchen' | 'deliveryKitchen'>('printers');
+  const [activeTab, setActiveTab] = useState<'printers' | 'newPrinter'>('printers');
   
   // Kitchen 프린터 타입 (Kitchen vs Waitress)
   const [kitchenPrinterType, setKitchenPrinterType] = useState<'kitchen' | 'waitress'>('kitchen');
@@ -1012,63 +1022,15 @@ export default function PrinterPage() {
 
   // 현재 선택된 탭과 프린터 타입에 맞는 레이아웃 설정 반환
   const getCurrentLayoutSettings = () => {
-    if (activeTab === 'kitchen') {
-      if (!layoutSettings.dineInKitchen) return layoutSettings.kitchenLayout;
-      return kitchenPrinterType === 'kitchen' 
-        ? layoutSettings.dineInKitchen.kitchenPrinter 
-        : layoutSettings.dineInKitchen.waitressPrinter;
-    } else if (activeTab === 'externalKitchen') {
-      if (!layoutSettings.externalKitchen) return layoutSettings.kitchenLayout;
-      return kitchenPrinterType === 'kitchen'
-        ? layoutSettings.externalKitchen.kitchenPrinter
-        : layoutSettings.externalKitchen.waitressPrinter;
-    } else if (activeTab === 'deliveryKitchen') {
-      if (!layoutSettings.deliveryKitchen) return layoutSettings.externalKitchen?.kitchenPrinter || layoutSettings.kitchenLayout;
-      return kitchenPrinterType === 'kitchen'
-        ? layoutSettings.deliveryKitchen.kitchenPrinter
-        : layoutSettings.deliveryKitchen.waitressPrinter;
-    }
     return layoutSettings.kitchenLayout;
   };
 
   // 현재 선택된 레이아웃 설정 업데이트
   const updateCurrentLayoutSettings = (updates: any) => {
-    if (activeTab === 'kitchen') {
-      const printerKey = kitchenPrinterType === 'kitchen' ? 'kitchenPrinter' : 'waitressPrinter';
-      const current = layoutSettings.dineInKitchen[printerKey];
-      updateLayoutSettings({
-        ...layoutSettings,
-        dineInKitchen: {
-          ...layoutSettings.dineInKitchen,
-          [printerKey]: { ...current, ...updates }
-        }
-      });
-    } else if (activeTab === 'externalKitchen') {
-      const printerKey = kitchenPrinterType === 'kitchen' ? 'kitchenPrinter' : 'waitressPrinter';
-      const current = layoutSettings.externalKitchen[printerKey];
-      updateLayoutSettings({
-        ...layoutSettings,
-        externalKitchen: {
-          ...layoutSettings.externalKitchen,
-          [printerKey]: { ...current, ...updates }
-        }
-      });
-    } else if (activeTab === 'deliveryKitchen') {
-      const printerKey = kitchenPrinterType === 'kitchen' ? 'kitchenPrinter' : 'waitressPrinter';
-      const current = layoutSettings.deliveryKitchen[printerKey];
-      updateLayoutSettings({
-        ...layoutSettings,
-        deliveryKitchen: {
-          ...layoutSettings.deliveryKitchen,
-          [printerKey]: { ...current, ...updates }
-        }
-      });
-    } else {
-       updateLayoutSettings({
-         ...layoutSettings,
-         kitchenLayout: { ...layoutSettings.kitchenLayout, ...updates }
-       });
-    }
+    updateLayoutSettings({
+      ...layoutSettings,
+      kitchenLayout: { ...layoutSettings.kitchenLayout, ...updates }
+    });
   };
 
   const currentLayout = getCurrentLayoutSettings() as any;
@@ -1697,18 +1659,22 @@ export default function PrinterPage() {
       return;
     }
     
-    const newGroup: PrinterGroup = {
-      id: Date.now(),
-      name: newGroupName.trim(),
-      printerIds: [],
-      show_label: true
-    };
-    
-    setPrinterGroups(prev => [...prev, newGroup]);
+    const newId = Date.now();
+    setPrinterGroups(prev => {
+      const maxOrder = prev.reduce((m, g) => Math.max(m, g.display_order ?? 0), -1);
+      const newGroup: PrinterGroup = {
+        id: newId,
+        name: newGroupName.trim(),
+        printerIds: [],
+        show_label: true,
+        display_order: maxOrder + 1
+      };
+      return [...prev, newGroup];
+    });
     setNewGroupName('');
     
     // 바로 프린터 선택 모달 열기
-    setSelectedGroupId(newGroup.id);
+    setSelectedGroupId(newId);
     setShowGroupPrinterModal(true);
   };
 
@@ -1744,6 +1710,38 @@ export default function PrinterPage() {
 
   // 현재 선택된 그룹
   const currentGroup = printerGroups.find(g => g.id === selectedGroupId);
+
+  // 그룹 순서 변경 (display_order로 출력 순서 결정 - Sushi Bar / Roll Bar 등)
+  const moveGroupUp = (groupId: number) => {
+    const sorted = [...printerGroups].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+    const idx = sorted.findIndex(g => g.id === groupId);
+    if (idx <= 0) return;
+    const prev = sorted[idx - 1];
+    const curr = sorted[idx];
+    setPrinterGroups(prevGroups => {
+      const next = prevGroups.map(g => {
+        if (g.id === prev.id) return { ...g, display_order: curr.display_order ?? idx };
+        if (g.id === curr.id) return { ...g, display_order: prev.display_order ?? idx - 1 };
+        return g;
+      });
+      return next;
+    });
+  };
+  const moveGroupDown = (groupId: number) => {
+    const sorted = [...printerGroups].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+    const idx = sorted.findIndex(g => g.id === groupId);
+    if (idx < 0 || idx >= sorted.length - 1) return;
+    const curr = sorted[idx];
+    const next = sorted[idx + 1];
+    setPrinterGroups(prevGroups => {
+      const result = prevGroups.map(g => {
+        if (g.id === curr.id) return { ...g, display_order: next.display_order ?? idx + 1 };
+        if (g.id === next.id) return { ...g, display_order: curr.display_order ?? idx };
+        return g;
+      });
+      return result;
+    });
+  };
 
   // 토글 컴포넌트
   const Toggle = ({ checked, onChange, label, description }: { 
@@ -1867,11 +1865,11 @@ export default function PrinterPage() {
 
   // 섹션별 요소 키 정의
   const KITCHEN_HEADER_KEYS = ['orderType', 'tableNumber', 'posOrderNumber', 'externalOrderNumber', 'serverName', 'dateTime', 'paidStatus'];
-  const KITCHEN_BODY_KEYS = ['items', 'modifiers', 'itemNote'];
+  const KITCHEN_BODY_KEYS = ['items', 'modifiers', 'itemNote', 'kitchenTicketElements'];
   const KITCHEN_FOOTER_KEYS = ['specialInstructions'];
   
   const EXTERNAL_HEADER_KEYS = ['orderType', 'tableNumber', 'posOrderNumber', 'externalOrderNumber', 'serverName', 'dateTime', 'deliveryChannel', 'pickupTime', 'customerName', 'customerPhone', 'deliveryAddress', 'paidStatus'];
-  const EXTERNAL_BODY_KEYS = ['items', 'modifiers', 'itemNote'];
+  const EXTERNAL_BODY_KEYS = ['items', 'modifiers', 'itemNote', 'kitchenTicketElements'];
   const EXTERNAL_FOOTER_KEYS = ['specialInstructions'];
 
   // 요소를 order 순으로 정렬하여 렌더링하는 함수
@@ -3054,13 +3052,13 @@ export default function PrinterPage() {
     };
 
     const renderItemsList = () => {
-      const itemParts = ['items', 'modifiers', 'itemNote'].sort((a, b) => {
+      const itemParts = ['items', 'modifiers', 'itemNote', 'kitchenTicketElements'].sort((a, b) => {
         return ((kl as any)[a]?.order || 0) - ((kl as any)[b]?.order || 0);
       });
 
-      const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
+      const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode, kteElements?: React.ReactNode) => {
         const el = (kl as any)[partKey];
-        if (!el.visible) return null;
+        if (!el || el.visible === false) return null;
         if (partKey === 'items') {
           return <div key="item" style={getKitchenPreviewStyle(el)}>{itemName}</div>;
         }
@@ -3070,17 +3068,24 @@ export default function PrinterPage() {
         if (partKey === 'itemNote' && note) {
            return <div key="note" className="ml-4 text-gray-800" style={getKitchenPreviewStyle(el)}>{note}</div>;
         }
+        if (partKey === 'kitchenTicketElements' && kteElements) {
+           return <div key="kte" className="ml-4 text-gray-700" style={getKitchenPreviewStyle(el)}>{kteElements}</div>;
+        }
         return null;
       };
 
-      const renderItemRow = (name: string, mods?: string, note?: string) => (
+      const renderItemRow = (name: string, mods?: string, note?: string, kte?: React.ReactNode) => (
          <div className="mb-1">
-            {itemParts.map(part => renderPart(part, name, mods && <>{kl.modifiers.prefix} {mods}</>, note && <>{kl.itemNote.prefix} {note}</>))}
+            {itemParts.map(part => renderPart(part, name, mods && <>{kl.modifiers?.prefix || '>>'} {mods}</>, note && <>{kl.itemNote?.prefix || '->'} {note}</>, kte))}
          </div>
       );
 
       // ESC/POS Guest 구분선 (문자 기반)
       const guestSeparator = kl.guestNumber.visible ? getEscPosSeparator('dashed', Math.floor(charWidth / 3)) : '';
+
+      const kteSample = kl.kitchenTicketElements?.visible ? (
+        <><span>{kl.kitchenTicketElements?.prefix || '  - '}1 x California Roll</span><br/><span>{kl.kitchenTicketElements?.prefix || '  - '}2 x BC Roll</span></>
+      ) : undefined;
 
       return (
         <div className="mt-2 text-left">
@@ -3089,7 +3094,7 @@ export default function PrinterPage() {
            )}
            {renderItemRow('1x Salmon Sashimi', 'Extra Ginger', 'No wasabi')}
            {renderItemRow('1x Miso Soup')}
-           
+           {kteSample && renderItemRow('1x Roll Combo A', undefined, undefined, kteSample)}
            {kl.guestNumber.visible && (
                <div className="text-center mb-1" style={getKitchenPreviewStyle(kl.guestNumber)}>{guestSeparator} GUEST 2 {guestSeparator}</div>
            )}
@@ -3552,13 +3557,13 @@ export default function PrinterPage() {
     };
 
     const renderItemsList = () => {
-      const itemParts = ['items', 'modifiers', 'itemNote'].sort((a, b) => {
+      const itemParts = ['items', 'modifiers', 'itemNote', 'kitchenTicketElements'].sort((a, b) => {
         return ((kl as any)[a]?.order || 0) - ((kl as any)[b]?.order || 0);
       });
 
-      const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode) => {
+      const renderPart = (partKey: string, itemName: string, mods: React.ReactNode, note: React.ReactNode, kteElements?: React.ReactNode) => {
         const el = (kl as any)[partKey];
-        if (!el.visible) return null;
+        if (!el || el.visible === false) return null;
         if (partKey === 'items') {
           return <div key="item" style={getKitchenPreviewStyle(el)}>{itemName}</div>;
         }
@@ -3568,18 +3573,26 @@ export default function PrinterPage() {
         if (partKey === 'itemNote' && note) {
            return <div key="note" className="ml-4 text-gray-800" style={getKitchenPreviewStyle(el)}>{note}</div>;
         }
+        if (partKey === 'kitchenTicketElements' && kteElements) {
+           return <div key="kte" className="ml-4 text-gray-700" style={getKitchenPreviewStyle(el)}>{kteElements}</div>;
+        }
         return null;
       };
 
-      const renderItemRow = (name: string, mods?: string, note?: string) => (
+      const renderItemRow = (name: string, mods?: string, note?: string, kte?: React.ReactNode) => (
          <div className="mb-1">
-            {itemParts.map(part => renderPart(part, name, mods && <>{kl.modifiers.prefix} {mods}</>, note && <>{kl.itemNote.prefix} {note}</>))}
+            {itemParts.map(part => renderPart(part, name, mods && <>{kl.modifiers?.prefix || '>>'} {mods}</>, note && <>{kl.itemNote?.prefix || '->'} {note}</>, kte))}
          </div>
       );
+
+      const kteSample = kl.kitchenTicketElements?.visible ? (
+        <><span>{kl.kitchenTicketElements?.prefix || '  - '}1 x California Roll</span><br/><span>{kl.kitchenTicketElements?.prefix || '  - '}2 x BC Roll</span></>
+      ) : undefined;
 
       return (
         <div className="mt-2 text-left">
            {renderItemRow('1x Spicy Tuna Roll', 'Extra Spicy')}
+           {kteSample && renderItemRow('1x Roll Combo A', undefined, undefined, kteSample)}
            {renderItemRow('2x Chicken Katsu', undefined, 'Sauce on side')}
            {renderItemRow('1x Coke Zero')}
         </div>
@@ -4179,11 +4192,6 @@ export default function PrinterPage() {
         {[
           { id: 'printers', label: 'Printers & Groups' },
           { id: 'newPrinter', label: 'New Printer' },
-          { id: 'bill', label: 'Bill' },
-          { id: 'receipt', label: 'Receipt' },
-          { id: 'kitchen', label: 'Ticket for Dine-in' },
-          { id: 'externalKitchen', label: 'Ticket for Take-out' },
-          { id: 'deliveryKitchen', label: 'Ticket for Delivery' },
         ].map(tab => (
           <button
             key={tab.id}
@@ -4342,14 +4350,33 @@ export default function PrinterPage() {
               </button>
             </div>
 
-            {/* 그룹 목록 */}
+            {/* 그룹 목록 (display_order로 정렬 - 위에 있는 그룹이 먼저 출력) */}
             <div className="space-y-1">
-              {printerGroups.map((group) => {
+              {[...printerGroups].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)).map((group) => {
                 const groupPrinters = printerSlots.filter(s => group.printerIds.includes(s.id));
                 return (
                   <div key={group.id} className="px-3 py-1.5 bg-gray-50 rounded-lg border">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
+                        {/* 순서 변경 (Sushibar 등 여러 그룹이 같은 프린터에 연결된 경우 출력 순서) */}
+                        <div className="flex flex-col gap-0.5">
+                          <button
+                            onClick={() => moveGroupUp(group.id)}
+                            disabled={[...printerGroups].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))[0]?.id === group.id}
+                            className="w-6 h-5 bg-gray-200 hover:bg-gray-300 rounded text-xs flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="위로 (먼저 출력)"
+                          >
+                            <ChevronUp size={14} />
+                          </button>
+                          <button
+                            onClick={() => moveGroupDown(group.id)}
+                            disabled={[...printerGroups].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)).pop()?.id === group.id}
+                            className="w-6 h-5 bg-gray-200 hover:bg-gray-300 rounded text-xs flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="아래로 (나중에 출력)"
+                          >
+                            <ChevronDown size={14} />
+                          </button>
+                        </div>
                         <h3 className="font-bold text-sm">{group.name}</h3>
                         {/* 라벨 출력 토글 */}
                         <button
@@ -4460,1048 +4487,6 @@ export default function PrinterPage() {
         </div>
       )}
 
-      {/* ===================== Bill 탭 ===================== */}
-      {activeTab === 'bill' && (
-        <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100vh-220px)]">
-          {/* 왼쪽: 설정 영역 */}
-          <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3">
-            <h2 className="text-lg font-bold text-gray-800">📋 Bill Layout Settings</h2>
-            
-            {/* Print Mode & Paper */}
-            <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
-                <div className="flex gap-2">
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    layoutSettings.billLayout.printMode === 'graphic' 
-                      ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={layoutSettings.billLayout.printMode === 'graphic'}
-                      onChange={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, printMode: 'graphic' } })} />
-                    🎨 Roll Graphic
-                  </label>
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    layoutSettings.billLayout.printMode === 'text' 
-                      ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={layoutSettings.billLayout.printMode === 'text'}
-                      onChange={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, printMode: 'text' } })} />
-                    📝 Text Mode
-                  </label>
-                </div>
-              </div>
-              <div className="flex gap-4 mt-2 text-xs">
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Font:</span>
-                  <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
-                    <option value="Arial">Arial</option>
-                    <option value="Verdana">Verdana</option>
-                    <option value="Tahoma">Tahoma</option>
-                    <option value="Georgia">Georgia</option>
-                    <option value="Times New Roman">Times New Roman</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Paper:</span>
-                  <select value={layoutSettings.billLayout.paperWidth} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, paperWidth: parseInt(e.target.value) } })} className="p-1 border rounded text-xs">
-                    <option value={58}>58mm</option>
-                    <option value={80}>80mm</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Top:</span>
-                  <input type="number" value={layoutSettings.billLayout.topMargin} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, topMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Left:</span>
-                  <input type="number" value={layoutSettings.billLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">RightPad:</span>
-                  <input
-                    type="number"
-                    value={layoutSettings.billLayout.rightPaddingPx ?? 0}
-                    onChange={(e) =>
-                      updateLayoutSettings({
-                        ...layoutSettings,
-                        billLayout: {
-                          ...layoutSettings.billLayout,
-                          rightPaddingPx: parseInt(e.target.value) || 0,
-                        },
-                      })
-                    }
-                    className="w-14 p-1 border rounded text-xs"
-                    min={0}
-                    max={300}
-                  />
-                  <span className="text-gray-400">px</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600 font-semibold">Scale:</span>
-                  <input type="number" step={0.1} value={layoutSettings.billLayout.fontScale || 1.0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, fontScale: parseFloat(e.target.value) || 1.0 } })} className="w-14 p-1 border rounded text-xs" min={0.5} max={3.0} />
-                  <span className="text-gray-400 text-xs">(권장: 2.0)</span>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== HEADER Section ========== */}
-            <div className="p-2 bg-blue-50 rounded-lg border border-blue-200">
-              <div className="font-bold text-blue-700 text-sm mb-2">📌 HEADER</div>
-              
-              {/* Store Name */}
-              <ElementStyleRow 
-                label="Store Name" 
-                element={layoutSettings.billLayout.storeName}
-                textValue={layoutSettings.billLayout.storeName.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storeName: { ...layoutSettings.billLayout.storeName, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storeName: { ...layoutSettings.billLayout.storeName, text } } })}
-                showTextInput
-              />
-              
-              {/* Store Address */}
-              <ElementStyleRow 
-                label="Address" 
-                element={layoutSettings.billLayout.storeAddress}
-                textValue={layoutSettings.billLayout.storeAddress.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storeAddress: { ...layoutSettings.billLayout.storeAddress, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storeAddress: { ...layoutSettings.billLayout.storeAddress, text } } })}
-                showTextInput
-              />
-              
-              {/* Store Phone */}
-              <ElementStyleRow 
-                label="Phone" 
-                element={layoutSettings.billLayout.storePhone}
-                textValue={layoutSettings.billLayout.storePhone.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storePhone: { ...layoutSettings.billLayout.storePhone, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, storePhone: { ...layoutSettings.billLayout.storePhone, text } } })}
-                showTextInput
-              />
-            </div>
-
-            {/* ========== SEPARATORS ========== */}
-            <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
-              <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {/* Separator 1 */}
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator1: { ...layoutSettings.billLayout.separator1, visible: !layoutSettings.billLayout.separator1.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.billLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.billLayout.separator1.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">① After Header</span>
-                  <select value={layoutSettings.billLayout.separator1.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator1: { ...layoutSettings.billLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.billLayout.separator1.visible}>
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                {/* Separator 2 */}
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator2: { ...layoutSettings.billLayout.separator2, visible: !layoutSettings.billLayout.separator2.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.billLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.billLayout.separator2.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">② After Order Info</span>
-                  <select value={layoutSettings.billLayout.separator2.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator2: { ...layoutSettings.billLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.billLayout.separator2.visible}>
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                {/* Separator 3 */}
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator3: { ...layoutSettings.billLayout.separator3, visible: !layoutSettings.billLayout.separator3.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.billLayout.separator3.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.billLayout.separator3.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">③ After Items</span>
-                  <select value={layoutSettings.billLayout.separator3.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator3: { ...layoutSettings.billLayout.separator3, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.billLayout.separator3.visible}>
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                {/* Separator 4 */}
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator4: { ...layoutSettings.billLayout.separator4, visible: !layoutSettings.billLayout.separator4.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.billLayout.separator4.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.billLayout.separator4.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">④ Before Total</span>
-                  <select value={layoutSettings.billLayout.separator4.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, separator4: { ...layoutSettings.billLayout.separator4, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.billLayout.separator4.visible}>
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== BODY Section ========== */}
-            <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-              <div className="font-bold text-green-700 text-sm mb-2">📄 BODY</div>
-              
-              <ElementStyleRow label="Order #" element={layoutSettings.billLayout.orderNumber}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, orderNumber: { ...layoutSettings.billLayout.orderNumber, ...updated } } })} />
-              
-              <ElementStyleRow label="Channel / Table" element={layoutSettings.billLayout.orderChannel}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, orderChannel: { ...layoutSettings.billLayout.orderChannel, ...updated } } })} />
-              
-              <ElementStyleRow label="Server" element={layoutSettings.billLayout.serverName}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, serverName: { ...layoutSettings.billLayout.serverName, ...updated } } })} />
-              
-              <ElementStyleRow label="Date / Time" element={layoutSettings.billLayout.dateTime}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, dateTime: { ...layoutSettings.billLayout.dateTime, ...updated } } })} />
-              
-              <ElementStyleRow label="Items" element={layoutSettings.billLayout.items}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, items: { ...layoutSettings.billLayout.items, ...updated } } })} />
-              
-              <ElementStyleRow label="Modifiers" element={layoutSettings.billLayout.modifiers}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, modifiers: { ...layoutSettings.billLayout.modifiers, ...updated } } })} />
-              
-              <ElementStyleRow label="Memo" element={layoutSettings.billLayout.itemNote}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, itemNote: { ...layoutSettings.billLayout.itemNote, ...updated } } })} />
-              
-              <ElementStyleRow label="Item Discount" element={layoutSettings.billLayout.itemDiscount}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, itemDiscount: { ...layoutSettings.billLayout.itemDiscount, ...updated } } })} />
-              
-              <ElementStyleRow label="Subtotal" element={layoutSettings.billLayout.subtotal}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, subtotal: { ...layoutSettings.billLayout.subtotal, ...updated } } })} />
-              
-              <ElementStyleRow label="Discount" element={layoutSettings.billLayout.discount}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, discount: { ...layoutSettings.billLayout.discount, ...updated } } })} />
-              
-              <ElementStyleRow label="GST" element={layoutSettings.billLayout.taxGST}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, taxGST: { ...layoutSettings.billLayout.taxGST, ...updated } } })} />
-              
-              <ElementStyleRow label="PST" element={layoutSettings.billLayout.taxPST}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, taxPST: { ...layoutSettings.billLayout.taxPST, ...updated } } })} />
-              
-              <ElementStyleRow label="Total" element={layoutSettings.billLayout.total}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, total: { ...layoutSettings.billLayout.total, ...updated } } })} />
-            </div>
-
-            {/* ========== FOOTER Section ========== */}
-            <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
-              <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER</div>
-              
-              <ElementStyleRow 
-                label="Greeting" 
-                element={layoutSettings.billLayout.greeting}
-                textValue={layoutSettings.billLayout.greeting.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, greeting: { ...layoutSettings.billLayout.greeting, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, billLayout: { ...layoutSettings.billLayout, greeting: { ...layoutSettings.billLayout.greeting, text } } })}
-                showTextInput
-              />
-            </div>
-          </div>
-          
-          {/* 오른쪽: 프리뷰 */}
-          <div className="bg-gray-100 rounded-lg p-4 flex flex-col items-center overflow-y-auto max-h-full">
-            <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
-            <BillPreviewNew />
-          </div>
-        </div>
-      )}
-
-      {/* ===================== Receipt 탭 ===================== */}
-      {activeTab === 'receipt' && (
-        <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100vh-220px)]">
-          {/* Left: Settings */}
-          <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3">
-            <h2 className="text-lg font-bold text-gray-800">🧾 Receipt Layout Settings</h2>
-            
-            {/* Print Mode & Paper */}
-            <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
-                <div className="flex gap-2">
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    layoutSettings.receiptLayout.printMode === 'graphic' 
-                      ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={layoutSettings.receiptLayout.printMode === 'graphic'}
-                      onChange={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, printMode: 'graphic' } })} />
-                    🎨 Roll Graphic
-                  </label>
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    layoutSettings.receiptLayout.printMode === 'text' 
-                      ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={layoutSettings.receiptLayout.printMode === 'text'}
-                      onChange={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, printMode: 'text' } })} />
-                    📝 Text Mode
-                  </label>
-                </div>
-              </div>
-              <div className="flex gap-4 mt-2 text-xs">
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Font:</span>
-                  <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
-                    <option value="Arial">Arial</option>
-                    <option value="Verdana">Verdana</option>
-                    <option value="Tahoma">Tahoma</option>
-                    <option value="Georgia">Georgia</option>
-                    <option value="Times New Roman">Times New Roman</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Paper:</span>
-                  <select value={layoutSettings.receiptLayout.paperWidth} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, paperWidth: parseInt(e.target.value) } })} className="p-1 border rounded text-xs">
-                    <option value={58}>58mm</option>
-                    <option value={80}>80mm</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Top:</span>
-                  <input type="number" value={layoutSettings.receiptLayout.topMargin} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, topMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Left:</span>
-                  <input type="number" value={layoutSettings.receiptLayout.leftMargin || 0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, leftMargin: parseInt(e.target.value) || 0 } })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">RightPad:</span>
-                  <input
-                    type="number"
-                    value={layoutSettings.receiptLayout.rightPaddingPx ?? 0}
-                    onChange={(e) =>
-                      updateLayoutSettings({
-                        ...layoutSettings,
-                        receiptLayout: {
-                          ...layoutSettings.receiptLayout,
-                          rightPaddingPx: parseInt(e.target.value) || 0,
-                        },
-                      })
-                    }
-                    className="w-14 p-1 border rounded text-xs"
-                    min={0}
-                    max={300}
-                  />
-                  <span className="text-gray-400">px</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600 font-semibold">Scale:</span>
-                  <input type="number" step={0.1} value={layoutSettings.receiptLayout.fontScale || 1.0} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, fontScale: parseFloat(e.target.value) || 1.0 } })} className="w-14 p-1 border rounded text-xs" min={0.5} max={3.0} />
-                  <span className="text-gray-400 text-xs">(권장: 2.0)</span>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== HEADER Section ========== */}
-            <div className="p-2 bg-blue-50 rounded-lg border border-blue-200">
-              <div className="font-bold text-blue-700 text-sm mb-2">📌 HEADER</div>
-              
-              <ElementStyleRow label="Store Name" element={layoutSettings.receiptLayout.storeName}
-                textValue={layoutSettings.receiptLayout.storeName.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storeName: { ...layoutSettings.receiptLayout.storeName, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storeName: { ...layoutSettings.receiptLayout.storeName, text } } })}
-                showTextInput />
-              
-              <ElementStyleRow label="Address" element={layoutSettings.receiptLayout.storeAddress}
-                textValue={layoutSettings.receiptLayout.storeAddress.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storeAddress: { ...layoutSettings.receiptLayout.storeAddress, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storeAddress: { ...layoutSettings.receiptLayout.storeAddress, text } } })}
-                showTextInput />
-              
-              <ElementStyleRow label="Phone" element={layoutSettings.receiptLayout.storePhone}
-                textValue={layoutSettings.receiptLayout.storePhone.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storePhone: { ...layoutSettings.receiptLayout.storePhone, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, storePhone: { ...layoutSettings.receiptLayout.storePhone, text } } })}
-                showTextInput />
-            </div>
-
-            {/* ========== SEPARATORS ========== */}
-            <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
-              <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator1: { ...layoutSettings.receiptLayout.separator1, visible: !layoutSettings.receiptLayout.separator1.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.receiptLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.receiptLayout.separator1.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">① After Header</span>
-                  <select value={layoutSettings.receiptLayout.separator1.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator1: { ...layoutSettings.receiptLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.receiptLayout.separator1.visible}>
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator2: { ...layoutSettings.receiptLayout.separator2, visible: !layoutSettings.receiptLayout.separator2.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.receiptLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.receiptLayout.separator2.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">② After Order Info</span>
-                  <select value={layoutSettings.receiptLayout.separator2.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator2: { ...layoutSettings.receiptLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.receiptLayout.separator2.visible}>
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator3: { ...layoutSettings.receiptLayout.separator3, visible: !layoutSettings.receiptLayout.separator3.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.receiptLayout.separator3.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.receiptLayout.separator3.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">③ After Items</span>
-                  <select value={layoutSettings.receiptLayout.separator3.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator3: { ...layoutSettings.receiptLayout.separator3, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.receiptLayout.separator3.visible}>
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator4: { ...layoutSettings.receiptLayout.separator4, visible: !layoutSettings.receiptLayout.separator4.visible } } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${layoutSettings.receiptLayout.separator4.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{layoutSettings.receiptLayout.separator4.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">④ Before Total</span>
-                  <select value={layoutSettings.receiptLayout.separator4.style} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, separator4: { ...layoutSettings.receiptLayout.separator4, style: e.target.value as 'solid' | 'dashed' | 'dotted' } } })} className="p-0.5 border rounded text-xs" disabled={!layoutSettings.receiptLayout.separator4.visible}>
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== BODY Section ========== */}
-            <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-              <div className="font-bold text-green-700 text-sm mb-2">📄 BODY</div>
-              
-              <ElementStyleRow label="Order #" element={layoutSettings.receiptLayout.orderNumber}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, orderNumber: { ...layoutSettings.receiptLayout.orderNumber, ...updated } } })} />
-              
-              <ElementStyleRow label="Channel / Table" element={layoutSettings.receiptLayout.orderChannel}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, orderChannel: { ...layoutSettings.receiptLayout.orderChannel, ...updated } } })} />
-              
-              <ElementStyleRow label="Server" element={layoutSettings.receiptLayout.serverName}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, serverName: { ...layoutSettings.receiptLayout.serverName, ...updated } } })} />
-              
-              <ElementStyleRow label="Date / Time" element={layoutSettings.receiptLayout.dateTime}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, dateTime: { ...layoutSettings.receiptLayout.dateTime, ...updated } } })} />
-              
-              <ElementStyleRow label="Items" element={layoutSettings.receiptLayout.items}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, items: { ...layoutSettings.receiptLayout.items, ...updated } } })} />
-              
-              <ElementStyleRow label="Modifiers" element={layoutSettings.receiptLayout.modifiers}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, modifiers: { ...layoutSettings.receiptLayout.modifiers, ...updated } } })} />
-              
-              <ElementStyleRow label="Memo" element={layoutSettings.receiptLayout.itemNote}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, itemNote: { ...layoutSettings.receiptLayout.itemNote, ...updated } } })} />
-              
-              <ElementStyleRow label="Item Discount" element={layoutSettings.receiptLayout.itemDiscount}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, itemDiscount: { ...layoutSettings.receiptLayout.itemDiscount, ...updated } } })} />
-              
-              <ElementStyleRow label="Subtotal" element={layoutSettings.receiptLayout.subtotal}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, subtotal: { ...layoutSettings.receiptLayout.subtotal, ...updated } } })} />
-              
-              <ElementStyleRow label="Discount" element={layoutSettings.receiptLayout.discount}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, discount: { ...layoutSettings.receiptLayout.discount, ...updated } } })} />
-              
-              <ElementStyleRow label="GST" element={layoutSettings.receiptLayout.taxGST}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, taxGST: { ...layoutSettings.receiptLayout.taxGST, ...updated } } })} />
-              
-              <ElementStyleRow label="PST" element={layoutSettings.receiptLayout.taxPST}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, taxPST: { ...layoutSettings.receiptLayout.taxPST, ...updated } } })} />
-              
-              <ElementStyleRow label="Total" element={layoutSettings.receiptLayout.total}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, total: { ...layoutSettings.receiptLayout.total, ...updated } } })} />
-            </div>
-
-            {/* ========== PAYMENT Section (Receipt only) ========== */}
-            <div className="p-2 bg-purple-50 rounded-lg border border-purple-200">
-              <div className="font-bold text-purple-700 text-sm mb-2">💳 PAYMENT</div>
-              
-              <ElementStyleRow label="Payment Method" element={layoutSettings.receiptLayout.paymentMethod}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, paymentMethod: { ...layoutSettings.receiptLayout.paymentMethod, ...updated } } })} />
-              
-              <ElementStyleRow label="Payment Details" element={layoutSettings.receiptLayout.paymentDetails}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, paymentDetails: { ...layoutSettings.receiptLayout.paymentDetails, ...updated } } })} />
-              
-              <div className="py-2 border-b border-gray-200">
-                <div className="flex items-center gap-2">
-                  {/* Visible toggle */}
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, visible: !layoutSettings.receiptLayout.changeAmount.visible } } })}
-                    className={`w-6 h-6 rounded flex items-center justify-center text-xs ${layoutSettings.receiptLayout.changeAmount.visible ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'}`}
-                    title={layoutSettings.receiptLayout.changeAmount.visible ? 'Visible' : 'Hidden'}
-                  >{layoutSettings.receiptLayout.changeAmount.visible ? '✓' : '–'}</button>
-                  
-                  {/* Inverse toggle */}
-                  <button
-                    onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, inverse: !layoutSettings.receiptLayout.changeAmount.inverse } } })}
-                    className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${layoutSettings.receiptLayout.changeAmount.inverse ? 'bg-black text-white' : 'bg-white text-black border border-gray-400'}`}
-                    title={layoutSettings.receiptLayout.changeAmount.inverse ? 'Inverse ON' : 'Inverse OFF'}
-                  >I</button>
-                  
-                  {/* Label */}
-                  <span className="text-sm font-medium text-gray-700 flex-1">Change Amount</span>
-                  
-                  {/* Font Size */}
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm text-gray-400">Size</span>
-                    <input type="number" value={layoutSettings.receiptLayout.changeAmount.fontSize} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontSize: parseInt(e.target.value) || 12 } } })} className="w-12 p-1 border rounded text-sm text-center" min={8} max={24} disabled={!layoutSettings.receiptLayout.changeAmount.visible} />
-                  </div>
-                  
-                  {/* Line Spacing */}
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm text-gray-400">Line</span>
-                    <input type="number" value={layoutSettings.receiptLayout.changeAmount.lineSpacing} onChange={(e) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, lineSpacing: parseInt(e.target.value) || 0 } } })} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!layoutSettings.receiptLayout.changeAmount.visible} />
-                  </div>
-                  
-                  {/* R/B/I Style */}
-                  <div className="flex gap-1">
-                    <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontWeight: 'regular' } } })} className={`px-2 py-1 text-sm rounded ${layoutSettings.receiptLayout.changeAmount.fontWeight === 'regular' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>R</button>
-                    <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, fontWeight: 'bold' } } })} className={`px-2 py-1 text-sm rounded font-bold ${layoutSettings.receiptLayout.changeAmount.fontWeight === 'bold' ? 'bg-gray-700 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>B</button>
-                    <button onClick={() => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, changeAmount: { ...layoutSettings.receiptLayout.changeAmount, isItalic: !layoutSettings.receiptLayout.changeAmount.isItalic } } })} className={`px-2 py-1 text-sm rounded italic ${layoutSettings.receiptLayout.changeAmount.isItalic ? 'bg-blue-600 text-white' : 'bg-gray-200'}`} disabled={!layoutSettings.receiptLayout.changeAmount.visible}>I</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== FOOTER Section ========== */}
-            <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
-              <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER</div>
-              
-              <ElementStyleRow label="Thank You Message" element={layoutSettings.receiptLayout.thankYouMessage}
-                textValue={layoutSettings.receiptLayout.thankYouMessage.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, thankYouMessage: { ...layoutSettings.receiptLayout.thankYouMessage, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, thankYouMessage: { ...layoutSettings.receiptLayout.thankYouMessage, text } } })}
-                showTextInput />
-              
-              <ElementStyleRow label="Greeting" element={layoutSettings.receiptLayout.greeting}
-                textValue={layoutSettings.receiptLayout.greeting.text}
-                onChange={(updated) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, greeting: { ...layoutSettings.receiptLayout.greeting, ...updated } } })}
-                onTextChange={(text) => updateLayoutSettings({ ...layoutSettings, receiptLayout: { ...layoutSettings.receiptLayout, greeting: { ...layoutSettings.receiptLayout.greeting, text } } })}
-                showTextInput />
-            </div>
-          </div>
-          
-          {/* Right: Preview */}
-          <div className="bg-gray-100 rounded-lg p-4 flex flex-col items-center overflow-y-auto max-h-full">
-            <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
-            <ReceiptPreviewNew />
-          </div>
-        </div>
-      )}
-
-      {/* ===================== Kitchen 탭 (Dine-In Only) ===================== */}
-      {activeTab === 'kitchen' && (
-        <div className="h-[calc(100vh-220px)]">
-          {/* 프린터 타입 선택 (Kitchen vs Waitress) */}
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setKitchenPrinterType('kitchen')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'kitchen'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Kitchen Printer
-            </button>
-            <button
-              onClick={() => setKitchenPrinterType('waitress')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'waitress'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Waitress Printer (Server Ticket)
-            </button>
-          </div>
-
-          <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100%-50px)]">
-          {/* Left: Settings */}
-          <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3" style={{ scrollBehavior: 'auto' }}>
-            <h2 className="text-lg font-bold text-gray-800">
-              Dine-In - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
-            </h2>
-            <p className="text-sm text-gray-500">Dine-in Order, Table Order, QRcode Order, Sub POS / Hand Held POS</p>
-
-            {/* Print Mode & Paper */}
-            <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
-                <div className="flex gap-2">
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    currentLayout.printMode === 'graphic' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={currentLayout.printMode === 'graphic'}
-                      onChange={() => updateCurrentLayoutSettings({ printMode: 'graphic' })} />
-                    🎨 Roll Graphic
-                  </label>
-                  <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                    currentLayout.printMode === 'text' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                  }`}>
-                    <input type="radio" className="hidden" checked={currentLayout.printMode === 'text'}
-                      onChange={() => updateCurrentLayoutSettings({ printMode: 'text' })} />
-                    📝 Text Mode
-                  </label>
-                </div>
-              </div>
-              <div className="flex gap-4 mt-2 text-xs">
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Font:</span>
-                  <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
-                    <option value="Arial">Arial</option>
-                    <option value="Verdana">Verdana</option>
-                    <option value="Tahoma">Tahoma</option>
-                    <option value="Georgia">Georgia</option>
-                    <option value="Times New Roman">Times New Roman</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Paper:</span>
-                  <select value={currentLayout.paperWidth} onChange={(e) => updateCurrentLayoutSettings({ paperWidth: parseInt(e.target.value) })} className="p-1 border rounded text-xs">
-                    <option value={58}>58mm</option>
-                    <option value={80}>80mm</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Top:</span>
-                  <input type="number" value={currentLayout.topMargin} onChange={(e) => updateCurrentLayoutSettings({ topMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Left:</span>
-                  <input type="number" value={currentLayout.leftMargin || 0} onChange={(e) => updateCurrentLayoutSettings({ leftMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
-                  <span className="text-gray-400">mm</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-600">Font Scale:</span>
-                  <input type="number" step={0.1} value={currentLayout.fontScale || 1.0} onChange={(e) => updateCurrentLayoutSettings({ fontScale: parseFloat(e.target.value) || 1.0 })} className="w-14 p-1 border rounded text-xs" min={0.5} max={2.0} />
-                  <span className="text-gray-400 text-xs">(Epson: 1.2)</span>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== MERGED ELEMENTS Section ========== */}
-            {(currentLayout.mergedElements || []).length > 0 && (
-              <div className="p-2 bg-purple-100 rounded-lg border border-purple-300">
-                <div className="font-bold text-purple-700 text-sm mb-2">🔗 MERGED ELEMENTS</div>
-                {(currentLayout.mergedElements || []).map((merged: MergedElement) => (
-                  <MergedElementRow
-                    key={merged.id}
-                    merged={merged}
-                    onUpdate={(updates) => updateMergedElement(merged.id, updates, 'kitchen')}
-                    onUnmerge={() => handleUnmergeElements(merged.id, 'kitchen')}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* ========== HEADER Section ========== */}
-            <div className="p-2 bg-orange-50 rounded-lg border border-orange-200">
-              <div className="font-bold text-orange-700 text-sm mb-2">📌 HEADER (Drag elements to merge)</div>
-              {renderSortedElements(KITCHEN_HEADER_KEYS, 'kitchen')}
-            </div>
-
-            {/* ========== SEPARATORS ========== */}
-            <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
-              <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, visible: !currentLayout.separator1.visible } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{currentLayout.separator1.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">Header End</span>
-                  <select value={currentLayout.separator1.style} onChange={(e) => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                  <button onClick={() => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, visible: !currentLayout.separator2.visible } })}
-                    className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                  >{currentLayout.separator2.visible ? '✓' : '–'}</button>
-                  <span className="flex-1 text-gray-600">Body End</span>
-                  <select value={currentLayout.separator2.style} onChange={(e) => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                    <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* ========== BODY Section ========== */}
-            <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-              <div className="font-bold text-green-700 text-sm mb-2">📄 BODY (Drag elements to merge)</div>
-              
-              <KitchenElementRow label="Guest Number (Split) (Fixed)" element={currentLayout.guestNumber}
-                onChange={(updated) => updateCurrentLayoutSettings({ guestNumber: { ...currentLayout.guestNumber, ...updated } })}
-                // onMoveUp, onMoveDown 제거하여 화살표 숨김
-              />
-              
-              {renderSortedElements(KITCHEN_BODY_KEYS, 'kitchen')}
-              
-              {/* Kitchen Memo (Body 하단 고정) */}
-              {currentLayout.kitchenNote && (
-                <KitchenElementRow label="Kitchen Memo (Fixed)" element={currentLayout.kitchenNote}
-                  onChange={(updated) => updateCurrentLayoutSettings({ kitchenNote: { ...currentLayout.kitchenNote, ...updated } })}
-                />
-              )}
-            </div>
-
-            {/* ========== FOOTER Section ========== */}
-            <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
-              <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER (Header 요소를 Footer에도 표시)</div>
-              
-              {/* Header 요소들을 Footer에서 설정 */}
-              {renderFooterElements(KITCHEN_HEADER_KEYS, 'kitchen')}
-              
-              {/* Special Instructions */}
-              {renderSortedElements(KITCHEN_FOOTER_KEYS, 'kitchen')}
-            </div>
-
-            {/* ========== ONLINE/DELIVERY Section ========== */}
-            <div className="p-2 bg-purple-50 rounded-lg border border-purple-200">
-              <div className="font-bold text-purple-700 text-sm mb-2">🚗 ONLINE / DELIVERY (Drag elements to merge)</div>
-              {renderSortedElements(['pickupTime', 'deliveryChannel', 'customerName', 'customerPhone', 'deliveryAddress'], 'kitchen')}
-            </div>
-          </div>
-          
-          {/* Right: Preview */}
-          <div className="bg-gray-100 rounded-lg p-4 overflow-y-auto max-h-full flex flex-col items-center">
-            <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
-            {/* Dine-in Preview */}
-            <div>
-              <h3 className="text-sm font-bold text-green-700 mb-2 text-center">Dine-in Kitchen Ticket</h3>
-              <KitchenPreviewDineInNew />
-            </div>
-          </div>
-        </div>
-        </div>
-      )}
-
-      {/* ===================== External Kitchen 탭 ===================== */}
-      {activeTab === 'externalKitchen' && (
-        <div className="h-[calc(100vh-220px)]">
-          {/* 프린터 타입 선택 (Kitchen vs Waitress) */}
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setKitchenPrinterType('kitchen')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'kitchen'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Kitchen Printer
-            </button>
-            <button
-              onClick={() => setKitchenPrinterType('waitress')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'waitress'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Waitress Printer (Server Ticket)
-            </button>
-          </div>
-
-          <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100%-50px)]">
-            {/* Left: Settings */}
-            <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3" style={{ scrollBehavior: 'auto' }}>
-              <h2 className="text-lg font-bold text-gray-800">
-                Take-out - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
-              </h2>
-              <p className="text-sm text-gray-500">ThezoneOrder (Online), Togo Order (No Delivery)</p>
-              
-              {/* Print Mode & Paper */}
-              <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
-                  <div className="flex gap-2">
-                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                      currentLayout.printMode === 'graphic' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                    }`}>
-                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'graphic'}
-                        onChange={() => updateCurrentLayoutSettings({ printMode: 'graphic' })} />
-                      🎨 Roll Graphic
-                    </label>
-                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                      currentLayout.printMode === 'text' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                    }`}>
-                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'text'}
-                        onChange={() => updateCurrentLayoutSettings({ printMode: 'text' })} />
-                      📝 Text Mode
-                    </label>
-                  </div>
-                </div>
-                <div className="flex gap-4 mt-2 text-xs">
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Font:</span>
-                    <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
-                      <option value="Arial">Arial</option>
-                      <option value="Verdana">Verdana</option>
-                      <option value="Tahoma">Tahoma</option>
-                      <option value="Georgia">Georgia</option>
-                      <option value="Times New Roman">Times New Roman</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Paper:</span>
-                    <select value={currentLayout.paperWidth} onChange={(e) => updateCurrentLayoutSettings({ paperWidth: parseInt(e.target.value) })} className="p-1 border rounded text-xs">
-                      <option value={58}>58mm</option>
-                      <option value={80}>80mm</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Top:</span>
-                    <input type="number" value={currentLayout.topMargin} onChange={(e) => updateCurrentLayoutSettings({ topMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
-                    <span className="text-gray-400">mm</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Left:</span>
-                    <input type="number" value={currentLayout.leftMargin || 0} onChange={(e) => updateCurrentLayoutSettings({ leftMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
-                    <span className="text-gray-400">mm</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Merged Elements */}
-              {(currentLayout.mergedElements || []).length > 0 && (
-                <div className="p-2 bg-purple-100 rounded-lg border border-purple-300 mb-2">
-                  <div className="font-bold text-purple-700 text-sm mb-2">🔗 MERGED ELEMENTS</div>
-                  {(currentLayout.mergedElements || []).map((merged: MergedElement) => (
-                    <MergedElementRow
-                      key={merged.id}
-                      merged={merged}
-                      onUpdate={(updates) => updateMergedElement(merged.id, updates, 'external')}
-                      onUnmerge={() => handleUnmergeElements(merged.id, 'external')}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Header Section */}
-              <div className="p-2 bg-orange-50 rounded-lg border border-orange-200">
-                <div className="font-bold text-orange-700 text-sm mb-2">📌 HEADER (Drag elements to merge)</div>
-                {renderSortedElements(EXTERNAL_HEADER_KEYS, 'external')}
-              </div>
-
-              {/* ========== SEPARATORS ========== */}
-              <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
-                <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                    <button onClick={() => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, visible: !currentLayout.separator1.visible } })}
-                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                    >{currentLayout.separator1.visible ? '✓' : '–'}</button>
-                    <span className="flex-1 text-gray-600">Header End</span>
-                    <select value={currentLayout.separator1.style} onChange={(e) => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                    <button onClick={() => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, visible: !currentLayout.separator2.visible } })}
-                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                    >{currentLayout.separator2.visible ? '✓' : '–'}</button>
-                    <span className="flex-1 text-gray-600">Body End</span>
-                    <select value={currentLayout.separator2.style} onChange={(e) => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Body Section */}
-              <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-                <div className="font-bold text-green-700 text-sm mb-2">📄 BODY (Drag elements to merge)</div>
-                <KitchenElementRow label="Guest Number (Split) (Fixed)" element={currentLayout.guestNumber}
-                  onChange={(updated) => updateCurrentLayoutSettings({ guestNumber: { ...currentLayout.guestNumber, ...updated } })}
-                />
-                {renderSortedElements(EXTERNAL_BODY_KEYS, 'external')}
-              </div>
-
-              {/* Footer Section */}
-              <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
-                <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER (Header 요소를 Footer에도 표시)</div>
-                
-                {/* Header 요소들을 Footer에서 설정 */}
-                {renderFooterElements(EXTERNAL_HEADER_KEYS, 'external')}
-                
-                {/* Special Instructions */}
-                {renderSortedElements(EXTERNAL_FOOTER_KEYS, 'external')}
-              </div>
-            </div>
-            
-            {/* Right: Preview */}
-            <div className="bg-gray-100 rounded-lg p-4 overflow-y-auto max-h-full flex flex-col items-center">
-              <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
-              {/* External Preview */}
-              <div>
-                <h3 className="text-sm font-bold text-orange-700 mb-2 text-center">Take-out Kitchen Ticket</h3>
-                <KitchenPreviewOnlineNew />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================== Delivery Kitchen 탭 ===================== */}
-      {/* Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo 배달 주문 */}
-      {activeTab === 'deliveryKitchen' && (
-        <div className="h-[calc(100vh-220px)]">
-          {/* 프린터 타입 선택 (Kitchen vs Waitress) */}
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setKitchenPrinterType('kitchen')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'kitchen'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Kitchen Printer
-            </button>
-            <button
-              onClick={() => setKitchenPrinterType('waitress')}
-              className={`px-4 py-1.5 rounded font-medium text-sm transition-colors ${
-                kitchenPrinterType === 'waitress'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Waitress Printer (Server Ticket)
-            </button>
-          </div>
-
-          <div className="grid grid-cols-[6fr_4fr] gap-4 h-[calc(100%-50px)]">
-            {/* Left: Settings */}
-            <div className="bg-white rounded-lg shadow-md p-4 overflow-y-auto max-h-full space-y-3" style={{ scrollBehavior: 'auto' }}>
-              <h2 className="text-lg font-bold text-gray-800">
-                Delivery - {kitchenPrinterType === 'kitchen' ? 'Kitchen' : 'Waitress'} Ticket Settings
-              </h2>
-              <p className="text-sm text-gray-500">Uber Eats, DoorDash, SkiptheDishes, Tryotter, Urban Pipe, ThezoneOrder/Togo (Delivery)</p>
-              
-              {/* Print Mode & Paper */}
-              <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-200">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-indigo-700 text-sm">🖨️ Print Mode</span>
-                  <div className="flex gap-2">
-                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                      currentLayout.printMode === 'graphic' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                    }`}>
-                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'graphic'}
-                        onChange={() => updateCurrentLayoutSettings({ printMode: 'graphic' })} />
-                      🎨 Roll Graphic
-                    </label>
-                    <label className={`px-3 py-1 rounded cursor-pointer text-xs font-medium ${
-                      currentLayout.printMode === 'text' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-600'
-                    }`}>
-                      <input type="radio" className="hidden" checked={currentLayout.printMode === 'text'}
-                        onChange={() => updateCurrentLayoutSettings({ printMode: 'text' })} />
-                      📝 Text Mode
-                    </label>
-                  </div>
-                </div>
-                <div className="flex gap-4 mt-2 text-xs">
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Font:</span>
-                    <select value={layoutSettings.fontFamily} onChange={(e) => updateLayoutSettings({ ...layoutSettings, fontFamily: e.target.value })} className="p-1 border rounded text-xs">
-                      <option value="Arial">Arial</option>
-                      <option value="Verdana">Verdana</option>
-                      <option value="Tahoma">Tahoma</option>
-                      <option value="Georgia">Georgia</option>
-                      <option value="Times New Roman">Times New Roman</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Paper:</span>
-                    <select value={currentLayout.paperWidth} onChange={(e) => updateCurrentLayoutSettings({ paperWidth: parseInt(e.target.value) })} className="p-1 border rounded text-xs">
-                      <option value={58}>58mm</option>
-                      <option value={80}>80mm</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Top:</span>
-                    <input type="number" value={currentLayout.topMargin} onChange={(e) => updateCurrentLayoutSettings({ topMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={75} />
-                    <span className="text-gray-400">mm</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-gray-600">Left:</span>
-                    <input type="number" value={currentLayout.leftMargin || 0} onChange={(e) => updateCurrentLayoutSettings({ leftMargin: parseInt(e.target.value) || 0 })} className="w-12 p-1 border rounded text-xs" min={0} max={30} />
-                    <span className="text-gray-400">mm</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Merged Elements */}
-              {(currentLayout.mergedElements || []).length > 0 && (
-                <div className="p-2 bg-purple-100 rounded-lg border border-purple-300 mb-2">
-                  <div className="font-bold text-purple-700 text-sm mb-2">🔗 MERGED ELEMENTS</div>
-                  {(currentLayout.mergedElements || []).map((merged: MergedElement) => (
-                    <MergedElementRow
-                      key={merged.id}
-                      merged={merged}
-                      onUpdate={(updates) => updateMergedElement(merged.id, updates, 'external')}
-                      onUnmerge={() => handleUnmergeElements(merged.id, 'external')}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Header Section */}
-              <div className="p-2 bg-orange-50 rounded-lg border border-orange-200">
-                <div className="font-bold text-orange-700 text-sm mb-2">📌 HEADER (Drag elements to merge)</div>
-                {renderSortedElements(EXTERNAL_HEADER_KEYS, 'external')}
-              </div>
-
-              {/* ========== SEPARATORS ========== */}
-              <div className="p-2 bg-gray-100 rounded-lg border border-gray-300">
-                <div className="font-bold text-gray-700 text-sm mb-2">➖ Separators</div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                    <button onClick={() => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, visible: !currentLayout.separator1.visible } })}
-                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator1.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                    >{currentLayout.separator1.visible ? '✓' : '–'}</button>
-                    <span className="flex-1 text-gray-600">Header End</span>
-                    <select value={currentLayout.separator1.style} onChange={(e) => updateCurrentLayoutSettings({ separator1: { ...currentLayout.separator1, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2 p-1.5 bg-white rounded border">
-                    <button onClick={() => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, visible: !currentLayout.separator2.visible } })}
-                      className={`w-5 h-5 rounded flex items-center justify-center text-xs ${currentLayout.separator2.visible ? 'bg-green-500 text-white' : 'bg-gray-300'}`}
-                    >{currentLayout.separator2.visible ? '✓' : '–'}</button>
-                    <span className="flex-1 text-gray-600">Body End</span>
-                    <select value={currentLayout.separator2.style} onChange={(e) => updateCurrentLayoutSettings({ separator2: { ...currentLayout.separator2, style: e.target.value as 'solid' | 'dashed' | 'dotted' } })} className="p-0.5 border rounded text-xs">
-                      <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Body Section */}
-              <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-                <div className="font-bold text-green-700 text-sm mb-2">📄 BODY (Drag elements to merge)</div>
-                <KitchenElementRow label="Guest Number (Split) (Fixed)" element={currentLayout.guestNumber}
-                  onChange={(updated) => updateCurrentLayoutSettings({ guestNumber: { ...currentLayout.guestNumber, ...updated } })}
-                />
-                {renderSortedElements(EXTERNAL_BODY_KEYS, 'external')}
-              </div>
-
-              {/* Footer Section */}
-              <div className="p-2 bg-yellow-50 rounded-lg border border-yellow-200">
-                <div className="font-bold text-yellow-700 text-sm mb-2">📝 FOOTER (Header 요소를 Footer에도 표시)</div>
-                
-                {/* Header 요소들을 Footer에서 설정 */}
-                {renderFooterElements(EXTERNAL_HEADER_KEYS, 'external')}
-                
-                {/* Special Instructions */}
-                {renderSortedElements(EXTERNAL_FOOTER_KEYS, 'external')}
-              </div>
-            </div>
-            
-            {/* Right: Preview */}
-            <div className="bg-gray-100 rounded-lg p-4 overflow-y-auto max-h-full flex flex-col items-center">
-              <h2 className="text-lg font-bold text-gray-800 mb-3">Preview</h2>
-              {/* Delivery Preview */}
-              <div>
-                <h3 className="text-sm font-bold text-red-700 mb-2 text-center">Delivery Kitchen Ticket</h3>
-                <KitchenPreviewOnlineNew />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ===================== 프린터 선택 모달 ===================== */}
       {showPrinterModal && (

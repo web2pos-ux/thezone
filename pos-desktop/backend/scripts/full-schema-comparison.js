@@ -34,6 +34,7 @@ const menuItemsComparison = {
     'menu_id (INTEGER)',
     'image_url (TEXT)',
     'is_open_price (INTEGER)',
+    'kitchen_ticket_elements (TEXT) - JSON array [{ name, qty }, ...]',
     'firebase_id (TEXT)'
   ],
   firebaseFields: [
@@ -51,6 +52,7 @@ const menuItemsComparison = {
     'modifierGroupIds (string[])',
     'taxGroupIds (string[])',
     'printerGroupIds (string[])',
+    'kitchenTicketElements (array) - [{ name, qty }, ...] Kitchen Ticket sub-items',
     'options (array)',
     'createdAt (timestamp)',
     'updatedAt (timestamp)'
@@ -71,6 +73,7 @@ const menuItemsComparison = {
     'image_url (string)',
     'isAvailable (boolean)',
     'isPopular (boolean)',
+    'kitchenTicketElements (array) - [{ name, qty }, ...] Kitchen Ticket sub-items',
     'options (MenuOption[])',
     'modifierGroupIds (string[])',
     'taxGroupIds (string[])',

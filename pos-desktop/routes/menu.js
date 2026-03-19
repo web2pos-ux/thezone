@@ -39,6 +39,8 @@ const EXCEL_COLUMNS = {
     PRICE: 'Price',
     PRICE2: 'Price2',
     DESCRIPTION: 'Description',
+    KTE_NAME: 'KTE Name',   // Kitchen Ticket Element name (1-10)
+    KTE_QTY: 'KTE Qty',     // Kitchen Ticket Element qty (1-10)
     MODIFIER_GROUP: 'Modifier Group',  // Will have numbers: "Modifier Group 1", "Modifier Group 2", etc.
     TAX_GROUP: 'Tax Group',
     PRINTER_GROUP: 'Printer Group'
@@ -1779,6 +1781,11 @@ router.delete('/items/:id', (req, res) => {
           .map(conn => printerGroups.find(group => group.printer_group_id === conn.printer_group_id))
           .filter(Boolean);
 
+        const kteCols = {};
+        for (let i = 1; i <= 10; i++) {
+          kteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = '';
+          kteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = '';
+        }
         const categoryHeaderRow = {
           [EXCEL_COLUMNS.MENU.NO]: categoryName,
           [EXCEL_COLUMNS.MENU.CATEGORY]: categoryName,
@@ -1787,6 +1794,7 @@ router.delete('/items/:id', (req, res) => {
           [EXCEL_COLUMNS.MENU.PRICE]: '',
           [EXCEL_COLUMNS.MENU.PRICE2]: '',
           [EXCEL_COLUMNS.MENU.DESCRIPTION]: '',
+          ...kteCols,
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 1`]: categoryConnectedModifierGroups.length > 0 ? categoryConnectedModifierGroups[0].name : '',
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 2`]: categoryConnectedModifierGroups.length > 1 ? categoryConnectedModifierGroups[1].name : '',
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 3`]: categoryConnectedModifierGroups.length > 2 ? categoryConnectedModifierGroups[2].name : '',
@@ -1853,7 +1861,19 @@ router.delete('/items/:id', (req, res) => {
             ? itemConnectedPrinterGroups 
             : categoryConnectedPrinterGroups;
 
-          // Create row data for Menu Data sheet
+          // Parse kitchen_ticket_elements for export
+          let kteArr = [];
+          try {
+            const raw = item.kitchen_ticket_elements;
+            kteArr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw || '[]') : []);
+            kteArr = (kteArr || []).filter(e => e && String(e.name || '').trim()).slice(0, 10);
+          } catch { kteArr = []; }
+          const itemKteCols = {};
+          for (let i = 1; i <= 10; i++) {
+            const el = kteArr[i - 1];
+            itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = el ? String(el.name || '').trim() : '';
+            itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = el ? (el.qty || 1) : '';
+          }
           const row = {
             [EXCEL_COLUMNS.MENU.NO]: rowNo++,
             [EXCEL_COLUMNS.MENU.CATEGORY]: category ? category.name : '',
@@ -1862,6 +1882,7 @@ router.delete('/items/:id', (req, res) => {
             [EXCEL_COLUMNS.MENU.PRICE]: item.price,
             [EXCEL_COLUMNS.MENU.PRICE2]: item.price2 || '',
             [EXCEL_COLUMNS.MENU.DESCRIPTION]: item.description || '',
+            ...itemKteCols,
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 1`]: finalConnectedModifierGroups.length > 0 ? finalConnectedModifierGroups[0].name : '',
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 2`]: finalConnectedModifierGroups.length > 1 ? finalConnectedModifierGroups[1].name : '',
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 3`]: finalConnectedModifierGroups.length > 2 ? finalConnectedModifierGroups[2].name : '',
@@ -2169,17 +2190,27 @@ router.delete('/items/:id', (req, res) => {
         const itemName = getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name');
         const no = getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No');
         return itemName && itemName.trim() !== '' && !isNaN(parseInt(no));
-      }).map(item => ({
-        ...item,
-        // Normalize to standard property names
-        _no: getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No'),
-        _category: getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name'),
-        _itemName: getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name'),
-        _shortName: getExcelValue(item, EXCEL_COLUMNS.MENU.SHORT_NAME, 'Short Name'),
-        _price: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE, 'Price'),
-        _price2: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE2, 'Price2'),
-        _description: getExcelValue(item, EXCEL_COLUMNS.MENU.DESCRIPTION, 'Description')
-      }));
+      }).map(item => {
+        const kte = [];
+        for (let i = 1; i <= 10; i++) {
+          const name = getExcelValue(item, `${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`, `KTE Name ${i}`);
+          if (name && String(name).trim() !== '') {
+            const qty = getExcelValue(item, `${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`, `KTE Qty ${i}`);
+            kte.push({ name: String(name).trim(), qty: Math.max(1, parseInt(qty, 10) || 1) });
+          }
+        }
+        return {
+          ...item,
+          _no: getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No'),
+          _category: getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name'),
+          _itemName: getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name'),
+          _shortName: getExcelValue(item, EXCEL_COLUMNS.MENU.SHORT_NAME, 'Short Name'),
+          _price: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE, 'Price'),
+          _price2: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE2, 'Price2'),
+          _description: getExcelValue(item, EXCEL_COLUMNS.MENU.DESCRIPTION, 'Description'),
+          _kitchen_ticket_elements: kte
+        };
+      });
       
       if (!filteredMenuData.length) {
         throw new Error('No valid menu items found in Menu Data sheet');
@@ -2491,9 +2522,12 @@ router.delete('/items/:id', (req, res) => {
           const newItemId = await generateMenuItemId(db);
           const categoryId = uniqueCategories.find(c => c.name === item._category)?.categoryId;
           
+          const kteJson = Array.isArray(item._kitchen_ticket_elements) && item._kitchen_ticket_elements.length > 0
+            ? JSON.stringify(item._kitchen_ticket_elements.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })))
+            : '[]';
           await new Promise((resolve, reject) => {
             db.run(
-              'INSERT INTO menu_items (item_id, name, short_name, category_id, menu_id, price, price2, description, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              'INSERT INTO menu_items (item_id, name, short_name, category_id, menu_id, price, price2, description, sort_order, kitchen_ticket_elements) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               [
                 newItemId,
                 item._itemName,
@@ -2503,7 +2537,8 @@ router.delete('/items/:id', (req, res) => {
                 parseFloat(item._price) || 0,
                 parseFloat(item._price2) || 0,
                 item._description || '',
-                parseInt(item._no) || 0
+                parseInt(item._no) || 0,
+                kteJson
               ],
               (err) => {
                 if (err) reject(err);

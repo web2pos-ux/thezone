@@ -335,7 +335,7 @@ module.exports = (db) => {
     }
   });
 
-  // POST /api/printers/batch - Save all printers at once (UPSERT to preserve IDs)
+  // POST /api/printers/batch - Save all printers at once
   router.post('/batch', async (req, res) => {
     const { printers } = req.body;
     if (!Array.isArray(printers)) {
@@ -343,42 +343,19 @@ module.exports = (db) => {
     }
     try {
       await dbRun('BEGIN TRANSACTION');
-
-      const existingPrinters = await dbAll('SELECT printer_id FROM printers WHERE is_active = 1');
-      const existingIds = new Set(existingPrinters.map(p => p.printer_id));
-      const incomingIds = new Set();
-
+      await dbRun('DELETE FROM printer_group_links');
+      await dbRun('DELETE FROM printers');
+      
       const results = [];
       for (const printer of printers) {
+        const newPrinterId = await generateNextId(db, ID_RANGES.PRINTER);
         const gs = clampGraphicScale(printer?.graphicScale ?? printer?.graphic_scale);
-        const existingId = printer.id || printer.printer_id;
-
-        if (existingId && existingIds.has(existingId)) {
-          await dbRun(
-            'UPDATE printers SET name = ?, type = ?, selected_printer = ?, sort_order = ?, graphic_scale = ?, is_active = 1 WHERE printer_id = ?',
-            [printer.name || '', printer.type || '', printer.selectedPrinter || '', printer.sortOrder || 0, gs, existingId]
-          );
-          incomingIds.add(existingId);
-          results.push({ ...printer, id: existingId, graphicScale: gs });
-        } else {
-          const newPrinterId = await generateNextId(db, ID_RANGES.PRINTER);
-          await dbRun(
-            'INSERT INTO printers (printer_id, name, type, selected_printer, sort_order, graphic_scale, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)',
-            [newPrinterId, printer.name || '', printer.type || '', printer.selectedPrinter || '', printer.sortOrder || 0, gs]
-          );
-          incomingIds.add(newPrinterId);
-          results.push({ ...printer, id: newPrinterId, graphicScale: gs });
-        }
+        await dbRun(
+          'INSERT INTO printers (printer_id, name, type, selected_printer, sort_order, graphic_scale, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)',
+          [newPrinterId, printer.name || '', printer.type || '', printer.selectedPrinter || '', printer.sortOrder || 0, gs]
+        );
+        results.push({ ...printer, id: newPrinterId, graphicScale: gs });
       }
-
-      // Soft-delete printers that were removed from the list
-      for (const ep of existingPrinters) {
-        if (!incomingIds.has(ep.printer_id)) {
-          await dbRun('UPDATE printers SET is_active = 0 WHERE printer_id = ?', [ep.printer_id]);
-          await dbRun('DELETE FROM printer_group_links WHERE printer_id = ?', [ep.printer_id]);
-        }
-      }
-
       await dbRun('COMMIT');
       res.json(results);
     } catch (err) {
@@ -525,7 +502,7 @@ module.exports = (db) => {
     }
   });
 
-  // Batch for groups (UPSERT to preserve IDs)
+  // Batch for groups
   router.post('/groups/batch', async (req, res) => {
     const { groups } = req.body;
     if (!Array.isArray(groups)) {
@@ -533,58 +510,35 @@ module.exports = (db) => {
     }
     try {
       await dbRun('BEGIN TRANSACTION');
-
-      const existingGroups = await dbAll('SELECT printer_group_id FROM printer_groups WHERE is_active = 1');
-      const existingGroupIds = new Set(existingGroups.map(g => g.printer_group_id));
-      const incomingGroupIds = new Set();
-
+      await dbRun('DELETE FROM printer_group_links');
+      await dbRun('DELETE FROM printer_groups');
+      
       const results = [];
       for (const group of groups) {
-        const existingId = group.id || group.printer_group_id;
-        let groupId;
-
-        if (existingId && existingGroupIds.has(existingId)) {
-          await dbRun(
-            'UPDATE printer_groups SET name = ?, is_active = 1, show_label = ?, updated_at = CURRENT_TIMESTAMP WHERE printer_group_id = ?',
-            [group.name, group.show_label !== undefined ? (group.show_label ? 1 : 0) : 1, existingId]
-          );
-          groupId = existingId;
-        } else {
-          groupId = await generateNextId(db, ID_RANGES.PRINTER_GROUP);
-          await dbRun(
-            'INSERT INTO printer_groups (printer_group_id, name, is_active, show_label) VALUES (?, ?, 1, ?)',
-            [groupId, group.name, group.show_label !== undefined ? (group.show_label ? 1 : 0) : 1]
-          );
-        }
-        incomingGroupIds.add(groupId);
-
-        // Rebuild links for this group
-        await dbRun('DELETE FROM printer_group_links WHERE printer_group_id = ?', [groupId]);
+        const newGroupId = await generateNextId(db, ID_RANGES.PRINTER_GROUP);
+        await dbRun(
+          'INSERT INTO printer_groups (printer_group_id, name, is_active, show_label) VALUES (?, ?, 1, ?)',
+          [newGroupId, group.name, group.show_label !== undefined ? (group.show_label ? 1 : 0) : 1]
+        );
+        
+        // Allow both printerIds (array of IDs) or printers (array of objects with printer_id and copies)
         const printerList = group.printers && Array.isArray(group.printers) ? group.printers : [];
         const finalPrinterIds = group.printerIds || printerList.map(p => p.printer_id || p.id);
-
+        
         if (finalPrinterIds && Array.isArray(finalPrinterIds)) {
           for (const printerId of finalPrinterIds) {
             if (!printerId) continue;
+            // Get copies from printers array if available
             const printerInfo = printerList.find(p => (p.printer_id || p.id) === printerId);
             const copies = printerInfo?.copies || 1;
             await dbRun(
               'INSERT INTO printer_group_links (printer_group_id, printer_id, copies) VALUES (?, ?, ?)',
-              [groupId, printerId, copies]
+              [newGroupId, printerId, copies]
             );
           }
         }
-        results.push({ ...group, id: groupId });
+        results.push({ ...group, id: newGroupId });
       }
-
-      // Soft-delete groups that were removed
-      for (const eg of existingGroups) {
-        if (!incomingGroupIds.has(eg.printer_group_id)) {
-          await dbRun('UPDATE printer_groups SET is_active = 0 WHERE printer_group_id = ?', [eg.printer_group_id]);
-          await dbRun('DELETE FROM printer_group_links WHERE printer_group_id = ?', [eg.printer_group_id]);
-        }
-      }
-
       await dbRun('COMMIT');
       res.json(results);
     } catch (err) {
@@ -932,6 +886,31 @@ module.exports = (db) => {
       if (effectiveTopMargin == null) effectiveTopMargin = 15;
       console.log(`🍳 [Printer API] effectiveTopMargin = ${effectiveTopMargin}mm`);
 
+      // ★ RightPadding: DB에서 kitchen 레이아웃의 rightPaddingPx 조회
+      let effectiveRightPadding = null;
+      try {
+        const layoutRow2 = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow2 && layoutRow2.settings) {
+          const ls2 = JSON.parse(layoutRow2.settings);
+          const ch2 = (orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || 'DINE-IN').toUpperCase();
+          let channelLayout2 = null;
+          if (ch2 === 'DELIVERY') channelLayout2 = ls2.deliveryKitchen;
+          else if (ch2 === 'TOGO' || ch2 === 'ONLINE' || ch2 === 'PICKUP') channelLayout2 = ls2.externalKitchen;
+          else channelLayout2 = ls2.dineInKitchen;
+          const dbRp =
+            channelLayout2?.kitchenPrinter?.rightPaddingPx ??
+            channelLayout2?.rightPaddingPx ??
+            ls2.kitchenLayout?.rightPaddingPx ??
+            ls2.kitchen?.rightPaddingPx ??
+            ls2.rightPaddingPx ??
+            undefined;
+          if (dbRp != null) {
+            const rp = Number(dbRp);
+            if (Number.isFinite(rp) && rp >= 0) effectiveRightPadding = rp;
+          }
+        }
+      } catch (_e) { /* ignore */ }
+
       // === 1. printerName이 명시적으로 지정된 경우: 모든 아이템을 해당 프린터로 전송 ===
       if (printerName) {
         console.log(`🍳 [Printer API] Explicit printer specified: ${printerName}`);
@@ -948,6 +927,7 @@ module.exports = (db) => {
         }
         if (showLabel && printerGroupName) ticketData.printerLabel = printerGroupName;
         if (effectiveTopMargin != null && effectiveTopMargin >= 0) ticketData.topMargin = effectiveTopMargin;
+        if (effectiveRightPadding != null && effectiveRightPadding >= 0) ticketData.rightPaddingPx = effectiveRightPadding;
         
         await sendKitchenTicketToPrinter(printerName, ticketData, printMode, orderInfo, orderData);
         appendPrinterLog('PRINT_ORDER_SENT_EXPLICIT', { printerName });
@@ -1217,6 +1197,9 @@ module.exports = (db) => {
         if (effectiveTopMargin != null && effectiveTopMargin >= 0) {
           ticketData.topMargin = effectiveTopMargin;
         }
+        if (effectiveRightPadding != null && effectiveRightPadding >= 0) {
+          ticketData.rightPaddingPx = effectiveRightPadding;
+        }
         
         console.log(`🍳 [Printer API] Sending ${ticketData.items.length} items to "${job.printerName}" (${job.selectedPrinter}) x${job.copies} copies`);
         appendPrinterLog('PRINT_ORDER_SEND', {
@@ -1362,6 +1345,15 @@ module.exports = (db) => {
               topMargin: topMargin
             };
 
+            // Per-device graphic scale override
+            try {
+              if (targetPrinter) {
+                const row = await dbGet("SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1", [targetPrinter]);
+                const gs = Number(row?.graphic_scale);
+                if (Number.isFinite(gs) && gs > 0) voidTicketData.graphicScale = clampGraphicScale(gs);
+              }
+            } catch {}
+
             console.log(`🖨️ [Jobs Dispatch] Printing VOID ticket for order ${payload.orderId} to ${targetPrinter}`);
 
             const ticketBuffer = buildGraphicVoidTicket(voidTicketData, true);
@@ -1397,11 +1389,7 @@ module.exports = (db) => {
    */
   router.post('/print-receipt', async (req, res) => {
     try {
-      let { receiptData, copies = 1, printerName, openDrawer = false, printMode = 'graphic', topMargin } = req.body;
-      if (!receiptData) {
-        console.error('🧾 [Printer API] receiptData is missing from req.body, keys:', Object.keys(req.body || {}));
-        return res.status(400).json({ error: 'receiptData is required' });
-      }
+      const { receiptData, copies = 1, printerName, openDrawer = false, printMode = 'graphic', topMargin } = req.body;
       console.log(`🧾 [Printer API] Print Receipt request: ${copies} copies, openDrawer: ${openDrawer}, mode: ${printMode}`);
 
       const lockedPresetId = getLockedPresetIdFromPrintData(receiptData || req.body);

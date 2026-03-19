@@ -21,9 +21,10 @@ function getFirestore() {
   }
 }
 
-// 날짜 포맷 (YYYY-MM-DD)
+// 날짜 포맷 (YYYY-MM-DD) - 로컬 시스템 기준
+const { getLocalDateString } = require('../utils/datetimeUtils');
 function getDateString(date = new Date()) {
-  return date.toISOString().split('T')[0];
+  return getLocalDateString(date);
 }
 
 // 시간 포맷 (HH)
@@ -51,6 +52,7 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
     const hourStr = getHourString(now);
     const monthStr = dateStr.substring(0, 7); // YYYY-MM
 
+    // 레스토랑 참조
     const restaurantRef = db.collection('restaurants').doc(restaurantId);
     const skipDailySales = options.skipDailySales === true;
 

@@ -7,6 +7,7 @@ const firebaseService = require('../services/firebaseService');
 const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
+const { getLocalDatetimeString } = require('../backend/utils/datetimeUtils');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -116,7 +117,8 @@ function startOrderListener(restaurantId) {
         
         // 없으면 새로 생성
         if (!localOrder) {
-          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+          const raw = order.createdAt?.toDate?.() || order.createdAt;
+          const createdAt = raw instanceof Date ? getLocalDatetimeString(raw) : (typeof raw === 'string' ? (() => { const d = new Date(raw); return isNaN(d.getTime()) ? getLocalDatetimeString() : getLocalDatetimeString(d); })() : getLocalDatetimeString());
           const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
           
           // 세금 정보 추출
@@ -149,7 +151,7 @@ function startOrderListener(restaurantId) {
               'ONLINE',
               order.total || 0,
               'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              createdAt,
               order.customerPhone || null,
               order.customerName || null,
               firebaseOrderId,
@@ -834,7 +836,8 @@ router.get('/:restaurantId', async (req, res) => {
       
       // 없으면 새로 생성
       if (!localOrder) {
-        const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+        const raw = order.createdAt?.toDate?.() || order.createdAt;
+        const createdAt = raw instanceof Date ? getLocalDatetimeString(raw) : (typeof raw === 'string' ? (() => { const d = new Date(raw); return isNaN(d.getTime()) ? getLocalDatetimeString() : getLocalDatetimeString(d); })() : getLocalDatetimeString());
         const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
         
         // 세금 정보 추출
@@ -854,7 +857,7 @@ router.get('/:restaurantId', async (req, res) => {
               'ONLINE',
               order.total || 0,
               'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              createdAt,
               order.customerPhone || null,
               order.customerName || null,
               firebaseOrderId,
@@ -1049,7 +1052,7 @@ router.post('/order/:orderId/complete', async (req, res) => {
     // 로컬 SQLite 데이터베이스도 PAID 상태로 업데이트
     let localOrderId = null;
     try {
-      const closedAt = new Date().toISOString();
+      const closedAt = getLocalDatetimeString();
       await dbRun(
         `UPDATE orders SET status = 'PAID', closed_at = ? WHERE firebase_order_id = ?`,
         [closedAt, orderId]

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { generateMenuId, generateCategoryId, generateMenuItemId, generateModifierMenuLinkId, generateNextId, ID_RANGES } = require('../utils/idGenerator');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
 
@@ -392,7 +393,7 @@ module.exports = (db) => {
           name,
           description: description || '',
           is_active: 0,
-          created_at: new Date().toISOString()
+          created_at: getLocalDatetimeString()
         });
       });
     } catch (error) {
@@ -820,7 +821,7 @@ module.exports = (db) => {
           name: copyName,
           description: menu.description,
           is_active: 0,
-          created_at: new Date().toISOString()
+          created_at: getLocalDatetimeString()
         });
 
       } catch (error) {

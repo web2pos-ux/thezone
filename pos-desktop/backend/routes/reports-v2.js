@@ -5,6 +5,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 
 const router = express.Router();
+const { getLocalDateString, getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db } = require('../db');
@@ -357,7 +358,7 @@ router.get('/:reportId', async (req, res) => {
       return res.status(404).json({ error: 'Report not found' });
     }
     
-    const start = startDate || new Date().toISOString().split('T')[0];
+    const start = startDate || getLocalDateString();
     const end = endDate || start;
     const store = storeId || 'default';
     
@@ -378,7 +379,7 @@ router.get('/:reportId', async (req, res) => {
     res.json({
       report: reportDef,
       dateRange: { start, end },
-      generatedAt: new Date().toISOString(),
+      generatedAt: getLocalDatetimeString(),
       data
     });
   } catch (error) {
@@ -398,7 +399,7 @@ router.get('/:reportId/excel', async (req, res) => {
       return res.status(404).json({ error: 'Report not found' });
     }
     
-    const start = startDate || new Date().toISOString().split('T')[0];
+    const start = startDate || getLocalDateString();
     const end = endDate || start;
     
     const db = getDatabase();
@@ -435,7 +436,7 @@ router.get('/:reportId/print', async (req, res) => {
       return res.status(400).json({ error: 'Report is not printable' });
     }
     
-    const start = startDate || new Date().toISOString().split('T')[0];
+    const start = startDate || getLocalDateString();
     const db = getDatabase();
     
     const printText = await generatePrintText(db, reportId, start, shiftId, parseInt(width));
@@ -1896,7 +1897,7 @@ function generateCSV(reportDef, data) {
   
   // 헤더
   csv += `Report: ${reportDef.name}\n`;
-  csv += `Generated: ${new Date().toISOString()}\n\n`;
+  csv += `Generated: ${getLocalDatetimeString()}\n\n`;
   
   if (data.sections) {
     // 통합 레포트
@@ -1962,8 +1963,8 @@ function dbAllPromise(sql, params = []) {
 router.get('/operational/daily', async (req, res) => {
   try {
     const { date } = req.query;
-    const targetDate = date || new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
+    const targetDate = date || getLocalDateString();
+    const yesterday = getLocalDateString(new Date(new Date(targetDate).getTime() - 86400000));
 
     const hourlySales = await dbAllPromise(`
       SELECT strftime('%H', o.created_at) as hour,
@@ -2075,10 +2076,10 @@ router.get('/operational/daily', async (req, res) => {
 router.get('/operational/weekly', async (req, res) => {
   try {
     const { endDate } = req.query;
-    const end = endDate || new Date().toISOString().slice(0, 10);
-    const start = new Date(new Date(end).getTime() - 6 * 86400000).toISOString().slice(0, 10);
-    const prevStart = new Date(new Date(start).getTime() - 7 * 86400000).toISOString().slice(0, 10);
-    const prevEnd = new Date(new Date(start).getTime() - 86400000).toISOString().slice(0, 10);
+    const end = endDate || getLocalDateString();
+    const start = getLocalDateString(new Date(new Date(end).getTime() - 6 * 86400000));
+    const prevStart = getLocalDateString(new Date(new Date(start).getTime() - 7 * 86400000));
+    const prevEnd = getLocalDateString(new Date(new Date(start).getTime() - 86400000));
 
     const dailySales = await dbAllPromise(`
       SELECT DATE(o.created_at) as date,
@@ -2171,7 +2172,7 @@ router.get('/operational/weekly', async (req, res) => {
 router.get('/operational/monthly', async (req, res) => {
   try {
     const { month } = req.query;
-    const targetMonth = month || new Date().toISOString().slice(0, 7);
+    const targetMonth = month || getLocalDateString().slice(0, 7);
     const [year, mon] = targetMonth.split('-').map(Number);
     const prevMonth = mon === 1 ? `${year - 1}-12` : `${year}-${String(mon - 1).padStart(2, '0')}`;
     const prevYearMonth = `${year - 1}-${String(mon).padStart(2, '0')}`;

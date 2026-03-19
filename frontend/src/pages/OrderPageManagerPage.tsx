@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { DndContext, closestCenter, DragEndEvent, DragStartEvent, PointerSensor, TouchSensor, MouseSensor, useSensor, useSensors } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { DndContext, closestCenter, DragEndEvent, DragStartEvent, DragOverEvent, PointerSensor, TouchSensor, MouseSensor, useSensor, useSensors, useDroppable } from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import { API_URL } from '../config/constants';
@@ -14,23 +14,88 @@ type SortableRow =
   | { kind: 'modifier'; id: string; name: string; metaRight?: string }
   | { kind: 'blank'; id: string };
 
+// 세로 목록용 SortableItem (Categories, Modifiers 패널)
 const SortableItem: React.FC<{ id: string; children: React.ReactNode }> = ({ id, children }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   return (
     <div
       ref={setNodeRef}
-      style={{
-        transform: CSS.Transform.toString(transform),
-        transition,
-        opacity: isDragging ? 0.5 : 1,
-        touchAction: 'none',
-      }}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, touchAction: 'none' }}
       className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg shadow-sm cursor-grab active:cursor-grabbing select-none"
       {...attributes}
       {...listeners}
     >
       <span className="text-gray-400 text-sm">☰</span>
       {children}
+    </div>
+  );
+};
+
+// 그리드용 SortableGridCell (Items 패널)
+const SortableGridCell: React.FC<{
+  id: string;
+  row: SortableRow;
+  isSelected: boolean;
+  isOver: boolean;
+  isDragActive: boolean;
+  onSelect: () => void;
+  onRemoveBlank: () => void;
+}> = ({ id, row, isSelected, isOver, isDragActive, onSelect, onRemoveBlank }) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+
+  const baseStyle = `
+    relative flex flex-col items-center justify-center
+    rounded-lg border-2 select-none cursor-grab active:cursor-grabbing
+    transition-all duration-150
+    text-center px-1
+  `;
+
+  let cellClass = '';
+  if (isDragging) {
+    cellClass = 'border-blue-400 bg-blue-50 opacity-40 scale-95';
+  } else if (isOver && isDragActive) {
+    cellClass = 'border-green-400 bg-green-50 shadow-lg scale-105 ring-2 ring-green-400';
+  } else if (row.kind === 'blank') {
+    cellClass = 'border-dashed border-gray-300 bg-gray-50 hover:border-gray-400 hover:bg-gray-100';
+  } else if (isSelected) {
+    cellClass = 'border-blue-500 bg-blue-50 shadow-md';
+  } else {
+    cellClass = 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50 hover:shadow-sm';
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, touchAction: 'none', minHeight: 64 }}
+      className={`${baseStyle} ${cellClass}`}
+      {...attributes}
+      {...listeners}
+      onClick={row.kind !== 'blank' ? onSelect : undefined}
+    >
+      {row.kind === 'blank' ? (
+        <div className="flex flex-col items-center gap-1 w-full">
+          <span className="text-xs text-gray-400 italic">Empty</span>
+          <button
+            className="text-xs text-red-400 hover:text-red-600 leading-none"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onRemoveBlank(); }}
+            title="Remove blank"
+          >✕</button>
+        </div>
+      ) : (
+        <>
+          <span className={`text-xs font-medium leading-tight break-words w-full ${isSelected ? 'text-blue-700' : 'text-gray-700'}`}>
+            {row.name}
+          </span>
+          {row.metaRight && (
+            <span className="text-[10px] text-gray-400 mt-0.5">{row.metaRight}</span>
+          )}
+        </>
+      )}
+      {/* 자석 효과: 드래그 활성화 중 over된 셀에 타겟 표시 */}
+      {isOver && isDragActive && !isDragging && (
+        <div className="absolute inset-0 rounded-lg border-2 border-green-400 pointer-events-none animate-pulse" />
+      )}
     </div>
   );
 };
@@ -47,12 +112,14 @@ const OrderPageManagerPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
   const [loading, setLoading] = useState(true);
+  const [activeItemDragId, setActiveItemDragId] = useState<string | null>(null);
+  const [overItemId, setOverItemId] = useState<string | null>(null);
 
+  // distance: 10 으로 완화 → 클릭 시 의도치 않은 드래그 방지
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    // Fallbacks for environments where Pointer events are flaky/disabled
-    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 80, tolerance: 8 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 10 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 10 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 10 } })
   );
 
   const logDragStart = useCallback((scope: string) => (event: DragStartEvent) => {
@@ -113,10 +180,7 @@ const OrderPageManagerPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!menuId) {
-      setCategories([]);
-      return;
-    }
+    if (!menuId) { setCategories([]); return; }
     (async () => {
       try {
         const catRes = await fetch(`${API_URL}/menu/categories?menu_id=${encodeURIComponent(String(menuId))}`);
@@ -124,13 +188,9 @@ const OrderPageManagerPage: React.FC = () => {
           const cats = await catRes.json();
           setCategories(Array.isArray(cats) ? cats : []);
         } else {
-          console.warn('Failed to load categories:', catRes.status);
           setCategories([]);
         }
-      } catch (e) {
-        console.error('Failed to load categories:', e);
-        setCategories([]);
-      }
+      } catch (e) { console.error(e); setCategories([]); }
     })();
   }, [menuId]);
 
@@ -163,12 +223,7 @@ const OrderPageManagerPage: React.FC = () => {
           (Array.isArray(data) ? data : []).forEach((link: any) => {
             (link.modifiers || []).forEach((mod: any) => {
               const id = String(mod.option_id ?? mod.modifier_id ?? mod.id);
-              entries.push({
-                id,
-                label: mod.name || mod.option_name || '',
-                groupId: String(link.modifier_group_id),
-                price: mod.price_delta ?? mod.price_adjustment ?? 0,
-              });
+              entries.push({ id, label: mod.name || mod.option_name || '', groupId: String(link.modifier_group_id), price: mod.price_delta ?? mod.price_adjustment ?? 0 });
             });
           });
           setItemModifiers(entries);
@@ -177,11 +232,17 @@ const OrderPageManagerPage: React.FC = () => {
     })();
   }, [selectedItemId]);
 
-  // These are plain derived values; memoization here causes noisy deps warnings without benefits.
   const mergedGroups: MergedGroup[] = (layoutSettings.mergedGroups || []) as MergedGroup[];
   const savedCategoryBarOrder = (((layoutSettings as any).categoryBarOrder || []) as string[]);
   const menuItemOrderByCategory = (((layoutSettings as any).menuItemOrderByCategory || {}) as Record<number, string[]>);
   const modifierLayoutByItemFromSettings = (((layoutSettings as any).modifierLayoutByItem || {}) as Record<string, string[]>);
+
+  // 실제 Order Screen의 열 수를 그대로 사용
+  const gridCols: number = useMemo(() => {
+    const v = (layoutSettings as any).menuGridColumns;
+    const n = Number(v);
+    return (!Number.isNaN(n) && n >= 1) ? n : 6;
+  }, [layoutSettings]);
 
   const categoryBarOrder: string[] = useMemo(() => {
     if (savedCategoryBarOrder.length > 0) return savedCategoryBarOrder;
@@ -218,35 +279,20 @@ const OrderPageManagerPage: React.FC = () => {
         }
         const item = menuItems.find(i => i.id === String(id));
         if (item) {
-          rows.push({
-            kind: 'item',
-            id: item.id,
-            name: item.name,
-            metaRight: `$${Number(item.price || 0).toFixed(2)}`,
-          });
+          rows.push({ kind: 'item', id: item.id, name: item.name, metaRight: `$${Number(item.price || 0).toFixed(2)}` });
         }
       }
       for (const id of available) {
         if (!saved.includes(id)) {
           const item = menuItems.find(i => i.id === id);
           if (item) {
-            rows.push({
-              kind: 'item',
-              id: item.id,
-              name: item.name,
-              metaRight: `$${Number(item.price || 0).toFixed(2)}`,
-            });
+            rows.push({ kind: 'item', id: item.id, name: item.name, metaRight: `$${Number(item.price || 0).toFixed(2)}` });
           }
         }
       }
       return rows;
     }
-    return menuItems.map(item => ({
-      kind: 'item',
-      id: item.id,
-      name: item.name,
-      metaRight: `$${Number(item.price || 0).toFixed(2)}`,
-    }));
+    return menuItems.map(item => ({ kind: 'item', id: item.id, name: item.name, metaRight: `$${Number(item.price || 0).toFixed(2)}` }));
   }, [menuItems, selectedCategoryId, getCategoryItemOrder]);
 
   const orderedModifierRows: SortableRow[] = useMemo(() => {
@@ -263,12 +309,7 @@ const OrderPageManagerPage: React.FC = () => {
         const entry = itemModifiers.find(m => m.id === String(id));
         if (entry) {
           const price = Number(entry.price || 0);
-          rows.push({
-            kind: 'modifier',
-            id: entry.id,
-            name: entry.label,
-            metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined,
-          });
+          rows.push({ kind: 'modifier', id: entry.id, name: entry.label, metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined });
         }
       }
       for (const id of available) {
@@ -276,12 +317,7 @@ const OrderPageManagerPage: React.FC = () => {
           const entry = itemModifiers.find(m => m.id === id);
           if (entry) {
             const price = Number(entry.price || 0);
-            rows.push({
-              kind: 'modifier',
-              id: entry.id,
-              name: entry.label,
-              metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined,
-            });
+            rows.push({ kind: 'modifier', id: entry.id, name: entry.label, metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined });
           }
         }
       }
@@ -289,12 +325,7 @@ const OrderPageManagerPage: React.FC = () => {
     }
     return itemModifiers.map(entry => {
       const price = Number(entry.price || 0);
-      return ({
-        kind: 'modifier',
-        id: entry.id,
-        name: entry.label,
-        metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined,
-      });
+      return { kind: 'modifier' as const, id: entry.id, name: entry.label, metaRight: price !== 0 ? `${price > 0 ? '+' : ''}$${price.toFixed(2)}` : undefined };
     });
   }, [itemModifiers, selectedItemId, getModifierOrder]);
 
@@ -369,13 +400,11 @@ const OrderPageManagerPage: React.FC = () => {
     if (oldIndex === -1 || newIndex === -1) return;
     const newOrder = arrayMove(visibleCategoryBarOrder, oldIndex, newIndex);
     setLayoutSettings(prev => ({ ...prev, categoryBarOrder: newOrder }));
-
     const newMergedGroups = newOrder
       .filter(id => id.startsWith('mergy_'))
       .map(id => mergedGroups.find(g => g.id === id))
       .filter(Boolean) as MergedGroup[];
     setLayoutSettings(prev => ({ ...prev, mergedGroups: newMergedGroups }));
-
     console.log('[OrderScreenManager] category/group reorder', { active: String(active.id), over: String(over.id), oldIndex, newIndex });
   };
 
@@ -388,25 +417,43 @@ const OrderPageManagerPage: React.FC = () => {
     const newIndex = group.categoryNames.indexOf(String(over.id));
     if (oldIndex === -1 || newIndex === -1) return;
     const newNames = arrayMove(group.categoryNames, oldIndex, newIndex);
-    const updatedGroups = mergedGroups.map(g =>
-      g.id === groupId ? { ...g, categoryNames: newNames } : g
-    );
+    const updatedGroups = mergedGroups.map(g => g.id === groupId ? { ...g, categoryNames: newNames } : g);
     setLayoutSettings(prev => ({ ...prev, mergedGroups: updatedGroups }));
     console.log('[OrderScreenManager] merged group internal reorder', { groupId, active: String(active.id), over: String(over.id), oldIndex, newIndex });
   };
 
+  // 시나리오 1: 아이템이 있는 위치에 드롭 → push (밀어내기, 원위치는 EMPTY)
+  // 시나리오 2: 빈슬롯에 드롭 → 이동 (swap, 원위치는 EMPTY)
   const handleItemDragEnd = (event: DragEndEvent) => {
+    setActiveItemDragId(null);
+    setOverItemId(null);
     const { active, over } = event;
     if (!over || active.id === over.id || selectedCategoryId == null) return;
+
     const ids = orderedCategoryRows.map(r => r.id);
     const oldIndex = ids.indexOf(String(active.id));
     const newIndex = ids.indexOf(String(over.id));
     if (oldIndex === -1 || newIndex === -1) return;
-    const newIds = arrayMove(ids, oldIndex, newIndex);
+
+    const overRow = orderedCategoryRows[newIndex];
+    let newIds: string[];
+
+    if (overRow.kind === 'blank') {
+      // 시나리오 2: 빈슬롯 → 아이템 이동, 원위치 EMPTY로
+      newIds = ids.slice();
+      newIds[newIndex] = ids[oldIndex];       // 빈슬롯 자리에 아이템 배치
+      newIds[oldIndex] = overRow.id;           // 원위치를 빈슬롯으로
+    } else {
+      // 시나리오 1: 아이템 → 아이템 push 삽입 (splice), 원위치는 EMPTY
+      newIds = ids.slice();
+      const [moved] = newIds.splice(oldIndex, 1);  // 원위치에서 제거
+      newIds.splice(newIndex, 0, moved);            // 목표 위치에 삽입 (뒤로 밀기)
+    }
+
     const map = { ...((layoutSettings as any).menuItemOrderByCategory || {}) };
     map[selectedCategoryId] = newIds;
     setLayoutSettings(prev => ({ ...prev, menuItemOrderByCategory: map } as any));
-    console.log('[OrderScreenManager] item reorder', { categoryId: selectedCategoryId, active: String(active.id), over: String(over.id), oldIndex, newIndex });
+    console.log('[OrderScreenManager] item reorder', { categoryId: selectedCategoryId, active: String(active.id), over: String(over.id), oldIndex, newIndex, mode: overRow.kind === 'blank' ? 'swap-empty' : 'push' });
   };
 
   const handleModifierDragEnd = (event: DragEndEvent) => {
@@ -426,6 +473,15 @@ const OrderPageManagerPage: React.FC = () => {
   const catMap = useMemo(() => new Map(categories.map(c => [String(c.category_id), c])), [categories]);
   const groupMap = useMemo(() => new Map(mergedGroups.map(g => [g.id, g])), [mergedGroups]);
 
+  // Tailwind grid-cols 동적 매핑
+  const gridColsClass: Record<number, string> = {
+    1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3',
+    4: 'grid-cols-4', 5: 'grid-cols-5', 6: 'grid-cols-6',
+    7: 'grid-cols-7', 8: 'grid-cols-8', 9: 'grid-cols-9',
+    10: 'grid-cols-10',
+  };
+  const colClass = gridColsClass[gridCols] || 'grid-cols-6';
+
   if (loading) {
     return (
       <div className="p-6 flex items-center justify-center h-96">
@@ -437,12 +493,6 @@ const OrderPageManagerPage: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-        <div className="font-semibold">Backoffice — Order Screen Manager</div>
-        <div className="text-xs text-blue-800 mt-1">
-          Current route: {typeof window !== 'undefined' ? window.location.pathname : ''} (drag logs start with <span className="font-mono">[OrderScreenManager]</span>)
-        </div>
-      </div>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Order Screen Manager</h1>
@@ -479,7 +529,7 @@ const OrderPageManagerPage: React.FC = () => {
               onDragStart={logDragStart('categoryBar')}
               onDragEnd={handleCategoryBarDragEnd}
             >
-              <SortableContext items={visibleCategoryBarOrder} strategy={verticalListSortingStrategy}>
+              <SortableContext items={visibleCategoryBarOrder} strategy={rectSortingStrategy}>
                 <div className="space-y-2">
                   {visibleCategoryBarOrder.map(id => {
                     const group = groupMap.get(id);
@@ -499,7 +549,7 @@ const OrderPageManagerPage: React.FC = () => {
                               onDragStart={logDragStart(`mergedGroup:${group.id}`)}
                               onDragEnd={handleMergedGroupInternalDragEnd(group.id)}
                             >
-                              <SortableContext items={group.categoryNames} strategy={verticalListSortingStrategy}>
+                              <SortableContext items={group.categoryNames} strategy={rectSortingStrategy}>
                                 <div className="space-y-1">
                                   {group.categoryNames.map(catName => (
                                     <SortableItem key={catName} id={catName}>
@@ -534,70 +584,72 @@ const OrderPageManagerPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Column 2: Items (for selected category) */}
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {/* Column 2: Items (그리드 형태 - 실제 Order Screen과 동일한 열 수) */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden lg:col-span-2">
           <div className="bg-green-50 px-4 py-3 border-b border-green-100">
-            <h2 className="font-semibold text-green-900">
-              Items
-              {selectedCategoryId != null && (
-                <span className="text-sm font-normal text-green-600 ml-2">
-                  — {categories.find(c => c.category_id === selectedCategoryId)?.name || ''}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-green-900">
+                  Items
+                  {selectedCategoryId != null && (
+                    <span className="text-sm font-normal text-green-600 ml-2">
+                      — {categories.find(c => c.category_id === selectedCategoryId)?.name || ''}
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-green-600 mt-0.5">
+                  {selectedCategoryId
+                    ? `Drag to reorder · ${gridCols} columns (matches Order Screen) · Drop on item = push, drop on Empty = swap`
+                    : 'Select a category first.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">
+                  {gridCols} cols
                 </span>
-              )}
-            </h2>
-            <p className="text-xs text-green-600 mt-0.5">
-              {selectedCategoryId ? 'Drag to reorder items. Click to edit modifiers.' : 'Select a category first.'}
-            </p>
-            <div className="mt-2">
-              <button
-                onClick={insertBlankIntoCategory}
-                disabled={selectedCategoryId == null}
-                className="text-xs px-3 py-1 rounded bg-white/70 border border-green-200 hover:bg-white disabled:opacity-50"
-                title="Insert a blank slot (EMPTY) into this category layout"
-              >
-                + Blank
-              </button>
+                <button
+                  onClick={insertBlankIntoCategory}
+                  disabled={selectedCategoryId == null}
+                  className="text-xs px-3 py-1 rounded bg-white/70 border border-green-200 hover:bg-white disabled:opacity-50"
+                  title="Insert a blank slot after selected item"
+                >
+                  + Blank
+                </button>
+              </div>
             </div>
           </div>
-          <div className="p-3 max-h-[70vh] overflow-y-auto">
+          <div className="p-3 overflow-y-auto" style={{ maxHeight: '70vh' }}>
             {selectedCategoryId == null ? (
-              <p className="text-gray-400 text-center py-8 text-sm">Select a category on the left</p>
+              <p className="text-gray-400 text-center py-12 text-sm">Select a category on the left</p>
             ) : orderedCategoryRows.length === 0 ? (
-              <p className="text-gray-400 text-center py-8 text-sm">No items in this category</p>
+              <p className="text-gray-400 text-center py-12 text-sm">No items in this category</p>
             ) : (
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
-                onDragStart={logDragStart('items')}
+                onDragStart={(event) => {
+                  logDragStart('items')(event);
+                  setActiveItemDragId(String(event.active.id));
+                }}
+                onDragOver={(event: DragOverEvent) => {
+                  setOverItemId(event.over ? String(event.over.id) : null);
+                }}
                 onDragEnd={handleItemDragEnd}
+                onDragCancel={() => { setActiveItemDragId(null); setOverItemId(null); }}
               >
-                <SortableContext items={orderedCategoryRows.map(r => r.id)} strategy={verticalListSortingStrategy}>
-                  <div className="space-y-2">
+                <SortableContext items={orderedCategoryRows.map(r => r.id)} strategy={rectSortingStrategy}>
+                  <div className={`grid ${colClass} gap-2`}>
                     {orderedCategoryRows.map(row => (
-                      <SortableItem key={row.id} id={row.id}>
-                        {row.kind === 'blank' ? (
-                          <>
-                            <span className="text-sm flex-1 text-gray-400 italic">[ Blank ]</span>
-                            <button
-                              className="text-xs text-red-600 hover:text-red-700"
-                              onClick={(e) => { e.stopPropagation(); removeBlankFromCategory(row.id); }}
-                              title="Remove blank"
-                            >
-                              ✕
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <span
-                              className={`text-sm flex-1 cursor-pointer ${selectedItemId === row.id ? 'font-bold text-blue-700' : 'text-gray-700'}`}
-                              onClick={() => { setSelectedItemId(row.id); setSelectedModifierRowId(null); }}
-                            >
-                              {row.name}
-                            </span>
-                            <span className="text-xs text-gray-400">{row.metaRight}</span>
-                          </>
-                        )}
-                      </SortableItem>
+                      <SortableGridCell
+                        key={row.id}
+                        id={row.id}
+                        row={row}
+                        isSelected={selectedItemId === row.id}
+                        isOver={overItemId === row.id}
+                        isDragActive={activeItemDragId !== null}
+                        onSelect={() => { setSelectedItemId(row.id); setSelectedModifierRowId(null); }}
+                        onRemoveBlank={() => removeBlankFromCategory(row.id)}
+                      />
                     ))}
                   </div>
                 </SortableContext>
@@ -605,36 +657,33 @@ const OrderPageManagerPage: React.FC = () => {
             )}
           </div>
         </div>
+      </div>
 
-        {/* Column 3: Modifiers (for selected item) */}
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      {/* Modifiers 패널 (선택된 아이템이 있을 때) */}
+      {selectedItemId && (
+        <div className="mt-6 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="bg-amber-50 px-4 py-3 border-b border-amber-100">
-            <h2 className="font-semibold text-amber-900">
-              Modifiers
-              {selectedItemId && (
-                <span className="text-sm font-normal text-amber-600 ml-2">
-                  — {menuItems.find(i => i.id === selectedItemId)?.name || ''}
-                </span>
-              )}
-            </h2>
-            <p className="text-xs text-amber-600 mt-0.5">
-              {selectedItemId ? 'Drag to reorder modifiers for this item.' : 'Select an item first.'}
-            </p>
-            <div className="mt-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-amber-900">
+                  Modifiers
+                  <span className="text-sm font-normal text-amber-600 ml-2">
+                    — {menuItems.find(i => i.id === selectedItemId)?.name || ''}
+                  </span>
+                </h2>
+                <p className="text-xs text-amber-600 mt-0.5">Drag to reorder modifiers for this item.</p>
+              </div>
               <button
                 onClick={insertBlankIntoModifiers}
-                disabled={!selectedItemId}
-                className="text-xs px-3 py-1 rounded bg-white/70 border border-amber-200 hover:bg-white disabled:opacity-50"
-                title="Insert a blank slot (EMPTY) into this item's modifier layout"
+                className="text-xs px-3 py-1 rounded bg-white/70 border border-amber-200 hover:bg-white"
+                title="Insert a blank slot into this item's modifier layout"
               >
                 + Blank
               </button>
             </div>
           </div>
-          <div className="p-3 max-h-[70vh] overflow-y-auto">
-            {!selectedItemId ? (
-              <p className="text-gray-400 text-center py-8 text-sm">Select an item to see modifiers</p>
-            ) : orderedModifierRows.length === 0 ? (
+          <div className="p-3 max-h-[40vh] overflow-y-auto">
+            {orderedModifierRows.length === 0 ? (
               <p className="text-gray-400 text-center py-8 text-sm">No modifiers linked to this item</p>
             ) : (
               <DndContext
@@ -643,7 +692,7 @@ const OrderPageManagerPage: React.FC = () => {
                 onDragStart={logDragStart('modifiers')}
                 onDragEnd={handleModifierDragEnd}
               >
-                <SortableContext items={orderedModifierRows.map(r => r.id)} strategy={verticalListSortingStrategy}>
+                <SortableContext items={orderedModifierRows.map(r => r.id)} strategy={rectSortingStrategy}>
                   <div className="space-y-2">
                     {orderedModifierRows.map(row => (
                       <SortableItem key={row.id} id={row.id}>
@@ -654,9 +703,7 @@ const OrderPageManagerPage: React.FC = () => {
                               className="text-xs text-red-600 hover:text-red-700"
                               onClick={(e) => { e.stopPropagation(); removeBlankFromModifiers(row.id); }}
                               title="Remove blank"
-                            >
-                              ✕
-                            </button>
+                            >✕</button>
                           </>
                         ) : (
                           <>
@@ -666,9 +713,7 @@ const OrderPageManagerPage: React.FC = () => {
                             >
                               {row.name}
                             </span>
-                            {row.metaRight && (
-                              <span className="text-xs text-gray-400">{row.metaRight}</span>
-                            )}
+                            {row.metaRight && <span className="text-xs text-gray-400">{row.metaRight}</span>}
                           </>
                         )}
                       </SortableItem>
@@ -679,7 +724,7 @@ const OrderPageManagerPage: React.FC = () => {
             )}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

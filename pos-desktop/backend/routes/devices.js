@@ -5,6 +5,7 @@
  */
 
 const express = require('express');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
@@ -143,7 +144,7 @@ module.exports = (db) => {
           [fbCode, fbCode]
         );
 
-        await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [new Date().toISOString()]);
+        await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [getLocalDatetimeString()]);
         console.log('[Pairing] All existing tokens revoked due to code change');
 
         try {
@@ -195,7 +196,7 @@ module.exports = (db) => {
         [code, code]
       );
 
-      const revokeCount = await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [new Date().toISOString()]);
+      const revokeCount = await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [getLocalDatetimeString()]);
       console.log(`[Pairing] Code updated → "${code}", ${revokeCount?.changes || 0} tokens revoked`);
 
       // Firebase에도 동기화
@@ -245,7 +246,7 @@ module.exports = (db) => {
       }
 
       const ipAddress = req.ip || req.connection?.remoteAddress;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       const existing = await dbGet('SELECT * FROM registered_devices WHERE device_id = ?', [device_id]);
       if (existing) {
@@ -380,7 +381,7 @@ module.exports = (db) => {
 
     try {
       const ipAddress = req.ip || req.connection.remoteAddress;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       const existing = await dbGet(
         'SELECT * FROM registered_devices WHERE device_id = ?', 
@@ -653,7 +654,7 @@ module.exports = (db) => {
         }
 
         // force_replace: unassign the old device first
-        const now2 = new Date().toISOString();
+        const now2 = getLocalDatetimeString();
         await dbRun(`
           UPDATE registered_devices
           SET assigned_table_id = NULL,
@@ -677,7 +678,7 @@ module.exports = (db) => {
       }
 
       // 테이블 배정
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
       await dbRun(`
         UPDATE registered_devices 
         SET assigned_table_id = ?,
@@ -747,7 +748,7 @@ module.exports = (db) => {
 
       const previousTable = device.assigned_table_id;
 
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
       await dbRun(`
         UPDATE registered_devices 
         SET assigned_table_id = NULL,
@@ -814,7 +815,7 @@ module.exports = (db) => {
 
     try {
       const ipAddress = req.ip || req.connection.remoteAddress;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       // 디바이스 확인
       const device = await dbGet(
@@ -1028,7 +1029,7 @@ module.exports = (db) => {
         });
       }
 
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
       await dbRun(`
         UPDATE registered_devices 
         SET device_name = COALESCE(?, device_name),
@@ -1155,7 +1156,7 @@ module.exports = (db) => {
       const pending = await dbGet('SELECT COUNT(*) as count FROM registered_devices WHERE status = ?', ['pending']);
       
       // 온라인 디바이스 수 (60초 이내)
-      const onlineThreshold = new Date(Date.now() - 60000).toISOString();
+      const onlineThreshold = getLocalDatetimeString(new Date(Date.now() - 60000));
       const online = await dbGet(
         'SELECT COUNT(*) as count FROM registered_devices WHERE last_seen_at > ?', 
         [onlineThreshold]

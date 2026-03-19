@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // 메인 DB를 전달받아 사용
 module.exports = (db) => {
@@ -134,7 +135,7 @@ module.exports = (db) => {
       });
     }
 
-    const createdAt = new Date().toISOString();
+    const createdAt = getLocalDatetimeString();
     const validPriceType = priceType === 'price2' ? 'price2' : 'price';
     
     try {
@@ -191,7 +192,7 @@ module.exports = (db) => {
       });
     }
 
-    const updatedAt = new Date().toISOString();
+    const updatedAt = getLocalDatetimeString();
     const validPriceType = priceType === 'price2' ? 'price2' : 'price';
     
     try {

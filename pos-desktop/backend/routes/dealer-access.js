@@ -17,6 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { dbRun, dbAll, dbGet } = require('../db');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // Config paths (process.env.CONFIG_PATH 사용 - 패키징된 앱에서 쓰기 가능한 경로)
 const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
@@ -85,7 +86,7 @@ function hashPin(pin) {
 // Log access attempt
 function logAccess(config, dealerId, dealerName, role, action, success) {
   const logEntry = {
-    timestamp: new Date().toISOString(),
+    timestamp: getLocalDatetimeString(),
     dealerId,
     dealerName,
     role,
@@ -275,11 +276,11 @@ router.post('/store-settings', requireDealerAccess, async (req, res) => {
       restaurantId: restaurantId !== undefined ? restaurantId : setupStatus.restaurantId,
       storeName: storeName !== undefined ? storeName : setupStatus.storeName,
       serviceMode: serviceMode ? serviceMode.toUpperCase() : setupStatus.serviceMode,
-      setupDate: new Date().toISOString(),
+      setupDate: getLocalDatetimeString(),
       lastModifiedBy: {
         role,
         name,
-        timestamp: new Date().toISOString()
+        timestamp: getLocalDatetimeString()
       }
     };
     
@@ -367,7 +368,7 @@ router.post('/dealers', requireDealerAccess, async (req, res) => {
       pin,
       role,
       active: true,
-      createdAt: new Date().toISOString()
+      createdAt: getLocalDatetimeString()
     });
     
     saveDealerConfig(config);

@@ -6,6 +6,7 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs');
 const firebaseService = require('../services/firebaseService');
+const { getLocalDatetimeString, getLocalTimestampForFilename } = require('../utils/datetimeUtils');
 const { SyncLogService, SYNC_STATUS, SYNC_DIRECTION, SYNC_TYPE } = require('../services/syncLogService');
 const idMapperService = require('../services/idMapperService');
 
@@ -211,7 +212,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     // 0. 기존 POS 메뉴 백업 생성
     console.log('💾 POS 메뉴 백업 시작...');
     const backupData = {
-      timestamp: new Date().toISOString(),
+      timestamp: getLocalDatetimeString(),
       restaurantId: restaurantId,
       backupType: 'pre_download',
       categories: [],
@@ -248,7 +249,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     }
     
     // 백업 파일 저장
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const timestamp = getLocalTimestampForFilename();
     const backupFilename = `pos_menu_backup_${restaurantId}_${timestamp}.json`;
     const backupPath = path.join(backupDir, backupFilename);
     fs.writeFileSync(backupPath, JSON.stringify(backupData, null, 2));
@@ -464,6 +465,13 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
       
       if (posItem) {
         const itemImageValue = skipImages ? (posItem.image_url || '') : (fbItem.imageUrl || fbItem.image_url || '');
+        const kteRaw = fbItem.kitchenTicketElements || fbItem.kitchen_ticket_elements;
+        const kteJson = (() => {
+          try {
+            const arr = Array.isArray(kteRaw) ? kteRaw : (typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : []);
+            return JSON.stringify(arr.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })));
+          } catch { return '[]'; }
+        })();
         await dbRun(
           `UPDATE menu_items SET
             name = ?,
@@ -474,7 +482,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             description = ?,
             image_url = ?,
             sort_order = ?,
-            is_open_price = ?
+            is_open_price = ?,
+            kitchen_ticket_elements = ?
           WHERE item_id = ?`,
           [
             fbItem.name,
@@ -486,6 +495,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
             itemImageValue,
             fbItem.sortOrder || fbItem.sort_order || 0,
             fbItem.isOpenPrice || fbItem.is_open_price || 0,
+            kteJson,
             posItem.item_id
           ]
         );
@@ -503,6 +513,13 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
         
         if (posItem) {
           const itemImageValue = skipImages ? (posItem.image_url || '') : (fbItem.imageUrl || fbItem.image_url || '');
+          const kteRaw = fbItem.kitchenTicketElements || fbItem.kitchen_ticket_elements;
+          const kteJson = (() => {
+            try {
+              const arr = Array.isArray(kteRaw) ? kteRaw : (typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : []);
+              return JSON.stringify(arr.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })));
+            } catch { return '[]'; }
+          })();
           await dbRun(
             `UPDATE menu_items SET
               firebase_id = ?,
@@ -513,7 +530,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               description = ?,
               image_url = ?,
               sort_order = ?,
-              is_open_price = ?
+              is_open_price = ?,
+              kitchen_ticket_elements = ?
             WHERE item_id = ?`,
             [
               fbItem.id,
@@ -525,6 +543,7 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               itemImageValue,
               fbItem.sortOrder || fbItem.sort_order || 0,
               fbItem.isOpenPrice || fbItem.is_open_price || 0,
+              kteJson,
               posItem.item_id
             ]
           );
@@ -536,11 +555,18 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
           console.log(`🔗 아이템 연결: ${fbItem.name}`);
         } else {
           const itemImageValue = skipImages ? '' : (fbItem.imageUrl || fbItem.image_url || '');
+          const kteRaw = fbItem.kitchenTicketElements || fbItem.kitchen_ticket_elements;
+          const kteJson = (() => {
+            try {
+              const arr = Array.isArray(kteRaw) ? kteRaw : (typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : []);
+              return JSON.stringify(arr.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })));
+            } catch { return '[]'; }
+          })();
           const result = await dbRun(
             `INSERT INTO menu_items (
               name, short_name, price, price2, category_id, menu_id, description, image_url, 
-              sort_order, firebase_id, is_open_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              sort_order, firebase_id, is_open_price, kitchen_ticket_elements
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               fbItem.name,
               fbItem.shortName || fbItem.short_name || '',
@@ -552,7 +578,8 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
               itemImageValue,
               fbItem.sortOrder || fbItem.sort_order || 0,
               fbItem.id,
-              fbItem.isOpenPrice || fbItem.is_open_price || 0
+              fbItem.isOpenPrice || fbItem.is_open_price || 0,
+              kteJson
             ]
           );
           
@@ -944,7 +971,7 @@ router.get('/backup-firebase/:restaurantId', async (req, res) => {
     
     const backup = {
       restaurantId,
-      backupDate: new Date().toISOString(),
+      backupDate: getLocalDatetimeString(),
       categories,
       items,
       summary: {
@@ -1204,6 +1231,13 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
       }
       
       const itemImageUrl = skipImages && fbItemImageMap[item.item_id] ? fbItemImageMap[item.item_id] : (item.image_url || '');
+      const kteRaw = item.kitchen_ticket_elements;
+      const kitchenTicketElements = (() => {
+        try {
+          const arr = typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : (kteRaw || []);
+          return Array.isArray(arr) ? arr.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })) : [];
+        } catch { return []; }
+      })();
       const docRef = await restaurantRef.collection('menuItems').add({
         restaurantId,
         menuId: menuId || undefined,
@@ -1221,6 +1255,7 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
         modifierGroupIds: firebaseModifierGroupIds,
         taxGroupIds: firebaseTaxGroupIds,
         printerGroupIds: firebasePrinterGroupIds,
+        kitchenTicketElements,
         options: [],
         createdAt: new Date(),
         updatedAt: new Date()
@@ -2002,12 +2037,17 @@ router.post('/upload-modifier-groups', requireManager, async (req, res) => {
     // 4. 새 Modifier 그룹 업로드 (서브컬렉션에)
     const uploadedGroups = [];
     for (const group of posModifierGroups) {
+      const minSel = group.min_selection || 0;
+      const maxSel = group.max_selection || 0;
       const docRef = await restaurantRef.collection('modifierGroups').add({
         restaurantId,
         name: group.name,
         label: group.labels && group.labels.length > 0 ? group.labels[0].name : '',
-        min_selection: group.min_selection || 0,
-        max_selection: group.max_selection || 0,
+        min_selection: minSel,
+        max_selection: maxSel,
+        minSelections: minSel,
+        maxSelections: maxSel,
+        isRequired: minSel > 0,
         selection_type: group.selection_type || 'OPTIONAL',
         modifiers: group.modifiers.map((m, idx) => ({
           id: `mod-${Date.now()}-${idx}`,
@@ -2498,11 +2538,16 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         // modifier_labels 테이블 없으면 무시
       }
       
+      const minSel = group.min_selection || 0;
+      const maxSel = group.max_selection || 0;
       const modGroupDocRef = await restaurantRef.collection('modifierGroups').add({
         name: group.name || 'Unknown',
         label: groupLabel,
-        min_selection: group.min_selection || 0,
-        max_selection: group.max_selection || 0,
+        min_selection: minSel,
+        max_selection: maxSel,
+        minSelections: minSel,
+        maxSelections: maxSel,
+        isRequired: minSel > 0,
         selection_type: group.selection_type || 'OPTIONAL',
         modifiers: modifiers.map((m) => ({
           id: `mod-${m.modifier_id || 0}`,
@@ -2747,6 +2792,13 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         .filter(id => id);
       
       const itemImageUrl = skipImages && fbItemImageMap[item.item_id] ? fbItemImageMap[item.item_id] : (item.image_url || '');
+      const kteRaw = item.kitchen_ticket_elements;
+      const kitchenTicketElements = (() => {
+        try {
+          const arr = typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : (kteRaw || []);
+          return Array.isArray(arr) ? arr.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })) : [];
+        } catch { return []; }
+      })();
       const itemDocRef = await restaurantRef.collection('menuItems').add({
         menuId: firebaseMenuId,
         categoryId: firebaseCategoryId,
@@ -2769,6 +2821,7 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         modifierGroupIds: firebaseModifierGroupIds,
         taxGroupIds: firebaseTaxGroupIds,
         printerGroupIds: firebasePrinterGroupIds,
+        kitchenTicketElements,
         options: [],
         created_at: new Date(),
         updated_at: new Date()
@@ -3469,12 +3522,17 @@ router.post('/sync-modifiers', async (req, res) => {
       .limit(1)
       .get();
     
+    const minSel = group.min_selection || 0;
+    const maxSel = group.max_selection || 0;
     const firebaseData = {
       restaurantId,
       name: group.name,
       label: labels.length > 0 ? labels[0].label_name : '',
-      min_selection: group.min_selection || 0,
-      max_selection: group.max_selection || 0,
+      min_selection: minSel,
+      max_selection: maxSel,
+      minSelections: minSel,
+      maxSelections: maxSel,
+      isRequired: minSel > 0,
       selection_type: group.selection_type || 'OPTIONAL',
       posGroupId: groupId,
       options: options.map(opt => ({
@@ -3483,7 +3541,7 @@ router.post('/sync-modifiers', async (req, res) => {
         price2: opt.price_delta2 || 0,
         posModifierId: opt.modifier_id
       })),
-      updatedAt: new Date().toISOString()
+      updatedAt: getLocalDatetimeString()
     };
     
     let firebaseId;
@@ -3496,7 +3554,7 @@ router.post('/sync-modifiers', async (req, res) => {
       // 새 문서 생성
       const docRef = await restaurantRef.collection('modifierGroups').add({
         ...firebaseData,
-        createdAt: new Date().toISOString()
+        createdAt: getLocalDatetimeString()
       });
       firebaseId = docRef.id;
       console.log(`✅ Firebase Modifier Group 생성: ${firebaseId}`);
@@ -3531,7 +3589,7 @@ router.post('/upload-layout-settings', requireManager, async (req, res) => {
     // Firebase에 layoutSettings 저장 (단일 문서로 관리)
     await restaurantRef.collection('posSettings').doc('layoutSettings').set({
       settings: JSON.stringify(layoutSettings),
-      updatedAt: new Date().toISOString()
+      updatedAt: getLocalDatetimeString()
     });
 
     console.log(`✅ Layout settings uploaded to Firebase for restaurant: ${restaurantId}`);
@@ -3630,7 +3688,7 @@ router.post('/upload-table-map', requireManager, async (req, res) => {
           fontSize: el.fontSize || 20,
           color: el.color || '#3B82F6',
           status: el.status || 'Available',
-          uploadedAt: new Date().toISOString()
+          uploadedAt: getLocalDatetimeString()
         });
         elementsUploaded++;
       }

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 let firebaseService = null;
 try { firebaseService = require('../services/firebaseService'); } catch (e) { /* Firebase 없이도 동작 */ }
@@ -214,7 +215,7 @@ module.exports = (db) => {
         });
       }
 
-      const createdAt = new Date().toISOString();
+      const createdAt = getLocalDatetimeString();
 
       // Create refund record
       const refundResult = await dbRun(`

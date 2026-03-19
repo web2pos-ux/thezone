@@ -2,6 +2,7 @@
 // Firebase Admin SDK 초기화 및 온라인 주문 실시간 리스너
 
 const admin = require('firebase-admin');
+const { getLocalDateString, getLocalDatetimeString } = require('../utils/datetimeUtils');
 const path = require('path');
 
 // 서비스 계정 키 경로 (읽기 전용 파일 - 빌드 리소스에서 읽음)
@@ -282,6 +283,13 @@ async function syncMenuItems(restaurantId, categoryId, items) {
   const batch = firestore.batch();
 
   for (const item of items) {
+    const kteRaw = item.kitchen_ticket_elements;
+    const kitchenTicketElements = (() => {
+      try {
+        const arr = typeof kteRaw === 'string' ? JSON.parse(kteRaw || '[]') : (Array.isArray(kteRaw) ? kteRaw : []);
+        return (arr || []).filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) }));
+      } catch { return []; }
+    })();
     const ref = restaurantRef.collection('menuItems').doc();
     batch.set(ref, {
       restaurantId,
@@ -292,6 +300,7 @@ async function syncMenuItems(restaurantId, categoryId, items) {
       price: parseFloat(item.price) || 0,
       imageUrl: item.image_url || '',
       isAvailable: true,
+      kitchenTicketElements,
       options: [], // 추후 모디파이어 동기화
       sortOrder: item.sort_order || 0,
       posId: item.item_id, // POS의 원본 ID 저장
@@ -442,7 +451,7 @@ async function syncDayOff(restaurantId, dayOffDates) {
         date: d.date,
         channels: d.channels || 'all',
         type: d.type || 'closed',  // closed, extended, early, late
-        updatedAt: new Date().toISOString()
+        updatedAt: getLocalDatetimeString()
       })),
       updatedAt: new Date()
     };
@@ -489,10 +498,10 @@ async function addDayOff(restaurantId, date, channels = 'all', type = 'closed') 
     const existingIndex = dayOffDates.findIndex(d => d.date === date && d.channels === channels);
     if (existingIndex >= 0) {
       // 업데이트
-      dayOffDates[existingIndex] = { date, channels, type, updatedAt: new Date().toISOString() };
+      dayOffDates[existingIndex] = { date, channels, type, updatedAt: getLocalDatetimeString() };
     } else {
       // 새로 추가
-      dayOffDates.push({ date, channels, type, updatedAt: new Date().toISOString() });
+      dayOffDates.push({ date, channels, type, updatedAt: getLocalDatetimeString() });
     }
     
     // 날짜순 정렬
@@ -553,6 +562,82 @@ async function removeDayOff(restaurantId, date) {
   } catch (error) {
     console.error('❌ Day Off 삭제 실패:', error.message);
     throw error;
+  }
+}
+
+// Utility Settings 동기화 (POS → Firebase) - Bag Fee, Utensils
+async function syncUtilitySettings(restaurantId, utilitySettings) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+
+    await settingsRef.set({
+      utilitySettings: {
+        bagFee: {
+          enabled: Boolean(utilitySettings?.bagFee?.enabled),
+          amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
+        },
+        utensils: {
+          enabled: Boolean(utilitySettings?.utensils?.enabled),
+        },
+      },
+      updatedAt: new Date(),
+    }, { merge: true });
+
+    console.log(`✅ Utility Settings 동기화 완료 (${restaurantId})`);
+    return true;
+  } catch (error) {
+    console.error('❌ Utility Settings 동기화 실패:', error.message);
+    throw error;
+  }
+}
+
+// Utility Settings 조회 (Firebase → POS)
+async function getUtilitySettings(restaurantId) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const doc = await settingsRef.get();
+
+    if (!doc.exists) return null;
+    const data = doc.data();
+    return data?.utilitySettings || null;
+  } catch (error) {
+    console.error('❌ Utility Settings 조회 실패:', error.message);
+    return null;
+  }
+}
+
+// 전체 Online Settings 조회 (Firebase → POS) - Prep Time, Pause, Day Off, Utility
+async function getOnlineSettings(restaurantId) {
+  try {
+    const firestore = getFirestore();
+    const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const doc = await settingsRef.get();
+
+    if (!doc.exists) return null;
+    const data = doc.data();
+
+    const prepTimeRaw = data?.prepTimeSettings;
+    const prepTimeSettings = prepTimeRaw?.settings || prepTimeRaw || null;
+
+    const pauseSettings = data?.pauseSettings || null;
+    const dayOffDates = data?.dayOffSettings?.dates || [];
+    const utilitySettings = data?.utilitySettings || null;
+
+    return {
+      prepTimeSettings,
+      pauseSettings,
+      dayOffDates: dayOffDates.map((d) => ({
+        date: d.date,
+        channels: d.channels || 'all',
+        type: d.type || 'closed',
+      })),
+      utilitySettings,
+    };
+  } catch (error) {
+    console.error('❌ Online Settings 조회 실패:', error.message);
+    return null;
   }
 }
 
@@ -958,7 +1043,7 @@ async function saveDailyClosing(restaurantId, closingData) {
 
   try {
     const firestore = getFirestore();
-    const date = closingData.date || new Date().toISOString().split('T')[0];
+    const date = closingData.date || getLocalDateString();
     
     // restaurants/{restaurantId}/dailyClosings/{date}
     const docRef = firestore
@@ -970,7 +1055,7 @@ async function saveDailyClosing(restaurantId, closingData) {
     const dataToSave = {
       ...closingData,
       date,
-      updatedAt: new Date().toISOString(),
+      updatedAt: getLocalDatetimeString(),
       syncedFromPOS: true
     };
 
@@ -992,7 +1077,7 @@ async function getDailyClosing(restaurantId, date) {
 
   try {
     const firestore = getFirestore();
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const targetDate = date || getLocalDateString();
     
     const docRef = firestore
       .collection('restaurants')
@@ -1061,7 +1146,7 @@ async function savePaymentToFirebase(restaurantId, paymentData) {
     const dataToSave = {
       ...paymentData,
       syncedFromPOS: true,
-      syncedAt: new Date().toISOString()
+      syncedAt: getLocalDatetimeString()
     };
 
     // paymentId가 있으면 해당 문서에 저장, 없으면 자동 생성
@@ -1098,7 +1183,7 @@ async function saveTipToFirebase(restaurantId, tipData) {
     const dataToSave = {
       ...tipData,
       syncedFromPOS: true,
-      syncedAt: new Date().toISOString()
+      syncedAt: getLocalDatetimeString()
     };
 
     if (tipData.tipId) {
@@ -1137,7 +1222,7 @@ async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status
     await guestRef.set({
       guestNumber,
       status, // 'PAID', 'PARTIAL', 'UNPAID'
-      updatedAt: new Date().toISOString(),
+      updatedAt: getLocalDatetimeString(),
       syncedFromPOS: true
     }, { merge: true });
     
@@ -1149,7 +1234,7 @@ async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status
   }
 }
 
-// REFUND 데이터 Firebase 저장
+// Refund 데이터 Firebase 저장
 async function saveRefundToFirebase(restaurantId, refundData) {
   if (!restaurantId) {
     console.warn('⚠️ saveRefundToFirebase: restaurantId is required');
@@ -1161,7 +1246,7 @@ async function saveRefundToFirebase(restaurantId, refundData) {
     const dataToSave = {
       ...refundData,
       syncedFromPOS: true,
-      syncedAt: new Date().toISOString()
+      syncedAt: getLocalDatetimeString()
     };
     if (refundData.refundId) {
       await refundsRef.doc(String(refundData.refundId)).set(dataToSave, { merge: true });
@@ -1195,7 +1280,7 @@ async function saveVoidToFirebase(restaurantId, voidData) {
     const dataToSave = {
       ...voidData,
       syncedFromPOS: true,
-      syncedAt: new Date().toISOString()
+      syncedAt: getLocalDatetimeString()
     };
 
     if (voidData.voidId) {
@@ -1230,6 +1315,9 @@ module.exports = {
   addDayOff,
   removeDayOff,
   syncPrepTimeSettings,
+  syncUtilitySettings,
+  getUtilitySettings,
+  getOnlineSettings,
   syncMenuItemVisibility,
   getMenuVisibilityFromFirebase,
   syncCategoryVisibility,

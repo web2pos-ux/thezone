@@ -251,6 +251,12 @@ async function initDatabase(db) {
         console.log('[dbInit] Added show_label to printer_groups');
       } catch (e) { console.error(e.message); }
     }
+    if (!pgColNames.includes('display_order')) {
+      try {
+        await dbRun("ALTER TABLE printer_groups ADD COLUMN display_order INTEGER DEFAULT 0");
+        console.log('[dbInit] Added display_order to printer_groups');
+      } catch (e) { console.error(e.message); }
+    }
 
     await dbRun(`CREATE TABLE IF NOT EXISTS printer_group_links (
       printer_group_id INTEGER NOT NULL,
@@ -884,6 +890,15 @@ async function initDatabase(db) {
       FOREIGN KEY (category_id) REFERENCES menu_categories(category_id) ON DELETE CASCADE,
       FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE
     )`);
+    // Migration: kitchen_ticket_elements (JSON array for Kitchen Ticket sub-items)
+    try {
+      const miCols = await dbAll("PRAGMA table_info(menu_items)");
+      const miColNames = (miCols || []).map(c => String(c.name));
+      if (!miColNames.includes('kitchen_ticket_elements')) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN kitchen_ticket_elements TEXT DEFAULT '[]'");
+        console.log('[dbInit] Added kitchen_ticket_elements column to menu_items');
+      }
+    } catch (e) { console.error('[dbInit] menu_items kitchen_ticket_elements:', e.message); }
     console.log('[dbInit] Menu tables (menus, menu_categories, menu_items) ensured');
 
     // 15. BUSINESS PROFILE

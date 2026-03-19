@@ -7,6 +7,7 @@ import ReservationCreateModal from '../components/reservations/ReservationCreate
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import { API_URL } from '../config/constants';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
+import { getLocalDateString, getLocalDatetimeString } from '../utils/datetimeUtils';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
 
@@ -988,13 +989,13 @@ const TableMapManagerPage = () => {
     
     // Togo 주문 목록에 새로운 주문 추가
     const readyTimeLabel = pickupTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    const createdIso = new Date().toISOString();
+    const createdLocal = getLocalDatetimeString();
     const newTogoOrder = {
       id: Date.now(),
       type: 'Togo',
       time: pickupTimeString,
       fulfillment: 'togo',
-      createdAt: createdIso,
+      createdAt: createdLocal,
       phone: customerPhone,
       phoneRaw: normalizePhoneDigits(customerPhone),
       name: customerName,
@@ -1132,7 +1133,7 @@ const TableMapManagerPage = () => {
   useEffect(() => {
     const loadTodayReservations = async () => {
       try {
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         const res = await fetch(`${API_URL}/reservations?date=${today}`);
         if (!res.ok) return;
         const data = await res.json();

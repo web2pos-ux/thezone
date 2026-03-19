@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { getLocalDatetimeString, getLocalTimestampForFilename } = require('../backend/utils/datetimeUtils');
 
 const TRANSFER_VERSION = '1.0';
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -45,7 +46,7 @@ router.post('/export', requireManager, async (req, res) => {
     const { sections = ['menu', 'tablemap', 'layout'] } = req.body;
     const exportData = {
       version: TRANSFER_VERSION,
-      exportedAt: new Date().toISOString(),
+      exportedAt: getLocalDatetimeString(),
       sections: {}
     };
 
@@ -53,7 +54,7 @@ router.post('/export', requireManager, async (req, res) => {
     if (sections.includes('menu')) {
       const menus = await dbAll('SELECT menu_id, name, description, is_active, sales_channels, created_at FROM menus');
       const categories = await dbAll('SELECT category_id, name, menu_id, sort_order, image_url FROM menu_categories');
-      const items = await dbAll('SELECT item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until FROM menu_items');
+      const items = await dbAll('SELECT item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until, kitchen_ticket_elements FROM menu_items');
       const modifierGroups = await dbAll('SELECT modifier_group_id, name, selection_type, min_selection, max_selection, menu_id, is_deleted, firebase_id FROM modifier_groups');
       const modifiers = await dbAll('SELECT modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted FROM modifiers');
       const modifierGroupLinks = await dbAll('SELECT modifier_group_id, modifier_id FROM modifier_group_links');
@@ -130,7 +131,7 @@ router.post('/import', requireManager, upload.single('file'), async (req, res) =
       : Object.keys(importData.sections);
 
     // --- 백업 생성 ---
-    const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupTimestamp = getLocalTimestampForFilename();
     const backupFilename = `settings_backup_${backupTimestamp}.json`;
     const backupSections = {};
 
@@ -174,7 +175,7 @@ router.post('/import', requireManager, upload.single('file'), async (req, res) =
 
     fs.writeFileSync(
       path.join(backupsDir, backupFilename),
-      JSON.stringify({ version: TRANSFER_VERSION, backupAt: new Date().toISOString(), sections: backupSections }, null, 2)
+      JSON.stringify({ version: TRANSFER_VERSION, backupAt: getLocalDatetimeString(), sections: backupSections }, null, 2)
     );
 
     // --- 트랜잭션으로 Import ---
@@ -222,9 +223,12 @@ router.post('/import', requireManager, upload.single('file'), async (req, res) =
                 );
               }
               for (const row of (m.items || [])) {
+                const kteJson = (row.kitchen_ticket_elements != null && row.kitchen_ticket_elements !== '')
+                  ? (typeof row.kitchen_ticket_elements === 'string' ? row.kitchen_ticket_elements : JSON.stringify(row.kitchen_ticket_elements || []))
+                  : '[]';
                 await dbRun(
-                  'INSERT INTO menu_items (item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  [row.item_id, row.name, row.short_name, row.price, row.price2, row.description, row.category_id, row.menu_id, row.is_open_price, row.image_url, row.sort_order, row.online_visible, row.delivery_visible, row.online_hide_type, row.online_available_until, row.delivery_hide_type, row.delivery_available_until]
+                  'INSERT INTO menu_items (item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until, kitchen_ticket_elements) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                  [row.item_id, row.name, row.short_name, row.price, row.price2, row.description, row.category_id, row.menu_id, row.is_open_price, row.image_url, row.sort_order, row.online_visible, row.delivery_visible, row.online_hide_type, row.online_available_until, row.delivery_hide_type, row.delivery_available_until, kteJson]
                 );
               }
               for (const row of (m.modifierGroups || [])) {
@@ -342,7 +346,7 @@ router.post('/import', requireManager, upload.single('file'), async (req, res) =
               await dbRun('DELETE FROM menu_item_colors');
 
               for (const row of (l.orderPageSetups || [])) {
-                const now = new Date().toISOString();
+                const now = getLocalDatetimeString();
                 await dbRun(
                   'INSERT INTO order_page_setups (order_type, menu_id, menu_name, price_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
                   [row.order_type, row.menu_id, row.menu_name, row.price_type, now, now]

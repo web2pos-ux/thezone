@@ -1249,6 +1249,7 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
   const itemsStyle = ticketLayout.items || { fontSize: 14, visible: true };
   const modifiersStyle = ticketLayout.modifiers || { fontSize: 10, prefix: '>>', visible: true };
   const itemNoteStyle = ticketLayout.itemNote || { fontSize: 10, prefix: '->', visible: true };
+  const kitchenTicketElementsStyle = ticketLayout.kitchenTicketElements || { visible: true, prefix: '  - ' };
   
   // Guest Sections or Items
   if (orderData.guestSections && orderData.guestSections.length > 0) {
@@ -1269,13 +1270,13 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
       }
       if (section.items && section.items.length > 0) {
         section.items.forEach(item => {
-          output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF);
+          output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle);
         });
       }
     });
   } else if (orderData.items && orderData.items.length > 0) {
     orderData.items.forEach(item => {
-      output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF);
+      output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle);
     });
   }
   
@@ -1330,7 +1331,7 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
 /**
  * 레이아웃 설정을 적용한 Kitchen 아이템 포맷 (완전한 구현)
  */
-function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF) {
+function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle) {
   let output = '';
   const qty = item.quantity || item.qty || 1;
   const name = item.name || item.short_name || 'Unknown Item';
@@ -1339,6 +1340,21 @@ function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteS
   output += getStyleCommand(itemsStyle);
   output += `${qty}x ${name}` + LF;
   output += getStyleResetCommand();
+  
+  // Kitchen Ticket Elements (sub-items, e.g. Roll Combo: California Roll, Dynamite Roll...)
+  const kteStyle = kitchenTicketElementsStyle || { visible: true, prefix: '  - ' };
+  const elements = item.kitchenTicketElements || item.kitchen_ticket_elements || [];
+  if (kteStyle.visible !== false && Array.isArray(elements) && elements.length > 0) {
+    const prefix = kteStyle.prefix || '  - ';
+    elements.forEach(el => {
+      if (el && String(el.name || '').trim()) {
+        const elQty = Math.max(1, parseInt(el.qty, 10) || 1);
+        output += getStyleCommand(kteStyle);
+        output += `${prefix}${elQty} x ${String(el.name).trim()}` + LF;
+        output += getStyleResetCommand();
+      }
+    });
+  }
   
   // 모디파이어
   if (modifiersStyle.visible !== false && item.modifiers && item.modifiers.length > 0) {

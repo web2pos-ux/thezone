@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
   // Helper functions
@@ -251,7 +252,7 @@ module.exports = (db) => {
     }
 
     try {
-      const createdAt = new Date().toISOString();
+      const createdAt = getLocalDatetimeString();
       const orderSource = source === 'HANDHELD' ? 'HANDHELD' : 'TABLE_QR';
 
       // 금액 계산

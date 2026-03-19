@@ -144,7 +144,7 @@ module.exports = (db) => {
   function appendPrinterLog(event, data) {
     try {
       if (!fs.existsSync(printerLogDir)) fs.mkdirSync(printerLogDir, { recursive: true });
-      const line = `${new Date().toISOString()} ${event}${data ? ' ' + JSON.stringify(data) : ''}\n`;
+      const line = `${require('../backend/utils/datetimeUtils').getLocalDatetimeString()} ${event}${data ? ' ' + JSON.stringify(data) : ''}\n`;
       fs.appendFileSync(printerLogFile, line, 'utf8');
     } catch (e) {
       // never block printing due to logging issues
@@ -704,9 +704,38 @@ module.exports = (db) => {
       channel: orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || null,
       tableName: ticketData?.tableName || ticketData?.header?.tableName || orderInfo?.tableName || orderData?.tableName || '(empty)'
     });
+
+    // Per-device graphic scale override
+    try {
+      if (targetPrinter) {
+        const row = await dbGet("SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1", [targetPrinter]);
+        const gs = Number(row?.graphic_scale);
+        if (Number.isFinite(gs) && gs > 0) ticketData.graphicScale = gs;
+      }
+    } catch {}
     
     let usedTextMode = false;
     if (printMode === 'graphic') {
+      // Read rightPaddingPx from DB layout for this channel's kitchen layout
+      try {
+        if (ticketData.rightPaddingPx == null) {
+          const ktLayoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+          if (ktLayoutRow?.settings) {
+            const ls = JSON.parse(ktLayoutRow.settings);
+            const channel = (orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || 'DINE-IN').toUpperCase();
+            let ktLayout;
+            if (channel === 'DELIVERY') ktLayout = ls.deliveryKitchen || ls.delivery;
+            else if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP') ktLayout = ls.externalKitchen || ls.togo;
+            else ktLayout = ls.dineInKitchen || ls.dineIn;
+            const rp = ktLayout?.rightPaddingPx ?? ktLayout?.rightPadding ?? null;
+            if (rp != null) {
+              const rpn = Number(rp);
+              if (Number.isFinite(rpn) && rpn >= 0) ticketData.rightPaddingPx = rpn;
+            }
+          }
+        }
+      } catch (_e) { /* non-blocking */ }
+
       try {
         console.log(`🍳 [Printer API] Printing Kitchen Ticket (GRAPHIC mode) → ${targetPrinter}`);
         const { buildGraphicKitchenTicket } = require('../utils/graphicPrinterUtils');
@@ -823,6 +852,24 @@ module.exports = (db) => {
         });
       }
       
+      // === 0.5. Enrich items with kitchen_ticket_elements from menu_items (Kitchen Ticket only) ===
+      const itemsToUse = orderData?.items || items || [];
+      for (const item of itemsToUse) {
+        if (item.kitchenTicketElements) continue;
+        try {
+          const itemId = String(item.id || '').replace(/^(bagfee-|svc-|extra2-|extra3-|openprice-).*$/, '');
+          if (itemId && !isNaN(Number(itemId))) {
+            const mi = await dbGet('SELECT kitchen_ticket_elements FROM menu_items WHERE item_id = ?', [Number(itemId)]);
+            if (mi?.kitchen_ticket_elements) {
+              const parsed = typeof mi.kitchen_ticket_elements === 'string' ? JSON.parse(mi.kitchen_ticket_elements) : mi.kitchen_ticket_elements;
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                item.kitchenTicketElements = parsed.filter(e => e && String(e.name || '').trim());
+              }
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }
+
       // === 1. printerName이 명시적으로 지정된 경우: 모든 아이템을 해당 프린터로 전송 ===
       if (printerName) {
         console.log(`🍳 [Printer API] Explicit printer specified: ${printerName}`);
@@ -1232,6 +1279,15 @@ module.exports = (db) => {
               topMargin: topMargin
             };
 
+            // Per-device graphic scale override
+            try {
+              if (targetPrinter) {
+                const row = await dbGet("SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1", [targetPrinter]);
+                const gs = Number(row?.graphic_scale);
+                if (Number.isFinite(gs) && gs > 0) voidTicketData.graphicScale = gs;
+              }
+            } catch {}
+
             console.log(`🖨️ [Jobs Dispatch] Printing VOID ticket for order ${payload.orderId} to ${targetPrinter}`);
 
             const ticketBuffer = buildGraphicVoidTicket(voidTicketData, true);
@@ -1311,10 +1367,37 @@ module.exports = (db) => {
       if (layoutRowReceipt && layoutRowReceipt.settings) {
         try {
           const layoutSettings = JSON.parse(layoutRowReceipt.settings);
+          // Attach receipt layout for GRAPHIC renderer
+          receiptData.layout = layoutSettings.receiptLayout || layoutSettings.receipt || receiptData.layout || null;
           // receiptLayout에서 paperWidth 가져오기, 없으면 루트 레벨에서 가져오기
-          const receiptPaperWidth = layoutSettings.receiptLayout?.paperWidth || layoutSettings.paperWidth || 80;
+          const receiptPaperWidth = layoutSettings.receiptLayout?.paperWidth || layoutSettings.receipt?.paperWidth || layoutSettings.paperWidth || 80;
           receiptData.paperWidth = receiptPaperWidth;
           console.log(`🧾 [Printer API] Paper width set to: ${receiptPaperWidth}mm`);
+          // Top margin from DB layout
+          {
+            const dbTop =
+              layoutSettings.receiptLayout?.topMargin ??
+              layoutSettings.receipt?.topMargin ??
+              layoutSettings.topMargin ??
+              undefined;
+            if (dbTop != null && receiptData.topMargin == null) {
+              const tm = Number(dbTop);
+              if (Number.isFinite(tm) && tm >= 0) receiptData.topMargin = tm;
+            }
+          }
+          // Right padding
+          const rp =
+            layoutSettings.receiptLayout?.rightPaddingPx ??
+            layoutSettings.receiptLayout?.rightPadding ??
+            layoutSettings.receipt?.rightPaddingPx ??
+            layoutSettings.receipt?.rightPadding ??
+            layoutSettings.rightPaddingPx ??
+            layoutSettings.rightPadding ??
+            null;
+          if (rp != null) {
+            const rpn = Number(rp);
+            if (Number.isFinite(rpn) && rpn >= 0) receiptData.rightPaddingPx = rpn;
+          }
         } catch (parseErr) {
           console.warn('🧾 [Printer API] Failed to parse layout settings for paperWidth:', parseErr);
           receiptData.paperWidth = 80; // 기본값
@@ -1340,6 +1423,15 @@ module.exports = (db) => {
       }
       
       console.log(`🧾 [Printer API] Target printer: ${targetPrinter}`);
+
+      // Per-device graphic scale override
+      try {
+        if (targetPrinter) {
+          const row = await dbGet("SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1", [targetPrinter]);
+          const gs = Number(row?.graphic_scale);
+          if (Number.isFinite(gs) && gs > 0) receiptData.graphicScale = gs;
+        }
+      } catch {}
       
       const { sendRawToPrinter } = require('../utils/printerUtils');
       
@@ -1463,10 +1555,37 @@ module.exports = (db) => {
       if (layoutRow && layoutRow.settings) {
         try {
           const layoutSettings = JSON.parse(layoutRow.settings);
+          // Attach bill layout for GRAPHIC renderer (so header font sizes/text/etc apply)
+          billData.layout = layoutSettings.billLayout || layoutSettings.bill || billData.layout || null;
           // billLayout에서 paperWidth 가져오기, 없으면 루트 레벨에서 가져오기
-          const billPaperWidth = layoutSettings.billLayout?.paperWidth || layoutSettings.paperWidth || 80;
+          const billPaperWidth = layoutSettings.billLayout?.paperWidth || layoutSettings.bill?.paperWidth || layoutSettings.paperWidth || 80;
           billData.paperWidth = billPaperWidth;
           console.log(`📃 [Printer API] Paper width set to: ${billPaperWidth}mm`);
+          // Top margin from DB layout
+          {
+            const dbTop =
+              layoutSettings.billLayout?.topMargin ??
+              layoutSettings.bill?.topMargin ??
+              layoutSettings.topMargin ??
+              undefined;
+            if (dbTop != null && billData.topMargin == null) {
+              const tm = Number(dbTop);
+              if (Number.isFinite(tm) && tm >= 0) billData.topMargin = tm;
+            }
+          }
+          // Right padding
+          const rp =
+            layoutSettings.billLayout?.rightPaddingPx ??
+            layoutSettings.billLayout?.rightPadding ??
+            layoutSettings.bill?.rightPaddingPx ??
+            layoutSettings.bill?.rightPadding ??
+            layoutSettings.rightPaddingPx ??
+            layoutSettings.rightPadding ??
+            null;
+          if (rp != null) {
+            const rpn = Number(rp);
+            if (Number.isFinite(rpn) && rpn >= 0) billData.rightPaddingPx = rpn;
+          }
         } catch (parseErr) {
           console.warn('📃 [Printer API] Failed to parse layout settings for paperWidth:', parseErr);
           billData.paperWidth = 80; // 기본값
@@ -1492,6 +1611,15 @@ module.exports = (db) => {
       }
       
       console.log(`📃 [Printer API] Target printer: ${targetPrinter}`);
+
+      // Per-device graphic scale override
+      try {
+        if (targetPrinter) {
+          const row = await dbGet("SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1", [targetPrinter]);
+          const gs = Number(row?.graphic_scale);
+          if (Number.isFinite(gs) && gs > 0) billData.graphicScale = gs;
+        }
+      } catch {}
       
       const { sendRawToPrinter } = require('../utils/printerUtils');
       

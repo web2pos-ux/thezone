@@ -45,6 +45,17 @@ const PRINTER_CONFIG = {
   }
 };
 
+function clampNumber(n, min, max, fallback) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
+
+function getGraphicScaleFromData(data) {
+  const raw = data?.graphicScale ?? data?.graphicsScale ?? null;
+  return clampNumber(raw, 0.5, 1.5, 1.0);
+}
+
 // 용지 너비별 설정 (58mm = 384px, 80mm = 576px)
 const getPrinterWidth = (paperWidth) => {
   if (paperWidth === 58 || paperWidth === '58mm') return 384;
@@ -114,24 +125,53 @@ function getKitchenDeliveryCompanyLabel(name) {
  * @param {number} height - 이미지 높이
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
-function imageToEscPosRaster(imageData, width, height) {
+function imageToEscPosRaster(imageData, width, height, graphicScale) {
+  let srcData = imageData;
+  let srcW = width;
+  let srcH = height;
+
+  const scale = Number(graphicScale);
+  if (Number.isFinite(scale) && scale > 0 && Math.abs(scale - 1) > 0.01) {
+    try {
+      const newW = Math.round(width * scale);
+      const newH = Math.round(height * scale);
+      if (newW > 0 && newH > 0) {
+        const srcCanvas = createCanvas(width, height);
+        const srcCtx = srcCanvas.getContext('2d');
+        const img = srcCtx.createImageData(width, height);
+        Buffer.from(imageData.buffer || imageData).copy(Buffer.from(img.data.buffer));
+        srcCtx.putImageData(img, 0, 0);
+
+        const dstCanvas = createCanvas(newW, newH);
+        const dstCtx = dstCanvas.getContext('2d');
+        dstCtx.drawImage(srcCanvas, 0, 0, newW, newH);
+        const dstImg = dstCtx.getImageData(0, 0, newW, newH);
+        srcData = dstImg.data;
+        srcW = newW;
+        srcH = newH;
+      }
+    } catch (scaleErr) {
+      console.error('[imageToEscPosRaster] Scale failed, using original size:', scaleErr.message);
+    }
+  }
+
   // 너비를 8의 배수로 맞춤
-  const alignedWidth = Math.ceil(width / 8) * 8;
+  const alignedWidth = Math.ceil(srcW / 8) * 8;
   const bytesPerRow = alignedWidth / 8;
   
   const bitmapData = [];
   
-  for (let y = 0; y < height; y++) {
+  for (let y = 0; y < srcH; y++) {
     for (let byteX = 0; byteX < bytesPerRow; byteX++) {
       let byte = 0;
       for (let bit = 0; bit < 8; bit++) {
         const x = byteX * 8 + bit;
-        if (x < width) {
-          const idx = (y * width + x) * 4;
-          const r = imageData[idx];
-          const g = imageData[idx + 1];
-          const b = imageData[idx + 2];
-          const a = imageData[idx + 3];
+        if (x < srcW) {
+          const idx = (y * srcW + x) * 4;
+          const r = srcData[idx];
+          const g = srcData[idx + 1];
+          const b = srcData[idx + 2];
+          const a = srcData[idx + 3];
           
           // 그레이스케일 변환 후 이진화 (임계값 128)
           const gray = (r * 0.299 + g * 0.587 + b * 0.114);
@@ -147,7 +187,7 @@ function imageToEscPosRaster(imageData, width, height) {
   }
   
   // ESC/POS 래스터 명령 + 비트맵 데이터
-  const header = ESC_POS.RASTER_BIT_IMAGE(alignedWidth, height);
+  const header = ESC_POS.RASTER_BIT_IMAGE(alignedWidth, srcH);
   return Buffer.concat([header, Buffer.from(bitmapData)]);
 }
 
@@ -161,31 +201,32 @@ function imageToEscPosRaster(imageData, width, height) {
 function drawTextBlock(ctx, block, y) {
   const {
     text,
-    fontSize = PRINTER_CONFIG.fontSize.normal,
+    fontSize: rawFontSize = PRINTER_CONFIG.fontSize.normal,
     fontWeight = 'normal',
     fontStyle = 'normal',
     align = 'left',
     inverse = false,
     lineHeight = null,
     paddingY = 4,
-    extraBold = false,  // Extra bold: draw text multiple times
-    box = false,        // 텍스트 주변에 박스(테두리) 그리기
-    boxPaddingX = 20,   // 박스 좌우 패딩
-    strikethrough = false // 취소선 그리기
+    extraBold = false,
+    box = false,
+    boxPaddingX = 20,
+    strikethrough = false
   } = block;
   
-  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
-  const width = PRINTER_CONFIG.width;
-  const padding = PRINTER_CONFIG.padding;
+  const fontScale = Number(ctx?._fontScale || 1);
+  const fontSize = Math.max(6, Math.round(rawFontSize * fontScale));
+  const actualLineHeight = lineHeight ? Math.round(lineHeight * fontScale) : fontSize + paddingY * 2;
+  const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+  const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+  const rightPadding = Number(ctx._receiptRightPadding || 0);
+  const effectiveRightPad = Math.max(padding, rightPadding);
   
-  // 폰트 설정
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px "Arial", "Malgun Gothic", sans-serif`;
   
-  // 텍스트 크기 측정
   const textWidth = ctx.measureText(text).width;
   
   if (inverse) {
-    // 반전 모드: 검은 배경, 흰 글씨
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, y, width, actualLineHeight);
     ctx.fillStyle = '#FFFFFF';
@@ -193,21 +234,21 @@ function drawTextBlock(ctx, block, y) {
     ctx.fillStyle = '#000000';
   }
   
-  // 텍스트 정렬
   let textX;
   
   switch (align) {
-    case 'center':
-      textX = (width - textWidth) / 2;
+    case 'center': {
+      const usableWidth = width - padding - effectiveRightPad;
+      textX = padding + (usableWidth - textWidth) / 2;
       break;
+    }
     case 'right':
-      textX = width - textWidth - padding;
+      textX = width - textWidth - effectiveRightPad;
       break;
     default:
       textX = padding;
   }
   
-  // 박스 그리기 (텍스트 주변에 테두리)
   if (box) {
     const boxX = textX - boxPaddingX;
     const boxY = y + 2;
@@ -219,18 +260,15 @@ function drawTextBlock(ctx, block, y) {
     ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
   }
   
-  // 텍스트 그리기
   ctx.textBaseline = 'middle';
   const textY = y + actualLineHeight / 2;
   
   if (extraBold) {
-    // Slightly bolder: draw text 3 times with small offset
     ctx.fillText(text, textX + 0.4, textY);
     ctx.fillText(text, textX - 0.4, textY);
   }
   ctx.fillText(text, textX, textY);
   
-  // 취소선 그리기 (strikethrough)
   if (strikethrough) {
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = Math.max(2, Math.round(fontSize / 10));
@@ -252,9 +290,13 @@ function drawTextBlock(ctx, block, y) {
  * @returns {number} 다음 Y 위치
  */
 function drawSeparator(ctx, y, style = 'solid') {
-  const width = PRINTER_CONFIG.width;
-  const padding = PRINTER_CONFIG.padding;
-  const lineY = y + 8;
+  const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+  const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+  const rightPadding = Number(ctx._receiptRightPadding || 0);
+  const effectiveRightPad = Math.max(padding, rightPadding);
+  const fontScale = Number(ctx?._fontScale || 1);
+  const gap = Math.round(8 * fontScale);
+  const lineY = y + gap;
   
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = style === 'double' ? 2 : 1;
@@ -267,18 +309,18 @@ function drawSeparator(ctx, y, style = 'solid') {
   
   ctx.beginPath();
   ctx.moveTo(padding, lineY);
-  ctx.lineTo(width - padding, lineY);
+  ctx.lineTo(width - effectiveRightPad, lineY);
   ctx.stroke();
   
   if (style === 'double') {
     ctx.beginPath();
     ctx.moveTo(padding, lineY + 4);
-    ctx.lineTo(width - padding, lineY + 4);
+    ctx.lineTo(width - effectiveRightPad, lineY + 4);
     ctx.stroke();
-    return y + 20;
+    return y + Math.round(20 * fontScale);
   }
   
-  return y + 16;
+  return y + Math.round(16 * fontScale);
 }
 
 /**
@@ -292,29 +334,28 @@ function drawSeparator(ctx, y, style = 'solid') {
  */
 function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   const {
-    fontSize = PRINTER_CONFIG.fontSize.normal,
+    fontSize: rawFontSize = PRINTER_CONFIG.fontSize.normal,
     fontWeight = 'normal',
     inverse = false,
     lineHeight = null,
     paddingY = 4
   } = options;
   
-  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
-  // 동적 용지 너비 사용 (없으면 기본값)
+  const fontScale = Number(ctx?._fontScale || 1);
+  const fontSize = Math.max(6, Math.round(rawFontSize * fontScale));
+  const actualLineHeight = lineHeight ? Math.round(lineHeight * fontScale) : fontSize + paddingY * 2;
   const width = ctx._receiptWidth || PRINTER_CONFIG.width;
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   
   ctx.font = `${fontWeight} ${fontSize}px "Arial", "Malgun Gothic", sans-serif`;
   
-  // 오른쪽 텍스트 너비 먼저 계산 (10% 여유 추가)
   const rightWidth = ctx.measureText(rightText).width;
-  const safeRightPadding = Math.max(padding, 15); // 최소 15px 여백
+  const configuredRightPadding = Number(ctx._receiptRightPadding || 0);
+  const safeRightPadding = Math.max(padding, configuredRightPadding);
   const rightX = width - rightWidth - safeRightPadding;
   
-  // 왼쪽 텍스트가 오른쪽 텍스트와 겹치지 않도록 최대 너비 계산
-  const maxLeftWidth = rightX - padding - 15; // 15px 간격
+  const maxLeftWidth = rightX - padding - 5;
   
-  // 왼쪽 텍스트 잘림 처리
   let displayLeftText = leftText;
   let leftTextWidth = ctx.measureText(displayLeftText).width;
   if (leftTextWidth > maxLeftWidth && maxLeftWidth > 0) {
@@ -335,9 +376,7 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   ctx.textBaseline = 'middle';
   const textY = y + actualLineHeight / 2;
   
-  // 왼쪽 텍스트
   ctx.fillText(displayLeftText, padding, textY);
-  // 오른쪽 텍스트 (안전한 여백 적용)
   ctx.fillText(rightText, width - rightWidth - safeRightPadding, textY);
   
   return y + actualLineHeight;
@@ -394,7 +433,16 @@ function renderKitchenTicketGraphic(orderData) {
   const canvas = createCanvas(PRINTER_CONFIG.width, estimatedHeight);
   const ctx = canvas.getContext('2d');
   
-  // 배경 흰색
+  ctx._fontScale = getGraphicScaleFromData(orderData);
+  ctx._receiptWidth = PRINTER_CONFIG.width;
+  ctx._receiptPadding = PRINTER_CONFIG.padding;
+  const kitchenRightPad = (() => {
+    const v = orderData?.rightPaddingPx ?? orderData?.rightPadding ?? null;
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+    return 0;
+  })();
+  ctx._receiptRightPadding = kitchenRightPad;
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, PRINTER_CONFIG.width, estimatedHeight);
   
@@ -478,27 +526,46 @@ function renderKitchenTicketGraphic(orderData) {
   }
   
   // === 헤더 (반전 + 큰 글씨) ===
+  // 공통: #주문번호 + 채널 + 채널번호
+  const cleanOrderNum = String(orderNumber || '').replace('#', '').trim();
   let headerText = '';
   if (isDeliveryLike) {
     const displayCompany = getKitchenDeliveryCompanyLabel(deliveryCompany) || 'DELIVERY';
-    const displayNumber = String(deliveryOrderNumber || orderNumber).replace('#', '');
-    headerText = `${displayCompany} / #${displayNumber}`;
-  } else if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
-    const displayChannel = (channel === 'FORHERE' || channel === 'FOR HERE') ? 'EAT IN' : channel;
-    headerText = `${displayChannel} #${String(orderNumber).replace('#', '')}`;
+    const ext = String(deliveryOrderNumber || '').replace('#', '').trim();
+    const right = ext ? `${displayCompany} ${ext}` : displayCompany;
+    headerText = cleanOrderNum ? `#${cleanOrderNum}  ${right}` : right;
+  } else if (channel === 'TOGO' || channel === 'PICKUP') {
+    const phoneRaw = String(customerPhone || '').trim();
+    const phoneDigits = phoneRaw.replace(/\D/g, '');
+    const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : '';
+    const right = phoneLast4 ? `TOGO ${phoneLast4}` : 'TOGO';
+    headerText = cleanOrderNum ? `#${cleanOrderNum}  ${right}` : right;
+  } else if (channel === 'ONLINE' || channel === 'THEZONE') {
+    const extDigits = String(deliveryOrderNumber || '').replace(/\D/g, '');
+    const last4 = extDigits.length >= 4 ? extDigits.slice(-4) : '';
+    const right = last4 ? `ONLINE ${last4}` : 'ONLINE';
+    headerText = cleanOrderNum ? `#${cleanOrderNum}  ${right}` : right;
+  } else if (channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
+    const displayChannel = (channel === 'FORHERE') ? 'FOR HERE' : (channel === 'EATIN') ? 'EAT IN' : channel;
+    headerText = cleanOrderNum ? `#${cleanOrderNum}  ${displayChannel}` : displayChannel;
   } else if (tableName) {
-    // 테이블 기반 주문: DINE-IN/T4 (FSR 요청사항)
-    const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
-    headerText = isDineInLike ? `DINE-IN / ${tableName}` : tableName;
+    const formatTbl = (s) => {
+      const m1 = s.match(/^t\s*0*(\d+)\s*$/i);
+      if (m1) return `Table ${Number(m1[1])}`;
+      const m2 = s.match(/^table\s*0*(\d+)\s*$/i);
+      if (m2) return `Table ${Number(m2[1])}`;
+      return s;
+    };
+    const tableLabel = formatTbl(String(tableName).trim());
+    headerText = cleanOrderNum ? `#${cleanOrderNum}  ${tableLabel}` : tableLabel;
   } else {
-    // Dine-In인데 테이블명이 없으면 order#로만 표시(기존 동작 유지)
-    headerText = `#${String(orderNumber).replace('#', '')}`;
+    headerText = cleanOrderNum ? `#${cleanOrderNum}` : '';
   }
   
   console.log(`🍳 [GRAPHIC-HEADER] headerText="${headerText}" isDeliveryLike=${isDeliveryLike} tableName="${tableName}" channel="${channel}"`);
   
   // Dine-in 스타일: 테두리만 (검은 배경 X), 다른 채널: 검은 배경 (inverse)
-  const isDineInStyle = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
+  const isDineInStyle = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS' || channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE');
   
   y = drawTextBlock(ctx, {
     text: headerText,
@@ -811,7 +878,7 @@ function renderKitchenTicketGraphic(orderData) {
   // 실제 사용된 높이로 이미지 추출
   const imageData = ctx.getImageData(0, 0, PRINTER_CONFIG.width, y);
   
-  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y);
+  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y, orderData?.graphicScale);
 }
 
 /**
@@ -904,9 +971,19 @@ function renderReceiptGraphic(receiptData) {
   const canvas = createCanvas(RECEIPT_WIDTH, estimatedHeight);
   const ctx = canvas.getContext('2d');
   
+  ctx._fontScale = getGraphicScaleFromData(receiptData);
+  
   // 동적 용지 너비를 컨텍스트에 저장
   ctx._receiptWidth = RECEIPT_WIDTH;
   ctx._receiptPadding = RECEIPT_PADDING;
+  // Right padding
+  const RECEIPT_RIGHT_PADDING = (() => {
+    const v = receiptData?.rightPaddingPx ?? receiptData?.rightPadding ?? null;
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+    return RECEIPT_WIDTH === 384 ? 30 : 10;
+  })();
+  ctx._receiptRightPadding = RECEIPT_RIGHT_PADDING;
   
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, RECEIPT_WIDTH, estimatedHeight);
@@ -980,8 +1057,8 @@ function renderReceiptGraphic(receiptData) {
   let orderTypeText;
   if (!channel || channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE') {
     orderTypeText = 'DINE-IN';
-  } else if (channel === 'FORHERE' || channel === 'FOR HERE' || channel === 'EAT IN' || channel === 'EATIN') {
-    orderTypeText = 'EAT IN';
+  } else if (channel === 'FORHERE' || channel === 'FOR HERE') {
+    orderTypeText = 'FOR HERE';
   } else {
     orderTypeText = channel;
   }
@@ -1163,36 +1240,50 @@ function renderReceiptGraphic(receiptData) {
   
   // === 결제 정보 ===
   if (receiptData.payments && receiptData.payments.length > 0) {
-    y = drawTextBlock(ctx, {
-      text: 'Payment',
-      fontSize: PRINTER_CONFIG.fontSize.normal,
-      fontWeight: 'bold',
-      align: 'left'
-    }, y);
-    
-    // 결제 수단별로 그룹화: 총 결제금액(amount + tip) 합산
     const paymentsByMethod = {};
     let totalTip = 0;
+    let grossPaidTotal = 0;
     
     receiptData.payments.forEach(p => {
       const method = (p.method || 'OTHER').toUpperCase();
       const amount = Number(p.amount || 0);
       const tipField = Number(p.tip || 0);
+      grossPaidTotal += amount;
       
       if (!paymentsByMethod[method]) {
         paymentsByMethod[method] = 0;
       }
-      
-      // 모든 금액을 해당 method에 합산 (총 받은 금액)
       paymentsByMethod[method] += amount;
       
-      // tip 필드가 있으면 팁으로 합산
       if (tipField > 0) {
         totalTip += tipField;
       }
     });
+
+    // PAID 바 (검은 띠 반전 바)
+    {
+      const paidText = `PAID  $${Number(grossPaidTotal).toFixed(2)}`;
+      const fontScale = Number(ctx?._fontScale || 1);
+      const paidFontSize = Math.max(6, Math.round((PRINTER_CONFIG.fontSize.normal + 6) * fontScale));
+      const paddingY = Math.max(1, Math.round(4 * fontScale));
+      const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+      const lineH = paidFontSize + paddingY * 2;
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, y, width, lineH);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textBaseline = 'middle';
+      ctx.font = `normal bold ${paidFontSize}px "Arial", "Malgun Gothic", sans-serif`;
+      const textW = ctx.measureText(paidText).width;
+      const startX = (width - textW) / 2;
+      const textY = y + lineH / 2;
+      ctx.fillText(paidText, startX, textY);
+      ctx.fillText(paidText, startX + 0.5, textY);
+      ctx.fillText(paidText, startX, textY + 0.5);
+      y += lineH;
+    }
     
-    // 각 결제 수단 출력 (총 결제금액 = 음식값 + 팁 포함)
+    // 각 결제 수단 출력
     Object.entries(paymentsByMethod).forEach(([method, totalAmount]) => {
       y = drawLeftRightText(ctx, `  ${method}:`, `$${totalAmount.toFixed(2)}`, y, {
         fontSize: PRINTER_CONFIG.fontSize.normal,
@@ -1200,7 +1291,7 @@ function renderReceiptGraphic(receiptData) {
       });
     });
     
-    // 팁 표시 (한 번만)
+    // 팁 표시
     if (totalTip > 0) {
       y = drawLeftRightText(ctx, '  Tip:', `$${totalTip.toFixed(2)}`, y, {
         fontSize: PRINTER_CONFIG.fontSize.normal,
@@ -1208,15 +1299,28 @@ function renderReceiptGraphic(receiptData) {
       });
     }
     
-    // 거스름돈
+    // 거스름돈 — PAID와 동일한 검은 띠 반전 바 스타일
     if (receiptData.change && Number(receiptData.change) > 0) {
-      y = drawTextBlock(ctx, {
-        text: `CHANGE: $${Number(receiptData.change).toFixed(2)}`,
-        fontSize: PRINTER_CONFIG.fontSize.large,
-        fontWeight: 'bold',
-        align: 'center',
-        inverse: true
-      }, y);
+      const changeText = `CHANGE  $${Number(receiptData.change).toFixed(2)}`;
+      const fontScale = Number(ctx?._fontScale || 1);
+      const changeFontSize = Math.max(6, Math.round((PRINTER_CONFIG.fontSize.normal + 6) * fontScale));
+      const paddingY = Math.max(1, Math.round(4 * fontScale));
+      const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+      const lineH = changeFontSize + paddingY * 2;
+
+      y += 2;
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, y, width, lineH);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textBaseline = 'middle';
+      ctx.font = `normal bold ${changeFontSize}px "Arial", "Malgun Gothic", sans-serif`;
+      const textW = ctx.measureText(changeText).width;
+      const startX = (width - textW) / 2;
+      const textY = y + lineH / 2;
+      ctx.fillText(changeText, startX, textY);
+      ctx.fillText(changeText, startX + 0.5, textY);
+      ctx.fillText(changeText, startX, textY + 0.5);
+      y += lineH;
     }
   }
   
@@ -1233,7 +1337,7 @@ function renderReceiptGraphic(receiptData) {
   y += 30;
   
   const imageData = ctx.getImageData(0, 0, PRINTER_CONFIG.width, y);
-  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y);
+  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y, receiptData?.graphicScale);
 }
 
 /**
@@ -1355,6 +1459,16 @@ function renderVoidTicketGraphic(voidData) {
 
   const canvas = createCanvas(PRINTER_CONFIG.width, estimatedHeight);
   const ctx = canvas.getContext('2d');
+
+  ctx._fontScale = getGraphicScaleFromData(voidData);
+  ctx._receiptWidth = PRINTER_CONFIG.width;
+  ctx._receiptPadding = PRINTER_CONFIG.padding;
+  ctx._receiptRightPadding = (() => {
+    const v = voidData?.rightPaddingPx ?? voidData?.rightPadding ?? null;
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return n;
+    return 10;
+  })();
 
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, PRINTER_CONFIG.width, estimatedHeight);
@@ -1482,7 +1596,7 @@ function renderVoidTicketGraphic(voidData) {
   y += 30;
 
   const imageData = ctx.getImageData(0, 0, PRINTER_CONFIG.width, y);
-  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y);
+  return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y, voidData?.graphicScale);
 }
 
 /**

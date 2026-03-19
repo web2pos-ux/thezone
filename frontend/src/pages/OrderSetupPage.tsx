@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
+import { getLocalDatetimeString } from '../utils/datetimeUtils';
 
 interface Menu {
   menu_id: number;
@@ -113,7 +114,7 @@ const OrderSetupPage = () => {
         menuId: selectedMenu,
         menuName: menus.find(m => m.menu_id === selectedMenu)?.name || '',
         priceType: selectedPriceType,
-        createdAt: new Date().toISOString()
+        createdAt: getLocalDatetimeString()
       };
       console.log('💾 Saving setup data:', setupData);
 

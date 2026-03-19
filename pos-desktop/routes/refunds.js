@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { getLocalDatetimeString } = require('../backend/utils/datetimeUtils');
 
 module.exports = (db) => {
   const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
@@ -201,7 +202,7 @@ module.exports = (db) => {
         });
       }
 
-      const createdAt = new Date().toISOString();
+      const createdAt = getLocalDatetimeString();
 
       // Create refund record
       const refundResult = await dbRun(`

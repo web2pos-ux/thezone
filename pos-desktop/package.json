@@ -1,6 +1,6 @@
 {
   "name": "thezonepos",
-  "version": "1.0.22",
+  "version": "1.0.24",
   "description": "TheZonePOS - Restaurant POS System",
   "main": "main.js",
   "author": "WEB2POS",
@@ -35,7 +35,7 @@
     "appId": "com.thezonepos.pos",
     "productName": "TheZonePOS",
     "directories": {
-      "output": "dist22"
+      "output": "dist24"
     },
     "files": [
       "main.js",

@@ -194,7 +194,7 @@ const SortableMenuItem: React.FC<{
           Sold Out
         </div>
       )}
-      <div className={`font-medium text_center break_words leading-tight ${layoutSettings.menuFontBold ? 'font-extrabold' : 'font-normal'} ${isSoldOut ? 'line-through decoration-2' : ''}`} style={{ fontSize: `${layoutSettings.menuFontSize}px`, letterSpacing: '0.1px' }}>
+      <div className={`text_center break_words leading-tight ${layoutSettings.menuFontExtraBold ? 'font-black' : layoutSettings.menuFontBold ? 'font-bold' : 'font-normal'} ${isSoldOut ? 'line-through decoration-2' : ''}`} style={{ fontSize: `${layoutSettings.menuFontSize}px`, letterSpacing: '0.1px' }}>
         {layoutSettings.useShortName && (item as any).short_name ? (item as any).short_name : item.name}
       </div>
       <div className="sr-only">{layoutSettings.useShortName && (item as any).short_name ? (item as any).short_name : ''}</div>

@@ -480,7 +480,7 @@ const tableOperationsRoutes = require('./routes/table-operations')(db);
 const tableMoveHistoryRoutes = require('./routes/table-move-history')(db);
 const workScheduleRoutes = require('./routes/work-schedule');
 const giftCardsRoutes = require('./routes/gift-cards')(db);
-const { router: onlineOrdersRoutes, startOrderListener } = require('./routes/online-orders');
+const { router: onlineOrdersRoutes, startOrderListener, broadcastToRestaurant } = require('./routes/online-orders');
 const tableOrdersRoutes = require('./routes/table-orders')(db);
 const devicesRoutes = require('./routes/devices')(db);
 const menuSyncRoutes = require('./routes/menu-sync');
@@ -945,6 +945,22 @@ server.listen(PORT, async () => {
                 );
               });
               console.log(`✅ POS visibility 동기화: ${change.itemName} [${change.firebaseItemId} → ${posItemId}] (type: ${change.onlineHideType}, until: ${change.onlineAvailableUntil})`);
+              // SSE로 POS UI에 Menu Hide 변경 알림
+              if (typeof broadcastToRestaurant === 'function') {
+                broadcastToRestaurant(restaurantId, {
+                  type: 'menu_visibility_changed',
+                  item: {
+                    item_id: posItemId,
+                    name: change.itemName,
+                    online_visible: change.onlineVisible ? 1 : 0,
+                    delivery_visible: change.deliveryVisible ? 1 : 0,
+                    online_hide_type: change.onlineHideType || 'visible',
+                    online_available_until: change.onlineAvailableUntil,
+                    delivery_hide_type: change.deliveryHideType || 'visible',
+                    delivery_available_until: change.deliveryAvailableUntil
+                  }
+                });
+              }
             } else {
               console.warn(`⚠️ POS visibility 동기화 건너뜀: ${change.itemName} - 매핑된 POS 아이템 없음`);
             }

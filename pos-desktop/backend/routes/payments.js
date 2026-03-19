@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -55,22 +56,17 @@ module.exports = (db) => {
 			if (!Number.isFinite(tipAmount) || tipAmount < 0) {
 				return res.status(400).json({ success:false, error:'tip must be a valid number (>= 0)' });
 			}
-			const createdAt = new Date().toISOString();
+			const createdAt = getLocalDatetimeString();
 			const result = await dbRun(
 				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at, change_amount)
 				 VALUES(?,?,?,?,?,?,?,?,?)`,
 				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeVal]
 			);
 			
-			// Firebase에도 결제 데이터 저장 (결제 기반 매출 집계용)
+			// Firebase에도 결제 데이터 저장
 			try {
 				const restaurantId = await getRestaurantId();
 				if (restaurantId) {
-					let orderType = 'DINE_IN';
-					try {
-						const ord = await dbGet('SELECT order_type FROM orders WHERE id = ?', [orderId]);
-						if (ord?.order_type) orderType = String(ord.order_type).toUpperCase();
-					} catch (e) { /* */ }
 					await firebaseService.savePaymentToFirebase(restaurantId, {
 						paymentId: result.lastID,
 						orderId,
@@ -80,9 +76,7 @@ module.exports = (db) => {
 						ref,
 						status,
 						guestNumber,
-						createdAt,
-						orderType,
-						payment_method: method
+						createdAt
 					});
 					
 					// 게스트 번호가 있으면 게스트 결제 상태도 저장
@@ -156,61 +150,6 @@ module.exports = (db) => {
 		} catch (e) {
 			console.error('Failed to void payment:', e);
 			res.status(500).json({ success:false, error:'Failed to void payment' });
-		}
-	});
-
-	// 과거 payments 일괄 Firebase 동기화
-	router.post('/sync-to-firebase', async (req, res) => {
-		try {
-			const restaurantId = await getRestaurantId();
-			if (!restaurantId) {
-				return res.status(400).json({ success: false, error: 'No restaurant ID configured' });
-			}
-
-			const { startDate, endDate, limit: rowLimit = 5000 } = req.body || {};
-			let sql = `
-				SELECT p.*, o.order_type
-				FROM payments p
-				LEFT JOIN orders o ON p.order_id = o.id
-				WHERE p.status = 'APPROVED'
-			`;
-			const params = [];
-			if (startDate) { sql += ` AND DATE(p.created_at) >= ?`; params.push(startDate); }
-			if (endDate) { sql += ` AND DATE(p.created_at) <= ?`; params.push(endDate); }
-			sql += ` ORDER BY p.id ASC LIMIT ?`;
-			params.push(Number(rowLimit) || 5000);
-
-			const rows = await dbAll(sql, params);
-			let synced = 0;
-			let failed = 0;
-
-			for (const p of rows) {
-				try {
-					const orderType = String(p.order_type || 'DINE_IN').toUpperCase();
-					await firebaseService.savePaymentToFirebase(restaurantId, {
-						paymentId: p.id,
-						orderId: p.order_id,
-						method: p.payment_method,
-						amount: p.amount || 0,
-						tip: p.tip || 0,
-						ref: p.ref,
-						status: p.status || 'APPROVED',
-						guestNumber: p.guest_number,
-						createdAt: p.created_at,
-						orderType,
-						payment_method: p.payment_method
-					});
-					synced++;
-				} catch (e) {
-					failed++;
-					console.warn(`[sync-to-firebase] Payment ${p.id} failed:`, e.message);
-				}
-			}
-
-			res.json({ success: true, total: rows.length, synced, failed });
-		} catch (e) {
-			console.error('Sync payments to Firebase error:', e);
-			res.status(500).json({ success: false, error: e.message });
 		}
 	});
 

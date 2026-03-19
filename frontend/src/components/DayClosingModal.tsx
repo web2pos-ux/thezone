@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
+import { getLocalDateString } from '../utils/datetimeUtils';
 
 const OperationalReportsPanel = lazy(() => import('./OperationalReportsPanel'));
 
@@ -120,8 +120,7 @@ type CashCounts = {
 };
 
 type ViewMode = 'cash-count' | 'print-preview' | 'shift-result';
-type ModalTab = 'closing' | 'sales-report' | 'z-report' | 'item-report' | 'server-sales' | 'reports';
-type SalesReportPeriod = 'today' | '7days' | '30days' | 'month' | 'custom';
+type ModalTab = 'closing' | 'report-dashboard' | 'z-report' | 'item-report' | 'server-sales';
 type ItemReportPeriod = 'today' | '7days' | 'weekly' | 'monthly' | 'custom';
 
 interface ItemReportData {
@@ -182,24 +181,6 @@ interface ZReportHistoryRecord {
   closing_cash: number;
 }
 
-interface SalesReportData {
-  period: { startDate: string; endDate: string };
-  overall: { orderCount: number; subtotal: number; taxTotal: number; totalSales: number };
-  channels: Record<string, { count: number; sales: number }>;
-  dineInTableStats: { tableOrderCount: number; avgPerTable: number };
-  deliveryPlatforms: Record<string, { count: number; sales: number }>;
-  topItems: Array<{ rank: number; name: string; quantity: number; revenue: number }>;
-  bottomItems?: Array<{ rank: number; name: string; quantity: number; revenue: number }>;
-  totalItems: { totalQuantity: number; uniqueItems: number };
-  unpaid?: {
-    orderCount: number;
-    totalAmount: number;
-    channels: Record<string, { count: number; amount: number }>;
-  };
-}
-
-const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
-
 const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onClosingComplete }) => {
   const navigate = useNavigate();
   const [zReportData, setZReportData] = useState<ZReportData | null>(null);
@@ -236,11 +217,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
   // Sales Report tab state
   const [activeTab, setActiveTab] = useState<ModalTab>('closing');
-  const [salesReportPeriod, setSalesReportPeriod] = useState<SalesReportPeriod>('today');
-  const [salesReportData, setSalesReportData] = useState<SalesReportData | null>(null);
-  const [isSalesReportLoading, setIsSalesReportLoading] = useState(false);
-  const [customStartDate, setCustomStartDate] = useState<string>('');
-  const [customEndDate, setCustomEndDate] = useState<string>('');
 
   // Z Report History tab state
   const [zReportHistoryList, setZReportHistoryList] = useState<ZReportHistoryRecord[]>([]);
@@ -259,7 +235,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
   // Server Sales tab state
   const [serverSalesDate, setServerSalesDate] = useState<string>(() => {
-    try { return new Date().toISOString().slice(0, 10); } catch { return ''; }
+    try { return getLocalDateString(); } catch { return ''; }
   });
   const [serverSalesRows, setServerSalesRows] = useState<ServerSalesRow[]>([]);
   const [selectedServerSalesId, setSelectedServerSalesId] = useState<string>('');
@@ -298,43 +274,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const expectedCash = zReportData?.expected_cash || 0;
   const cashDifference = closingCashTotal - expectedCash;
 
-  const getDateRange = useCallback((period: SalesReportPeriod): { startDate: string; endDate: string } => {
-    const today = new Date();
-    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    if (period === 'today') return { startDate: fmt(today), endDate: fmt(today) };
-    if (period === '7days') {
-      const d = new Date(today); d.setDate(d.getDate() - 6);
-      return { startDate: fmt(d), endDate: fmt(today) };
-    }
-    if (period === '30days') {
-      const d = new Date(today); d.setDate(d.getDate() - 29);
-      return { startDate: fmt(d), endDate: fmt(today) };
-    }
-    if (period === 'month') {
-      const d = new Date(today.getFullYear(), today.getMonth(), 1);
-      return { startDate: fmt(d), endDate: fmt(today) };
-    }
-    return { startDate: customStartDate || fmt(today), endDate: customEndDate || fmt(today) };
-  }, [customStartDate, customEndDate]);
-
-  const fetchSalesReport = useCallback(async (period: SalesReportPeriod) => {
-    setIsSalesReportLoading(true);
-    try {
-      const { startDate, endDate } = getDateRange(period);
-      const res = await fetch(`${API_URL}/daily-closings/sales-report?startDate=${startDate}&endDate=${endDate}`);
-      const json = await res.json();
-      if (json.success) setSalesReportData(json);
-      else console.error('Sales report error:', json.error);
-    } catch (e) {
-      console.error('Sales report fetch failed:', e);
-    } finally {
-      setIsSalesReportLoading(false);
-    }
-  }, [getDateRange]);
-
-  useEffect(() => {
-    if (activeTab === 'sales-report' && accessGranted) fetchSalesReport(salesReportPeriod);
-  }, [activeTab, salesReportPeriod, accessGranted, fetchSalesReport]);
 
   // Z Report History fetch
   const fetchZReportHistory = useCallback(async () => {
@@ -896,7 +835,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           alert('Day Closing completed, but printing failed. Please reprint Z-Report after checking the Front printer.');
         }
         setClosingCopies(1);
-        const today = new Date().toISOString().split('T')[0];
+        const today = getLocalDateString();
         localStorage.setItem('pos_last_closed_date', today);
         onClosingComplete();
         onClose();
@@ -1131,11 +1070,10 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
             <div className="flex gap-1 mt-2">
               {([
                 { key: 'closing' as ModalTab, label: 'Closing' },
-                { key: 'sales-report' as ModalTab, label: 'Dashboard' },
+                { key: 'report-dashboard' as ModalTab, label: 'Report Dashboard' },
                 { key: 'z-report' as ModalTab, label: 'Z Report' },
                 { key: 'item-report' as ModalTab, label: 'Item Report' },
                 { key: 'server-sales' as ModalTab, label: 'Server Sales' },
-                { key: 'reports' as ModalTab, label: 'Reports' },
               ]).map(tab => (
                 <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                   className={`px-4 py-1.5 rounded-t-lg text-sm font-bold transition-colors ${
@@ -1228,343 +1166,11 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           </div>
         )}
 
-        {activeTab === 'reports' ? (
-          /* ========== OPERATIONAL REPORTS TAB ========== */
+        {activeTab === 'report-dashboard' ? (
+          /* ========== REPORT DASHBOARD TAB ========== */
           <Suspense fallback={<div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" /></div>}>
             <OperationalReportsPanel />
           </Suspense>
-        ) : activeTab === 'sales-report' ? (
-          /* ========== SALES REPORT TAB ========== */
-          <div className="p-5 flex-1 overflow-y-auto">
-            {/* Period selector */}
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              {([
-                { key: 'today', label: 'Today' },
-                { key: '7days', label: 'Last 7 Days' },
-                { key: '30days', label: 'Last 30 Days' },
-                { key: 'month', label: 'This Month' },
-                { key: 'custom', label: 'Custom' },
-              ] as { key: SalesReportPeriod; label: string }[]).map(p => (
-                <button key={p.key} onClick={() => setSalesReportPeriod(p.key)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-bold border transition-colors ${
-                    salesReportPeriod === p.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
-                  }`}>
-                  {p.label}
-                </button>
-              ))}
-              {salesReportPeriod === 'custom' && (
-                <div className="flex items-center gap-1 ml-2">
-                  <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)}
-                    className="border rounded px-2 py-1 text-sm" />
-                  <span className="text-gray-400">~</span>
-                  <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)}
-                    className="border rounded px-2 py-1 text-sm" />
-                  <button onClick={() => fetchSalesReport('custom')}
-                    className="px-3 py-1 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700">
-                    Search
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {isSalesReportLoading ? (
-              <div className="py-12 text-center">
-                <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
-                <p className="text-gray-500 text-sm mt-2">Loading report...</p>
-              </div>
-            ) : salesReportData ? (
-              <div className="space-y-5">
-                {/* Period display */}
-                <div className="text-xs text-gray-500">
-                  {salesReportData.period.startDate} ~ {salesReportData.period.endDate}
-                </div>
-
-                {/* Overall Stats (Paid + Unpaid) */}
-                <div>
-                  <div className="text-xs text-slate-500 font-bold mb-1.5">All Orders (incl. Unpaid)</div>
-                  <div className="grid grid-cols-4 gap-3">
-                    {[
-                      { label: 'Orders', value: salesReportData.overall.orderCount.toString() },
-                      { label: 'Subtotal', value: formatMoney(salesReportData.overall.subtotal) },
-                      { label: 'Tax', value: formatMoney(salesReportData.overall.taxTotal) },
-                      { label: 'Total', value: formatMoney(salesReportData.overall.totalSales) },
-                    ].map(s => (
-                      <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
-                        <div className="text-xs text-gray-500 font-medium">{s.label}</div>
-                        <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Unpaid badge */}
-                  {salesReportData.unpaid && salesReportData.unpaid.orderCount > 0 && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1">
-                        Unpaid: {formatMoney(salesReportData.unpaid.totalAmount)} ({salesReportData.unpaid.orderCount} orders)
-                      </div>
-                      {(['DINE-IN', 'TOGO', 'ONLINE', 'DELIVERY'] as const).map(ch => {
-                        const d = salesReportData.unpaid?.channels?.[ch];
-                        if (!d || d.count === 0) return null;
-                        return (
-                          <div key={ch} className="text-xs text-amber-600 bg-amber-50/60 border border-amber-100 rounded px-2 py-0.5">
-                            {ch}: {formatMoney(d.amount)} ({d.count})
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Channel Breakdown - 4 Square Panels */}
-                <div>
-                  <div className="text-xs text-slate-500 font-bold mb-2">
-                    Channel Breakdown <span className="font-normal text-gray-400">(incl. Unpaid)</span>
-                  </div>
-                  {(() => {
-                    const ch = salesReportData.channels;
-                    const tblStats = salesReportData.dineInTableStats;
-                    const avg = (s: number, c: number) => c > 0 ? formatMoney(s / c) : '-';
-                    const colors = [
-                      { bg: 'from-blue-50 to-blue-100', border: 'border-blue-200', title: 'text-blue-700', accent: 'text-blue-600', badge: 'bg-blue-600' },
-                      { bg: 'from-emerald-50 to-emerald-100', border: 'border-emerald-200', title: 'text-emerald-700', accent: 'text-emerald-600', badge: 'bg-emerald-600' },
-                      { bg: 'from-violet-50 to-violet-100', border: 'border-violet-200', title: 'text-violet-700', accent: 'text-violet-600', badge: 'bg-violet-600' },
-                      { bg: 'from-orange-50 to-orange-100', border: 'border-orange-200', title: 'text-orange-700', accent: 'text-orange-600', badge: 'bg-orange-600' },
-                    ];
-                    const panels = [
-                      { label: 'Dine-In', count: ch['DINE-IN']?.count || 0, sales: ch['DINE-IN']?.sales || 0,
-                        extra: [{ k: 'Tables', v: String(tblStats.tableOrderCount) }, { k: 'Avg/Table', v: formatMoney(tblStats.avgPerTable) }] },
-                      { label: 'Togo', count: ch['TOGO']?.count || 0, sales: ch['TOGO']?.sales || 0, extra: [] },
-                      { label: 'Online', count: ch['ONLINE']?.count || 0, sales: ch['ONLINE']?.sales || 0, extra: [] },
-                      { label: 'Delivery', count: ch['DELIVERY']?.count || 0, sales: ch['DELIVERY']?.sales || 0, extra: [] },
-                    ];
-                    return (
-                      <div className="grid grid-cols-4 gap-3">
-                        {panels.map((p, i) => {
-                          const c = colors[i];
-                          return (
-                            <div key={p.label} className={`bg-gradient-to-br ${c.bg} rounded-xl border ${c.border} p-3 flex flex-col`}>
-                              <div className="flex items-center gap-1.5 mb-2">
-                                <span className={`inline-block w-2 h-2 rounded-full ${c.badge}`} />
-                                <span className={`font-extrabold text-sm ${c.title}`}>{p.label}</span>
-                              </div>
-                              <div className={`text-xl font-extrabold ${c.title} leading-tight`}>{formatMoney(p.sales)}</div>
-                              <div className="mt-1.5 space-y-0.5">
-                                <div className="text-xs">
-                                  <span className="text-gray-400">Orders:</span>{' '}
-                                  <span className={`font-bold ${c.accent}`}>{p.count}</span>
-                                </div>
-                                <div className="text-xs">
-                                  <span className="text-gray-400">Avg/Order:</span>{' '}
-                                  <span className={`font-bold ${c.accent}`}>{avg(p.sales, p.count)}</span>
-                                </div>
-                                {p.extra.map(e => (
-                                  <div key={e.k} className="text-xs">
-                                    <span className="text-gray-400">{e.k}:</span>{' '}
-                                    <span className={`font-bold ${c.accent}`}>{e.v}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* Charts Row */}
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Channel Pie */}
-                  <div className="bg-white rounded-xl border border-gray-200 p-3">
-                    <div className="text-sm font-bold text-gray-700 mb-2">Sales by Channel</div>
-                    {(() => {
-                      const ch = salesReportData.channels;
-                      const data = Object.entries(ch)
-                        .filter(([, v]) => v.sales > 0)
-                        .map(([k, v]) => ({ name: k, count: v.count, value: v.sales }));
-                      const total = data.reduce((s, d) => s + d.value, 0);
-                      if (data.length === 0) return <div className="text-center text-gray-400 text-sm py-8">No data</div>;
-                      return (
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 space-y-1.5 min-w-0">
-                            {data.map((d, i) => (
-                              <div key={d.name} className="flex items-center gap-1.5">
-                                <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                                <span className="text-xs text-gray-600 truncate">{d.name}</span>
-                                <span className="text-xs font-bold text-gray-800 ml-auto flex-shrink-0">{formatMoney(d.value)}</span>
-                                <span className="text-[10px] text-gray-400 flex-shrink-0 w-8 text-right">{total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : ''}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="flex-shrink-0" style={{ width: 150, height: 150 }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                              <PieChart>
-                                <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60} labelLine={false} fontSize={10}>
-                                  {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                                </Pie>
-                                <Tooltip formatter={(v: number) => formatMoney(v)} />
-                              </PieChart>
-                            </ResponsiveContainer>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Delivery Platform Pie */}
-                  <div className="bg-white rounded-xl border border-gray-200 p-3">
-                    <div className="text-sm font-bold text-gray-700 mb-2">Delivery by Platform</div>
-                    {(() => {
-                      const dp = salesReportData.deliveryPlatforms;
-                      const data = Object.entries(dp)
-                        .filter(([, v]) => v.sales > 0)
-                        .map(([k, v]) => ({ name: k, count: v.count, value: v.sales }));
-                      const total = data.reduce((s, d) => s + d.value, 0);
-                      if (data.length === 0) return <div className="text-center text-gray-400 text-sm py-8">No delivery data</div>;
-                      return (
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 space-y-1.5 min-w-0">
-                            {data.map((d, i) => (
-                              <div key={d.name} className="flex items-center gap-1.5">
-                                <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: PIE_COLORS[(i + 3) % PIE_COLORS.length] }} />
-                                <span className="text-xs text-gray-600 truncate">{d.name}</span>
-                                <span className="text-xs font-bold text-gray-800 ml-auto flex-shrink-0">{formatMoney(d.value)}</span>
-                                <span className="text-[10px] text-gray-400 flex-shrink-0 w-8 text-right">{total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : ''}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="flex-shrink-0" style={{ width: 150, height: 150 }}>
-                            <ResponsiveContainer width="100%" height="100%">
-                              <PieChart>
-                                <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60} labelLine={false} fontSize={10}>
-                                  {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[(i + 3) % PIE_COLORS.length]} />)}
-                                </Pie>
-                                <Tooltip formatter={(v: number) => formatMoney(v)} />
-                              </PieChart>
-                            </ResponsiveContainer>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Top 30 Items */}
-                {salesReportData.topItems.length === 0 ? (
-                  <div className="bg-white rounded-xl border border-gray-200 p-4">
-                    <div className="text-sm font-bold text-gray-700">Top Items</div>
-                    <div className="text-center text-gray-400 text-sm py-8">No item data</div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="bg-white rounded-xl border border-gray-200 p-3">
-                      <div className="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
-                        <span>
-                          Top 30 Items
-                          <span className="ml-2 text-xs font-normal text-gray-400">
-                            (Total: {salesReportData.totalItems.uniqueItems} items, {salesReportData.totalItems.totalQuantity} qty)
-                          </span>
-                        </span>
-                        <span className="inline-flex items-center gap-3 text-xs font-normal">
-                          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#3b82f6' }} />Revenue</span>
-                          <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#f59e0b' }} />Qty</span>
-                        </span>
-                      </div>
-                      {(() => {
-                        const top30 = salesReportData.topItems.slice(0, 30);
-                        const bottomNames = new Set((salesReportData.bottomItems || []).map(b => b.name));
-                        const topData = top30.map(item => ({ ...item, overlap: bottomNames.has(item.name) }));
-                        return (
-                          <ResponsiveContainer width="100%" height={topData.length * 38 + 30}>
-                            <BarChart data={topData} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                              <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v}`} />
-                              <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#1f2937', fontWeight: 600 }} interval={0} />
-                              <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? formatMoney(v) : `${v} qty`} />
-                              <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]}>
-                                {topData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#a78bfa' : '#3b82f6'} />)}
-                              </Bar>
-                              <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]}>
-                                {topData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#c4b5fd' : '#f59e0b'} />)}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                        );
-                      })()}
-                      <div className="mt-1 flex items-center gap-4 text-xs text-gray-500 px-1">
-                        <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#a78bfa' }} />Also in Least Sold</span>
-                      </div>
-                    </div>
-
-                    {/* Items #31~50 */}
-                    {salesReportData.topItems.length > 30 && (
-                      <div className="bg-white rounded-xl border border-gray-200 p-3">
-                        <div className="text-sm font-bold text-gray-700 mb-2">
-                          Items #31 ~ #{salesReportData.topItems.length}
-                          <span className="ml-2 text-xs font-normal text-gray-400">(by revenue)</span>
-                        </div>
-                        {(() => {
-                          const rest = salesReportData.topItems.slice(30);
-                          const bottomNames = new Set((salesReportData.bottomItems || []).map(b => b.name));
-                          const restData = rest.map(item => ({ ...item, overlap: bottomNames.has(item.name) }));
-                          return (
-                            <ResponsiveContainer width="100%" height={restData.length * 38 + 30}>
-                              <BarChart data={restData} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                                <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v}`} />
-                                <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#4b5563', fontWeight: 600 }} interval={0} />
-                                <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? formatMoney(v) : `${v} qty`} />
-                                <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]}>
-                                  {restData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#a78bfa' : '#93c5fd'} />)}
-                                </Bar>
-                                <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]}>
-                                  {restData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#c4b5fd' : '#fcd34d'} />)}
-                                </Bar>
-                              </BarChart>
-                            </ResponsiveContainer>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    {/* Least Sold 20 Items */}
-                    {salesReportData.bottomItems && salesReportData.bottomItems.length > 0 && (
-                      <div className="bg-white rounded-xl border border-red-200 p-3">
-                        <div className="text-sm font-bold text-red-700 mb-2">
-                          Least Sold 20 Items
-                          <span className="ml-2 text-xs font-normal text-red-400">(by revenue, lowest at bottom)</span>
-                        </div>
-                        {(() => {
-                          const items = [...(salesReportData.bottomItems || [])].reverse();
-                          const topNames = new Set(salesReportData.topItems.map(t => t.name));
-                          const leastData = items.map(item => ({ ...item, overlap: topNames.has(item.name) }));
-                          return (
-                            <>
-                              <ResponsiveContainer width="100%" height={leastData.length * 38 + 30}>
-                                <BarChart data={leastData} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                                  <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v}`} />
-                                  <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#991b1b', fontWeight: 600 }} interval={0} />
-                                  <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? formatMoney(v) : `${v} qty`} />
-                                  <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]}>
-                                    {leastData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#a78bfa' : '#fca5a5'} />)}
-                                  </Bar>
-                                  <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]}>
-                                    {leastData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#c4b5fd' : '#fdba74'} />)}
-                                  </Bar>
-                                </BarChart>
-                              </ResponsiveContainer>
-                              <div className="mt-1 flex items-center gap-4 text-xs text-gray-500 px-1">
-                                <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#a78bfa' }} />Also in Top Items</span>
-                              </div>
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            ) : (
-              <div className="py-12 text-center text-gray-400">Select a period to view the report</div>
-            )}
-          </div>
         ) : activeTab === 'z-report' ? (
           /* ========== Z REPORT TAB ========== */
           <div className="p-5 flex-1 overflow-y-auto">

@@ -3,6 +3,7 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
 const salesSyncService = require('../services/salesSyncService');
+const { getLocalDatetimeString } = require('../backend/utils/datetimeUtils');
 
 /**
  * Orders API Routes
@@ -192,7 +193,7 @@ module.exports = (db) => {
 					const needsTypeNormalize = normalizeToUpper(o.order_type) !== 'DELIVERY';
 
 					if (needsPaidStatus || needsTypeNormalize) {
-						const closedAt = o.closed_at || o.created_at || new Date().toISOString();
+						const closedAt = o.closed_at || o.created_at || getLocalDatetimeString();
 						await dbRun(
 							`UPDATE orders SET order_type = 'DELIVERY', status = 'PAID', closed_at = ? WHERE id = ?`,
 							[closedAt, o.id],
@@ -205,7 +206,7 @@ module.exports = (db) => {
 						[o.id],
 					);
 					if (!pay) {
-						const createdAt = o.created_at || new Date().toISOString();
+						const createdAt = o.created_at || getLocalDatetimeString();
 						await dbRun(
 							`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
 							 VALUES(?,?,?,?,?,?,?,?)`,
@@ -229,7 +230,7 @@ module.exports = (db) => {
 	router.post('/:id/close', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const closedAt = new Date().toISOString();
+			const closedAt = getLocalDatetimeString();
 			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
@@ -976,7 +977,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.post('/', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource } = req.body || {};
-			const createdAt = new Date().toISOString();
+			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const orderTypeToSave = isDelivery ? 'DELIVERY' : (orderType ? String(orderType).toUpperCase() : null);
 			const statusToSave = isDelivery ? 'PAID' : 'PENDING';

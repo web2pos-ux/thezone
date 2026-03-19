@@ -3,6 +3,7 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
 const salesSyncService = require('../services/salesSyncService');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 /**
  * Orders API Routes
@@ -195,7 +196,7 @@ module.exports = (db) => {
 					const needsTypeNormalize = normalizeToUpper(o.order_type) !== 'DELIVERY';
 
 					if (needsPaidStatus || needsTypeNormalize) {
-						const closedAt = o.closed_at || o.created_at || new Date().toISOString();
+						const closedAt = o.closed_at || o.created_at || getLocalDatetimeString();
 						await dbRun(
 							`UPDATE orders SET order_type = 'DELIVERY', status = 'PAID', closed_at = ? WHERE id = ?`,
 							[closedAt, o.id],
@@ -208,7 +209,7 @@ module.exports = (db) => {
 						[o.id],
 					);
 					if (!pay) {
-						const createdAt = o.created_at || new Date().toISOString();
+						const createdAt = o.created_at || getLocalDatetimeString();
 						await dbRun(
 							`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
 							 VALUES(?,?,?,?,?,?,?,?)`,
@@ -232,7 +233,7 @@ module.exports = (db) => {
 	router.post('/:id/close', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const closedAt = new Date().toISOString();
+			const closedAt = getLocalDatetimeString();
 			const { discount } = req.body || {};
 
 			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ?`;
@@ -454,7 +455,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				console.log('[GET /orders] Order mode filter applied:', orderMode);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, t.name AS table_name FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -860,7 +861,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// voids/void_lines 테이블 없을 수 있음
 		}
 		
-		res.json({ success:true, order, items: mergedItems, adjustments, voidLines });
+		let refundedTotal = 0;
+		try {
+			const refundRow = await dbGet(`SELECT COALESCE(SUM(total), 0) AS refunded_total FROM refunds WHERE order_id = ?`, [orderId]);
+			refundedTotal = Number(refundRow?.refunded_total || 0);
+		} catch {}
+		
+		res.json({ success:true, order: { ...order, refunded_total: refundedTotal }, items: mergedItems, adjustments, voidLines });
 		} catch (e) {
 			console.error('Failed to fetch order:', e);
 			res.status(500).json({ success:false, error:'Failed to fetch order' });
@@ -1184,7 +1191,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.post('/', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource } = req.body || {};
-			const createdAt = new Date().toISOString();
+			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const orderTypeToSave = isDelivery ? 'DELIVERY' : (orderType ? String(orderType).toUpperCase() : null);
 			const statusToSave = isDelivery ? 'PAID' : 'PENDING';

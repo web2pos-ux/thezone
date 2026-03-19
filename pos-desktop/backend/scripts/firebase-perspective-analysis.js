@@ -45,7 +45,7 @@ const EXPECTED_SCHEMAS = {
     required: ['name', 'price', 'categoryId', 'restaurantId'],
     optional: ['shortName', 'description', 'price2', 'imageUrl', 'isAvailable', 
                'sortOrder', 'posId', 'modifierGroupIds', 'taxGroupIds', 
-               'printerGroupIds', 'options', 'createdAt', 'updatedAt'],
+               'printerGroupIds', 'kitchenTicketElements', 'options', 'createdAt', 'updatedAt'],
     types: {
       name: 'string',
       price: 'number',
@@ -61,6 +61,7 @@ const EXPECTED_SCHEMAS = {
       modifierGroupIds: 'array',
       taxGroupIds: 'array',
       printerGroupIds: 'array',
+      kitchenTicketElements: 'array',  // [{ name: string, qty: number }, ...]
       options: 'array'
     }
   },

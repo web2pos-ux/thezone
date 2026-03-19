@@ -517,7 +517,10 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
           console.warn('Reprint: failed to load order items:', e);
         }
       }
-      const orderTypeDisplay = isDelivery ? 'DELIVERY' : (selectedOrderType === 'online' ? 'THEZONE' : 'TOGO');
+      const orderTypeDisplay = isDelivery ? 'DELIVERY' :
+        selectedOrderType === 'online' ? 'ONLINE' :
+        selectedOrderType === 'pickup' ? 'PICKUP' :
+        selectedOrderType === 'togo' ? 'TOGO' : 'DINE-IN';
       
       const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
       const isPaid = status === 'paid' || status === 'completed' || status === 'closed';

@@ -67,7 +67,7 @@ const SortableCategory: React.FC<{
       style={style}
       onClick={isDragging ? undefined : onClick}
       data-active-category={isActive ? 'true' : undefined}
-      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
+      className={`${layoutSettings.categoryFontExtraBold ? 'font-black' : layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
         isActive
           ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} shadow-inner` : 'shadow-inner')
           : (!isHexColor(layoutSettings.categoryNormalColor) ? `${layoutSettings.categoryNormalColor} hover:bg-opacity-80` : 'hover:bg-opacity-80')
@@ -78,7 +78,7 @@ const SortableCategory: React.FC<{
       {...attributes}
       {...listeners}
     >
-      <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
+      <span className={`${layoutSettings.categoryFontExtraBold ? 'font-black' : layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
         {name}
       </span>
     </button>
@@ -121,7 +121,7 @@ const SortableMergedGroup: React.FC<{
       ref={setNodeRef}
       style={style}
       onClick={isDragging ? undefined : onClick}
-      className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
+      className={`${layoutSettings.categoryFontExtraBold ? 'font-black' : layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} transition-colors duration-200 p-2 rounded-xl justify-self-start flex items-center justify-center text-center overflow-hidden break-words leading-tight ${
         isActive
           ? (!isHexColor(layoutSettings.categorySelectedColor) ? `${getSelectedButtonColor(layoutSettings.categorySelectedColor)} shadow-inner` : 'shadow-inner')
           : (!isHexColor(layoutSettings.categoryNormalColor) ? `${layoutSettings.categoryNormalColor} hover:bg-opacity-80` : 'hover:bg-opacity-80')
@@ -132,7 +132,7 @@ const SortableMergedGroup: React.FC<{
       {...attributes}
       {...listeners}
     >
-      <span className={`${layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
+      <span className={`${layoutSettings.categoryFontExtraBold ? 'font-black' : layoutSettings.categoryFontBold ? 'font-bold' : 'font-medium'} text-center`} style={{ display: '-webkit-box', WebkitLineClamp: 3 as any, WebkitBoxOrient: 'vertical' as any, overflow: 'hidden', WebkitFontSmoothing: 'antialiased' as any, letterSpacing: '0.1px' }}>
         {group.name}
       </span>
     </button>

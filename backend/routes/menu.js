@@ -17,6 +17,7 @@
  */
 
 const express = require('express');
+const { getLocalDatetimeString, getLocalTimestampForFilename } = require('../utils/datetimeUtils');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -39,6 +40,8 @@ const EXCEL_COLUMNS = {
     PRICE: 'Price',
     PRICE2: 'Price2',
     DESCRIPTION: 'Description',
+    KTE_NAME: 'KTE Name',   // Kitchen Ticket Element name (1-10)
+    KTE_QTY: 'KTE Qty',     // Kitchen Ticket Element qty (1-10)
     MODIFIER_GROUP: 'Modifier Group',  // Will have numbers: "Modifier Group 1", "Modifier Group 2", etc.
     TAX_GROUP: 'Tax Group',
     PRINTER_GROUP: 'Printer Group'
@@ -276,7 +279,7 @@ router.post('/items', async (req, res) => {
 
   // PATCH /api/menu/items/:id
 router.patch('/items/:id', (req, res) => {
-    const { name, short_name, price, price2, description } = req.body;
+    const { name, short_name, price, price2, description, kitchen_ticket_elements } = req.body;
     const { id } = req.params;
 
     // Allow blank item name ("") but require price.
@@ -299,8 +302,11 @@ router.patch('/items/:id', (req, res) => {
     }
 
     const safeName = (typeof name === 'string') ? name : '';
-    db.run('UPDATE menu_items SET name = ?, short_name = ?, price = ?, price2 = ?, description = ? WHERE item_id = ?', 
-      [safeName, short_name || null, price, price2 || 0, description || '', id], 
+    const kteJson = Array.isArray(kitchen_ticket_elements)
+      ? JSON.stringify(kitchen_ticket_elements.filter(e => e && String(e.name || '').trim() !== '').map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })))
+      : (typeof kitchen_ticket_elements === 'string' ? kitchen_ticket_elements : '[]');
+    db.run('UPDATE menu_items SET name = ?, short_name = ?, price = ?, price2 = ?, description = ?, kitchen_ticket_elements = ? WHERE item_id = ?', 
+      [safeName, short_name || null, price, price2 || 0, description || '', kteJson, id], 
       function (err) {
         if (err) return res.status(500).json({ error: err.message });
         if (this.changes === 0) return res.status(404).json({ error: 'Item not found.' });
@@ -1763,6 +1769,21 @@ router.delete('/items/:id', (req, res) => {
       // Process each item for Menu Data sheet (sorted by category and then by sort_order)
       let rowNo = 1;
       const categoryHeaderRowIndices = []; // Track category header row indices
+
+      // Pre-calculate max KTE count across all items (minimum 1)
+      let maxKteCount = 1;
+      for (const catName of categoryNames) {
+        for (const item of itemsByCategory[catName]) {
+          let kteLen = 0;
+          try {
+            const raw = item.kitchen_ticket_elements;
+            const arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw || '[]') : []);
+            kteLen = (arr || []).filter(e => e && String(e.name || '').trim()).length;
+          } catch { kteLen = 0; }
+          if (kteLen > maxKteCount) maxKteCount = kteLen;
+        }
+      }
+      if (maxKteCount > 10) maxKteCount = 10;
       
       for (const categoryName of categoryNames) {
         // Add category header row with connected options
@@ -1786,6 +1807,11 @@ router.delete('/items/:id', (req, res) => {
           .map(conn => printerGroups.find(group => group.printer_group_id === conn.printer_group_id))
           .filter(Boolean);
 
+        const kteCols = {};
+        for (let i = 1; i <= maxKteCount; i++) {
+          kteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = '';
+          kteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = '';
+        }
         const categoryHeaderRow = {
           [EXCEL_COLUMNS.MENU.NO]: categoryName,
           [EXCEL_COLUMNS.MENU.CATEGORY]: categoryName,
@@ -1794,6 +1820,7 @@ router.delete('/items/:id', (req, res) => {
           [EXCEL_COLUMNS.MENU.PRICE]: '',
           [EXCEL_COLUMNS.MENU.PRICE2]: '',
           [EXCEL_COLUMNS.MENU.DESCRIPTION]: '',
+          ...kteCols,
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 1`]: categoryConnectedModifierGroups.length > 0 ? categoryConnectedModifierGroups[0].name : '',
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 2`]: categoryConnectedModifierGroups.length > 1 ? categoryConnectedModifierGroups[1].name : '',
           [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 3`]: categoryConnectedModifierGroups.length > 2 ? categoryConnectedModifierGroups[2].name : '',
@@ -1860,6 +1887,19 @@ router.delete('/items/:id', (req, res) => {
             ? itemConnectedPrinterGroups 
             : categoryConnectedPrinterGroups;
 
+          // Parse kitchen_ticket_elements for export
+          let kteArr = [];
+          try {
+            const raw = item.kitchen_ticket_elements;
+            kteArr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw || '[]') : []);
+            kteArr = (kteArr || []).filter(e => e && String(e.name || '').trim()).slice(0, 10);
+          } catch { kteArr = []; }
+          const itemKteCols = {};
+          for (let i = 1; i <= maxKteCount; i++) {
+            const el = kteArr[i - 1];
+            itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`] = el ? String(el.name || '').trim() : '';
+            itemKteCols[`${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`] = el ? (el.qty || 1) : '';
+          }
           // Create row data for Menu Data sheet
           const row = {
             [EXCEL_COLUMNS.MENU.NO]: rowNo++,
@@ -1869,6 +1909,7 @@ router.delete('/items/:id', (req, res) => {
             [EXCEL_COLUMNS.MENU.PRICE]: item.price,
             [EXCEL_COLUMNS.MENU.PRICE2]: item.price2 || '',
             [EXCEL_COLUMNS.MENU.DESCRIPTION]: item.description || '',
+            ...itemKteCols,
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 1`]: finalConnectedModifierGroups.length > 0 ? finalConnectedModifierGroups[0].name : '',
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 2`]: finalConnectedModifierGroups.length > 1 ? finalConnectedModifierGroups[1].name : '',
             [`${EXCEL_COLUMNS.MENU.MODIFIER_GROUP} 3`]: finalConnectedModifierGroups.length > 2 ? finalConnectedModifierGroups[2].name : '',
@@ -2185,17 +2226,27 @@ router.delete('/items/:id', (req, res) => {
         const itemName = getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name');
         const no = getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No');
         return itemName && itemName.trim() !== '' && !isNaN(parseInt(no));
-      }).map(item => ({
-        ...item,
-        // Normalize to standard property names
-        _no: getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No'),
-        _category: getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name'),
-        _itemName: getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name'),
-        _shortName: getExcelValue(item, EXCEL_COLUMNS.MENU.SHORT_NAME, 'Short Name'),
-        _price: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE, 'Price'),
-        _price2: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE2, 'Price2'),
-        _description: getExcelValue(item, EXCEL_COLUMNS.MENU.DESCRIPTION, 'Description')
-      }));
+      }).map(item => {
+        const kte = [];
+        for (let i = 1; i <= 10; i++) {
+          const name = getExcelValue(item, `${EXCEL_COLUMNS.MENU.KTE_NAME} ${i}`, `KTE Name ${i}`);
+          if (name && String(name).trim() !== '') {
+            const qty = getExcelValue(item, `${EXCEL_COLUMNS.MENU.KTE_QTY} ${i}`, `KTE Qty ${i}`);
+            kte.push({ name: String(name).trim(), qty: Math.max(1, parseInt(qty, 10) || 1) });
+          }
+        }
+        return {
+          ...item,
+          _no: getExcelValue(item, EXCEL_COLUMNS.MENU.NO, 'No'),
+          _category: getExcelValue(item, EXCEL_COLUMNS.MENU.CATEGORY, 'Category Name'),
+          _itemName: getExcelValue(item, EXCEL_COLUMNS.MENU.ITEM_NAME, 'Item Name'),
+          _shortName: getExcelValue(item, EXCEL_COLUMNS.MENU.SHORT_NAME, 'Short Name'),
+          _price: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE, 'Price'),
+          _price2: getExcelValue(item, EXCEL_COLUMNS.MENU.PRICE2, 'Price2'),
+          _description: getExcelValue(item, EXCEL_COLUMNS.MENU.DESCRIPTION, 'Description'),
+          _kitchen_ticket_elements: kte
+        };
+      });
       
       if (!filteredMenuData.length) {
         throw new Error('No valid menu items found in Menu Data sheet');
@@ -2227,7 +2278,7 @@ router.delete('/items/:id', (req, res) => {
 
         // Create backup data
         const backupData = {
-          timestamp: new Date().toISOString(),
+          timestamp: getLocalDatetimeString(),
           menuId: menuId,
           categories: existingCategories,
           items: existingItems,
@@ -2235,7 +2286,7 @@ router.delete('/items/:id', (req, res) => {
         };
 
         // Generate backup filename (환경 변수 BACKUPS_PATH 사용, 빌드된 앱 호환)
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const timestamp = getLocalTimestampForFilename();
         const backupFilename = `backup_menu_${menuId}_${timestamp}.json`;
         const fs = require('fs');
         const path = require('path');
@@ -2501,9 +2552,12 @@ router.delete('/items/:id', (req, res) => {
           const newItemId = await generateMenuItemId(db);
           const categoryId = uniqueCategories.find(c => c.name === item._category)?.categoryId;
           
+          const kteJson = Array.isArray(item._kitchen_ticket_elements) && item._kitchen_ticket_elements.length > 0
+            ? JSON.stringify(item._kitchen_ticket_elements.filter(e => e && String(e.name || '').trim()).slice(0, 10).map(e => ({ name: String(e.name || '').trim(), qty: Math.max(1, parseInt(e.qty, 10) || 1) })))
+            : '[]';
           await new Promise((resolve, reject) => {
             db.run(
-              'INSERT INTO menu_items (item_id, name, short_name, category_id, menu_id, price, price2, description, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              'INSERT INTO menu_items (item_id, name, short_name, category_id, menu_id, price, price2, description, sort_order, kitchen_ticket_elements) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               [
                 newItemId,
                 item._itemName,
@@ -2513,7 +2567,8 @@ router.delete('/items/:id', (req, res) => {
                 parseFloat(item._price) || 0,
                 parseFloat(item._price2) || 0,
                 item._description || '',
-                parseInt(item._no) || 0
+                parseInt(item._no) || 0,
+                kteJson
               ],
               (err) => {
                 if (err) reject(err);
@@ -3062,7 +3117,7 @@ router.delete('/items/:id', (req, res) => {
         OPEN_PRICE_MANAGER_PINS: normalizedPins.join(","),
         OPEN_PRICE_APPROVAL_LIMIT: approval_limit.toString(),
         OPEN_PRICE_NOTE_LIMIT: note_limit.toString(),
-        updated_at: new Date().toISOString()
+        updated_at: getLocalDatetimeString()
       };
       
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));

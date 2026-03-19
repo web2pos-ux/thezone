@@ -39,6 +39,7 @@ import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
 import OrderDetailModal, { OrderData } from '../components/OrderDetailModal';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
+import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
@@ -659,7 +660,7 @@ const QsrOrderPage = () => {
   const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
   const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
   const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
-  const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [orderListDate, setOrderListDate] = useState<string>(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
   const [orderListLoading, setOrderListLoading] = useState(false);
   // QSR Order History - Refund Flow
   const [showOrderListRefundModal, setShowOrderListRefundModal] = useState(false);
@@ -1359,7 +1360,7 @@ const QsrOrderPage = () => {
   
   // Order History Modal States - Removed duplicate declarations
   // const [showOrderListModal, setShowOrderListModal] = useState<boolean>(false);
-  // const [orderListDate, setOrderListDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  // const [orderListDate, setOrderListDate] = useState<string>(getLocalDateString());
   // const [orderListOrders, setOrderListOrders] = useState<any[]>([]);
   // const [orderListSelectedOrder, setOrderListSelectedOrder] = useState<any | null>(null);
   // const [orderListSelectedItems, setOrderListSelectedItems] = useState<any[]>([]);
@@ -1369,7 +1370,7 @@ const QsrOrderPage = () => {
   
   // Online Settings Modal States
   const [showPrepTimeModal, setShowPrepTimeModal] = useState<boolean>(false);
-  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide'>('preptime');
+  const [onlineModalTab, setOnlineModalTab] = useState<'preptime' | 'pause' | 'dayoff' | 'menuhide' | 'utility'>('preptime');
   const [prepTimeSettings, setPrepTimeSettings] = useState<{
     thezoneorder: { mode: 'auto' | 'manual'; time: string };
     ubereats: { mode: 'auto' | 'manual'; time: string };
@@ -1400,6 +1401,12 @@ const QsrOrderPage = () => {
   const [menuHideLoading, setMenuHideLoading] = useState<boolean>(false);
   const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
   const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
+  // Utility Settings (Bag Fee, Utensils) - Firebase 연동
+  const [utilitySettings, setUtilitySettings] = useState<{ bagFee: { enabled: boolean; amount: number }; utensils: { enabled: boolean } }>({
+    bagFee: { enabled: false, amount: 0.10 },
+    utensils: { enabled: false },
+  });
+  const [savingUtility, setSavingUtility] = useState<boolean>(false);
   
   const [showOpeningModal, setShowOpeningModal] = useState<boolean>(false);
   const [showClosingModal, setShowClosingModal] = useState<boolean>(false);
@@ -1840,7 +1847,7 @@ const handleVoidPinClear = useCallback(() => {
           sold_by: currentUser,
           seller_pin: giftCardSellerPin,
           menu_id: menuId,
-          created_at: new Date().toISOString(),
+          created_at: getLocalDatetimeString(),
           is_reload: giftCardIsReload
         })
       });
@@ -2380,9 +2387,9 @@ const handleVoidPinClear = useCallback(() => {
   };
 
   const handleOrderListDateChange = (days: number) => {
-    const current = new Date(orderListDate);
+    const current = new Date(orderListDate + 'T00:00:00');
     current.setDate(current.getDate() + days);
-    const newDate = current.toISOString().split('T')[0];
+    const newDate = `${current.getFullYear()}-${String(current.getMonth()+1).padStart(2,'0')}-${String(current.getDate()).padStart(2,'0')}`;
     setOrderListDate(newDate);
     setOrderListSelectedOrder(null);
     setOrderListSelectedItems([]);
@@ -2391,7 +2398,15 @@ const handleVoidPinClear = useCallback(() => {
 
   const orderListFormatTime = (dateStr: string) => {
     if (!dateStr) return '--:--';
-    const d = new Date(dateStr);
+    let d: Date;
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateStr)) {
+      const [datePart, timePart] = dateStr.split(' ');
+      const [year, month, day] = datePart.split('-').map(Number);
+      const [h, m, s] = timePart.split(':').map(Number);
+      d = new Date(year, month - 1, day, h, m, s);
+    } else {
+      d = new Date(dateStr);
+    }
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
@@ -2402,6 +2417,14 @@ const handleVoidPinClear = useCallback(() => {
       const d = new Date(year, month - 1, day);
       return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     }
+    // YYYY-MM-DD HH:mm:ss (로컬 저장 형식) - 로컬 시간으로 파싱
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateStr)) {
+      const [datePart, timePart] = dateStr.split(' ');
+      const [year, month, day] = datePart.split('-').map(Number);
+      const [h, m, s] = timePart.split(':').map(Number);
+      const d = new Date(year, month - 1, day, h, m, s);
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
     // 다른 형식 (ISO 타임스탬프 등)은 그대로 파싱
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
@@ -2410,15 +2433,21 @@ const handleVoidPinClear = useCallback(() => {
   const orderListGetChannelBadge = (order: any): { label: string; bgColor: string; textColor: string } => {
     const type = (order.order_type || '').toUpperCase();
     const tableId = (order.table_id || '').toString().toUpperCase();
+    const source = (order.order_source || '').toUpperCase();
+    const custName = (order.customer_name || '').toUpperCase();
+    const orderNum = (order.order_number || '').toUpperCase();
     
-    // Online channel (UberEats, DoorDash, Skip, Online, Web, QR) - or table_id starts with 'OL'
-    if (type === 'UBEREATS' || type === 'UBER' || type === 'DOORDASH' || type === 'SKIP' || type === 'SKIPTHEDISHES' || type === 'ONLINE' || type === 'WEB' || type === 'QR' || tableId.startsWith('OL')) {
-      return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
+    // Delivery channel: order_type is DELIVERY, order_source is a delivery platform,
+    // or customer_name/order_number contains delivery platform names
+    const deliveryKeywords = ['UBER', 'DOORDASH', 'DDASH', 'SKIP', 'FANTUAN', 'FTAN'];
+    const isDeliverySource = deliveryKeywords.some(k => source.includes(k) || custName.includes(k) || orderNum.includes(k));
+    if (type === 'DELIVERY' || isDeliverySource || tableId.startsWith('DL')) {
+      return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
     }
     
-    // Delivery channel
-    if (type === 'DELIVERY') {
-      return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
+    // Online channel (TheZone Online, Web, QR) - or table_id starts with 'OL'
+    if (type === 'ONLINE' || type === 'WEB' || type === 'QR' || tableId.startsWith('OL')) {
+      return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
     }
     
     // Togo channel - order_type or table_id starts with 'TG'
@@ -2950,7 +2979,7 @@ const handleVoidPinClear = useCallback(() => {
   };
 
   const orderListHandleCalendarDateSelect = (date: Date) => {
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
     setOrderListDate(dateStr);
     setShowOrderListCalendar(false);
     setOrderListSelectedOrder(null);
@@ -3002,7 +3031,7 @@ const handleVoidPinClear = useCallback(() => {
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ 
           billData: {
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: new Date().toISOString(), orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : orderListSelectedOrder.id },
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: getLocalDatetimeString(), orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : orderListSelectedOrder.id },
             orderInfo: {
               channel: billChannel,
               table: billTableName || undefined,
@@ -3112,11 +3141,17 @@ const handleVoidPinClear = useCallback(() => {
       });
 
       const rawOrderType = String(orderListSelectedOrder.order_type || '').toUpperCase();
+      const rawOrderSource = String(orderListSelectedOrder.order_source || '').toUpperCase();
+      const rawCustName = String(orderListSelectedOrder.customer_name || '').toUpperCase();
+      const rawOrderNum = String(orderListSelectedOrder.order_number || '').toUpperCase();
+      const deliveryKw = ['UBER', 'DOORDASH', 'DDASH', 'SKIP', 'FANTUAN', 'FTAN'];
+      const isDeliverySource = deliveryKw.some(k => rawOrderSource.includes(k) || rawCustName.includes(k) || rawOrderNum.includes(k));
       const orderTypeDisplay =
+        (rawOrderType === 'DELIVERY' || isDeliverySource) ? 'DELIVERY' :
         (rawOrderType === 'TOGO' || rawOrderType === 'TAKEOUT' || rawOrderType === 'TO GO' || rawOrderType === 'TO-GO') ? 'TOGO' :
         rawOrderType === 'ONLINE' ? 'ONLINE' :
-        rawOrderType === 'DELIVERY' ? 'DELIVERY' :
         rawOrderType === 'PICKUP' ? 'PICKUP' :
+        (rawOrderType === 'FORHERE' || rawOrderType === 'EAT IN' || rawOrderType === 'EATIN' || rawOrderType === 'FOR HERE') ? 'EAT IN' :
         'DINE-IN';
 
       const tableNameForPrint =
@@ -3310,6 +3345,49 @@ const handleVoidPinClear = useCallback(() => {
     }
   };
 
+  // Online Settings 모달 열릴 때 Firebase에서 전체 설정 로드 (Prep Time, Pause, Day Off, Utility)
+  const loadAllOnlineSettings = useCallback(async () => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      if (!restaurantId) return;
+      const url = `${API_URL}/online-orders/online-settings?restaurantId=${restaurantId}`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.success || !data.settings) return;
+      const s = data.settings;
+      if (s.prepTimeSettings) {
+        const def = { thezoneorder: { mode: 'auto' as const, time: '20m' }, ubereats: { mode: 'auto' as const, time: '20m' }, doordash: { mode: 'auto' as const, time: '20m' }, skipthedishes: { mode: 'auto' as const, time: '20m' } };
+        setPrepTimeSettings({ ...def, ...s.prepTimeSettings });
+        localStorage.setItem('prepTimeSettings', JSON.stringify({ ...def, ...s.prepTimeSettings }));
+      }
+      if (s.pauseSettings) {
+        const chs = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const;
+        const next = chs.reduce((acc, ch) => {
+          const p = s.pauseSettings[ch];
+          acc[ch] = { paused: p?.paused ?? false, pauseUntil: p?.pausedUntil ? new Date(p.pausedUntil) : null };
+          return acc;
+        }, {} as { thezoneorder: { paused: boolean; pauseUntil: Date | null }; ubereats: { paused: boolean; pauseUntil: Date | null }; doordash: { paused: boolean; pauseUntil: Date | null }; skipthedishes: { paused: boolean; pauseUntil: Date | null } });
+        setPauseSettings(next);
+      }
+      if (s.dayOffDates && Array.isArray(s.dayOffDates)) {
+        setDayOffDates(s.dayOffDates);
+      }
+      if (s.utilitySettings) {
+        setUtilitySettings({
+          bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+          utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load online settings:', error);
+    }
+  }, [API_URL]);
+
+  useEffect(() => {
+    if (showPrepTimeModal) loadAllOnlineSettings();
+  }, [showPrepTimeModal, loadAllOnlineSettings]);
+
   // Menu Hide 탭 열릴 때 카테고리 로드
   useEffect(() => {
     if (onlineModalTab === 'menuhide' && showPrepTimeModal) {
@@ -3318,6 +3396,108 @@ const handleVoidPinClear = useCallback(() => {
       setMenuHideItems([]);
     }
   }, [onlineModalTab, showPrepTimeModal, loadMenuHideCategories]);
+
+  // Utility 탭 열릴 때 Firebase에서 로드 (loadAllOnlineSettings에서 이미 로드되지만 탭 전환 시 재로드)
+  const loadUtilitySettings = useCallback(async () => {
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.utilitySettings) {
+          setUtilitySettings({
+            bagFee: {
+              enabled: data.utilitySettings.bagFee?.enabled ?? false,
+              amount: data.utilitySettings.bagFee?.amount ?? 0.10,
+            },
+            utensils: {
+              enabled: data.utilitySettings.utensils?.enabled ?? false,
+            },
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load utility settings:', error);
+    }
+  }, [API_URL]);
+
+  const saveUtilitySettings = async () => {
+    setSavingUtility(true);
+    try {
+      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ utilitySettings, restaurantId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('Utility settings saved!');
+      } else {
+        alert('Failed to save: ' + (data.error || 'Unknown error'));
+      }
+    } catch (error) {
+      alert('Failed to save utility settings');
+    } finally {
+      setSavingUtility(false);
+    }
+  };
+
+  useEffect(() => {
+    if (onlineModalTab === 'utility' && showPrepTimeModal) {
+      loadUtilitySettings();
+    }
+  }, [onlineModalTab, showPrepTimeModal, loadUtilitySettings]);
+
+  const menuHideRefreshRef = useRef({ tab: 'preptime' as string, modalOpen: false, category: null as string | null });
+  useEffect(() => {
+    menuHideRefreshRef.current = { tab: onlineModalTab, modalOpen: showPrepTimeModal, category: menuHideSelectedCategory };
+  }, [onlineModalTab, showPrepTimeModal, menuHideSelectedCategory]);
+
+  // SSE: Firebase에서 Online Settings 변경 시 실시간 반영
+  useEffect(() => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    if (!restaurantId) return;
+    const es = new EventSource(`${API_URL}/online-orders/stream/${restaurantId}`);
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'menu_visibility_changed') {
+          const { tab, modalOpen, category } = menuHideRefreshRef.current;
+          if (tab === 'menuhide' && modalOpen) {
+            loadMenuHideCategories();
+            if (category) loadMenuHideItems(category);
+          }
+          return;
+        }
+        if (data.type !== 'online_settings_changed' || !data.settings) return;
+        const s = data.settings;
+        if (s.prepTimeSettings) {
+          const def = { thezoneorder: { mode: 'auto' as const, time: '20m' }, ubereats: { mode: 'auto' as const, time: '20m' }, doordash: { mode: 'auto' as const, time: '20m' }, skipthedishes: { mode: 'auto' as const, time: '20m' } };
+          setPrepTimeSettings({ ...def, ...s.prepTimeSettings });
+          localStorage.setItem('prepTimeSettings', JSON.stringify({ ...def, ...s.prepTimeSettings }));
+        }
+        if (s.pauseSettings) {
+          const chs = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'] as const;
+          const next = chs.reduce((acc, ch) => {
+            const p = s.pauseSettings[ch];
+            acc[ch] = { paused: p?.paused ?? false, pauseUntil: p?.pausedUntil ? new Date(p.pausedUntil) : null };
+            return acc;
+          }, {} as { thezoneorder: { paused: boolean; pauseUntil: Date | null }; ubereats: { paused: boolean; pauseUntil: Date | null }; doordash: { paused: boolean; pauseUntil: Date | null }; skipthedishes: { paused: boolean; pauseUntil: Date | null } });
+          setPauseSettings(next);
+        }
+        if (s.dayOffDates && Array.isArray(s.dayOffDates)) setDayOffDates(s.dayOffDates);
+        if (s.utilitySettings) {
+          setUtilitySettings({
+            bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+            utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+          });
+        }
+      } catch (_) {}
+    };
+    return () => es.close();
+  }, [API_URL]);
 
   // 카테고리 선택 시 아이템 로드
   useEffect(() => {
@@ -3373,7 +3553,7 @@ const handleVoidPinClear = useCallback(() => {
         });
         
         localStorage.removeItem('pos_last_closed_date');
-        localStorage.setItem('pos_last_opened_date', new Date().toISOString().split('T')[0]);
+        localStorage.setItem('pos_last_opened_date', getLocalDateString());
         setIsDayClosed(false);
         setShowOpeningModal(false);
         resetOpeningCashCounts();
@@ -3722,15 +3902,6 @@ const handleVoidPinClear = useCallback(() => {
                 })
               });
               console.log(`🧾 Guest ${guestNum} Receipt printed successfully`);
-              
-              // 개별 게스트 결제 완료 시 Cash Drawer 오픈
-              try {
-                console.log(`💰 Opening cash drawer for Guest ${guestNum} payment...`);
-                await fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' });
-                console.log(`💰 Cash drawer opened successfully`);
-              } catch (drawerErr) {
-                console.warn('Cash drawer open failed (ignored):', drawerErr);
-              }
             }
             
             // 게스트 결제 완료 시 즉시 DB에 PAID 상태 저장
@@ -7212,15 +7383,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       items.forEach(it => {
         const g = it.guestNumber || 1;
         if (!byGuest[g]) byGuest[g] = [];
-        const base = (((it.totalPrice||0) + (((it as any).memo && typeof (it as any).memo.price === 'number') ? (it as any).memo.price : 0)) * (it.quantity||1));
+        const qty = it.quantity || 1;
+        const base = (((it.totalPrice||0) + (((it as any).memo && typeof (it as any).memo.price === 'number') ? (it as any).memo.price : 0)) * qty);
         const disc = computeItemDiscountAmount(it as any);
         const discountType = (it as any).discount?.type || 'Item D/C';
+        const lineTotal = Math.max(0, base - disc);
+        const unitPrice = qty > 0 ? lineTotal / qty : 0;
         byGuest[g].push({
-          qty: it.quantity,
+          qty,
+          quantity: qty,
           name: it.name,
+          price: unitPrice,
+          totalPrice: lineTotal,
           modifiers: (it as any).modifiers || [],
           memo: (it as any).memo || null,
-          lineTotal: Math.max(0, base - disc),
+          lineTotal,
           originalTotal: disc > 0 ? base : undefined,
           discount: disc > 0 ? {
             type: discountType,
@@ -7316,7 +7493,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          
          return {
             type: 'prebill',
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber, showGuestNumber: true },
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: getLocalDatetimeString(now), orderNumber, showGuestNumber: true },
             orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined, showGuestNumber: true },
             body: { 
                 guestSections: receiptItems, 
@@ -7332,7 +7509,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       if (mode === 'ALL_DETAILS') {
          // 공통 Bill 데이터 빌드 함수 사용 (주문 제출 시 Bill과 동일한 로직)
-         const printOrderNumber = savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber;
+         const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber);
          const channelDisplay = normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase();
          
          const billData = buildBillDataForPrint({
@@ -7415,7 +7592,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     const parsed = JSON.parse(oldRaw);
                     if (parsed.tableId === tableIdForMap && parsed.ts) {
                         oldTs = parsed.ts;
-                        occupiedAtStr = new Date(oldTs).toISOString();
+                        occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                     }
                 }
             } catch {}
@@ -7477,7 +7654,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const promoChannel = isTogo ? 'togo' : 'table';
     
     // Apply promotions (works for both Dine-In and Togo with channel filtering)
-    const todayKey = new Date().toISOString().slice(0,10);
+    const todayKey = getLocalDateString();
     const usageKey = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
     const alreadyUsedToday = usageKey ? (localStorage.getItem(usageKey) === '1') : false;
     
@@ -7674,6 +7851,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const savedOrder = await saveRes.json();
         const newOrderId = savedOrder?.orderId ?? savedOrder?.id;
         try { savedOrderIdRef.current = newOrderId ?? savedOrderIdRef.current; } catch {}
+        try { savedOrderNumberRef.current = savedOrder?.order_number || String(savedOrder?.dailyNumber || '').padStart(3, '0') || savedOrderNumberRef.current; } catch {}
         
         // New Order Created: Clear stale paidGuests state for this table to prevent merging old data
         try {
@@ -7765,7 +7943,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       const parsed = JSON.parse(oldRaw);
                       if (parsed.tableId === tableIdForMap && parsed.ts) {
                           oldTs = parsed.ts;
-                          occupiedAtStr = new Date(oldTs).toISOString();
+                          occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                       }
                   }
               } catch {}
@@ -7876,7 +8054,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // QSR 모드에서는 테이블 이름을 빈 문자열로 설정 (EAT IN TABLE → EAT IN)
       const printTableName = isQsrMode ? '' : (resolvedTableName || tableNameFromState || '');
       const printServerName = selectedServer?.name || '';
-      const printOrderNumber = savedOrderIdRef.current || `ORD-${Date.now()}`;
+      const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current || `ORD-${Date.now()}`);
       
       // 딜리버리 정보 추출 (location.state 또는 QSR 모드에서 직접 입력한 값 사용)
       const deliveryCompany = (location.state as any)?.deliveryCompany || qsrDeliveryChannel || '';
@@ -8337,7 +8515,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                      const parsed = JSON.parse(oldRaw);
                      if (parsed.tableId === tableId && parsed.ts) {
                          oldTs = parsed.ts;
-                         occupiedAtStr = new Date(oldTs).toISOString();
+                         occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                      }
                  }
              } catch {}
@@ -8871,6 +9049,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const res = await fetch(`${API_URL}/orders/${encodeURIComponent(savedOrderId)}`);
         if (!res.ok) return;
         const json = await res.json();
+        try { savedOrderNumberRef.current = json?.order?.order_number || null; } catch {}
         applyCustomerInfoFromOrder(json?.order);
         const serverIdFromApi = json?.order?.server_id || json?.order?.serverId;
         const serverNameFromApi = json?.order?.server_name || json?.order?.serverName;
@@ -9024,6 +9203,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           if (!res.ok) return;
           const json = await res.json();
           applyCustomerInfoFromOrder(json?.order);
+          try { savedOrderNumberRef.current = json?.order?.order_number || null; } catch {}
           const serverIdFromApi = json?.order?.server_id || json?.order?.serverId;
           const serverNameFromApi = json?.order?.server_name || json?.order?.serverName;
           if (serverIdFromApi && serverNameFromApi) {
@@ -10027,11 +10207,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <label className="text-sm text-gray-300">Font Size: {layoutSettings.categoryFontSize}px</label>
                     <div className="flex space-x-1">
                       <button
-                        onClick={() => updateLayoutSetting('categoryFontBold', !layoutSettings.categoryFontBold)}
+                        onClick={() => { updateLayoutSetting('categoryFontBold', !layoutSettings.categoryFontBold); if (!layoutSettings.categoryFontBold) updateLayoutSetting('categoryFontExtraBold', false); }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.categoryFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => { updateLayoutSetting('categoryFontExtraBold', !layoutSettings.categoryFontExtraBold); if (!layoutSettings.categoryFontExtraBold) updateLayoutSetting('categoryFontBold', false); }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.categoryFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -10101,11 +10288,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <button
                         onClick={() => {
                            updateLayoutSetting('menuFontBold', !layoutSettings.menuFontBold);
+                           if (!layoutSettings.menuFontBold) updateLayoutSetting('menuFontExtraBold', false);
                          }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.menuFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => {
+                           updateLayoutSetting('menuFontExtraBold', !layoutSettings.menuFontExtraBold);
+                           if (!layoutSettings.menuFontExtraBold) updateLayoutSetting('menuFontBold', false);
+                         }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.menuFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -10241,13 +10439,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex space-x-1">
                       <button
                         onClick={() => {
-                          console.log('Modifier Bold button clicked. Current value:', layoutSettings.modifierFontBold);
                           updateLayoutSetting('modifierFontBold', !layoutSettings.modifierFontBold);
+                          if (!layoutSettings.modifierFontBold) updateLayoutSetting('modifierFontExtraBold', false);
                         }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.modifierFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => {
+                          updateLayoutSetting('modifierFontExtraBold', !layoutSettings.modifierFontExtraBold);
+                          if (!layoutSettings.modifierFontExtraBold) updateLayoutSetting('modifierFontBold', false);
+                        }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.modifierFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -11475,7 +11683,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         // Calculate alreadyUsedToday first (needed for both local promo and BOGO)
                         const tableIdForMap = (location.state && (location.state as any).tableId) || null;
                         const customerName = (location.state && (location.state as any).customerName) || null;
-                        const todayKey = new Date().toISOString().slice(0,10);
+                        const todayKey = getLocalDateString();
                         const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
                         const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
                         const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
@@ -12023,6 +12231,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           More ▾
                         </button>
                         {showQsrMoreMenu && (
+                          <>
+                          <div className="fixed inset-0 z-40" onClick={() => setShowQsrMoreMenu(false)} />
                           <div className="absolute bottom-full right-0 mb-2 w-48 bg-[#e0e5ec] rounded-2xl p-2 z-50 shadow-[10px_10px_20px_#b8bec7,_-10px_-10px_20px_#ffffff]">
                             <button
                               onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }}
@@ -12065,6 +12275,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               Goto Windows
                             </button>
                           </div>
+                          </>
                         )}
                       </div>
                     </div>
@@ -15080,7 +15291,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             disabled={!day}
                             className={`p-2 rounded-lg text-sm font-medium ${
                               !day ? '' :
-                              day.toISOString().split('T')[0] === orderListDate 
+                              getLocalDateString(day) === orderListDate 
                                 ? 'bg-blue-600 text-white' 
                                 : 'hover:bg-gray-100'
                             }`}
@@ -15117,6 +15328,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     ) : (
                       orderListOrders.map((order) => {
                         const badge = orderListGetChannelBadge(order);
+                        const hasRefund = Number(order.refunded_total || 0) > 0;
                         return (
                           <div
                             key={order.id}
@@ -15133,6 +15345,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             </span>
                             <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
                             <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
+                            {hasRefund && (
+                              <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-red-100 text-red-600">Refund</span>
+                            )}
                             <span className="w-18 text-right font-bold">${Number(order.total || 0).toFixed(2)}</span>
                           </div>
                         );
@@ -15332,13 +15547,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <span>${totals.total.toFixed(2)}</span>
                             </div>
                             <div className="flex justify-center py-1">
-                              <span className={`px-5 py-1.5 rounded-lg text-sm font-bold ${
-                                orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID'
-                                  ? 'bg-green-500 text-white' 
-                                  : 'bg-yellow-400 text-gray-800'
-                              }`}>
-                                {orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID' ? 'PAID' : 'UNPAID'}
-                              </span>
+                              {(() => {
+                                const hasRefund = Number(orderListSelectedOrder.refunded_total || 0) > 0;
+                                const isPaidStatus = orderListSelectedOrder.status === 'paid' || orderListSelectedOrder.status === 'closed' || orderListSelectedOrder.status === 'completed' || orderListSelectedOrder.status === 'PAID';
+                                if (hasRefund) {
+                                  return (
+                                    <span className="px-5 py-1.5 rounded-lg text-sm font-bold bg-red-500 text-white">
+                                      Refund Complete
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className={`px-5 py-1.5 rounded-lg text-sm font-bold ${
+                                    isPaidStatus ? 'bg-green-500 text-white' : 'bg-yellow-400 text-gray-800'
+                                  }`}>
+                                    {isPaidStatus ? 'PAID' : 'UNPAID'}
+                                  </span>
+                                );
+                              })()}
                             </div>
                           </div>
                         )}
@@ -16569,7 +16795,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           id: Date.now(),
                           type: 'Delivery',
                           time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-                          createdAt: new Date().toISOString(),
+                          createdAt: getLocalDatetimeString(),
                           phone: '',
                           name: `${qsrDeliveryChannel} #${qsrDeliveryOrderNumber}`,
                           status: 'pending',
@@ -16659,6 +16885,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button onClick={() => setOnlineModalTab('pause')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Pause</button>
               <button onClick={() => setOnlineModalTab('dayoff')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Day Off</button>
               <button onClick={() => setOnlineModalTab('menuhide')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'menuhide' ? 'bg-white text-purple-700 shadow-md border-2 border-purple-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Menu Hide</button>
+              <button onClick={() => setOnlineModalTab('utility')} className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'utility' ? 'bg-white text-violet-700 shadow-md border-2 border-violet-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}>Utility</button>
             </div>
             {/* Tab Content */}
             <div className="p-4 h-[437px] overflow-auto">
@@ -16772,7 +16999,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <div className="grid grid-cols-7 gap-1 mb-1">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => <div key={idx} className="text-center text-xs font-semibold text-gray-500 py-1">{day}</div>)}</div>
                       <div className="grid grid-cols-7 gap-1 flex-1">
                         {(() => {
-                          const year = dayOffCalendarMonth.getFullYear(); const month = dayOffCalendarMonth.getMonth(); const firstDay = new Date(year, month, 1).getDay(); const daysInMonth = new Date(year, month + 1, 0).getDate(); const today = new Date().toISOString().split('T')[0]; const cells = [];
+                          const year = dayOffCalendarMonth.getFullYear(); const month = dayOffCalendarMonth.getMonth(); const firstDay = new Date(year, month, 1).getDay(); const daysInMonth = new Date(year, month + 1, 0).getDate(); const today = getLocalDateString(); const cells = [];
                           for (let i = 0; i < firstDay; i++) cells.push(<div key={`empty-${i}`} className="h-8" />);
                           for (let day = 1; day <= daysInMonth; day++) {
                             const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`; const savedDayOff = dayOffDates.find(d => d.date === dateStr); const isSavedDayOff = !!savedDayOff; const isSelected = dayOffSelectedDates.includes(dateStr); const isToday = dateStr === today; const isPast = dateStr < today;
@@ -16806,10 +17033,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
                   {/* Scheduled */}
                   <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-200">
-                    <div className="text-sm font-bold text-gray-700 mb-2">Scheduled ({dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length})</div>
-                    {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).length === 0 ? <div className="text-sm text-gray-400 text-center py-2">No scheduled day offs</div> : (
+                    <div className="text-sm font-bold text-gray-700 mb-2">Scheduled ({dayOffDates.filter(d => d.date >= getLocalDateString()).length})</div>
+                    {dayOffDates.filter(d => d.date >= getLocalDateString()).length === 0 ? <div className="text-sm text-gray-400 text-center py-2">No scheduled day offs</div> : (
                       <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
-                        {dayOffDates.filter(d => d.date >= new Date().toISOString().split('T')[0]).sort((a, b) => a.date.localeCompare(b.date)).map((d) => {
+                        {dayOffDates.filter(d => d.date >= getLocalDateString()).sort((a, b) => a.date.localeCompare(b.date)).map((d) => {
                           const typeColor = d.type === 'closed' ? 'bg-red-100 text-red-700 border-red-300' : d.type === 'extended' ? 'bg-green-100 text-green-700 border-green-300' : d.type === 'early' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' : 'bg-purple-100 text-purple-700 border-purple-300';
                           return <div key={`${d.date}-${d.channels}`} className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border ${typeColor}`}><span className="font-bold">{new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span><span className="text-xs opacity-75">{d.channels === 'all' ? 'All' : d.channels}</span><span className="px-1.5 py-0.5 rounded text-xs bg-white bg-opacity-50">{d.type === 'closed' ? 'Closed' : d.type === 'extended' ? 'Ext' : d.type === 'early' ? 'Early' : 'Late'}</span><button onClick={() => removeDayOff(d.date)} className="hover:opacity-70 font-bold ml-1">×</button></div>;
                         })}
@@ -16842,6 +17069,47 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       ))}</div>
                     </div>
                   </div>
+                </div>
+              )}
+              {/* Utility Tab - Bag Fee, Utensils (Firebase 연동) */}
+              {onlineModalTab === 'utility' && (
+                <div className="flex flex-col h-full">
+                  <p className="text-sm text-gray-500 mb-4">Configure utility options shown to customers at checkout on the online order page.</p>
+                  <div className="border border-gray-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-base font-bold text-gray-800">🛍️ Bag Fee</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Charge customers a bag fee at checkout (GST included)</div>
+                      </div>
+                      <button onClick={() => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, enabled: !prev.bagFee.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.bagFee.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
+                        <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.bagFee.enabled ? 'left-7' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                    {utilitySettings.bagFee.enabled && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <label className="text-sm font-semibold text-gray-700 min-w-[80px]">Fee Amount</label>
+                        <div className="flex items-center border border-gray-300 rounded-md overflow-hidden">
+                          <span className="px-2.5 py-2 bg-gray-50 text-sm text-gray-500 border-r border-gray-300">$</span>
+                          <input type="number" min="0" step="0.01" value={utilitySettings.bagFee.amount} onChange={(e) => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, amount: parseFloat(e.target.value) || 0 } }))} className="px-2.5 py-2 border-none outline-none text-sm w-[90px]" />
+                        </div>
+                        <span className="text-xs text-gray-400">+GST 5% will be added</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="border border-gray-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-base font-bold text-gray-800">🥢 Utensils</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Ask customers how many utensil sets they need</div>
+                      </div>
+                      <button onClick={() => setUtilitySettings(prev => ({ ...prev, utensils: { enabled: !prev.utensils.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.utensils.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
+                        <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.utensils.enabled ? 'left-7' : 'left-0.5'}`} />
+                      </button>
+                    </div>
+                  </div>
+                  <button onClick={saveUtilitySettings} disabled={savingUtility} className={`w-full py-3 rounded-lg font-bold text-base transition-all ${savingUtility ? 'bg-gray-400 text-white cursor-wait' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>
+                    {savingUtility ? 'Saving...' : 'Save Utility Settings'}
+                  </button>
                 </div>
               )}
             </div>

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // Restaurant ID 조회 헬퍼
 let cachedRestaurantId = null;
@@ -222,7 +223,7 @@ module.exports = (db) => {
   // Returns { where: 'created_at >= ? AND created_at <= ?', params: [start, end] }
   const sessionTimeFilter = (session, columnName = 'created_at') => {
     const startTime = session.opened_at;
-    const endTime = session.closed_at || new Date().toISOString();
+    const endTime = session.closed_at || getLocalDatetimeString();
     return {
       where: `${columnName} >= ? AND ${columnName} <= ?`,
       params: [startTime, endTime]
@@ -251,7 +252,7 @@ module.exports = (db) => {
     try {
       const { openingCash = 0, openedBy = '', cashBreakdown = {} } = req.body;
       const today = getLocalDate();
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
       const sessionId = generateSessionId();
 
       // Check if there's already an active session
@@ -846,7 +847,7 @@ module.exports = (db) => {
       } catch (e) { /* */ }
 
       const startTime = session.opened_at;
-      const endTime = session.closed_at || new Date().toISOString();
+      const endTime = session.closed_at || getLocalDatetimeString();
       const q = await querySalesData(startTime, endTime);
 
       const openingCash = session.opening_cash || 0;
@@ -1002,7 +1003,8 @@ module.exports = (db) => {
           FROM orders o
           LEFT JOIN table_map_elements t ON o.table_id = t.element_id
           WHERE o.created_at >= ?
-          AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED')
+          AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED', 'REFUNDED')
+          AND NOT (o.firebase_order_id IS NOT NULL AND (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) = 0)
         `, [activeSession.opened_at]);
       }
 
@@ -1024,7 +1026,8 @@ module.exports = (db) => {
             FROM orders o
             LEFT JOIN table_map_elements t ON o.table_id = t.element_id
             WHERE o.id IN (${placeholders})
-            AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED')
+            AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED', 'REFUNDED')
+            AND NOT (o.firebase_order_id IS NOT NULL AND (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) = 0)
           `,
             tableOrderIds
           );
@@ -1078,7 +1081,7 @@ module.exports = (db) => {
   router.post('/shift-close', async (req, res) => {
     try {
       const { countedCash = 0, cashDetails = {}, closedBy = '' } = req.body;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
@@ -1177,7 +1180,7 @@ module.exports = (db) => {
   router.post('/closing', async (req, res) => {
     try {
       const { closingCash = 0, closedBy = '', notes = '', cashBreakdown = {} } = req.body;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
@@ -1190,7 +1193,7 @@ module.exports = (db) => {
 
       // Fetch closing data - payments 기반 실결제 매출
       const salesDataOrders2 = await dbGet(`
-        SELECT COUNT(*) as order_count, COALESCE(SUM(tax), 0) as tax_total, COALESCE(SUM(subtotal), 0) as subtotal
+        SELECT COUNT(*) as order_count, COALESCE(SUM(tax), 0) as tax_total
         FROM orders WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
       `, tf.params);
       const salesDataPt2 = await dbGet(`
@@ -1217,65 +1220,6 @@ module.exports = (db) => {
 
       const refundData = await dbGet(`SELECT COUNT(*) as refund_count, COALESCE(SUM(total), 0) as refund_total FROM refunds WHERE ${tf.where}`, tf.params);
       const voidData = await dbGet(`SELECT COUNT(*) as void_count, COALESCE(SUM(grand_total), 0) as void_total FROM voids WHERE ${tf.where}`, tf.params);
-
-      // discount_total (POS Z Report 동일: order_adjustments + adjustments_json)
-      let discountTotal = 0;
-      try {
-        const oTf = { where: 'o.created_at >= ? AND o.created_at <= ?', params: tf.params };
-        const adjSumRow = await dbGet(`
-          SELECT COALESCE(SUM(oa.amount_applied), 0) as discount_total
-          FROM order_adjustments oa
-          JOIN orders o ON oa.order_id = o.id
-          WHERE ${oTf.where}
-            AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
-            AND COALESCE(oa.amount_applied, 0) > 0
-            AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
-        `, oTf.params);
-        const jsonAdjSumRow = await dbGet(`
-          SELECT COALESCE(SUM(
-            CASE
-              WHEN o.adjustments_json IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM order_adjustments oa WHERE oa.order_id = o.id)
-              THEN (SELECT COALESCE(SUM(json_extract(value, '$.amountApplied')), 0) FROM json_each(o.adjustments_json))
-              ELSE 0
-            END
-          ), 0) as discount_total
-          FROM orders o
-          WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
-        `, oTf.params);
-        discountTotal = Number((Number(adjSumRow?.discount_total || 0) + Number(jsonAdjSumRow?.discount_total || 0)).toFixed(2));
-      } catch (e) { /* order_adjustments may not exist */ }
-
-      // Channel sales (payments 기반 - POS Z Report 동일)
-      let channelSales = { dine_in_sales: 0, togo_sales: 0, online_sales: 0, delivery_sales: 0, dine_in_order_count: 0, togo_order_count: 0, online_order_count: 0, delivery_order_count: 0 };
-      try {
-        const chRows = await dbAll(`
-          SELECT
-            CASE
-              WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER') THEN 'DINE_IN'
-              WHEN UPPER(o.order_type) = 'TOGO' THEN 'TOGO'
-              WHEN UPPER(o.order_type) = 'ONLINE' THEN 'ONLINE'
-              WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
-              ELSE 'OTHER'
-            END as ch,
-            COUNT(*) as order_count,
-            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales
-          FROM payments p
-          JOIN orders o ON p.order_id = o.id
-          WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
-            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
-            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
-          GROUP BY ch
-        `, tf.params);
-        (chRows || []).forEach(r => {
-          const ch = r.ch || 'OTHER';
-          if (ch === 'DINE_IN') { channelSales.dine_in_sales = Number(r.sales || 0); channelSales.dine_in_order_count = Number(r.order_count || 0); }
-          else if (ch === 'TOGO') { channelSales.togo_sales = Number(r.sales || 0); channelSales.togo_order_count = Number(r.order_count || 0); }
-          else if (ch === 'ONLINE') { channelSales.online_sales = Number(r.sales || 0); channelSales.online_order_count = Number(r.order_count || 0); }
-          else if (ch === 'DELIVERY') { channelSales.delivery_sales = Number(r.sales || 0); channelSales.delivery_order_count = Number(r.order_count || 0); }
-        });
-      } catch (e) { /* */ }
-
       let cashRefundTotal = 0;
       try {
         const crd = await dbGet(`SELECT COALESCE(SUM(total), 0) as t FROM refunds WHERE ${tf.where} AND UPPER(payment_method) = 'CASH'`, tf.params);
@@ -1297,7 +1241,7 @@ module.exports = (db) => {
           status = 'closed', closing_cash = ?, expected_cash = ?, cash_difference = ?,
           total_sales = ?, cash_sales = ?, card_sales = ?, other_sales = ?,
           tax_total = ?, order_count = ?, refund_total = ?, refund_count = ?,
-          discount_total = ?, void_total = ?, void_count = ?, tip_total = ?,
+          void_total = ?, void_count = ?, tip_total = ?,
           closed_at = ?, closed_by = ?, notes = ?,
           closing_cash_details = ?, updated_at = CURRENT_TIMESTAMP
         WHERE session_id = ?
@@ -1307,7 +1251,6 @@ module.exports = (db) => {
         paymentData?.card_sales || 0, paymentData?.other_sales || 0,
         salesData?.tax_total || 0, salesData?.order_count || 0,
         refundData?.refund_total || 0, refundData?.refund_count || 0,
-        discountTotal,
         voidData?.void_total || 0, voidData?.void_count || 0,
         paymentData?.tip_total || 0, now, closedBy, notes,
         JSON.stringify(cashBreakdown), activeSession.session_id
@@ -1320,17 +1263,19 @@ module.exports = (db) => {
         await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
       } catch (e) { /* */ }
 
-      // Firebase 동기화 (POS Z Report와 완전 동일하게)
+      // 테이블-주문 연결 해제: 마감 후 테이블 클릭 시 이전 주문(#695 등) 로드 방지 → 새 주문이 #001부터 시작
+      try {
+        await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
+        console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
+      } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
+
+      // Firebase 동기화
       try {
         const restaurantId = await getRestaurantId();
         if (restaurantId) {
-          const subtotalVal = Number(salesDataOrders2?.subtotal || 0);
           await firebaseService.saveDailyClosing(restaurantId, {
             ...record, closingCash, expectedCash, cashDifference,
-            totalSales: salesData?.total_sales || 0, closedAt: now, closedBy, notes,
-            subtotal: subtotalVal,
-            discount_total: discountTotal,
-            ...channelSales
+            totalSales: salesData?.total_sales || 0, closedAt: now, closedBy, notes
           });
         }
       } catch (firebaseError) {
@@ -1836,7 +1781,7 @@ module.exports = (db) => {
         }
         const session = sessions[0];
         const startTime = session.opened_at;
-        const endTime = session.closed_at || new Date().toISOString();
+        const endTime = session.closed_at || getLocalDatetimeString();
 
         let storeName = 'Restaurant';
         let serviceMode = 'FSR';

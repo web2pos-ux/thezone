@@ -301,8 +301,21 @@ function buildKitchenTicketText(orderData) {
   output += LF;
   output += DOUBLE_HEIGHT + BOLD_ON;
   
-  // 게스트 섹션이 있는 경우
-  if (orderData.guestSections && orderData.guestSections.length > 0) {
+  // 프린터 그룹 섹션이 있는 경우 (Sushi Bar / Roll Bar 등 display_order로 구분)
+  if (orderData.printerGroupSections && orderData.printerGroupSections.length > 0) {
+    orderData.printerGroupSections.forEach((section, idx) => {
+      if (orderData.printerGroupSections.length > 1) {
+        output += CENTER;
+        output += `---------- ${section.groupName || `Section ${idx + 1}`} ----------` + LF;
+        output += LEFT;
+      }
+      if (section.items && section.items.length > 0) {
+        section.items.forEach(item => {
+          output += formatKitchenItem(item, DOUBLE_HEIGHT, NORMAL_SIZE, LF);
+        });
+      }
+    });
+  } else if (orderData.guestSections && orderData.guestSections.length > 0) {
     orderData.guestSections.forEach((section, idx) => {
       if (orderData.guestSections.length > 1) {
         output += CENTER;
@@ -1226,12 +1239,28 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
   // 3. order 순서대로 정렬
   headerElements.sort((a, b) => a.order - b.order);
   
+  // QSR mode only: order number / channel 30% larger
+  const isQsrMode = !!(orderData?.orderInfo?.isQsrMode || orderData?.isQsrMode);
+  const getStyleBoost = (key, style) => {
+    if (!isQsrMode || !style) return {};
+    if (key !== 'orderType' && key !== 'posOrderNumber') return {};
+    const baseFont = style.fontSize ?? 18;
+    return { fontSize: Math.round(baseFont * 1.3) };
+  };
+  
   // 4. 순서대로 출력
   headerElements.forEach(el => {
     if (el.type === 'single') {
-      output += renderElement(el.key, el.style, data, width, LF);
+      const style = { ...el.style, ...getStyleBoost(el.key, el.style) };
+      output += renderElement(el.key, style, data, width, LF);
     } else if (el.type === 'merged') {
-      output += renderMergedElement(el.merged, data, width, LF);
+      const m = el.merged;
+      const boostedMerged = {
+        ...m,
+        leftElement: { ...m.leftElement, ...getStyleBoost(m.leftElement?.key, m.leftElement) },
+        rightElement: { ...m.rightElement, ...getStyleBoost(m.rightElement?.key, m.rightElement) },
+      };
+      output += renderMergedElement(boostedMerged, data, width, LF);
     }
   });
   
@@ -1247,9 +1276,31 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
   const itemsStyle = ticketLayout.items || { fontSize: 14, visible: true };
   const modifiersStyle = ticketLayout.modifiers || { fontSize: 10, prefix: '>>', visible: true };
   const itemNoteStyle = ticketLayout.itemNote || { fontSize: 10, prefix: '->', visible: true };
+  const kitchenTicketElementsStyle = ticketLayout.kitchenTicketElements || { visible: true, prefix: '  - ' };
   
-  // Guest Sections or Items
-  if (orderData.guestSections && orderData.guestSections.length > 0) {
+  // Printer Group Sections, Guest Sections, or Items
+  if (orderData.printerGroupSections && orderData.printerGroupSections.length > 0) {
+    orderData.printerGroupSections.forEach((section, idx) => {
+      if (orderData.printerGroupSections.length > 1) {
+        const splitSep = ticketLayout.splitSeparator || { visible: true, style: 'dashed' };
+        if (splitSep.visible !== false) {
+          const groupStyle = ticketLayout.guestNumber || { inverse: true };
+          output += ESC_POS.CENTER;
+          if (groupStyle.inverse) output += ESC_POS.REVERSE_ON;
+          output += getStyleCommand(groupStyle);
+          const groupLabel = `--- ${section.groupName || `Section ${idx + 1}`} ---`;
+          output += ' ' + groupLabel + ' ' + LF;
+          output += getStyleResetCommand();
+          output += ESC_POS.LEFT;
+        }
+      }
+      if (section.items && section.items.length > 0) {
+        section.items.forEach(item => {
+          output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle);
+        });
+      }
+    });
+  } else if (orderData.guestSections && orderData.guestSections.length > 0) {
     orderData.guestSections.forEach((section, idx) => {
       // Guest separator
       if (orderData.guestSections.length > 1) {
@@ -1267,13 +1318,13 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
       }
       if (section.items && section.items.length > 0) {
         section.items.forEach(item => {
-          output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF);
+          output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle);
         });
       }
     });
   } else if (orderData.items && orderData.items.length > 0) {
     orderData.items.forEach(item => {
-      output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF);
+      output += formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle);
     });
   }
   
@@ -1307,7 +1358,8 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
     if (!style || style.visible === false) return;
     if (!style.showInFooter) return; // showInFooter가 true인 것만
     
-    output += renderElement(key, style, data, width, LF);
+    const footerStyle = { ...style, ...getStyleBoost(key, style) };
+    output += renderElement(key, footerStyle, data, width, LF);
   });
   
   // 시간 구분선
@@ -1328,7 +1380,7 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
 /**
  * 레이아웃 설정을 적용한 Kitchen 아이템 포맷 (완전한 구현)
  */
-function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF) {
+function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteStyle, width, LF, kitchenTicketElementsStyle) {
   let output = '';
   const qty = item.quantity || item.qty || 1;
   const name = item.name || item.short_name || 'Unknown Item';
@@ -1337,6 +1389,21 @@ function formatKitchenItemWithLayout(item, itemsStyle, modifiersStyle, itemNoteS
   output += getStyleCommand(itemsStyle);
   output += `${qty}x ${name}` + LF;
   output += getStyleResetCommand();
+  
+  // Kitchen Ticket Elements (sub-items, e.g. Roll Combo: California Roll, Dynamite Roll...)
+  const kteStyle = kitchenTicketElementsStyle || { visible: true, prefix: '  - ' };
+  const elements = item.kitchenTicketElements || item.kitchen_ticket_elements || [];
+  if (kteStyle.visible !== false && Array.isArray(elements) && elements.length > 0) {
+    const prefix = kteStyle.prefix || '  - ';
+    elements.forEach(el => {
+      if (el && String(el.name || '').trim()) {
+        const elQty = Math.max(1, parseInt(el.qty, 10) || 1);
+        output += getStyleCommand(kteStyle);
+        output += `${prefix}${elQty} x ${String(el.name).trim()}` + LF;
+        output += getStyleResetCommand();
+      }
+    });
+  }
   
   // 모디파이어
   if (modifiersStyle.visible !== false && item.modifiers && item.modifiers.length > 0) {

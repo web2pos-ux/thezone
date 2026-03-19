@@ -31,6 +31,7 @@ import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
+import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { PrintBillModal } from '../components/PrintBillModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
@@ -911,7 +912,7 @@ const handleVoidPinClear = useCallback(() => {
           customer_phone: giftCardCustomerPhone || null,
           sold_by: currentUser,
           menu_id: menuId,
-          created_at: new Date().toISOString()
+          created_at: getLocalDatetimeString()
         })
       });
       
@@ -2048,21 +2049,16 @@ const handleVoidPinClear = useCallback(() => {
           footer: {}
         };
 
-        // 스플릿빌: 개별 게스트 결제 시 PaymentCompleteModal에서 이미 출력됨 (스킵)
-        // ALL 모드 결제 시: 스플릿빌이어도 통합 영수증 출력
-        const isSplitBill = guestCount > 1 || adhocSplitCount > 0;
-        const allowFinalReceiptInAllMode = guestPaymentMode === 'ALL' && adhocSplitCount <= 0; // NEVER print final receipt in Equal Split(adhoc)
-        if (receiptCount > 0 && (!isSplitBill || allowFinalReceiptInAllMode)) {
+        // 결제 완료 시 무조건 영수증 출력
+        if (receiptCount > 0) {
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ receiptData, copies: receiptCount })
           });
           console.log(`Receipt printed successfully (${receiptCount} copies)`);
-        } else if (receiptCount === 0) {
-          console.log('No receipt requested by user');
         } else {
-          console.log('Split bill (individual mode) - skipping final receipt (guest receipts handled by PaymentCompleteModal)');
+          console.log('No receipt requested by user');
         }
         } catch (printErr) {
           console.warn('Receipt print failed (ignored):', printErr);
@@ -2213,8 +2209,8 @@ const handleVoidPinClear = useCallback(() => {
     const tableIdForMap = (location.state && (location.state as any).tableId) || null;
     const floor = (location.state && (location.state as any).floor) || null;
 
-    // Print receipt (split 결제가 아닌 경우에만 전체 영수증 출력)
-    if (!hasSplitContextFallback && !receiptPrintedRef.current && receiptCount > 0) {
+    // Print receipt (결제 완료 시 무조건 출력)
+    if (!receiptPrintedRef.current && receiptCount > 0) {
       receiptPrintedRef.current = true;
       try {
         const totals = computeGuestTotals('ALL');
@@ -5713,15 +5709,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       items.forEach(it => {
         const g = it.guestNumber || 1;
         if (!byGuest[g]) byGuest[g] = [];
-        const base = (((it.totalPrice||0) + (((it as any).memo && typeof (it as any).memo.price === 'number') ? (it as any).memo.price : 0)) * (it.quantity||1));
+        const qty = it.quantity || 1;
+        const base = (((it.totalPrice||0) + (((it as any).memo && typeof (it as any).memo.price === 'number') ? (it as any).memo.price : 0)) * qty);
         const disc = computeItemDiscountAmount(it as any);
         const discountType = (it as any).discount?.type || 'Item D/C';
+        const lineTotal = Math.max(0, base - disc);
+        const unitPrice = qty > 0 ? lineTotal / qty : 0;
         byGuest[g].push({
-          qty: it.quantity,
+          qty,
+          quantity: qty,
           name: it.name,
+          price: unitPrice,
+          totalPrice: lineTotal,
           modifiers: (it as any).modifiers || [],
           memo: (it as any).memo || null,
-          lineTotal: Math.max(0, base - disc),
+          lineTotal,
           originalTotal: disc > 0 ? base : undefined,
           discount: disc > 0 ? {
             type: discountType,
@@ -5818,7 +5820,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
          
          return {
             type: 'prebill',
-            header: { title: store.name, address: store.address, phone: store.phone, dateTime: now.toISOString(), orderNumber, showGuestNumber: true },
+            header: { title: store.name, address: store.address, phone: store.phone, dateTime: getLocalDatetimeString(now), orderNumber, showGuestNumber: true },
             orderInfo: { channel: normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase(), tableName: resolvedTableName || tableNameFromState || undefined, showGuestNumber: true },
             body: { 
                 guestSections: receiptItems, 
@@ -5917,7 +5919,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     const parsed = JSON.parse(oldRaw);
                     if (parsed.tableId === tableIdForMap && parsed.ts) {
                         oldTs = parsed.ts;
-                        occupiedAtStr = new Date(oldTs).toISOString();
+                        occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                     }
                 }
             } catch {}
@@ -5979,7 +5981,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const promoChannel = isTogo ? 'togo' : 'table';
     
     // Apply promotions (works for both Dine-In and Togo with channel filtering)
-    const todayKey = new Date().toISOString().slice(0,10);
+    const todayKey = getLocalDateString();
     const usageKey = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
     const alreadyUsedToday = usageKey ? (localStorage.getItem(usageKey) === '1') : false;
     
@@ -6265,7 +6267,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       const parsed = JSON.parse(oldRaw);
                       if (parsed.tableId === tableIdForMap && parsed.ts) {
                           oldTs = parsed.ts;
-                          occupiedAtStr = new Date(oldTs).toISOString();
+                          occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                       }
                   }
               } catch {}
@@ -6601,7 +6603,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                      const parsed = JSON.parse(oldRaw);
                      if (parsed.tableId === tableId && parsed.ts) {
                          oldTs = parsed.ts;
-                         occupiedAtStr = new Date(oldTs).toISOString();
+                         occupiedAtStr = getLocalDatetimeString(new Date(oldTs));
                      }
                  }
              } catch {}
@@ -8578,11 +8580,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <label className="text-sm text-gray-300">Font Size: {layoutSettings.categoryFontSize}px</label>
                     <div className="flex space-x-1">
                       <button
-                        onClick={() => updateLayoutSetting('categoryFontBold', !layoutSettings.categoryFontBold)}
+                        onClick={() => { updateLayoutSetting('categoryFontBold', !layoutSettings.categoryFontBold); if (!layoutSettings.categoryFontBold) updateLayoutSetting('categoryFontExtraBold', false); }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.categoryFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => { updateLayoutSetting('categoryFontExtraBold', !layoutSettings.categoryFontExtraBold); if (!layoutSettings.categoryFontExtraBold) updateLayoutSetting('categoryFontBold', false); }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.categoryFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -8769,11 +8778,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <button
                         onClick={() => {
                            updateLayoutSetting('menuFontBold', !layoutSettings.menuFontBold);
+                           if (!layoutSettings.menuFontBold) updateLayoutSetting('menuFontExtraBold', false);
                          }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.menuFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => {
+                           updateLayoutSetting('menuFontExtraBold', !layoutSettings.menuFontExtraBold);
+                           if (!layoutSettings.menuFontExtraBold) updateLayoutSetting('menuFontBold', false);
+                         }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.menuFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -9032,13 +9052,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex space-x-1">
                       <button
                         onClick={() => {
-                          console.log('Modifier Bold button clicked. Current value:', layoutSettings.modifierFontBold);
                           updateLayoutSetting('modifierFontBold', !layoutSettings.modifierFontBold);
+                          if (!layoutSettings.modifierFontBold) updateLayoutSetting('modifierFontExtraBold', false);
                         }}
                         className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.modifierFontBold ? 'bg-blue-600 text-white border-blue-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
-                        title="Toggle bold"
+                        title="Toggle bold (+100)"
                       >
                         Bold
+                      </button>
+                      <button
+                        onClick={() => {
+                          updateLayoutSetting('modifierFontExtraBold', !layoutSettings.modifierFontExtraBold);
+                          if (!layoutSettings.modifierFontExtraBold) updateLayoutSetting('modifierFontBold', false);
+                        }}
+                        className={`text-xs px-2 py-0.5 rounded border ${layoutSettings.modifierFontExtraBold ? 'bg-purple-600 text-white border-purple-700' : 'bg-gray-600 text-gray-200 border-gray-500'}`}
+                        title="Toggle extra bold (+200)"
+                      >
+                        Extra Bold
                       </button>
                     </div>
                   </div>
@@ -9610,7 +9640,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         channelInfo = tableName ? `Table ${tableName}` : '';
                       }
 
-                      const displayOrderId = savedOrderIdRef.current || ((location.state as any)?.orderId) || '';
+                      // 일일 주문번호(order_number, 001/002...) 우선 표시. Closing 후 Opening 시 리셋됨.
+                      const displayOrderId = savedOrderNumberRef.current || (savedOrderIdRef.current != null ? String(savedOrderIdRef.current) : '') || ((location.state as any)?.orderId) || '';
 
                       return (
                         <div data-pos-lock="order-channel-block" className="flex items-center gap-2">
@@ -10374,7 +10405,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         // Calculate alreadyUsedToday first (needed for both local promo and BOGO)
                         const tableIdForMap = (location.state && (location.state as any).tableId) || null;
                         const customerName = (location.state && (location.state as any).customerName) || null;
-                        const todayKey = new Date().toISOString().slice(0,10);
+                        const todayKey = getLocalDateString();
                         const usageKeyTable = tableIdForMap ? `promo_used_${tableIdForMap}_${todayKey}` : null;
                         const usageKeyCustomer = customerName ? `promo_used_customer_${customerName}_${todayKey}` : null;
                         const alreadyUsedToday = (usageKeyTable && localStorage.getItem(usageKeyTable) === '1') || (usageKeyCustomer && localStorage.getItem(usageKeyCustomer) === '1');
