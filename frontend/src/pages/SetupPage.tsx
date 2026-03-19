@@ -13,6 +13,9 @@ import { useNavigate } from 'react-router-dom';
 const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:3177').replace(/\/api\/?$/, '');
 const FETCH_TIMEOUT_MS = 6000;
 
+/** Setup PIN 화면에서 BackOffice / Sales 공통 PIN (고정, Intro와 동일) */
+const INTRO_PIN = '0888';
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs: number = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -138,80 +141,30 @@ const PinScreen: React.FC<{
     setPinError('');
   };
 
-  // PIN verification (Sales - 0000 allowed)
+  // PIN verification (Sales) — 고정 PIN 0888만 허용
   const verifySalesPin = async (): Promise<boolean> => {
     if (pin.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
-    
-    // 0000 is allowed for Sales access
-    if (pin === '0000') {
-      return true;
+    if (pin !== INTRO_PIN) {
+      setPinError('PIN must be 0888');
+      return false;
     }
-    
-    // 0888 (BackOffice PIN) also allowed for Sales access
-    try {
-      const response = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin })
-      });
-      if (response.ok) {
-        return true;
-      }
-    } catch (err) {
-      // continue to employee verification
-    }
-    
-    // Employee PIN verification
-    try {
-      const response = await fetch(`${API_URL}/api/employees/verify-pin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin })
-      });
-      const data = await response.json();
-      if (data.success) {
-        return true;
-      }
-    } catch (err) {
-      // ignore
-    }
-    
-    setPinError('Invalid PIN');
-    return false;
+    return true;
   };
 
-  // PIN verification (BackOffice - requires 0888, 0000 not allowed)
+  // PIN verification (BackOffice) — 고정 PIN 0888만 허용
   const verifyBackOfficePin = async (): Promise<boolean> => {
     if (pin.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
-    
-    // 0000 not allowed for BackOffice access
-    if (pin === '0000') {
-      setPinError('BackOffice requires PIN 0888');
+    if (pin !== INTRO_PIN) {
+      setPinError('PIN must be 0888');
       return false;
     }
-    
-    try {
-      const response = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin })
-      });
-      if (response.ok) {
-        return true;
-      } else {
-        setPinError('Invalid BackOffice PIN');
-        return false;
-      }
-    } catch (err) {
-      setPinError('Verification failed');
-      return false;
-    }
+    return true;
   };
 
   const goToBackOffice = async () => {
@@ -251,13 +204,13 @@ const PinScreen: React.FC<{
             draggable={false}
           />
         </div>
-        <h1 className="text-5xl text-white mb-1" style={{ fontFamily: "'Averia Libre', cursive", fontWeight: 700 }}>
+        <h1 className="text-[2.5rem] leading-tight text-white mb-1" style={{ fontFamily: "'Lora', Georgia, serif", fontWeight: 700 }}>
           ThezonePOS
         </h1>
-        <p className="text-xl text-sky-400 mb-8 italic">One Touch, So Much</p>
+        <p className="text-xl text-sky-400 mb-8 italic font-bold">One Touch, So Much</p>
 
         {/* PIN Dots */}
-        <div className="flex justify-center gap-3 mb-4">
+        <div className="flex justify-center gap-3 mb-0.5">
           {[0, 1, 2, 3].map((i) => (
             <div
               key={i}
@@ -269,58 +222,62 @@ const PinScreen: React.FC<{
         </div>
         
         {/* PIN Error Message */}
-        <div className="h-6 mb-4">
-          {pinError && <p className="text-red-400 text-sm">{pinError}</p>}
+        <div className="min-h-[14px] mb-0.5 flex items-center justify-center">
+          {pinError && <p className="text-red-400 text-sm leading-tight">{pinError}</p>}
         </div>
 
         {/* PIN Pad */}
-        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 inline-block border border-white/20" style={{ marginTop: '-30px' }}>
-          <div className="grid grid-cols-3 gap-4 mb-4">
+        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 inline-block border border-white/20" style={{ marginTop: '-8px' }}>
+          <div className="grid grid-cols-3 gap-3 mb-3">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
               <button
                 key={num}
                 onClick={() => handleNumber(num)}
-                className="w-[76px] h-[76px] rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
+                className="w-[57px] h-[57px] rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white text-2xl font-semibold transition-all active:scale-95"
               >
                 {num}
               </button>
             ))}
             <button
               onClick={handleClear}
-              className="w-[76px] h-[76px] rounded-full bg-red-500 hover:bg-red-600 text-white text-base font-bold transition-all active:scale-95"
+              className="w-[57px] h-[57px] rounded-full bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-all active:scale-95"
             >
               Clear
             </button>
             <button
               onClick={() => handleNumber('0')}
-              className="w-[76px] h-[76px] rounded-full bg-gray-400/40 hover:bg-gray-400/60 text-white text-3xl font-semibold transition-all active:scale-95"
+              className="w-[57px] h-[57px] rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white text-2xl font-semibold transition-all active:scale-95"
             >
               0
             </button>
             <button
               onClick={handleBackspace}
-              className="w-[76px] h-[76px] rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-3xl font-bold transition-all active:scale-95"
+              className="w-[57px] h-[57px] rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-2xl font-bold transition-all active:scale-95"
             >
               ←
             </button>
           </div>
 
           {/* Divider */}
-          <div className="border-t border-white/20 my-4"></div>
+          <div className="border-t border-white/20 my-2"></div>
 
           {/* Navigation Buttons - BackOffice 1/3, Sales 2/3 */}
-          <div className="flex gap-3">
+          <div className="flex gap-2">
             <button
               onClick={goToBackOffice}
-              className="w-1/3 px-2 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-1"
-              style={{ height: '57px' }}
+              className="w-1/3 px-2 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 transition-all flex flex-row items-center justify-center gap-1.5 leading-tight py-1"
+              style={{ minHeight: '43px' }}
             >
-              <span>⚙️</span> BackOffice
+              <span className="text-base shrink-0" aria-hidden>⚙️</span>
+              <span className="text-sm font-medium text-left">
+                <span className="block leading-tight">Back</span>
+                <span className="block leading-tight">Office</span>
+              </span>
             </button>
             <button
               onClick={goToSales}
               className="w-2/3 px-4 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-2"
-              style={{ height: '57px' }}
+              style={{ height: '43px' }}
             >
               <span>📋</span> Sales
             </button>
@@ -863,7 +820,7 @@ const SetupPage: React.FC = () => {
         {step === 'checking' && (
           <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20 text-center">
             <img src="/images/logo.png" alt="Logo" className="w-16 h-16 mx-auto mb-4 object-contain"/>
-            <h1 className="text-2xl font-bold text-white mb-4">TheZonePOS</h1>
+            <h1 className="text-lg text-white mb-4" style={{ fontFamily: "'Lora', Georgia, serif", fontWeight: 700 }}>TheZonePOS</h1>
             <div className="w-10 h-10 border-4 border-white/30 border-t-white rounded-full animate-spin mx-auto"></div>
             {error && <div className="mt-4 text-red-200 text-sm font-semibold">{error}</div>}
           </div>
