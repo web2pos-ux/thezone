@@ -1493,11 +1493,11 @@ const addQuick = async (q: number) => {
 				>
 					<X size={28} className="text-red-600" strokeWidth={3} />
 				</button>
-				<div className={`px-3 ${isSplitActive ? 'pt-3' : 'pt-1'}`}>
+				<div className={`px-3 ${isSplitActive ? 'pt-3' : 'pt-3'}`}>
 					<div className={`flex items-center gap-2 border rounded-full shadow px-3 overflow-x-auto whitespace-nowrap transition-all ${
-						isSplitActive ? 'bg-blue-50 border-blue-300 py-1.5 min-h-[44px]' : 'bg-gray-50 border-gray-200 py-1 min-h-[28px]'
+						isSplitActive ? 'bg-blue-50 border-blue-300 py-1.5 min-h-[44px]' : 'bg-gray-50 border-gray-200 py-1.5 min-h-[44px]'
 					}`}>
-						{Array.from({ length: isSplitActive ? maxGuestButtons : 0 }, (_, i) => i + 1).map((n) => {
+						{Array.from({ length: maxGuestButtons }, (_, i) => i + 1).map((n) => {
               const isActive = effectiveGuestMode === n || (effectiveGuestMode === 'ALL' && n === 1 && !isSplitActive);
               const isPaidGuest = Array.isArray(paidGuests) && paidGuests.includes(n);
               return (
@@ -1612,7 +1612,7 @@ const addQuick = async (q: number) => {
 						<div className="mt-3 text-base flex-1 flex flex-col min-h-0">
 							{/* Change container at top */}
                                 <div
-                                    className={`w-full px-0 rounded-md flex flex-col items-center justify-center py-[1.24rem] mb-3 bg-red-50 border border-red-200 ${(displayChange > 0 && !changeDueDigits) ? 'cursor-pointer hover:opacity-90' : 'cursor-default'}`}
+                                    className={`w-full px-0 rounded-md flex flex-col items-center justify-center py-[0.6rem] mb-3 bg-red-50 border border-red-200 ${(displayChange > 0 && !changeDueDigits) ? 'cursor-pointer hover:opacity-90' : 'cursor-default'}`}
                                     onClick={() => {
                                       if (displayChange <= 0 || changeDueDigits) return;
                                       setTip(prev => {
@@ -1643,8 +1643,8 @@ const addQuick = async (q: number) => {
                                     }}
                                 >
                                     <div className="flex flex-col items-center -translate-y-[10px] translate-x-[35px]">
-                                        <span className={`text-xl font-bold text-red-700`}>Change $</span>
-                                        <span className={`font-extrabold leading-none tracking-tight text-[4.2625rem] md:text-[4.60625rem] text-red-600`}>{formatMoney(displayChange)}</span>
+                                        <span className={`text-2xl font-bold text-red-700`}>Change $</span>
+                                        <span className={`font-extrabold leading-none tracking-tight text-[4.71rem] md:text-[5.09rem] text-red-600`}>{formatMoney(displayChange)}</span>
                                         <span className="mt-[9px] text-sm font-semibold text-red-500">
                                           {changeDueDigits ? `Tip: $${formatMoney(parsedTip)}` : 'Tap to add tip'}
                                         </span>
@@ -1656,16 +1656,19 @@ const addQuick = async (q: number) => {
 								{/* Amounts group */}
 								<div className="space-y-1.5">
 																{/* Due container: tap to fill display with remaining due for confirmation */}
-										<div className="w-full rounded-md border border-blue-200 bg-blue-50 px-4 py-2 h-[4.4rem] flex items-center justify-between cursor-pointer" onClick={handleFillDue}>
-											<span className="text-xl text-blue-700 whitespace-nowrap font-semibold leading-none">Due $</span>
-										<span className="text-3xl font-bold text-blue-700 leading-none">{formatMoney(due)}</span>
+										<div className="w-full rounded-md border border-blue-200 bg-blue-50 px-4 py-2 h-[5.15rem] flex flex-col items-center justify-center cursor-pointer relative" onClick={handleFillDue}>
+											<div className="w-full flex items-center justify-between">
+												<span className="text-2xl text-blue-700 whitespace-nowrap font-bold leading-none">Due $</span>
+												<span className="text-4xl font-bold text-blue-700 leading-none">{formatMoney(due)}</span>
+											</div>
+											<span className="text-sm font-semibold text-blue-500 mt-1 w-full text-center">Tap to fill payment amount</span>
 									</div>
 							{/* Change Due input: 항상 표시, Cash 거스름돈 발생 시 활성화 */}
 							{(() => {
 								const changeDueEnabled = displayChange > 0 && (lastChange != null && lastChange > 0);
 								return (
 									<div
-										className={`w-full rounded-md border-2 px-4 py-2 h-[3.6rem] flex items-center justify-between transition ${
+										className={`w-full rounded-md border-2 px-4 py-2 h-[3.51rem] flex items-center justify-between transition ${
 											!changeDueEnabled
 												? 'border-gray-200 bg-gray-100 cursor-not-allowed opacity-50'
 												: inputTarget === 'CHANGE_DUE'
@@ -1680,8 +1683,8 @@ const addQuick = async (q: number) => {
 											setIsTipFocused(false);
 										}}
 									>
-										<span className={`text-base font-bold whitespace-nowrap ${changeDueEnabled ? 'text-orange-700' : 'text-gray-400'}`}>Change Due $</span>
-										<span className={`text-2xl font-extrabold tabular-nums ${
+										<span className={`text-2xl font-bold whitespace-nowrap ${changeDueEnabled ? 'text-orange-700' : 'text-gray-400'}`}>Change Due $</span>
+										<span className={`text-3xl font-extrabold tabular-nums ${
 											!changeDueEnabled ? 'text-gray-400'
 											: inputTarget === 'CHANGE_DUE' ? 'text-orange-800' : 'text-orange-600'
 										}`}>
@@ -1691,9 +1694,9 @@ const addQuick = async (q: number) => {
 								);
 							})()}
 							{/* Pay container */}
-													<div className="w-full px-4 py-2 rounded-md border bg-white h-[7.2rem] flex flex-col">
+													<div className="w-full px-4 py-2 rounded-md border bg-white h-[7.02rem] flex flex-col">
 									<div className="flex items-center justify-between gap-2">
-										<span className="text-lg text-gray-700 whitespace-nowrap font-semibold leading-none h-8 flex items-center">Paid $</span>
+										<span className="text-2xl text-gray-700 whitespace-nowrap font-bold leading-none h-10 flex items-center">Paid $</span>
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -1704,7 +1707,7 @@ const addQuick = async (q: number) => {
                       >
                         Clear
                       </button>
-										  <span className="text-lg font-bold text-gray-800">{formatMoney(displayPaidTotal)}</span>
+										  <span className="text-2xl font-bold text-gray-800">{formatMoney(displayPaidTotal)}</span>
                     </div>
 									</div>
 													<div className="mt-1 text-xs text-gray-600 max-h-12 overflow-y-auto space-y-0.5 pr-1">
@@ -1730,8 +1733,8 @@ const addQuick = async (q: number) => {
 									</div>
 									</div>
 									{/* Tip container */}
-								<div className="h-[calc(4.4rem-10px)] w-full px-4 rounded-md bg-red-50 border border-red-200 flex items-center justify-between" onClick={() => setInputTarget('TIP')}>
-									<span className="text-xl font-extrabold text-red-700 whitespace-nowrap">Tip $</span>
+								<div className="h-[calc(4.29rem-10px)] w-full px-4 rounded-md bg-red-50 border border-red-200 flex items-center justify-between" onClick={() => setInputTarget('TIP')}>
+									<span className="text-2xl font-bold text-red-700 whitespace-nowrap">Tip $</span>
 									<input
                     inputMode="decimal"
                     value={inputTarget === 'TIP' ? (isTipFocused ? tip : formatInput(tip)) : formatMoney(tipPaidConfirmed)}
@@ -1751,7 +1754,7 @@ const addQuick = async (q: number) => {
                       }
                     }}
                     onChange={(e) => handleTipChange(e.target.value)}
-                    className="h-full flex-1 min-w-0 text-right outline-none bg-transparent text-3xl font-extrabold text-red-700 tabular-nums"
+                    className="h-full flex-1 min-w-0 text-right outline-none bg-transparent text-4xl font-extrabold text-red-700 tabular-nums"
                   />
 								</div>
 								</div>
@@ -1763,10 +1766,10 @@ const addQuick = async (q: number) => {
 						{/* Right: Keypad & Quick */}
 						<div className="p-3 md:order-2 bg-gray-300 h-full flex flex-col">
 							{/* Customer info moved here */}
-                            <div className={`mb-2 flex items-center ${isCenterHeader ? 'justify-center' : 'justify-between'} text-lg rounded-md px-4 py-2 bg-gray-300 border border-gray-400`}>
-                                <span className="text-gray-800 font-extrabold text-lg">{headerLeftLabel}</span>
+                            <div className={`mb-2 flex items-center ${isCenterHeader ? 'justify-center' : 'justify-between'} text-2xl rounded-md px-4 py-4 bg-gray-300 border border-gray-400`}>
+                                <span className="text-gray-800 font-extrabold text-2xl">{headerLeftLabel}</span>
                                 {!isCenterHeader && (
-                                  <span className="text-gray-800 font-semibold text-lg">{headerRightLabel}</span>
+                                  <span className="text-gray-800 font-semibold text-2xl">{headerRightLabel}</span>
                                 )}
                             </div>
 					
@@ -1774,7 +1777,7 @@ const addQuick = async (q: number) => {
 							<div className="grid grid-cols-8 gap-2 mb-2">
 								{/* Row 1: Display */}
 								<div
-                  className={`col-span-8 h-[4.32rem] px-3 rounded-md border-2 flex items-center justify-end text-[2.7rem] font-extrabold leading-none tracking-tight tabular-nums overflow-hidden cursor-pointer ${
+                  className={`col-span-8 h-[3.96rem] px-3 rounded-md border-2 flex items-center justify-end text-[2.7rem] font-extrabold leading-none tracking-tight tabular-nums overflow-hidden cursor-pointer ${
                     inputTarget === 'DISCOUNT'
                       ? 'border-amber-400 bg-amber-50 text-amber-900 shadow-[0_0_0_3px_rgba(251,191,36,0.25)]'
                       : 'border-red-300 bg-red-50 text-red-700'
@@ -1794,32 +1797,32 @@ const addQuick = async (q: number) => {
                   </div>
                 )}
 								{/* Row 2: 1 2 3 $5 */}
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('1')}>1</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('2')}>2</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('3')}>3</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(5)}>$5</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('1')}>1</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('2')}>2</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('3')}>3</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(5)}>$5</button>
 
 								{/* Row 3: 4 5 6 $10 */}
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('4')}>4</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('5')}>5</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('6')}>6</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(10)}>$10</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('4')}>4</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('5')}>5</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('6')}>6</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(10)}>$10</button>
 
 								{/* Row 4: 7 8 9 $20 */}
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('7')}>7</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('8')}>8</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('9')}>9</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(20)}>$20</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('7')}>7</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('8')}>8</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('9')}>9</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(20)}>$20</button>
 
 								{/* Row 5: 0 00 . $50 */}
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('0')}>0</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('00')}>00</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-3xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('.')}>.</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(50)}>$50</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('0')}>0</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('00')}>00</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-3xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('.')}>.</button>
+                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(50)}>$50</button>
 
 								{/* Row 6: Clear (3col) ← (3col) $100 (2col) */}
                 <button
-                  className="col-span-3 h-[4rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100"
+                  className="col-span-3 h-[3.37rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100"
                   onClick={() => {
                     if (isSplitCountMode) { setSplitCountInput(''); return; }
                     if (inputTarget === 'DISCOUNT') { setCustomDiscountDigits(''); setLastChange(null); return; }
@@ -1836,20 +1839,20 @@ const addQuick = async (q: number) => {
                 >
                   Clear
                 </button>
-                <button className="col-span-3 h-[4rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100" onClick={()=>appendDigit('BS')}>←</button>
-                <button className={`col-span-2 h-[4rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(100)}>$100</button>
+                <button className="col-span-3 h-[3.37rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100" onClick={()=>appendDigit('BS')}>←</button>
+                <button className={`col-span-2 h-[3.37rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(100)}>$100</button>
 							</div>
 							<div className="h-3" />
             <div className="mt-0 mb-0 grid grid-cols-2 gap-2">
                 <button 
                   onClick={isSplitCountMode ? handleSplitCountCancel : handleCancelClick} 
-                  className="h-12 w-full rounded-md bg-gray-700 text-white hover:bg-gray-800 active:bg-red-600 active:text-white font-bold"
+                  className="h-[4.00rem] w-full rounded-md bg-gray-700 text-white hover:bg-gray-800 active:bg-red-600 active:text-white font-bold"
                 >
                   {isSplitCountMode ? 'Cancel Split' : 'Cancel'}
                 </button>
                 <button 
                   onClick={isSplitCountMode ? handleSplitCountConfirm : (proceedArmed ? proceedNext : finalizeAndComplete)} 
-                  className={`${(isSplitCountMode ? splitCountInput.length > 0 : canClickOk) ? 'h-12 w-full rounded-md bg-green-600 text-white hover:bg-green-700 active:bg-red-600' : 'h-12 w-full rounded-md bg-green-200 text-green-700 cursor-not-allowed'} font-bold`} 
+                  className={`${(isSplitCountMode ? splitCountInput.length > 0 : canClickOk) ? 'h-[4.00rem] w-full rounded-md bg-green-600 text-white hover:bg-green-700 active:bg-red-600' : 'h-[4.00rem] w-full rounded-md bg-green-200 text-green-700 cursor-not-allowed'} font-bold`} 
                   disabled={isSplitCountMode ? splitCountInput.length === 0 : !canClickOk}
                 >
                   {isSplitCountMode ? 'Confirm' : (proceedArmed ? 'Next' : 'OK')}
