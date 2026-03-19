@@ -2049,16 +2049,21 @@ const handleVoidPinClear = useCallback(() => {
           footer: {}
         };
 
-        // 결제 완료 시 무조건 영수증 출력
-        if (receiptCount > 0) {
+        // 스플릿빌: 개별 게스트 결제 시 PaymentCompleteModal에서 이미 출력됨 (스킵)
+        // ALL 모드 결제 시: 스플릿빌이어도 통합 영수증 출력
+        const isSplitBill = guestCount > 1 || adhocSplitCount > 0;
+        const allowFinalReceiptInAllMode = guestPaymentMode === 'ALL' && adhocSplitCount <= 0; // NEVER print final receipt in Equal Split(adhoc)
+        if (receiptCount > 0 && (!isSplitBill || allowFinalReceiptInAllMode)) {
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ receiptData, copies: receiptCount })
           });
           console.log(`Receipt printed successfully (${receiptCount} copies)`);
-        } else {
+        } else if (receiptCount === 0) {
           console.log('No receipt requested by user');
+        } else {
+          console.log('Split bill (individual mode) - skipping final receipt (guest receipts handled by PaymentCompleteModal)');
         }
         } catch (printErr) {
           console.warn('Receipt print failed (ignored):', printErr);
@@ -2209,8 +2214,8 @@ const handleVoidPinClear = useCallback(() => {
     const tableIdForMap = (location.state && (location.state as any).tableId) || null;
     const floor = (location.state && (location.state as any).floor) || null;
 
-    // Print receipt (결제 완료 시 무조건 출력)
-    if (!receiptPrintedRef.current && receiptCount > 0) {
+    // Print receipt (split 결제가 아닌 경우에만 전체 영수증 출력)
+    if (!hasSplitContextFallback && !receiptPrintedRef.current && receiptCount > 0) {
       receiptPrintedRef.current = true;
       try {
         const totals = computeGuestTotals('ALL');
