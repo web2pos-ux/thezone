@@ -1057,13 +1057,14 @@ module.exports = (db) => {
         
         // fallback 시에도 프린터 그룹 링크에서 copies를 조회
         const kitchenPrinterWithCopies = await dbGet(
-          `SELECT p.printer_id, p.name, p.selected_printer, 
+          `SELECT p.printer_id, p.name, p.selected_printer,
+                  COALESCE(p.graphic_scale, 1.0) as graphic_scale,
                   COALESCE(pgl.copies, 1) as copies,
                   pg.name as group_name, COALESCE(pg.show_label, 1) as show_label
            FROM printers p
            LEFT JOIN printer_group_links pgl ON p.printer_id = pgl.printer_id
            LEFT JOIN printer_groups pg ON pgl.printer_group_id = pg.printer_group_id AND pg.is_active = 1
-           WHERE (p.type = 'kitchen' OR p.name LIKE '%Kitchen%') AND p.is_active = 1 
+           WHERE (p.type = 'kitchen' OR p.name LIKE '%Kitchen%') AND p.is_active = 1
            LIMIT 1`
         );
         if (kitchenPrinterWithCopies?.selected_printer) {
@@ -1073,18 +1074,20 @@ module.exports = (db) => {
             copies: kitchenPrinterWithCopies.copies || 1,
             groupName: kitchenPrinterWithCopies.group_name || null,
             showLabel: kitchenPrinterWithCopies.show_label === 1,
+            graphicScale: clampGraphicScale(kitchenPrinterWithCopies.graphic_scale),
             items: items || []
           });
         } else {
           // 최후 fallback: Front 프린터
           const frontPrinterWithCopies = await dbGet(
             `SELECT p.printer_id, p.name, p.selected_printer,
+                    COALESCE(p.graphic_scale, 1.0) as graphic_scale,
                     COALESCE(pgl.copies, 1) as copies,
                     pg.name as group_name, COALESCE(pg.show_label, 1) as show_label
              FROM printers p
              LEFT JOIN printer_group_links pgl ON p.printer_id = pgl.printer_id
              LEFT JOIN printer_groups pg ON pgl.printer_group_id = pg.printer_group_id AND pg.is_active = 1
-             WHERE p.name LIKE '%Front%' AND p.is_active = 1 
+             WHERE p.name LIKE '%Front%' AND p.is_active = 1
              LIMIT 1`
           );
           if (frontPrinterWithCopies?.selected_printer) {
@@ -1094,6 +1097,7 @@ module.exports = (db) => {
               copies: frontPrinterWithCopies.copies || 1,
               groupName: frontPrinterWithCopies.group_name || null,
               showLabel: frontPrinterWithCopies.show_label === 1,
+              graphicScale: clampGraphicScale(frontPrinterWithCopies.graphic_scale),
               items: items || []
             });
           }
@@ -1187,11 +1191,19 @@ module.exports = (db) => {
           ticketData.printerLabel = job.groupName;
         }
 
-        // Per-device graphic scale override (wins over layout/payload)
+        // Per-device graphic scale (graphic kitchen ticket bitmap). Group jobs include job.graphicScale;
+        // fallback kitchen/front jobs now include it too — still resolve from DB if missing.
         try {
-          const gs = Number(job?.graphicScale);
+          let gs = Number(job?.graphicScale);
+          if (!Number.isFinite(gs) || gs <= 0) {
+            const row = await dbGet(
+              'SELECT COALESCE(graphic_scale, 1.0) AS graphic_scale FROM printers WHERE printer_id = ? LIMIT 1',
+              [printerId]
+            );
+            gs = Number(row?.graphic_scale);
+          }
           if (Number.isFinite(gs) && gs > 0) ticketData.graphicScale = clampGraphicScale(gs);
-        } catch {}
+        } catch (_e) { /* non-blocking */ }
         
         // 상단 마진 (DB fallback 포함)
         if (effectiveTopMargin != null && effectiveTopMargin >= 0) {

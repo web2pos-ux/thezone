@@ -5543,7 +5543,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const discountType = (it as any).discount?.type || 'Item D/C';
         byGuest[g].push({
           qty: it.quantity,
+          quantity: it.quantity,
           name: it.name,
+          price: it.totalPrice || 0,
           modifiers: (it as any).modifiers || [],
           memo: (it as any).memo || null,
           lineTotal: Math.max(0, base - disc),

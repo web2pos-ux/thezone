@@ -66,7 +66,7 @@ echo.
 
 echo ================================================
 echo DONE!
-echo - Output folder: pos-desktop\dist8
+echo - Output folder: pos-desktop\dist24
 echo - Look for:
 echo   - "TheZonePOS Setup *.exe"      (Installer)
 echo   - "TheZonePOS-Portable-*.exe"   (Portable)
