@@ -101,7 +101,10 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [splitNCustomDigits, setSplitNCustomDigits] = useState<string>('');
   const [changeDueDigits, setChangeDueDigits] = useState<string>('');
   const changeDueTotalRef = useRef<number>(0);
+  const committedChangeRef = useRef<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);  // 더블 클릭 방지용
+  const [cashReadyForOk, setCashReadyForOk] = useState<boolean>(false);
+  const cashReadyDataRef = useRef<{ rawAmt: number; scopeDueNow: number; effectiveMethod: string; isFinalizeFlow: boolean } | null>(null);
   const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);  // Cancel 확인 팝업
   const [selectedReceiptCount, setSelectedReceiptCount] = useState<number>(2);  // 영수증 출력 매수 (0: No Receipt, 1: 1 Receipt, 2: 2 Receipts)
   
@@ -239,6 +242,7 @@ useEffect(() => {
     setSplitNCustomDigits('');
     setChangeDueDigits('');
     changeDueTotalRef.current = 0;
+    committedChangeRef.current = 0;
   }
 }, [isOpen, resetGiftCard]);
 	useEffect(() => {
@@ -574,7 +578,7 @@ useEffect(() => {
   // Removed auto-commit: 결제도구/금액 조합은 OK 시점에만 확정
 
   const finalizeAndComplete = async () => {
-    // canClickOk 조건 확인: (Next 단계) 또는 (금액>0 && 결제도구 선택됨) 또는 (잔액≈0)
+    // canClickOk 조건 확인: (Next 단계) 또는 (금액>0 && 결제도구 선택됨) 또는 (잔액≈0) 또는 (cashReadyForOk)
     if (!canClickOk) return;
     // 더블 클릭 방지
     if (isProcessing) {
@@ -582,13 +586,89 @@ useEffect(() => {
       return;
     }
     try {
-      // OK 시점 확정: 가장 마지막 결제도구(method)와 현재 입력 금액(amount) 조합만 확정 처리
+      // === cashReadyForOk 상태: 사용자가 Tip/Change Due 입력 후 OK를 눌렀을 때 최종 확정 ===
+      if (cashReadyForOk && cashReadyDataRef.current) {
+        const { rawAmt, scopeDueNow, effectiveMethod, isFinalizeFlow } = cashReadyDataRef.current;
+        const savedChangeDueDigits = changeDueDigits;
+        const rawTip = parsedTip;
+        setIsProcessing(true);
+        let finalAmount = Math.min(rawAmt, scopeDueNow);
+        let t = rawTip;
+        if (savedChangeDueDigits && String(effectiveMethod || '').toUpperCase() === 'CASH') {
+          const totalChange = Math.max(0, Number((rawAmt - scopeDueNow).toFixed(2)));
+          const changeDueVal = parseInt(savedChangeDueDigits, 10) / 100;
+          const clampedChangeDue = Math.min(changeDueVal, totalChange);
+          t = Number((totalChange - clampedChangeDue).toFixed(2));
+          setLastChange(clampedChangeDue > 0 ? clampedChangeDue : null);
+          committedChangeRef.current = clampedChangeDue;
+        } else {
+          const nextChange = Math.max(0, Number((rawAmt - scopeDueNow - t).toFixed(2)));
+          setLastChange(nextChange > 0 ? nextChange : null);
+          committedChangeRef.current = nextChange;
+        }
+        const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+        const displayAmount = Number((finalAmount + t).toFixed(2));
+        setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount, tip: t, displayAmount }]);
+        setRawAmountDigits('');
+        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
+        setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
+        setAmount('0.00');
+        setTip('0');
+        setMethod('');
+        setInputTarget('AMOUNT');
+        setIsTipFocused(false);
+        setChangeDueDigits('');
+        setIsProcessing(false);
+        setCashReadyForOk(false);
+        cashReadyDataRef.current = null;
+
+        if (onPaymentComplete) {
+          const cashDisplayAmt = rawAmt > 0 ? rawAmt : Number((finalAmount + t).toFixed(2));
+          const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
+          const allPayments = [...prevPayments, { method: effectiveMethod, amount: cashDisplayAmt }];
+          const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
+          let currentChange: number;
+          const isCashMethod = String(effectiveMethod || '').toUpperCase() === 'CASH';
+          if (savedChangeDueDigits && isCashMethod) {
+            const totalOverpay = Math.max(0, rawAmt - scopeDueNow);
+            const changeDueVal = parseInt(savedChangeDueDigits, 10) / 100;
+            currentChange = Math.min(changeDueVal, totalOverpay);
+          } else if (isCashMethod) {
+            currentChange = Math.max(0, rawAmt - scopeDueNow - t);
+          } else {
+            currentChange = committedChangeRef.current > 0 ? committedChangeRef.current : 0;
+          }
+          const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + t;
+          const totalPaidAfter = (paidSoFar || 0) + finalAmount;
+          const isPartial = Math.abs(totalPaidAfter - grand) > 0.01;
+          onPaymentComplete({
+            change: currentChange,
+            total: grand,
+            tip: totalTip,
+            payments: allPayments,
+            hasCashPayment: hasCash,
+            isPartialPayment: isPartial,
+            discount: pricingEffective.discountPercent > 0 ? {
+              percent: pricingEffective.discountPercent,
+              amount: pricingEffective.discountAmount,
+              originalSubtotal: pricingEffective.baseSubtotal,
+              discountedSubtotal: pricingEffective.subtotal,
+              taxLines: pricingEffective.taxLines,
+              taxesTotal: pricingEffective.taxesTotal,
+            } : undefined,
+          });
+        }
+        return;
+      }
+
+      // === 일반 결제 흐름 ===
       const rawAmt = parsedAmount;
       const rawTip = parsedTip;
+      const savedChangeDueDigits = changeDueDigits;
       if (rawAmt > 0 || rawTip > 0) {
         const effectiveMethod = (method || (rawTip > 0 ? lastFoodPaymentMethod : '') || '').toUpperCase();
         if (!effectiveMethod) { showAlert('Please select a payment method.'); return; }
-        setIsProcessing(true);  // 결제 처리 시작
+        setIsProcessing(true);
         const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
         let scopeDueNow: number;
         if (onCreateAdhocGuests && isSplitActive && splitNActive >= 2) {
@@ -602,30 +682,44 @@ useEffect(() => {
         }
         const isCardPayment = ['DEBIT', 'VISA', 'MC', 'OTHER_CARD'].includes(effectiveMethod.toUpperCase());
         const isCashLikeMethod = (effectiveMethod === 'CASH') || isCardPayment;
+        const isCashMethod = effectiveMethod === 'CASH';
+
+        // Cash: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip/Change Due 입력 기회 제공)
+        if (isCashMethod && rawAmt >= scopeDueNow && scopeDueNow > 0) {
+          const cashChange = Math.max(0, Number((rawAmt - scopeDueNow).toFixed(2)));
+          setLastChange(cashChange > 0 ? cashChange : null);
+          committedChangeRef.current = cashChange;
+          changeDueTotalRef.current = cashChange;
+          setCashReadyForOk(true);
+          cashReadyDataRef.current = { rawAmt, scopeDueNow, effectiveMethod, isFinalizeFlow: true };
+          setIsProcessing(false);
+          return;
+        }
+
         let finalAmount: number;
         let t: number;
         
         if (isCashLikeMethod) {
-          // Cash-like: 음식값(Due) 이하로 처리, 초과분은 Change로 표시
           finalAmount = Math.min(rawAmt, scopeDueNow);
           t = rawTip;
         } else {
-          // 그 외: 기존 로직 (Due 이하로 제한, 팁은 수동 입력값 사용)
           finalAmount = Math.min(rawAmt, scopeDueNow);
           t = rawTip;
         }
-        // Change Due 입력이 있으면 tip 재계산
-        if (changeDueDigits && String(effectiveMethod || '').toUpperCase() === 'CASH') {
+        if (savedChangeDueDigits && isCashMethod) {
           const totalChange = Math.max(0, Number((rawAmt - scopeDueNow).toFixed(2)));
-          const changeDueVal = parseInt(changeDueDigits, 10) / 100;
+          const changeDueVal = parseInt(savedChangeDueDigits, 10) / 100;
           const clampedChangeDue = Math.min(changeDueVal, totalChange);
           t = Number((totalChange - clampedChangeDue).toFixed(2));
           setLastChange(clampedChangeDue > 0 ? clampedChangeDue : null);
+          committedChangeRef.current = clampedChangeDue;
         } else if (isCashLikeMethod) {
           const nextChange = Math.max(0, Number((rawAmt - scopeDueNow - t).toFixed(2)));
           setLastChange(nextChange > 0 ? nextChange : null);
+          committedChangeRef.current = nextChange;
         } else {
           setLastChange(null);
+          committedChangeRef.current = 0;
         }
         const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
         const displayAmount = Number((finalAmount + t).toFixed(2));
@@ -649,8 +743,6 @@ useEffect(() => {
         setChangeDueDigits('');
         setIsProcessing(false);
         
-        // Cash-like card payments: no info popup on over-entry (same as cash)
-
         // 결제 처리 후 잔액이 0이면 바로 Payment Complete 모달 표시
         // Cash-like (Cash + Cards): 항상 결제 완료 처리 (초과분은 Change)
         // 기타: scopeDueNow - finalAmount로 남은 잔액 계산
@@ -659,21 +751,17 @@ useEffect(() => {
           : scopeDueNow - finalAmount;
         
         if (Math.abs(remainingAfterPayment) < 0.005 && onPaymentComplete) {
-          // 결제 완료됨 - 바로 Payment Complete 모달 표시
-          // 표시용 금액: Cash-like는 입력값, 기타는 실제 처리 금액(amount+tip)
           const displayAmount = isCashLikeMethod
             ? (rawAmt > 0 ? rawAmt : Number((finalAmount + t).toFixed(2)))
             : Number((finalAmount + t).toFixed(2));
           const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
           const allPayments = [...prevPayments, { method: effectiveMethod, amount: displayAmount }];
           const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
-          // Change = Cash 결제 시에만 발생 (Card는 Change 없음)
           let currentChange: number;
-          const isCashMethod = String(effectiveMethod || '').toUpperCase() === 'CASH';
           const prevHasCash = (payments || []).some(p => (p.method || '').toUpperCase() === 'CASH');
-          if (changeDueDigits && isCashMethod) {
+          if (savedChangeDueDigits && isCashMethod) {
             const totalOverpay = Math.max(0, rawAmt - scopeDueNow);
-            const changeDueVal = parseInt(changeDueDigits, 10) / 100;
+            const changeDueVal = parseInt(savedChangeDueDigits, 10) / 100;
             currentChange = Math.min(changeDueVal, totalOverpay);
           } else if (isCashMethod) {
             currentChange = Math.max(0, rawAmt - scopeDueNow - t);
@@ -682,13 +770,9 @@ useEffect(() => {
           } else {
             currentChange = 0;
           }
-          // 전체 팁 합산
           const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + t;
-          
-          // 부분 결제 여부 판단
           const totalPaidAfter = (paidSoFar || 0) + finalAmount;
           const isPartial = Math.abs(totalPaidAfter - grand) > 0.01;
-          
           onPaymentComplete({
             change: currentChange,
             total: grand,
@@ -708,21 +792,19 @@ useEffect(() => {
           return;
         }
       } else if (canComplete) {
-        // 금액이 0이지만 잔액이 0에 근접한 경우 (이미 모든 결제가 완료된 경우)
         // 별도 Payment Complete 모달 표시
         if (onPaymentComplete) {
           const paymentsData = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
           const hasCash = paymentsData.some(p => (p.method || '').toUpperCase() === 'CASH');
-          let currentChange = lastChange != null ? lastChange : change;
-          if (changeDueDigits && hasCash) {
-            currentChange = parseInt(changeDueDigits, 10) / 100;
+          let currentChange = committedChangeRef.current > 0
+            ? committedChangeRef.current
+            : (lastChange != null ? lastChange : change);
+          if (savedChangeDueDigits && hasCash) {
+            currentChange = parseInt(savedChangeDueDigits, 10) / 100;
           }
           const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0);
-          
-          // 부분 결제 여부 판단
           const totalPaid = paymentsData.reduce((sum, p) => sum + (p.amount || 0), 0);
           const isPartial = Math.abs(totalPaid - grand) > 0.01;
-          
           onPaymentComplete({
             change: currentChange > 0 ? currentChange : 0,
             total: grand,
@@ -740,12 +822,10 @@ useEffect(() => {
             } : undefined,
           });
         } else {
-          // fallback to old behavior
           setProceedArmed(true);
         }
       }
     } catch (e) {
-      // 에러 시 optimisticPayments 정리 및 상태 초기화
       setOptimisticPayments(prev => prev.slice(0, -1));
       setAmount('0.00');
       setRawAmountDigits('');
@@ -753,6 +833,8 @@ useEffect(() => {
       setInputTarget('AMOUNT');
       setIsTipFocused(false);
       setIsProcessing(false);
+      setCashReadyForOk(false);
+      cashReadyDataRef.current = null;
       showAlert('Payment failed. Please try again.');
       try { console.error('Finalize failed', e); } catch {}
     }
@@ -880,6 +962,8 @@ useEffect(() => {
         setLastChange(null);
         setSelectedReceiptCount(2);
         setShowCancelConfirm(false);
+        setCashReadyForOk(false);
+        cashReadyDataRef.current = null;
 
         // Reset auxiliary modes
         setIsSplitCountMode(false);
@@ -903,7 +987,7 @@ useEffect(() => {
   // 방법 3: 다음 액션 시 자동 확정
   // 이전에 준비된 조합(결제 수단 + 금액)이 있으면 먼저 확정하는 헬퍼 함수
   const commitPendingIfReady = useCallback(async () => {
-    // 더블 클릭 방지
+    if (cashReadyForOk) return;
     if (isProcessing) {
       console.log('⚠️ Payment already processing (commitPendingIfReady), ignoring');
       return;
@@ -936,8 +1020,18 @@ useEffect(() => {
         if (isCashLikeMethod2) {
           finalAmount = Math.min(currentAmt, scopeDueNow);
           t = currentTip;
-          const nextChange = Math.max(0, Number((currentAmt - scopeDueNow - t).toFixed(2)));
-          setLastChange(nextChange > 0 ? nextChange : null);
+          if (changeDueDigits && effectiveMethod === 'CASH') {
+            const totalChange2 = Math.max(0, Number((currentAmt - scopeDueNow).toFixed(2)));
+            const changeDueVal2 = parseInt(changeDueDigits, 10) / 100;
+            const clampedChangeDue2 = Math.min(changeDueVal2, totalChange2);
+            t = Number((totalChange2 - clampedChangeDue2).toFixed(2));
+            setLastChange(clampedChangeDue2 > 0 ? clampedChangeDue2 : null);
+            committedChangeRef.current = clampedChangeDue2;
+          } else {
+            const nextChange = Math.max(0, Number((currentAmt - scopeDueNow - t).toFixed(2)));
+            setLastChange(nextChange > 0 ? nextChange : null);
+            committedChangeRef.current = nextChange;
+          }
         } else {
           finalAmount = Math.min(currentAmt, scopeDueNow);
           t = currentTip;
@@ -1060,10 +1154,11 @@ useEffect(() => {
   const canComplete = useMemo(() => Math.abs(due) < 0.005, [due]);
   // OK 버튼 활성화 조건: (Next 단계) 또는 (금액>0 && 결제도구 선택됨) 또는 (잔액≈0)
   const canClickOk = useMemo(() => {
+    if (cashReadyForOk) return true;
     const hasFoodDraft = (parsedAmount > 0) && !!method;
     const hasTipDraft = (parsedTip > 0) && !!(method || lastFoodPaymentMethod);
     return proceedArmed || hasFoodDraft || hasTipDraft || canComplete;
-  }, [proceedArmed, parsedAmount, parsedTip, method, lastFoodPaymentMethod, canComplete]);
+  }, [cashReadyForOk, proceedArmed, parsedAmount, parsedTip, method, lastFoodPaymentMethod, canComplete]);
 
   // Build header labels per channel
   const { headerLeftLabel, headerRightLabel, isCenterHeader } = useMemo(() => {
@@ -1243,7 +1338,8 @@ useEffect(() => {
       return;
     }
 		// 숫자 버튼은 단순히 금액 입력만 함
-		// 결제 수단 선택 시에만 확정됨 (commitPendingIfReady 제거)
+		// cashReadyForOk 모드: amount 입력은 무시 (Tip/Change Due만 입력 가능)
+		if (cashReadyForOk && inputTarget === 'AMOUNT') return;
 		// amount: maintain raw cents buffer to avoid premature formatting issues
 		let nextRaw = rawAmountDigits;
 		if (d === 'C') nextRaw = '';
@@ -1263,6 +1359,7 @@ const addQuick = async (q: number) => {
     if (isSplitCountMode) return;
     if (inputTarget === 'SPLIT_N') return;
     if (inputTarget === 'CHANGE_DUE') return;
+    if (cashReadyForOk && inputTarget === 'AMOUNT') return;
     if (inputTarget === 'TIP') {
         setLastChange(null);
         setTip(prev => (parseFloat(prev || '0') + q).toFixed(2));
@@ -1301,8 +1398,7 @@ const addQuick = async (q: number) => {
 
 	// Explicitly fill display with remaining due (no commit) when user taps Due
 	const handleFillDue = async () => {
-		// 방법 3: 다음 액션 시 자동 확정
-		// 이전에 준비된 조합(결제 수단 + 금액)이 있으면 먼저 확정
+		if (cashReadyForOk) return;
 		await commitPendingIfReady();
     const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
     let dueFoodFull: number;
@@ -1354,6 +1450,8 @@ const addQuick = async (q: number) => {
 			setMethod('');
 			setRawAmountDigits('');
 			setLastChange(null);
+			setCashReadyForOk(false);
+			cashReadyDataRef.current = null;
 			onClose();
 		}
 	};
@@ -1366,7 +1464,6 @@ const addQuick = async (q: number) => {
 	const commitDraft = async (clickedMethod?: string) => {
 		try {
 			if (!clickedMethod) {
-				// 결제 수단이 없으면 초기화
 				setMethod('');
 				setRawAmountDigits('');
 				setAmount('0.00');
@@ -1375,7 +1472,8 @@ const addQuick = async (q: number) => {
 				return;
 			}
 
-      // Tip 입력 모드에서는 결제수단 선택만 하고 "저장(Save)"에서 확정한다.
+      if (cashReadyForOk) return;
+
       if (inputTarget === 'TIP') {
         setMethod(clickedMethod);
         return;
@@ -1397,15 +1495,11 @@ const addQuick = async (q: number) => {
       const currentTip = parseFloat(tip || '0') || 0;
 			
 			if (currentAmt > 0 || currentTip > 0) {
-				// 더블 클릭 방지
 				if (isProcessing) {
 					console.log('⚠️ Payment already processing (commitDraft), ignoring');
 					return;
 				}
-				setIsProcessing(true);  // 결제 처리 시작
-				
-				// 현재 금액 > 0이면: 기존 결제 수단이 있으면 그것으로, 없으면 클릭한 것으로 확정
-				// 기존 method가 있으면 그것을 사용, 없으면 clickedMethod 사용
+				setIsProcessing(true);
 				const effectiveMethod = method || clickedMethod;
 				
 				const confirmedTotalNow = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
@@ -1420,19 +1514,43 @@ const addQuick = async (q: number) => {
 					scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
 				}
 				
-				const parsedTipVal = currentTip;
         const isCardPaymentDraft = ['DEBIT', 'VISA', 'MC', 'OTHER_CARD'].includes(String(effectiveMethod || '').toUpperCase());
         const isCashLikeMethodDraft = (String(effectiveMethod || '').toUpperCase() === 'CASH') || isCardPaymentDraft;
+        const isCashMethodDraft = String(effectiveMethod || '').toUpperCase() === 'CASH';
+
+        // Cash: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip/Change Due 입력 기회 제공)
+        if (isCashMethodDraft && currentAmt >= scopeDueNow && scopeDueNow > 0) {
+          const cashChange = Math.max(0, Number((currentAmt - scopeDueNow).toFixed(2)));
+          setLastChange(cashChange > 0 ? cashChange : null);
+          committedChangeRef.current = cashChange;
+          changeDueTotalRef.current = cashChange;
+          setMethod(effectiveMethod);
+          setCashReadyForOk(true);
+          cashReadyDataRef.current = { rawAmt: currentAmt, scopeDueNow, effectiveMethod, isFinalizeFlow: false };
+          setIsProcessing(false);
+          return;
+        }
+
+				const parsedTipVal = currentTip;
         let finalAmount: number;
         let tipToSend: number;
         finalAmount = Math.min(currentAmt, scopeDueNow);
         tipToSend = parsedTipVal;
 
-        if (isCashLikeMethodDraft) {
+        if (changeDueDigits && isCashMethodDraft) {
+          const totalChange = Math.max(0, Number((currentAmt - scopeDueNow).toFixed(2)));
+          const changeDueVal = parseInt(changeDueDigits, 10) / 100;
+          const clampedChangeDue = Math.min(changeDueVal, totalChange);
+          tipToSend = Number((totalChange - clampedChangeDue).toFixed(2));
+          setLastChange(clampedChangeDue > 0 ? clampedChangeDue : null);
+          committedChangeRef.current = clampedChangeDue;
+        } else if (isCashLikeMethodDraft) {
           const nextChange = Math.max(0, Number((currentAmt - scopeDueNow - tipToSend).toFixed(2)));
           setLastChange(nextChange > 0 ? nextChange : null);
+          committedChangeRef.current = nextChange;
         } else {
           setLastChange(null);
+          committedChangeRef.current = 0;
         }
 				const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
 				
@@ -1457,25 +1575,52 @@ const addQuick = async (q: number) => {
           }
         }
 				
-				// 금액 초기화
 				setAmount('0.00');
 				setRawAmountDigits('');
 				setTip('0');
         setInputTarget('AMOUNT');
         setIsTipFocused(false);
-				// 결제 수단 처리: 같은 수단으로 확정했으면 초기화, 다른 수단으로 전환했으면 새 수단 유지
+        setChangeDueDigits('');
 				if (effectiveMethod === clickedMethod) {
-					setMethod(''); // 같은 수단 → 초기화
+					setMethod('');
 				} else {
-					setMethod(clickedMethod); // 다른 수단 → 새 수단 활성화
+					setMethod(clickedMethod);
 				}
-				setIsProcessing(false);  // 결제 처리 완료
+				setIsProcessing(false);
+
+        const remainingDraft = isCashLikeMethodDraft ? 0 : scopeDueNow - finalAmount;
+        if (Math.abs(remainingDraft) < 0.005 && onPaymentComplete) {
+          const draftDisplayAmount = isCashLikeMethodDraft
+            ? (currentAmt > 0 ? currentAmt : Number((finalAmount + tipToSend).toFixed(2)))
+            : Number((finalAmount + tipToSend).toFixed(2));
+          const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
+          const allPayments = [...prevPayments, { method: effectiveMethod, amount: draftDisplayAmount }];
+          const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
+          let draftChange = committedChangeRef.current;
+          const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + tipToSend;
+          const totalPaidAfter = (paidSoFar || 0) + finalAmount;
+          const isPartial = Math.abs(totalPaidAfter - grand) > 0.01;
+          onPaymentComplete({
+            change: draftChange > 0 ? draftChange : 0,
+            total: grand,
+            tip: totalTip,
+            payments: allPayments,
+            hasCashPayment: hasCash,
+            isPartialPayment: isPartial,
+            discount: pricingEffective.discountPercent > 0 ? {
+              percent: pricingEffective.discountPercent,
+              amount: pricingEffective.discountAmount,
+              originalSubtotal: pricingEffective.baseSubtotal,
+              discountedSubtotal: pricingEffective.subtotal,
+              taxLines: pricingEffective.taxLines,
+              taxesTotal: pricingEffective.taxesTotal,
+            } : undefined,
+          });
+        }
 			} else {
-				// 현재 금액 = 0이면: 결제 수단만 활성화
 				setMethod(clickedMethod);
 			}
 		} catch (e) {
-			// 에러 시 optimisticPayments 정리 및 상태 초기화
 			setOptimisticPayments(prev => prev.slice(0, -1));
 			setAmount('0.00');
 			setRawAmountDigits('');
@@ -1784,7 +1929,9 @@ const addQuick = async (q: number) => {
 								{/* Row 1: Display */}
 								<div
                   className={`col-span-8 h-[3.96rem] px-3 rounded-md border-2 flex items-center justify-end text-[2.7rem] font-extrabold leading-none tracking-tight tabular-nums overflow-hidden cursor-pointer ${
-                    inputTarget === 'DISCOUNT'
+                    cashReadyForOk
+                      ? 'border-green-400 bg-green-50 text-green-800 shadow-[0_0_0_3px_rgba(74,222,128,0.25)]'
+                      : inputTarget === 'DISCOUNT'
                       ? 'border-amber-400 bg-amber-50 text-amber-900 shadow-[0_0_0_3px_rgba(251,191,36,0.25)]'
                       : 'border-red-300 bg-red-50 text-red-700'
                   }`}
@@ -1800,6 +1947,11 @@ const addQuick = async (q: number) => {
                 {isSplitCountMode && (
                   <div className="col-span-8 -mt-1 mb-0.5 text-center text-sm font-bold text-gray-700">
                     Equal Split — Enter guest count, then press OK / Enter
+                  </div>
+                )}
+                {cashReadyForOk && !isSplitCountMode && (
+                  <div className="col-span-8 -mt-1 mb-0.5 text-center text-sm font-bold text-green-700">
+                    Cash ${formatMoney(cashReadyDataRef.current?.rawAmt || 0)} — Enter Tip or Change Due, then press OK
                   </div>
                 )}
 								{/* Row 2: 1 2 3 $5 */}
@@ -1840,7 +1992,7 @@ const addQuick = async (q: number) => {
                       setLastChange(orig > 0 ? orig : null);
                       return;
                     }
-                    setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod(''); setInputTarget('AMOUNT'); setIsTipFocused(false);
+                    setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod(''); setInputTarget('AMOUNT'); setIsTipFocused(false); setCashReadyForOk(false); cashReadyDataRef.current = null;
                   }}
                 >
                   Clear
