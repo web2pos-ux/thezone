@@ -3,6 +3,62 @@
   "dealers": [],
   "accessLog": [
     {
+      "timestamp": "2026-03-19 23:22:37",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "CHANGE_STORE_SETTINGS",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 23:22:35",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "CHANGE_STORE_SETTINGS",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 23:22:33",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 17:04:48",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "CHANGE_STORE_SETTINGS",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 17:04:46",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 16:42:55",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "CHANGE_STORE_SETTINGS",
+      "success": true
+    },
+    {
+      "timestamp": "2026-03-19 16:42:51",
+      "dealerId": "SYSTEM",
+      "dealerName": "System Admin",
+      "role": "SYSTEM_ADMIN",
+      "action": "LOGIN",
+      "success": true
+    },
+    {
       "timestamp": "2026-03-18 19:23:10",
       "dealerId": "SYSTEM",
       "dealerName": "System Admin",

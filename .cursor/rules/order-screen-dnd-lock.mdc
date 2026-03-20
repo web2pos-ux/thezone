@@ -21,6 +21,24 @@ alwaysApply: true
 - menuItemOrderByCategory / modifierLayoutByItem 저장/로드 연동
 - 카테고리별/아이템별 모디파이어 레이아웃 키 분기 (modLayoutKey, modCategoryKey)
 
+## CRITICAL Protected Scope (절대 보호 영역)
+
+### 1. DnD 핵심 로직 (최우선 보호)
+- `onDragEnd` 핸들러 — 아이템 이동 후 위치 저장
+- `onDragStart` 핸들러 — 드래그 시작 시 상태 설정
+- `SortableContext` 설정 — 정렬 가능 영역 정의
+- `SortableMenuItem` / `SortableEmptyCell` 컴포넌트 — 드래그 가능 아이템
+
+### 2. EMPTY 토큰 로직 (최우선 보호)
+- EMPTY 토큰 생성/필터링/렌더링 — 빈 슬롯 관리
+- capacity 계산 — 그리드 크기 결정
+- baseIds / kept 배열 구성 — 레이아웃 빌드 순서
+
+### 3. 레이아웃 저장/로드 (최우선 보호)
+- `menuItemOrderByCategory` 저장/로드 연동
+- `modifierLayoutByItem` 저장/로드 연동
+- 레이아웃 키 분기 로직
+
 ## Rules
 
 1. **절대 금지**: 사용자 승인 없이 보호 파일을 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
@@ -28,12 +46,15 @@ alwaysApply: true
 3. **우회 금지**: 동일 로직을 다른 파일로 복사/분리해서 "사실상 수정"하는 행위도 승인 없이는 절대 불가.
 4. **간접 수정 금지**: OrderPage.tsx 등 상위 파일에서 이 파일들에 전달하는 props/콜백의 시그니처나 동작을 변경하는 것도 승인 없이는 금지.
 5. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **⚠️ 경고 표시**: "⚠️ DND-LOCK 보호 영역 수정 요청입니다"
    - Explain WHAT you want to change (specific lines/functions)
    - Explain WHY the change is necessary
    - Explain the IMPACT on existing DnD/layout/color functionality
    - Ask for explicit approval: "이 변경을 진행해도 될까요?"
 6. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 **파일을 편집하지 말고**, 변경을 시도하지 마라.
 7. 다른 작업의 "부수 효과로 DnD/레이아웃 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+8. **CRITICAL SCOPE 위반 시**: 위 "CRITICAL Protected Scope"에 해당하는 코드를 실수로 건드리게 되면, 즉시 작업을 중단하고 다음 메시지를 사용자에게 표시하라:
+   "⚠️⚠️⚠️ CRITICAL ALERT: DnD 핵심 로직, EMPTY 토큰 관리, 또는 레이아웃 저장/로드가 영향받을 수 있습니다. 즉시 확인이 필요합니다. ⚠️⚠️⚠️"
 
 ## Example
 
@@ -44,7 +65,8 @@ alwaysApply: true
 ❌ BAD: Modifying how EMPTY tokens are generated or filtered
 
 ✅ GOOD:
-"MenuItemGrid.tsx를 수정해야 합니다.
+"⚠️ DND-LOCK 보호 영역 수정 요청입니다.
+MenuItemGrid.tsx를 수정해야 합니다.
 - 변경 내용: SortableEmptyCell에 드롭 시 시각적 하이라이트 추가
 - 변경 이유: 빈 슬롯에 드롭할 때 사용자가 위치를 확인하기 어려움
 - 영향 범위: DnD 로직/EMPTY 토큰 처리/레이아웃 저장에는 영향 없음, CSS만 추가

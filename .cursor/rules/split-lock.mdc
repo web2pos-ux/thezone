@@ -44,6 +44,23 @@
 - `frontend/src/components/SplitBillModal.tsx` - 아이템 분배 UI
 - `frontend/src/pages/order/modules/PaymentSplitModals.tsx` - Split 모달 브릿지
 
+## CRITICAL Protected Scope (절대 보호 영역)
+
+### 1. Split 수량/가격 계산 (최우선 보호)
+- `getSplitQtyDisplay()` 계산 공식 — 5곳에서 공유, 하나 바꾸면 전부 영향
+- `getSplitPriceDisplay()` 계산 공식 — strikethrough + 잔액 표시
+- `isItemLockedForSplit()` 판정 로직 — 새 아이템 vs 기존 아이템 구분
+
+### 2. Split 결제 상태 관리 (최우선 보호)
+- `persistedPaidGuests` 상태 및 localStorage 연동
+- `guestStatusMap` 계산 (PAID/PARTIAL/UNPAID 판정)
+- `balanceTotalsAll` 잔액 계산
+- `handleAddPayment`의 fair-share 분배 로직
+
+### 3. Split 아이템 분배 (최우선 보호)
+- `_preSplit` 플래그 설정/복원 로직
+- Equal Split 모드 아이템 추가 시 게스트 자동 전환
+
 ## Rules
 
 1. **절대 금지**: 사용자 승인 없이 보호 파일/코드를 편집/수정/리팩터링/정리/삭제/이동/이름변경 하지 마라.
@@ -52,12 +69,15 @@
 4. **간접 수정 금지**: Split에 영향을 주는 다른 코드 변경 (orderItems 구조, guestNumber 할당, payment 저장 형식 등)도 승인 없이는 금지.
 5. **계산 로직 변경 금지**: getSplitQtyDisplay, getSplitPriceDisplay의 계산 공식을 변경하지 마라. 이 함수들은 5곳에서 공유되므로 하나를 바꾸면 전부 영향받음.
 6. 변경이 꼭 필요하다고 판단되면, 실제 편집 전에 반드시 아래를 먼저 수행:
+   - **⚠️ 경고 표시**: "⚠️ SPLIT-LOCK 보호 영역 수정 요청입니다"
    - **WHAT**: 어떤 파일의 어떤 함수/로직을 변경하는지
    - **WHY**: 왜 이 변경이 필요한지
    - **IMPACT**: Split 표시, Split 결제, Split 상태 유지, 게스트 잠금 등에 미치는 영향
    - 승인 요청: "Split의 [기능명]을 수정해도 될까요?"
 7. 사용자가 명확히 "yes", "승인", "진행해" 등으로 승인하기 전까지는 파일을 편집하지 마라.
 8. 다른 작업의 "부수 효과로 Split 코드 수정이 필요"해지면, 즉시 중단하고 먼저 사용자에게 승인 요청을 하라.
+9. **CRITICAL SCOPE 위반 시**: 위 "CRITICAL Protected Scope"에 해당하는 코드를 실수로 건드리게 되면, 즉시 작업을 중단하고 다음 메시지를 사용자에게 표시하라:
+   "⚠️⚠️⚠️ CRITICAL ALERT: Split 결제의 수량/가격 계산, 결제 상태 관리, 또는 아이템 분배 로직이 영향받을 수 있습니다. 즉시 확인이 필요합니다. ⚠️⚠️⚠️"
 
 ## Split 수정 시 필수 테스트 체크리스트
 
@@ -83,7 +103,8 @@ Split 관련 코드 수정 후 반드시 아래 시나리오를 모두 검증해
 ❌ BAD: Modifying _preSplit flag assignment logic
 
 ✅ GOOD:
-"Split의 수량 표시를 수정해야 합니다.
+"⚠️ SPLIT-LOCK 보호 영역 수정 요청입니다.
+Split의 수량 표시를 수정해야 합니다.
 - 변경 내용: getSplitQtyDisplay()에서 remaining 계산 조건 수정
 - 변경 이유: 새 아이템 추가 후 기존 아이템의 수량이 리셋되는 버그
 - 영향 범위: 수량 표시 3곳 (일반 아이템 2곳, TOGO 1곳) 모두 영향

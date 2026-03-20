@@ -4187,7 +4187,7 @@ const handleVoidPinClear = useCallback(() => {
             method: p.method || 'Unknown',
             amount: p.amount || 0
           })),
-          change: 0,
+          change: paymentCompleteData?.change || 0,
           footer: {}
         };
 

@@ -1031,7 +1031,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                 <div className="border-t bg-gray-50 px-3 py-2 space-y-1">
                   {(() => {
                     const items = selectedOrderDetail.fullOrder?.items || [];
-                    let calculatedSubtotal = 0;
+                    let grossSubtotal = 0;
+                    let totalDiscount = 0;
                     const taxBreakdown: { [key: string]: { rate: number; amount: number } } = {};
                     
                     items.forEach((item: any) => {
@@ -1048,102 +1049,53 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                           modifierTotal += Number(opt.price_delta || opt.priceDelta || opt.price || 0);
                         }
                       });
-                      const itemTotal = (basePrice + modifierTotal) * (item.quantity || 1);
-                      calculatedSubtotal += itemTotal;
-                      
+
+                      let memoPrice = 0;
+                      try {
+                        const rawMemo = item.memo || item.memo_json;
+                        if (rawMemo) {
+                          const parsed = typeof rawMemo === 'string' ? JSON.parse(rawMemo) : rawMemo;
+                          if (parsed && typeof parsed === 'object') memoPrice = Number(parsed.price || 0);
+                        }
+                      } catch {}
+
+                      const itemGross = (basePrice + modifierTotal + memoPrice) * (item.quantity || 1);
+                      grossSubtotal += itemGross;
+
+                      let discountAmt = 0;
+                      try {
+                        const rawDisc = item.discount || item.discount_json;
+                        if (rawDisc) {
+                          const disc = typeof rawDisc === 'string' ? JSON.parse(rawDisc) : rawDisc;
+                          if (disc && disc.value > 0) {
+                            discountAmt = disc.amount || (itemGross * disc.value / 100);
+                          }
+                        }
+                      } catch {}
+                      totalDiscount += discountAmt;
+
+                      const itemNet = itemGross - discountAmt;
                       const itemTaxDetails = item.taxDetails || [{ name: 'GST', rate: 5 }];
                       itemTaxDetails.forEach((taxInfo: any) => {
                         const taxName = taxInfo.name || 'Tax';
-                        const rate = taxInfo.rate || 5;
-                        const taxAmount = itemTotal * (rate / 100);
+                        const rate = Number(taxInfo.rate || 5);
+                        const taxAmount = itemNet * (rate / 100);
                         if (!taxBreakdown[taxName]) {
                           taxBreakdown[taxName] = { rate, amount: 0 };
                         }
                         taxBreakdown[taxName].amount += taxAmount;
                       });
                     });
-                    
-                    const storedSubtotalRaw =
-                      (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).subtotal) ??
-                      (selectedOrderDetail as any).subtotal ??
-                      0;
-                    const storedTaxRaw =
-                      (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).tax) ??
-                      (selectedOrderDetail as any).tax ??
-                      0;
+
+                    const subtotalVal = Number((grossSubtotal - totalDiscount).toFixed(2));
+                    const taxesTotal = Number(Object.values(taxBreakdown).reduce((sum, t) => sum + t.amount, 0).toFixed(2));
+                    const totalVal = Number((subtotalVal + taxesTotal).toFixed(2));
+
                     const storedTotalRaw =
                       (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).total) ??
-                      (selectedOrderDetail as any).total ??
-                      0;
-
-                    const storedSubtotal = Number(storedSubtotalRaw || 0);
-                    const storedTax = Number(storedTaxRaw || 0);
+                      (selectedOrderDetail as any).total ?? 0;
                     const storedTotal = Number(storedTotalRaw || 0);
-
-                    const calculatedTax = Object.values(taxBreakdown).reduce((sum, t) => sum + t.amount, 0);
-                    const fromBackend = Boolean(selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any)._fromBackend);
-                    const finalTax = fromBackend ? storedTax : calculatedTax;
-
-                    const storedBreakdownRaw =
-                      selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).taxBreakdown;
-                    let storedBreakdownObj: any = null;
-                    if (storedBreakdownRaw && typeof storedBreakdownRaw === 'object') {
-                      if (Array.isArray(storedBreakdownRaw)) {
-                        storedBreakdownObj = {};
-                        storedBreakdownRaw.forEach((t: any) => {
-                          const nm = String(t?.name || 'Tax');
-                          const rate = Number(t?.rate || 0);
-                          const amount = Number(t?.amount || 0);
-                          if (!storedBreakdownObj[nm]) storedBreakdownObj[nm] = { rate, amount: 0 };
-                          storedBreakdownObj[nm].amount += amount;
-                          if (storedBreakdownObj[nm].rate === 0 && rate > 0) storedBreakdownObj[nm].rate = rate;
-                        });
-                      } else {
-                        storedBreakdownObj = storedBreakdownRaw;
-                      }
-                    }
-                    const displayTaxBreakdown = storedBreakdownObj && Object.keys(storedBreakdownObj).length > 0
-                      ? storedBreakdownObj
-                      : taxBreakdown;
-
-                    // Subtotal should reflect discounts (e.g. 10/50/100% D/C) and negative discount lines.
-                    // Backend `subtotal` may be gross (pre-discount), so compute a net subtotal from items.
-                    const normalizedItems = (items || []).map((it: any) => {
-                      let discountObj: any = it.discount ?? null;
-                      if (!discountObj && it.discount_json) {
-                        try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
-                      }
-                      return {
-                        id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
-                        orderLineId: it.order_line_id ?? it.orderLineId,
-                        name: it.name,
-                        type: it.type,
-                        quantity: it.quantity,
-                        price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
-                        totalPrice: (it.total_price ?? it.totalPrice),
-                        modifiers: it.modifiers ?? it.options ?? [],
-                        memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
-                        discount: discountObj,
-                        guestNumber: it.guestNumber ?? it.guest_number,
-                        taxGroupId: it.taxGroupId ?? it.tax_group_id,
-                        void_id: it.void_id,
-                        voidId: it.voidId,
-                        is_void: it.is_void,
-                      };
-                    });
-                    const pricing = calculateOrderPricing(normalizedItems);
-                    const computedNetSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
-
-                    // ✅ "Togo modal" numbers: trust stored TOTAL, derive TAX = TOTAL - (discounted subtotal)
-                    const storedTotalSafe = Number.isFinite(storedTotal) ? Number(storedTotal.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
-                    const subtotalVal = computedNetSubtotal;
-                    const taxVal = Math.max(0, Number((storedTotalSafe - subtotalVal).toFixed(2)));
-                    const totalVal = storedTotalSafe;
-
-                    // Show breakdown only if it matches; otherwise show single Tax line to avoid mismatch.
-                    const breakdownSum = Object.values(displayTaxBreakdown || {}).reduce((s: number, v: any) => s + Number(v?.amount || 0), 0);
-                    const keepBreakdown = Number.isFinite(breakdownSum) && Math.abs(Number(breakdownSum.toFixed(2)) - taxVal) < 0.02;
-                    const displayTaxBreakdownFinal = keepBreakdown ? displayTaxBreakdown : { Tax: { rate: '', amount: taxVal } };
+                    const finalTotal = Number.isFinite(storedTotal) && storedTotal > 0 ? Number(storedTotal.toFixed(2)) : totalVal;
                     
                     return (
                       <>
@@ -1151,7 +1103,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                           <span className="text-gray-600">Sub Total</span>
                           <span>${subtotalVal.toFixed(2)}</span>
                         </div>
-                        {Object.entries(displayTaxBreakdownFinal).map(([taxName, info]: any) => (
+                        {Object.entries(taxBreakdown).map(([taxName, info]: any) => (
                           <div key={taxName} className="flex justify-between text-sm">
                             <span className="text-gray-600">{info.rate ? `${taxName} (${info.rate}%)` : taxName}</span>
                             <span>${Number(info.amount || 0).toFixed(2)}</span>
@@ -1159,7 +1111,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                         ))}
                         <div className="flex justify-between text-base font-bold border-t pt-1">
                           <span>Total</span>
-                          <span className="text-blue-600">${totalVal.toFixed(2)}</span>
+                          <span className="text-blue-600">${finalTotal.toFixed(2)}</span>
                         </div>
                       </>
                     );
