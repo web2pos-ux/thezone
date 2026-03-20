@@ -90,10 +90,10 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
             <h2 className="text-3xl font-bold text-white">Payment Complete</h2>
           </div>
           <div className="p-8">
-            {change > 0 && (
+            {hasCashPayment && change > 0 && (
               <div className="text-center mb-6 py-4 bg-red-50 rounded-xl border-2 border-red-200">
-                <div className="text-lg font-semibold text-gray-600">Change</div>
-                <div className="text-4xl font-bold text-red-600">${formatMoney(change)}</div>
+                <div className="text-xl font-bold text-red-700">Change</div>
+                <div className="text-[5rem] font-extrabold text-red-600 tracking-tight leading-none">${formatMoney(change)}</div>
               </div>
             )}
             <div className="text-center mb-4">
@@ -175,7 +175,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
           {/* Content */}
           <div className="p-8">
             {/* Change Display */}
-            {change > 0 && (
+            {hasCashPayment && change > 0 && (
               <div className="mb-8 p-6 bg-red-50 border-2 border-red-300 rounded-xl text-center">
                 <div className="text-xl font-bold text-red-700 mb-2">Change</div>
                 <div className="text-[5rem] font-extrabold text-red-600 tracking-tight leading-none">
@@ -354,7 +354,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
           {/* ── Left: Payment Info + Receipt Options ── */}
           <div className="flex-1 flex flex-col">
             {/* Change */}
-            {change > 0 && (
+            {hasCashPayment && change > 0 && (
               <div className="mb-4 p-5 bg-red-50 border-2 border-red-300 rounded-xl text-center">
                 <div className="text-lg font-bold text-red-700 mb-1">Change</div>
                 <div className="text-[4rem] font-extrabold text-red-600 tracking-tight leading-none">

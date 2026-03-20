@@ -415,8 +415,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			
 			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
 			
-			if (type) { clauses.push('UPPER(o.order_type) = ?'); params.push(String(type).toUpperCase()); }
-			if (status) { clauses.push('o.status = ?'); params.push(String(status).toUpperCase()); }
+			if (type) {
+				const types = String(type).split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+				if (types.length === 1) {
+					clauses.push('UPPER(o.order_type) = ?');
+					params.push(types[0]);
+				} else if (types.length > 1) {
+					clauses.push(`UPPER(o.order_type) IN (${types.map(() => '?').join(',')})`);
+					params.push(...types);
+				}
+			}
+			if (status) {
+				const statuses = String(status).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+				if (statuses.length === 1) {
+					clauses.push('o.status = ?');
+					params.push(statuses[0]);
+				} else if (statuses.length > 1) {
+					clauses.push(`o.status IN (${statuses.map(() => '?').join(',')})`);
+					params.push(...statuses);
+				}
+			}
 			// 날짜 필터 추가 (created_at이 해당 날짜에 해당하는 주문만 조회)
 			// ISO 형식 (2025-12-10T14:30:00.000Z) 지원을 위해 LIKE 사용
 			if (date) {

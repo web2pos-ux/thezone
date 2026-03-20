@@ -114,10 +114,10 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     }
   }, [initialOrderType]);
 
-  // initialSelectedOrder가 변경되면 선택된 주문도 변경
+  // initialSelectedOrder가 변경되면 선택된 주문도 변경 (상세는 fetchOrderDetails 선언 후 로드)
   useEffect(() => {
     if (initialSelectedOrder) {
-      setSelectedOrderDetail(initialSelectedOrder);
+      setSelectedOrderDetail({ ...initialSelectedOrder, isLoading: true });
     }
   }, [initialSelectedOrder]);
 
@@ -157,7 +157,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
           if (data.success && data.items) {
             const parsedItems = data.items.map((item: any) => {
               let options: any[] = [];
-              let memo = '';
+              let memo: any = null;
+              let discount: any = null;
               try {
                 if (item.modifiers_json) {
                   const mods = typeof item.modifiers_json === 'string' 
@@ -171,10 +172,17 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                   const memoData = typeof item.memo_json === 'string'
                     ? JSON.parse(item.memo_json)
                     : item.memo_json;
-                  memo = memoData?.text || memoData?.memo || '';
+                  memo = typeof memoData === 'string' ? { text: memoData } : memoData;
                 }
               } catch {}
-              return { ...item, options, memo };
+              try {
+                if (item.discount_json) {
+                  discount = typeof item.discount_json === 'string'
+                    ? JSON.parse(item.discount_json)
+                    : item.discount_json;
+                }
+              } catch {}
+              return { ...item, options, memo, discount };
             });
 
             const calculatedSubtotal = parsedItems.reduce((sum: number, item: any) => 
@@ -211,6 +219,13 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     }
     setSelectedOrderDetail({ ...order, isLoading: false });
   }, []);
+
+  // initialSelectedOrder가 변경되면 상세 자동 로드
+  useEffect(() => {
+    if (initialSelectedOrder && isOpen) {
+      fetchOrderDetails(initialSelectedOrder, selectedOrderType).catch(() => {});
+    }
+  }, [initialSelectedOrder, isOpen, selectedOrderType, fetchOrderDetails]);
 
   // Prevent "zombie" detail/actions when the selected order no longer exists in the list.
   // This happens when a PAID order is marked as PICKED_UP and removed from the left list.
@@ -912,7 +927,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                 </div>
                 
                 {/* 아이템 목록 */}
-                <div className="divide-y flex-1 overflow-auto" style={{ maxHeight: '120px' }}>
+                <div className="divide-y flex-1 overflow-auto" style={{ maxHeight: '260px' }}>
                   {(selectedOrderDetail.fullOrder?.items || []).length > 0 ? (
                     (selectedOrderDetail.fullOrder?.items || []).map((item: any, idx: number) => {
                       const modifierNames: { name: string; price: number }[] = [];
@@ -949,12 +964,42 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                         .join(', ');
                       const itemBasePrice = Number(item.price || item.subtotal || 0);
                       const itemTotalPrice = itemBasePrice + modifierTotal;
+
+                      let memoText = '';
+                      let memoPrice = 0;
+                      try {
+                        const rawMemo = item.memo || item.memo_json;
+                        if (rawMemo) {
+                          const parsed = typeof rawMemo === 'string' ? JSON.parse(rawMemo) : rawMemo;
+                          if (typeof parsed === 'string') {
+                            memoText = parsed;
+                          } else if (parsed) {
+                            memoText = parsed.text || parsed.memo || '';
+                            memoPrice = Number(parsed.price || 0);
+                          }
+                        }
+                      } catch {}
+
+                      let discountInfo: { type: string; value: number; amount: number } | null = null;
+                      try {
+                        const rawDisc = item.discount || item.discount_json;
+                        if (rawDisc) {
+                          const parsed = typeof rawDisc === 'string' ? JSON.parse(rawDisc) : rawDisc;
+                          if (parsed && parsed.value > 0) {
+                            const grossLine = (itemBasePrice + modifierTotal + memoPrice) * (item.quantity || 1);
+                            const discAmt = parsed.amount || (grossLine * parsed.value / 100);
+                            discountInfo = { type: parsed.type || 'Discount', value: parsed.value, amount: discAmt };
+                          }
+                        }
+                      } catch {}
+
+                      const isTogoBag = /togo\s*bag|to-go\s*bag/i.test(item.name || '');
                       
                       return (
-                        <div key={idx} className="px-3 py-1">
+                        <div key={idx} className="px-3 py-1.5">
                           <div className="grid grid-cols-12 text-sm">
                             <div className="col-span-2 font-medium text-blue-600">{item.quantity || 1}</div>
-                            <div className="col-span-7 text-gray-800">{item.name}</div>
+                            <div className={`col-span-7 text-gray-800 ${isTogoBag ? 'italic text-gray-500' : ''}`}>{item.name}</div>
                             <div className="col-span-3 text-right text-gray-600">
                               ${itemTotalPrice.toFixed(2)}
                             </div>
@@ -962,6 +1007,16 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                           {modifierText && (
                             <div className="text-xs text-orange-600 ml-8 mt-0.5">
                               {modifierText}
+                            </div>
+                          )}
+                          {memoText && (
+                            <div className="text-xs text-purple-600 ml-8 mt-0.5">
+                              📝 {memoText}{memoPrice > 0 ? ` (+$${memoPrice.toFixed(2)})` : ''}
+                            </div>
+                          )}
+                          {discountInfo && (
+                            <div className="text-xs text-red-500 ml-8 mt-0.5">
+                              🏷️ {discountInfo.type} {discountInfo.value}% (-${Number(discountInfo.amount).toFixed(2)})
                             </div>
                           )}
                         </div>

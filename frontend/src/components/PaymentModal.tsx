@@ -667,14 +667,20 @@ useEffect(() => {
           const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
           const allPayments = [...prevPayments, { method: effectiveMethod, amount: displayAmount }];
           const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
-          // Change = 거스름돈 (Change Due 입력 시 해당 값, 아니면 전체 초과분)
+          // Change = Cash 결제 시에만 발생 (Card는 Change 없음)
           let currentChange: number;
-          if (changeDueDigits && String(effectiveMethod || '').toUpperCase() === 'CASH') {
+          const isCashMethod = String(effectiveMethod || '').toUpperCase() === 'CASH';
+          const prevHasCash = (payments || []).some(p => (p.method || '').toUpperCase() === 'CASH');
+          if (changeDueDigits && isCashMethod) {
             const totalOverpay = Math.max(0, rawAmt - scopeDueNow);
             const changeDueVal = parseInt(changeDueDigits, 10) / 100;
             currentChange = Math.min(changeDueVal, totalOverpay);
+          } else if (isCashMethod) {
+            currentChange = Math.max(0, rawAmt - scopeDueNow - t);
+          } else if (prevHasCash && hasCash) {
+            currentChange = lastChange != null && lastChange > 0 ? lastChange : 0;
           } else {
-            currentChange = isCashLikeMethod ? Math.max(0, rawAmt - scopeDueNow - t) : 0;
+            currentChange = 0;
           }
           // 전체 팁 합산
           const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + t;

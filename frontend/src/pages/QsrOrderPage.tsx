@@ -413,7 +413,7 @@ const QsrOrderPage = () => {
     setQsrPickupCompleteLoading(true);
     setQsrPickupCompleteError('');
     try {
-      const res = await fetch(`${API_URL}/orders?type=TOGO&status=PAID&limit=80`);
+      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO&status=PENDING,UNPAID,PAID&limit=80`);
       const data = await res.json();
       const raw: any[] =
         Array.isArray(data)
@@ -430,7 +430,32 @@ const QsrOrderPage = () => {
         return true;
       });
 
-      setQsrPickupCompleteOrders(filtered as OrderData[]);
+      const mapped = filtered.map((o: any) => ({
+        ...o,
+        customerName: o.customer_name || o.customerName || '',
+        name: o.customer_name || o.customerName || o.name || '',
+        customerPhone: o.customer_phone || o.customerPhone || '',
+        phone: o.customer_phone || o.customerPhone || o.phone || '',
+        createdAt: o.created_at || o.createdAt || '',
+        placedTime: o.created_at || o.createdAt || o.placedTime || '',
+        readyTime: o.ready_time || o.readyTime || '',
+        readyTimeLabel: o.ready_time || o.readyTimeLabel || '',
+        number: o.order_number || o.number || '',
+      }));
+
+      mapped.sort((a: any, b: any) => {
+        const now = Date.now();
+        const parseTime = (t: string): number => {
+          if (!t) return now + 999999999;
+          const d = new Date(t);
+          return isNaN(d.getTime()) ? now + 999999999 : d.getTime();
+        };
+        const tA = parseTime(a.readyTime || a.createdAt);
+        const tB = parseTime(b.readyTime || b.createdAt);
+        return tA - tB;
+      });
+
+      setQsrPickupCompleteOrders(mapped as OrderData[]);
     } catch (e) {
       console.error('[QSR] Failed to load pickup complete orders:', e);
       setQsrPickupCompleteError('Failed to load pickup complete orders.');
@@ -2726,6 +2751,8 @@ const handleVoidPinClear = useCallback(() => {
           totalPrice: it.price || 0,
           type: Number(it.price || 0) < 0 ? 'discount' : 'item',
           guestNumber: typeof it.guest_number === 'number' && it.guest_number > 0 ? it.guest_number : 1,
+          taxRate: Number(it.tax_rate || it.taxRate || 0),
+          tax: Number(it.tax || 0),
           modifiers: (() => {
             try {
               return JSON.parse(it.modifiers_json || '[]');
@@ -2753,8 +2780,8 @@ const handleVoidPinClear = useCallback(() => {
       );
 
       savedOrderIdRef.current = orderId;
-      if (afterOpen) afterOpen();
       setShowPaymentModal(true);
+      if (afterOpen) afterOpen();
     } catch (e) {
       console.error('Failed to load order for payment:', e);
       alert('Failed to load order. Please try again.');
@@ -3009,8 +3036,8 @@ const handleVoidPinClear = useCallback(() => {
         byGuest[guestNum].push({
           name: item.name || 'Unknown Item',
           quantity: item.quantity || 1,
-          unitPrice: item.price || 0,
-          total: (item.quantity || 1) * (item.price || 0),
+          price: item.price || 0,
+          lineTotal: (item.quantity || 1) * (item.price || 0),
           modifiers: item.modifiers_json ? (typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json) : []
         });
       });
@@ -4201,17 +4228,7 @@ const handleVoidPinClear = useCallback(() => {
             console.error('Kitchen ticket print failed:', err);
           }
         }
-        setShowPaymentModal(false);
-        setOrderItems([]);
-        setSessionPayments([]);
-        setPaymentsByGuest({});
-        setQsrCustomerName('');
-        setQsrOrderType('forhere');
-        setQsrDeliveryChannel('');
-        setQsrDeliveryOrderNumber('');
-        savedOrderIdRef.current = null;
-        receiptPrintedRef.current = false;
-        console.log('✅ QSR Pickup: Payment completed, ready for new order');
+        console.log('🍳 QSR Pickup: handleCompletePayment done, waiting for PaymentCompleteModal');
         return;
       }
       // Eat In / Togo / Delivery / Online:
@@ -4246,20 +4263,25 @@ const handleVoidPinClear = useCallback(() => {
         console.warn('Cash drawer open failed (ignored):', drawerErr);
       }
       
-      // 2. Kitchen Ticket 출력
-      try {
-        if (isQsrMode) {
-          console.log('🍳 QSR: Printing Kitchen Ticket (PAID)...');
-          const kitchenSnapshot = (orderItems || []).map(it => ({ ...it, orderLineId: undefined }));
-          await printKitchenOrders(false, true, kitchenSnapshot);
-          console.log('✅ QSR: Kitchen Ticket printed');
-        } else {
-          console.log('🍳 Printing Kitchen Ticket (1 copy)...');
-          await printKitchenOrders(false, true);
-          console.log('✅ Kitchen Ticket printed (1 copy)');
+      // 2. Kitchen Ticket 출력 (Pickup 결제 완료 시에는 스킵 — 이미 Send 시 출력됨)
+      const isPickupPayment = isQsrMode && (qsrOrderType || 'forhere').toLowerCase() === 'pickup';
+      if (!isPickupPayment) {
+        try {
+          if (isQsrMode) {
+            console.log('🍳 QSR: Printing Kitchen Ticket (PAID)...');
+            const kitchenSnapshot = (orderItems || []).map(it => ({ ...it, orderLineId: undefined }));
+            await printKitchenOrders(false, true, kitchenSnapshot);
+            console.log('✅ QSR: Kitchen Ticket printed');
+          } else {
+            console.log('🍳 Printing Kitchen Ticket (1 copy)...');
+            await printKitchenOrders(false, true);
+            console.log('✅ Kitchen Ticket printed (1 copy)');
+          }
+        } catch (kitchenErr) {
+          console.warn('Kitchen ticket print failed (ignored):', kitchenErr);
         }
-      } catch (kitchenErr) {
-        console.warn('Kitchen ticket print failed (ignored):', kitchenErr);
+      } else {
+        console.log('📋 Pickup payment complete: skipping Kitchen Ticket (already printed on Send)');
       }
       
       // 3. 영수증 출력 (receiptCount에 따라)
@@ -16182,7 +16204,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     : 'bg-slate-100 text-slate-500 border-slate-300 hover:bg-slate-200 hover:text-slate-700 hover:border-slate-400'
                 }`}
               >
-                ✅ Pickup Complete
+                📋 Pickup List
               </button>
             </div>
 
@@ -16609,7 +16631,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <div className="flex flex-col flex-1 min-h-0">
                 <div className="flex items-center justify-between mb-3 flex-shrink-0">
                   <div>
-                    <h3 className="text-lg font-semibold text-slate-800">Pickup Complete</h3>
+                    <h3 className="text-lg font-semibold text-slate-800">Pickup List</h3>
                     <p className="text-xs text-slate-500">Paid pickup orders waiting to be marked as picked up.</p>
                   </div>
                   <button
@@ -16657,6 +16679,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           alert('Invalid order.');
                           return;
                         }
+                        setQsrOrderType('pickup');
                         await openPaymentModalForOrderId(id, () => {
                           setShowQsrTogoModal(false);
                         });

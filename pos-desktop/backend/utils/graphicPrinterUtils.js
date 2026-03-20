@@ -353,7 +353,8 @@ function drawTextBlock(ctx, block, y) {
   } = block;
   
   const fontSize = rawFontSize;
-  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
+  const defaultLH = fontSize + paddingY * 2;
+  const actualLineHeight = (lineHeight && lineHeight >= fontSize) ? lineHeight : defaultLH;
   const width = ctx._receiptWidth || PRINTER_CONFIG.width;
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   const rightPadding = Number(ctx._receiptRightPadding || 0);
@@ -478,7 +479,8 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   } = options;
   
   const fontSize = rawFontSize;
-  const actualLineHeight = lineHeight || fontSize + paddingY * 2;
+  const defaultLH = fontSize + paddingY * 2;
+  const actualLineHeight = (lineHeight && lineHeight >= fontSize) ? lineHeight : defaultLH;
   const width = ctx._receiptWidth || PRINTER_CONFIG.width;
   const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
   
