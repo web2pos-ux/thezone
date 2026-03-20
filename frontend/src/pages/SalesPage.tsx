@@ -286,6 +286,20 @@ const SalesPage: React.FC = () => {
   });
 
   const [selectedChannelTab, setSelectedChannelTab] = useState<string>('table-map');
+  const [channelVis, setChannelVis] = useState<{ togo: boolean; delivery: boolean }>(() => {
+    try {
+      const raw = localStorage.getItem('tableMapChannelVisibility');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          togo: parsed?.togo !== false,
+          delivery: parsed?.delivery !== false,
+        };
+      }
+    } catch {}
+    return { togo: true, delivery: true };
+  });
+  const rightPanelVisible = channelVis.togo || channelVis.delivery;
   // 현재 시간 표시용 상태
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const now = new Date();
@@ -1002,8 +1016,8 @@ const SalesPage: React.FC = () => {
   const footerHeightPx = Math.round((isWidescreen ? 91 : 70) * footerUiScale);
   const contentHeightPx = Math.max(0, frameHeightPx - headerHeightPx - footerHeightPx);
   // ì¢Œ/ìš° ë¹„ìœ¨ 66%/34%ë¡œ ë¶„í• 
-  const leftWidthPx = Math.round(frameWidthPx * (66 / 100));
-  const rightWidthPx = Math.max(0, frameWidthPx - leftWidthPx);
+  const leftWidthPx = rightPanelVisible ? Math.round(frameWidthPx * (66 / 100)) : frameWidthPx;
+  const rightWidthPx = rightPanelVisible ? Math.max(0, frameWidthPx - leftWidthPx) : 0;
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
   // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
   // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
@@ -3935,7 +3949,7 @@ const SalesPage: React.FC = () => {
       case 'wall':
         return ''; // Wallì—ë„ ì´ë¦„ì„ ë„£ì§€ ì•ŠìŒ
       case 'other':
-        return 'Other'; // ë²ˆí˜¸ ì—†ìŒ
+        return element.text ? String(element.text).trim() : ''; // ë²ˆí˜¸ ì—†ìŒ
       case 'floor-label':
         return element.text || 'Floor'; // ë²ˆí˜¸ ì—†ìŒ
       default:
@@ -4104,6 +4118,22 @@ const SalesPage: React.FC = () => {
     return () => window.removeEventListener('storage', onStorage);
   }, [selectedFloor]);
 
+  useEffect(() => {
+    const onChannelVisChange = (e: StorageEvent) => {
+      if (e.key === 'tableMapChannelVisibility' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setChannelVis({
+            togo: parsed?.togo !== false,
+            delivery: parsed?.delivery !== false,
+          });
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', onChannelVisChange);
+    return () => window.removeEventListener('storage', onChannelVisChange);
+  }, []);
+
   // ë¼ìš°íŒ… ë³µê·€/íƒ­ ê°€ì‹œì„± ë³€ê²½ ì‹œ í•­ìƒ í™”ë©´ í¬ê¸° ìž¬ì ìš©
   useEffect(() => {
     const onPageShow = () => fetchTableMapData();
@@ -4129,6 +4159,16 @@ const SalesPage: React.FC = () => {
           if (!payload.floor || payload.floor === selectedFloor) {
             fetchTableMapData();
           }
+        }
+      } catch {}
+      try {
+        const chRaw = localStorage.getItem('tableMapChannelVisibility');
+        if (chRaw) {
+          const parsed = JSON.parse(chRaw);
+          setChannelVis({
+            togo: parsed?.togo !== false,
+            delivery: parsed?.delivery !== false,
+          });
         }
       } catch {}
     };
@@ -8472,13 +8512,13 @@ const SalesPage: React.FC = () => {
             </div>
             {/* Delivery + EXIT 버튼 (오른쪽) */}
             <div className="flex justify-end items-center gap-2">
-              <button
+              {channelVis.delivery && <button
                 className="h-9 px-3 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
                 onClick={() => setSelectedChannelTab('delivery')}
                 title="Delivery"
               >
                 Delivery
-              </button>
+              </button>}
               <button
                 className="h-10 px-5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 border-2 border-red-700 shadow-md transition-all"
                 onClick={() => setShowExitModal(true)}
@@ -8580,27 +8620,27 @@ const SalesPage: React.FC = () => {
           </div>
 
           {/* 4. ìš°ì¸¡ 34% - Togo/Delivery Order í˜„í™©íŒ */}
-          <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
+          {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
             {/* ìƒë‹¨ ê³ ì • ë²„íŠ¼ ì˜ì—­ */}
             <div className="flex gap-2 p-2 pb-1 flex-shrink-0">
-              <button
+              {channelVis.delivery && <button
                 onClick={handleNewDeliveryClick}
                 className="flex-1 py-2 min-h-[40px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
                 Delivery
-              </button>
-              <button
+              </button>}
+              {channelVis.togo && <button
                 onClick={handleNewTogoClick}
                 className="flex-1 py-2 min-h-[40px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
                 Togo
-              </button>
+              </button>}
             </div>
             {/* ìŠ¤í¬ë¡¤ ê°€ëŠ¥í•œ ì£¼ë¬¸ ëª©ë¡ ì˜ì—­ */}
             <div className="flex-1 overflow-auto px-2 pb-[85px]">
-              <div className="grid grid-cols-2 gap-1">
+              <div className={`grid ${channelVis.delivery && channelVis.togo ? 'grid-cols-2' : 'grid-cols-1'} gap-1`}>
                 {/* ì™¼ìª½: Delivery ì£¼ë¬¸ ëª©ë¡ */}
-                <div className="space-y-1">
+                {channelVis.delivery && <div className="space-y-1">
                   {(() => {
                     const deliveryFiltered = togoOrders.filter(order => 
                       String(order.fulfillment || '').toLowerCase() === 'delivery' ||
@@ -8661,10 +8701,9 @@ const SalesPage: React.FC = () => {
                   ).length === 0 && (
                     <div className="text-center text-gray-400 text-xs py-4">No Delivery Orders</div>
                   )}
-                </div>
+                </div>}
                 
-                {/* ì˜¤ë¥¸ìª½: Togo + Online í†µí•© ì£¼ë¬¸ë¦¬ìŠ¤íŠ¸ - í”½ì—…ì‹œê°„ ì˜¤ë¦„ì°¨ìˆœ ì •ë ¬ */}
-                <div className="space-y-1">
+                {channelVis.togo && <div className="space-y-1">
                   {(() => {
                     // Togo (delivery ì œì™¸)ì™€ Onlineì„ í•©ì³ì„œ í”½ì—…ì‹œê°„ ìˆœìœ¼ë¡œ ì •ë ¬
                     const getPickupTimeMs = (order: any, type: 'togo' | 'online'): number => {
@@ -8786,7 +8825,7 @@ const SalesPage: React.FC = () => {
                       }
                     });
                   })()}
-                </div>
+                </div>}
               </div>
             </div>
 
@@ -8811,9 +8850,8 @@ const SalesPage: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>}
           </div>
-          </div>
-          {/* 3. 하단 액션 바 - Neumorphic Raised Style */}
           <div className="border-t py-1.5 pl-3 pr-3" data-pos-lock="sales-footer" style={{ height: `${footerHeightPx}px`, background: '#d1d5db', borderColor: '#c0c5cc' }}>
             <div className="grid grid-cols-10 h-full w-full" style={{ gap: `${footerGapPx}px` }}>
               {buttonData.map((buttonName, index) => {

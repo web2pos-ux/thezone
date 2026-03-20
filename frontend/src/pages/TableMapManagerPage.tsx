@@ -2405,15 +2405,13 @@ const TableMapManagerPage = () => {
 
     // 텍스트 편집 완료
     const handleTextEditComplete = () => {
-      if (editingText.trim()) {
-        const updatedElements = tableElements.map(el => 
-          el.id === element.id 
-            ? { ...el, text: editingText.trim(), fontSize: editingFontSize }
-            : el
-        );
-        setTableElements(updatedElements);
-        saveToHistory(updatedElements);
-      }
+      const updatedElements = tableElements.map(el => 
+        el.id === element.id 
+          ? { ...el, text: editingText.trim(), fontSize: editingFontSize }
+          : el
+      );
+      setTableElements(updatedElements);
+      saveToHistory(updatedElements);
       setEditingElementId(null);
     };
 
@@ -3342,22 +3340,21 @@ const TableMapManagerPage = () => {
       {/* 색상 모달 */}
       <ColorModal />
       
-      {/* 상단 10% - 드롭다운과 기능 버튼들 */}
-      <div className="h-[10%] bg-white border-b border-gray-200 p-4 flex items-center justify-between">
-        <div className="flex items-center space-x-2">
+      {/* 상단 툴바 */}
+      <div className="shrink-0 bg-white border-b border-gray-200 px-3 py-1.5 flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {/* Screen Size Input */}
           <div className="flex items-center space-x-1 bg-blue-50 p-1 rounded-lg border border-blue-200">
-            <label className="text-sm font-medium text-gray-700">Screen Size:</label>
+            <label className="text-xs font-medium text-gray-700 whitespace-nowrap">Size:</label>
             <div className="flex items-center space-x-1">
-              {/* Preset Buttons */}
-              <div className="flex space-x-1 mr-2">
+              <div className="flex space-x-0.5">
                 <button
                   onClick={() => {
                     setScreenWidth('800');
                     setScreenHeight('600');
                     handleApplyScreenSize();
                   }}
-                  className="px-2 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600 transition-colors"
+                  className="px-1.5 py-0.5 bg-gray-500 text-white text-[10px] rounded hover:bg-gray-600 transition-colors"
                   title="4:3 Ratio - 800x600"
                 >
                   4:3
@@ -3368,7 +3365,7 @@ const TableMapManagerPage = () => {
                     setScreenHeight('1080');
                     handleApplyScreenSize();
                   }}
-                  className="px-2 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-700 transition-colors"
+                  className="px-1.5 py-0.5 bg-gray-600 text-white text-[10px] rounded hover:bg-gray-700 transition-colors"
                   title="16:9 Ratio - 1920x1080"
                 >
                   16:9
@@ -3383,11 +3380,11 @@ const TableMapManagerPage = () => {
                     handleApplyScreenSize();
                   }
                 }}
-                className="w-16 px-1 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Width"
+                className="w-14 px-1 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="W"
                 min="1"
               />
-              <span className="text-sm text-gray-500">×</span>
+              <span className="text-xs text-gray-400">×</span>
               <input
                 type="number"
                 value={screenHeight}
@@ -3397,37 +3394,32 @@ const TableMapManagerPage = () => {
                     handleApplyScreenSize();
                   }
                 }}
-                className="w-16 px-1 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Height"
+                className="w-14 px-1 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                placeholder="H"
                 min="1"
               />
-              <span className="text-xs text-gray-500">px</span>
               <button 
-                className="px-2 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm ml-1"
+                className="px-1.5 py-0.5 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-[10px]"
                 onClick={handleApplyScreenSize}
               >
-                Apply
+                OK
               </button>
-              {/* 현재 적용 사이즈 표시 */}
-              <span className="ml-2 px-2 py-1 text-xs bg-white border border-blue-200 rounded text-blue-700">
-                Current: {screenWidth} × {screenHeight}px
-              </span>
             </div>
           </div>
 
           {/* Canvas Zoom (Fit / Custom) */}
-          <div className="flex items-center space-x-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
-            <label className="text-sm font-medium text-gray-700">View:</label>
+          <div className="flex items-center space-x-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
+            <label className="text-xs font-medium text-gray-700">View:</label>
             <button
               onClick={() => setZoomMode('fit')}
-              className={`px-2 py-1 text-xs rounded transition-colors ${zoomMode === 'fit' ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
+              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${zoomMode === 'fit' ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
               title="Fit to window"
             >
               Fit
             </button>
             <button
               onClick={() => { setZoomMode('custom'); setCustomZoom(1); }}
-              className={`px-2 py-1 text-xs rounded transition-colors ${zoomMode === 'custom' && Math.abs(customZoom - 1) < 0.0001 ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
+              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${zoomMode === 'custom' && Math.abs(customZoom - 1) < 0.0001 ? 'bg-slate-700 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'}`}
               title="100%"
             >
               100%
@@ -3442,17 +3434,17 @@ const TableMapManagerPage = () => {
                 setZoomMode('custom');
                 setCustomZoom(next);
               }}
-              className="w-28"
+              className="w-16"
               title="Zoom"
             />
-            <span className="px-2 py-1 text-xs bg-white border border-slate-200 rounded text-slate-700 tabular-nums">
+            <span className="px-1 py-0.5 text-[10px] bg-white border border-slate-200 rounded text-slate-700 tabular-nums">
               {Math.round(editorScale * 100)}%
             </span>
           </div>
 
           {/* Floor Section */}
           <div className="flex items-center space-x-1 bg-green-50 p-1 rounded-lg border border-green-200">
-            <label className="text-sm font-medium text-gray-700">Floor:</label>
+            <label className="text-xs font-medium text-gray-700">Floor:</label>
             <button
               onClick={() => setShowAddFloorModal(true)}
               className="px-2 py-1 bg-green-500 text-white text-xs rounded hover:bg-green-600 transition-colors"
@@ -3464,11 +3456,11 @@ const TableMapManagerPage = () => {
 
           {/* Table Type Dropdown */}
           <div className="flex items-center space-x-1 bg-purple-50 p-1 rounded-lg border border-purple-200">
-            <label className="text-sm font-medium text-gray-700">Table Type:</label>
+            <label className="text-xs font-medium text-gray-700 whitespace-nowrap">Type:</label>
             <select 
               value={selectedTableType}
               onChange={(e) => setSelectedTableType(e.target.value)}
-              className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+              className="px-1 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
             >
               <option value="rounded-rectangle">Square</option>
               <option value="circle">Circle</option>
@@ -3486,20 +3478,18 @@ const TableMapManagerPage = () => {
 
           {/* Colour Selection */}
           <div className="flex items-center space-x-1 bg-pink-50 p-1 rounded-lg border border-pink-200">
-            <label className="text-sm font-medium text-gray-700">Colour:</label>
+            <label className="text-xs font-medium text-gray-700">Colour:</label>
             <button
               onClick={() => {
                 if (selectedElement) {
-                  // 기존 요소가 선택된 경우 - 바로 색상 변경 모달
                   setIsColorModalForExisting(true);
                   setShowColorModal(true);
                 } else {
-                  // 새 요소 색상 선택 모달
                   setShowColorModal(true);
                 }
               }}
               disabled={isColorSelectionDisabled(selectedTableType)}
-              className={`w-8 h-8 rounded border transition-colors ${
+              className={`w-6 h-6 rounded border transition-colors ${
                 isColorSelectionDisabled(selectedTableType)
                   ? 'border-gray-200 bg-gray-100 cursor-not-allowed opacity-50'
                   : 'border-gray-300 hover:border-gray-400'
@@ -3518,18 +3508,16 @@ const TableMapManagerPage = () => {
               }
             />
             <button 
-              className={`px-2 py-2 text-white rounded transition-colors text-sm ${
+              className={`px-2 py-1 text-white rounded transition-colors text-xs ${
                 selectedElement 
                   ? 'bg-blue-500 hover:bg-blue-600' 
                   : 'bg-green-500 hover:bg-green-600'
               }`}
               onClick={() => {
                 if (selectedElement) {
-                  // 기존 요소 색상 변경 - 바로 색상 변경 모달 열기
                   setIsColorModalForExisting(true);
                   setShowColorModal(true);
                 } else {
-                  // 새 요소 추가
                   handleAddTableElement();
                 }
               }}
@@ -3540,11 +3528,11 @@ const TableMapManagerPage = () => {
 
           {/* Channel Management */}
           <div className="flex items-center space-x-1 bg-yellow-50 p-1 rounded-lg border border-yellow-200">
-            <label className="text-sm font-medium text-gray-700">Channels:</label>
-            <div className="flex space-x-1">
+            <label className="text-xs font-medium text-gray-700">Ch:</label>
+            <div className="flex space-x-0.5">
               <button
                 onClick={() => toggleChannelVisibility('table-map')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
                   channelVisibility['table-map']
                     ? 'bg-blue-500 text-white hover:bg-blue-600'
                     : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
@@ -3555,7 +3543,7 @@ const TableMapManagerPage = () => {
               </button>
               <button
                 onClick={() => toggleChannelVisibility('togo')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
                   channelVisibility['togo']
                     ? 'bg-green-800 text-white hover:bg-green-900'
                     : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
@@ -3566,7 +3554,7 @@ const TableMapManagerPage = () => {
               </button>
               <button
                 onClick={() => toggleChannelVisibility('delivery')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
                   channelVisibility['delivery']
                     ? 'bg-orange-500 text-white hover:bg-orange-600'
                     : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
@@ -3577,7 +3565,7 @@ const TableMapManagerPage = () => {
               </button>
               <button
                 onClick={() => toggleChannelVisibility('online')}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
                   channelVisibility['online']
                     ? 'bg-purple-500 text-white hover:bg-purple-600'
                     : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
@@ -3591,107 +3579,19 @@ const TableMapManagerPage = () => {
         </div>
 
         {/* 기능 버튼들 */}
-        <div className="flex items-center space-x-1 bg-gray-50 p-2 rounded-lg border border-gray-200">
+        <div className="flex items-center bg-gray-50 p-1 rounded-lg border border-gray-200 ml-auto">
           <button 
-            className={`p-2 text-gray-700 rounded-md transition-colors hover:bg-gray-200 ${
-              historyIndex > 0 
-                ? 'cursor-pointer' 
-                : 'cursor-not-allowed opacity-50'
-            }`}
-            onClick={handleGoBack}
-            disabled={historyIndex <= 0}
-            title="Undo (Ctrl+Z)"
-          >
-            <img 
-              src={undoImage} 
-              alt="Undo"
-              className="w-4 h-4"
-            />
-          </button>
-          <button 
-            className={`p-2 text-gray-700 rounded-md transition-colors hover:bg-gray-200 ${
-              historyIndex < history.length - 1 
-                ? 'cursor-pointer' 
-                : 'cursor-not-allowed opacity-50'
-            }`}
-            onClick={handleRedo}
-            disabled={historyIndex >= history.length - 1}
-            title="Redo (Ctrl+Shift+Z)"
-          >
-            <img 
-              src={redoImage} 
-              alt="Redo"
-              className="w-4 h-4"
-            />
-          </button>
-          <button 
-            className="p-2 text-gray-700 rounded-md transition-colors hover:bg-gray-200"
-            onClick={handleReset}
-            title="Reset"
-          >
-            <img 
-              src={resetImage} 
-              alt="Reset"
-              className="w-4 h-4"
-            />
-          </button>
-          <button 
-            className={`p-2 text-red-500 rounded-md transition-colors hover:bg-red-100 ${
-              selectedElement 
-                ? 'cursor-pointer' 
-                : 'cursor-not-allowed opacity-50'
-            }`}
-            onClick={handleDeleteElement}
-            disabled={!selectedElement}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 6H5H21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M8 6V4C8 3.46957 8.21071 2.96086 8.58579 2.58579C8.96086 2.21071 9.46957 2 10 2H14C14.5304 2 15.0391 2.21071 15.4142 2.58579C15.7893 2.96086 16 3.46957 16 4V6M19 6V20C19 20.5304 18.7893 21.0391 18.4142 21.4142C18.0391 21.7893 17.5304 22 17 22H7C6.46957 22 5.96086 21.7893 5.58579 21.4142C5.21071 21.0391 5 20.5304 5 20V6H19Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M10 11V17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M14 11V17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button 
-            className="p-2 text-green-500 rounded-md transition-colors hover:bg-green-100"
-            onClick={addTestCall}
-            title="Test Call Notification"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M20 6L9 17L4 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button 
-            className="p-2 text-yellow-500 rounded-md transition-colors hover:bg-yellow-100"
-            onClick={addTestOrder}
-            title="Test Order Notification"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button 
-            className="p-2 text-green-500 rounded-md transition-colors hover:bg-green-100"
-            onClick={addMixedTestNotifications}
-            title="Test Mixed Notifications (3 Calls + 3 Orders)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
-          <button 
-            className="p-2 text-blue-500 rounded-md transition-colors hover:bg-blue-100"
+            className="px-3 py-1 text-xs font-medium text-white bg-blue-500 rounded hover:bg-blue-600 transition-colors"
             title="Save Table Layout"
             onClick={handleSaveLayout}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M20 6L9 17L4 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            Save
           </button>
         </div>
       </div>
 
-      {/* 하단 90% - 테이블맵 요소들을 배열하는 화면 */}
-      <div className="h-[90%] bg-gray-50 p-6">
+      {/* 하단 - 테이블맵 요소들을 배열하는 화면 */}
+      <div className="flex-1 min-h-0 bg-gray-50 p-3">
         <div ref={canvasViewportRef} className="bg-white rounded-lg shadow-lg h-full relative overflow-auto flex items-start justify-start" onClick={handleCanvasClick}>
           {/* POS에 보여지는 메인 테이블맵 영역 (Fixed Resolution Canvas) */}
           <DndContext sensors={dndSensors} onDragEnd={(e) => { if (mapLocked) return; handleDragEnd(e); }}>
@@ -3817,9 +3717,9 @@ const TableMapManagerPage = () => {
                 ) : (
                   <>
                 
-                {/* 3. 좌측 66% - Table Map 영역 */}
+                {/* 3. 좌측 - Table Map 영역 */}
                 <div 
-                  className="w-[66%] relative"
+                  className={`${channelVisibility['togo'] ? 'w-[66%]' : 'w-full'} relative`}
                   onClick={handleCanvasClick}
                 >
                   {/* 그리드 배경 */}
@@ -3836,6 +3736,7 @@ const TableMapManagerPage = () => {
                 </div>
 
                 {/* 4. 우측 34% - Togo Order 현황판 */}
+                {channelVisibility['togo'] && (
                 <div className="w-[34%] bg-blue-50 border-l border-gray-300 p-2 relative" style={{ paddingBottom: '75px' }}>
                   {/* 상단 - 기존 투고 목록 */}
                   <div className="overflow-y-auto" style={{ height: 'calc(100% - 75px)' }}>
@@ -4053,6 +3954,7 @@ const TableMapManagerPage = () => {
                     )}
                   </div>
                 </div>
+                )}
                   </>
                 )}
               </div>

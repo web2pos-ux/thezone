@@ -246,6 +246,7 @@ function buildKitchenTicketText(orderData) {
   const channel = (header.channel || orderInfo.channel || orderData.channel || orderInfo.orderType || orderData.orderType || 'DINE-IN').toUpperCase();
   const tableName = header.tableName || orderInfo.tableName || orderData.tableName || orderInfo.table || '';
   const customerName = orderInfo.customerName || orderData.customerName || '';
+  const customerPhone = orderInfo.customerPhone || orderData.customerPhone || '';
   const pickupTime = orderInfo.pickupTime || orderData.pickupTime || '';
   const pickupMinutes = orderInfo.pickupMinutes || orderData.pickupMinutes || '';
   const isPaid = orderData.isPaid || false;
@@ -256,11 +257,26 @@ function buildKitchenTicketText(orderData) {
   output += CENTER;
   output += REVERSE_ON + BOLD_ON + DOUBLE_SIZE;
   
-  // 채널 + 주문번호 (예: "TOGO 1027", "EAT IN 1027" 또는 "Table 5")
+  // 채널 + 주문번호 (예: "TOGO #003", "EAT IN #021", "PICKUP "7117"")
   let headerText = '';
-  if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
-    const displayChannel = (channel === 'FORHERE' || channel === 'FOR HERE') ? 'EAT IN' : channel;
-    headerText = `${displayChannel} ${String(orderNumber).replace('#', '')}`;
+  const cleanNum = String(orderNumber).replace('#', '');
+  if (channel === 'PICKUP') {
+    const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
+    if (phoneDigits.length >= 4) {
+      headerText = `PICKUP "${phoneDigits.slice(-4)}"`;
+    } else if (phoneDigits.length > 0) {
+      headerText = `PICKUP "${phoneDigits}"`;
+    } else {
+      headerText = cleanNum ? `PICKUP #${cleanNum}` : 'PICKUP';
+    }
+  } else if (channel === 'TOGO' || channel === 'TAKEOUT') {
+    headerText = cleanNum ? `TOGO #${cleanNum}` : 'TOGO';
+  } else if (channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE') {
+    headerText = cleanNum ? `EAT IN #${cleanNum}` : 'EAT IN';
+  } else if (channel === 'ONLINE') {
+    const extDigits = String(orderNumber || '').replace(/\D/g, '');
+    const last4 = extDigits.length >= 4 ? extDigits.slice(-4) : '';
+    headerText = last4 ? `ONLINE "${last4}"` : 'ONLINE';
   } else if (tableName) {
     const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
     headerText = isDineInLike ? `DINE-IN / ${tableName}` : tableName;

@@ -685,7 +685,8 @@ function renderKitchenTicketGraphic(orderData) {
   // - DELIVERY/ONLINE: "CHANNEL #EXTERNAL(<=6 digits) |" + (right box) "POS_SEQUENTIAL_ORDER_NUMBER"
   // - 위 채널들은 헤더 전체가 흰글씨/검정배경
   const cleanPosSeq = String(orderNumber || '').replace('#', '').trim();
-  const isPickupLike = (channel === 'TOGO' || channel === 'TAKEOUT' || channel === 'PICKUP');
+  const isPickupLike = (channel === 'PICKUP');
+  const isTogoLike = (channel === 'TOGO' || channel === 'TAKEOUT');
   const isOnlineLike = (channel === 'ONLINE' || channel === 'THEZONE');
 
   const formatExternalUpTo9Digits = (v) => {
@@ -725,18 +726,25 @@ function renderKitchenTicketGraphic(orderData) {
     return s;
   };
 
-  // 모든 채널: 왼쪽 박스 = #주문번호, 오른쪽 박스 = 채널 + 채널번호
-  headerText = cleanPosSeq ? `#${cleanPosSeq}` : '';
+  // 모든 채널: 단일 라인 헤더 텍스트 (채널+주문번호)
+  headerText = '';
 
   if (isPickupLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
-    const phoneLast4 = phoneDigits.length >= 4 ? phoneDigits.slice(-4) : '';
-    rightHeaderText = phoneLast4 ? `TOGO ${phoneLast4}` : 'TOGO';
+    if (phoneDigits.length >= 4) {
+      rightHeaderText = `PICKUP "${phoneDigits.slice(-4)}"`;
+    } else if (phoneDigits.length > 0) {
+      rightHeaderText = `PICKUP "${phoneDigits}"`;
+    } else {
+      rightHeaderText = cleanPosSeq ? `PICKUP #${cleanPosSeq}` : 'PICKUP';
+    }
+  } else if (isTogoLike) {
+    rightHeaderText = cleanPosSeq ? `TOGO #${cleanPosSeq}` : 'TOGO';
   } else if (isOnlineLike) {
     const extDigits = String(deliveryOrderNumber || '').replace(/\D/g, '');
     const last4 = extDigits.length >= 4 ? extDigits.slice(-4) : '';
-    rightHeaderText = last4 ? `ONLINE ${last4}` : 'ONLINE';
+    rightHeaderText = last4 ? `ONLINE "${last4}"` : 'ONLINE';
   } else if (isDeliveryLike) {
     const platform = getKitchenDeliveryCompanyLabel(deliveryCompany) || 'DELIVERY';
     const ext = formatExternalAlphaNumTail(deliveryOrderNumber, 12);
@@ -745,8 +753,7 @@ function renderKitchenTicketGraphic(orderData) {
     const tableLabel = formatTableLabel(tableName);
     rightHeaderText = tableLabel;
   } else if (channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE') {
-    const displayChannel = (channel === 'EATIN') ? 'EAT IN' : (channel === 'FORHERE') ? 'FOR HERE' : channel;
-    rightHeaderText = displayChannel;
+    rightHeaderText = cleanPosSeq ? `EAT IN #${cleanPosSeq}` : 'EAT IN';
   } else {
     rightHeaderText = '';
   }
@@ -761,7 +768,7 @@ function renderKitchenTicketGraphic(orderData) {
   const isTwoBoxLayout = !!(headerText && rightHeaderText);
   const headerStartY = y;
   const headerFontScale = 1;
-  const headerFontSize = PRINTER_CONFIG.fontSize.xxlarge;
+  const headerFontSize = 55;
   const orderNumberFontSize = Math.max(8, Math.round(headerFontSize * 0.78));
   const orderNumberHashFontSize = Math.max(6, Math.round(headerFontSize * 0.52));
   const eatInOrderNumFontSize = Math.max(8, Math.round(headerFontSize * 0.878));
@@ -851,18 +858,23 @@ function renderKitchenTicketGraphic(orderData) {
     orderBoxW = Math.max(0, headerW - leftBoxW);
     fittedOrderBoxText = orderBoxText;
   } else {
-    ctx.font = orderFont;
-    const orderTextW = orderBoxText ? ctx.measureText(orderBoxText).width : 0;
-    const desiredOrderBoxW = orderBoxText ? Math.ceil(orderTextW + orderHeaderPadX * 2) : 0;
-    const minLeftBoxW = headerText ? Math.max(0, Math.round(140 * headerFontScale)) : 0;
-    const maxOrderBoxW = Math.max(0, headerW - minLeftBoxW);
-    orderBoxW = orderBoxText ? Math.min(desiredOrderBoxW, maxOrderBoxW > 0 ? maxOrderBoxW : headerW) : 0;
-    const orderMaxTextW = Math.max(0, orderBoxW - orderHeaderPadX * 2);
-    fittedOrderBoxText = fitTextToWidthNoEllipsis(orderBoxText, orderMaxTextW);
-    // Recompute width based on fitted text so we don't waste space / overflow.
-    const fittedOrderTextW = fittedOrderBoxText ? ctx.measureText(fittedOrderBoxText).width : 0;
-    orderBoxW = fittedOrderBoxText ? Math.min(Math.ceil(fittedOrderTextW + orderHeaderPadX * 2), headerW) : 0;
-    leftBoxW = Math.max(0, headerW - orderBoxW);
+    ctx.font = headerFont;
+    if (!headerText) {
+      orderBoxW = headerW;
+      leftBoxW = 0;
+      fittedOrderBoxText = orderBoxText;
+    } else {
+      const orderTextW = orderBoxText ? ctx.measureText(orderBoxText).width : 0;
+      const desiredOrderBoxW = orderBoxText ? Math.ceil(orderTextW + orderHeaderPadX * 2) : 0;
+      const minLeftBoxW = Math.max(0, Math.round(140 * headerFontScale));
+      const maxOrderBoxW = Math.max(0, headerW - minLeftBoxW);
+      orderBoxW = orderBoxText ? Math.min(desiredOrderBoxW, maxOrderBoxW > 0 ? maxOrderBoxW : headerW) : 0;
+      const orderMaxTextW = Math.max(0, orderBoxW - orderHeaderPadX * 2);
+      fittedOrderBoxText = fitTextToWidthNoEllipsis(orderBoxText, orderMaxTextW);
+      const fittedOrderTextW = fittedOrderBoxText ? ctx.measureText(fittedOrderBoxText).width : 0;
+      orderBoxW = fittedOrderBoxText ? Math.min(Math.ceil(fittedOrderTextW + orderHeaderPadX * 2), headerW) : 0;
+      leftBoxW = Math.max(0, headerW - orderBoxW);
+    }
   }
 
   // TOGO/TAKEOUT/PICKUP + DELIVERY: 헤더의 흰 선(위/아래/가운데 구분선) 제거
@@ -998,42 +1010,23 @@ function renderKitchenTicketGraphic(orderData) {
       }
       ctx.fillText(displayText, centerX, centerY);
     } else {
-    const hashIdx = String(fittedOrderBoxText || '').indexOf('#');
-    if (hashIdx >= 0) {
-      const prefix = String(fittedOrderBoxText || '').slice(0, hashIdx);
-      const suffix = String(fittedOrderBoxText || '').slice(hashIdx + 1);
-
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-
-      ctx.font = orderFont;
-      const prefixW = prefix ? ctx.measureText(prefix).width : 0;
-      const suffixW = suffix ? ctx.measureText(suffix).width : 0;
-      ctx.font = orderHashFont;
-      const hashW = ctx.measureText('#').width;
-
-      const totalW = prefixW + hashW + suffixW;
-      let startX = centerX - totalW / 2;
-      // Keep a tiny padding so the text doesn't visually touch borders.
-      startX = Math.max(orderBoxX + Math.max(2, Math.round(2 * headerFontScale)), startX);
-
-      ctx.font = orderFont;
-      if (prefix) ctx.fillText(prefix, startX, centerY);
-      ctx.font = orderHashFont;
-      ctx.fillText('#', startX + prefixW, centerY);
-      ctx.font = orderFont;
-      if (suffix) ctx.fillText(suffix, startX + prefixW + hashW, centerY);
-    } else {
-      ctx.font = orderFont;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(fittedOrderBoxText, centerX, centerY);
-    }
+    ctx.font = headerFont;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const displayText = fittedOrderBoxText || orderBoxText;
+    ctx.fillText(displayText, centerX, centerY);
     } // end else (non-TwoBox)
   }
 
   ctx.restore();
   y = headerStartY + headerH;
+  
+  // 헤더 하단 보더와 Pickup Time 사이의 흰 줄 제거 (검은 strip으로 덮기)
+  const headerBottomGap = 4;
+  ctx.save();
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(headerX, y - headerBottomGap, headerW, headerBottomGap + 2);
+  ctx.restore();
   
   // PICKUP 시간 (TOGO, ONLINE, PICKUP, DELIVERY 채널에서 표시)
   // 헤더와 함께 검은 배경으로 묶어서 출력

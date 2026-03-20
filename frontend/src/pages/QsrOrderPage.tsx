@@ -38,6 +38,7 @@ import DayOpeningModal from '../components/DayOpeningModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
 import OrderDetailModal, { OrderData } from '../components/OrderDetailModal';
+import PickupListPanel from '../components/PickupListPanel';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
@@ -192,6 +193,7 @@ const QsrOrderPage = () => {
   
   // QSR Togo Modal State (100% copied from FSR)
   const [showQsrTogoModal, setShowQsrTogoModal] = useState(false);
+  const [showPickupListPanel, setShowPickupListPanel] = useState(false);
   const [qsrPickupModalTab, setQsrPickupModalTab] = useState<'pickup' | 'complete'>('pickup');
   const [qsrPickupTime, setQsrPickupTime] = useState(15);
   const [qsrCustomerNameInput, setQsrCustomerNameInput] = useState('');
@@ -11014,6 +11016,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <Car className="w-5 h-5" />
                     Delivery
                   </button>
+
+                  {/* Pickup List toggle button */}
+                  <button
+                    onClick={() => setShowPickupListPanel(prev => !prev)}
+                    className={`flex items-center justify-center gap-1 py-3 px-3 rounded-lg font-bold text-sm transition ${
+                      showPickupListPanel
+                        ? 'bg-cyan-500 text-white shadow-lg ring-2 ring-cyan-300'
+                        : 'bg-white/10 text-white/80 hover:bg-white/20'
+                    }`}
+                  >
+                    Pickup List
+                  </button>
                   
                   {/* Customer Name Input - 모든 주문 타입에 표시 */}
                   <div className="flex items-center gap-2 ml-2">
@@ -11029,7 +11043,30 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               )}
 
-              {/* Top Section - Left Panel + Right Panel */}
+              {/* Pickup List Panel (full screen overlay within QSR layout) */}
+              {isQsrMode && showPickupListPanel ? (
+                <div className="flex-1 min-h-0">
+                  <PickupListPanel
+                    onPayment={async (orderId) => {
+                      setQsrOrderType('pickup');
+                      await openPaymentModalForOrderId(orderId, () => {
+                        setShowPickupListPanel(true);
+                      });
+                    }}
+                    onPickupComplete={async (orderId) => {
+                      try {
+                        await fetch(`${API_URL}/orders/${orderId}/status`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ status: 'PICKED_UP' }),
+                        });
+                      } catch (e) {
+                        console.error('[PickupList] Pickup complete error:', e);
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
               <div className="flex flex-1 min-h-0">
                 {/* Left Panel - Order List and Summary */}
                 <div className="bg-white flex flex-col h-full" style={{ width: `${layoutSettings.leftPanelWidth}%` }}>
@@ -12305,6 +12342,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               </div>
             </div>
+            )}
 
             {/* Bottom Section - Function Buttons Panel (moved to right panel) */}
             <div ref={bottomBarRef} />
