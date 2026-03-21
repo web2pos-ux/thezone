@@ -1091,6 +1091,34 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                     const taxesTotal = Number(Object.values(taxBreakdown).reduce((sum, t) => sum + t.amount, 0).toFixed(2));
                     const totalVal = Number((subtotalVal + taxesTotal).toFixed(2));
 
+                    // Order-level discount from payment modal (adjustments_json)
+                    let pmDiscountLabel = '';
+                    let pmDiscountAmount = 0;
+                    let pmNetSales = subtotalVal;
+                    let pmTaxBreakdown = taxBreakdown;
+                    let pmTaxesTotal = taxesTotal;
+                    try {
+                      const adjRaw = (selectedOrderDetail.fullOrder as any)?.adjustments_json;
+                      if (adjRaw) {
+                        const pmAdjs = typeof adjRaw === 'string' ? JSON.parse(adjRaw) : adjRaw;
+                        if (Array.isArray(pmAdjs)) {
+                          const pmDisc = pmAdjs.find((a: any) => a.percent > 0 && a.originalSubtotal > 0);
+                          if (pmDisc) {
+                            pmDiscountAmount = Math.abs(Number(pmDisc.amount || 0));
+                            pmDiscountLabel = (pmDisc.label || `Discount (${pmDisc.percent}%)`).replace(/^Discount\b/, 'D/C');
+                            pmNetSales = Number((subtotalVal - pmDiscountAmount).toFixed(2));
+                            const discountRatio = subtotalVal > 0 ? pmNetSales / subtotalVal : 1;
+                            const scaledBreakdown: { [key: string]: { rate: number; amount: number } } = {};
+                            Object.entries(pmTaxBreakdown).forEach(([name, info]: [string, any]) => {
+                              scaledBreakdown[name] = { rate: info.rate, amount: Number((info.amount * discountRatio).toFixed(2)) };
+                            });
+                            pmTaxBreakdown = scaledBreakdown;
+                            pmTaxesTotal = Number(Object.values(scaledBreakdown).reduce((sum: number, t: any) => sum + t.amount, 0).toFixed(2));
+                          }
+                        }
+                      }
+                    } catch {}
+
                     const storedTotalRaw =
                       (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).total) ??
                       (selectedOrderDetail as any).total ?? 0;
@@ -1103,7 +1131,19 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                           <span className="text-gray-600">Sub Total</span>
                           <span>${subtotalVal.toFixed(2)}</span>
                         </div>
-                        {Object.entries(taxBreakdown).map(([taxName, info]: any) => (
+                        {pmDiscountAmount > 0 && (
+                          <>
+                            <div className="flex justify-between text-sm text-green-600">
+                              <span>{pmDiscountLabel}</span>
+                              <span>-${pmDiscountAmount.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-600">Net Sales</span>
+                              <span>${pmNetSales.toFixed(2)}</span>
+                            </div>
+                          </>
+                        )}
+                        {Object.entries(pmTaxBreakdown).map(([taxName, info]: any) => (
                           <div key={taxName} className="flex justify-between text-sm">
                             <span className="text-gray-600">{info.rate ? `${taxName} (${info.rate}%)` : taxName}</span>
                             <span>${Number(info.amount || 0).toFixed(2)}</span>

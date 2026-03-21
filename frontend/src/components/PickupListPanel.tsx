@@ -331,6 +331,32 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     const storedTotal = Number(order.fullOrder?.total ?? order.total ?? 0);
     const finalTotal = Number.isFinite(storedTotal) && storedTotal > 0 ? Number(storedTotal.toFixed(2)) : totalVal;
 
+    // Order-level discount from payment modal (adjustments_json)
+    let pmDiscountLabel = '';
+    let pmDiscountAmount = 0;
+    let pmNetSales = subtotalVal;
+    let pmTaxBreakdown = taxBreakdown;
+    try {
+      const adjRaw = (order.fullOrder as any)?.adjustments_json ?? order.adjustments_json;
+      if (adjRaw) {
+        const pmAdjs = typeof adjRaw === 'string' ? JSON.parse(adjRaw) : adjRaw;
+        if (Array.isArray(pmAdjs)) {
+          const pmDisc = pmAdjs.find((a: any) => a.percent > 0 && a.originalSubtotal > 0);
+          if (pmDisc) {
+            pmDiscountAmount = Math.abs(Number(pmDisc.amount || 0));
+            pmDiscountLabel = (pmDisc.label || `Discount (${pmDisc.percent}%)`).replace(/^Discount\b/, 'D/C');
+            pmNetSales = Number((subtotalVal - pmDiscountAmount).toFixed(2));
+            const discountRatio = subtotalVal > 0 ? pmNetSales / subtotalVal : 1;
+            const scaledBreakdown: { [key: string]: { rate: number; amount: number } } = {};
+            Object.entries(pmTaxBreakdown).forEach(([name, info]) => {
+              scaledBreakdown[name] = { rate: info.rate, amount: Number((info.amount * discountRatio).toFixed(2)) };
+            });
+            pmTaxBreakdown = scaledBreakdown;
+          }
+        }
+      }
+    } catch {}
+
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Action buttons */}
@@ -487,7 +513,19 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
                 <span className="text-gray-600">Sub Total</span>
                 <span>${subtotalVal.toFixed(2)}</span>
               </div>
-              {Object.entries(taxBreakdown).map(([taxName, info]) => (
+              {pmDiscountAmount > 0 && (
+                <>
+                  <div className="flex justify-between text-sm text-green-600">
+                    <span>{pmDiscountLabel}</span>
+                    <span>-${pmDiscountAmount.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Net Sales</span>
+                    <span>${pmNetSales.toFixed(2)}</span>
+                  </div>
+                </>
+              )}
+              {Object.entries(pmTaxBreakdown).map(([taxName, info]) => (
                 <div key={taxName} className="flex justify-between text-sm">
                   <span className="text-gray-600">{info.rate ? `${taxName} (${info.rate}%)` : taxName}</span>
                   <span>${Number(info.amount || 0).toFixed(2)}</span>

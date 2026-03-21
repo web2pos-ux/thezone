@@ -2073,7 +2073,8 @@ function renderReceiptGraphic(receiptData) {
   if (receiptData.adjustments && receiptData.adjustments.length > 0) {
     receiptData.adjustments.forEach(adj => {
       const amount = Number(adj.amount || 0);
-      const label = adj.label || adj.name || 'Discount';
+      let label = adj.label || adj.name || 'Discount';
+      if (amount < 0) label = label.replace(/^Discount\b/, 'D/C');
       const sign = amount < 0 ? '-' : '';
       const stAdj = getGraphicElementStyle(layout, 'discount', {
         fontSize: PRINTER_CONFIG.fontSize.normal,
@@ -2094,6 +2095,28 @@ function renderReceiptGraphic(receiptData) {
         });
       }
     });
+    // Net Sales (할인 적용 후 순매출)
+    const hasDiscount = receiptData.adjustments.some(adj => Number(adj.amount || 0) < 0);
+    if (hasDiscount && receiptData.subtotal != null) {
+      const discountSum = receiptData.adjustments.reduce((s, adj) => s + Number(adj.amount || 0), 0);
+      const netSales = Number((Number(receiptData.subtotal) + discountSum).toFixed(2));
+      const stAdj = getGraphicElementStyle(layout, 'discount', {
+        fontSize: PRINTER_CONFIG.fontSize.normal,
+        fontWeight: 'bold',
+        fontStyle: 'normal',
+        align: 'left',
+        inverse: false
+      });
+      y += stAdj.lineSpacing;
+      y = drawLeftRightText(ctx, 'Net Sales:', `$${netSales.toFixed(2)}`, y, {
+        fontSize: ITEM_BASE_FONT_SIZE,
+        fontWeight: stAdj.fontWeight,
+        fontStyle: stAdj.fontStyle,
+        inverse: stAdj.inverse,
+        lineHeight: stAdj.lineHeight,
+        extraBold: stAdj.extraBold
+      });
+    }
   }
 
   // 세금 (할인 후 금액 기준)

@@ -621,10 +621,18 @@ function buildReceiptText(receiptData) {
   if (receiptData.adjustments && receiptData.adjustments.length > 0) {
     receiptData.adjustments.forEach(adj => {
       const amount = Number(adj.amount || 0);
-      const label = adj.label || adj.name || 'Adjustment';
+      let label = adj.label || adj.name || 'Adjustment';
+      if (amount < 0) label = label.replace(/^Discount\b/, 'D/C');
       const sign = amount < 0 ? '-' : '';
       output += rightAlignText(`${label}:`, `${sign}$${Math.abs(amount).toFixed(2)}`, width) + LF;
     });
+    // Net Sales (할인 적용 후 순매출)
+    const hasDiscount = receiptData.adjustments.some(adj => Number(adj.amount || 0) < 0);
+    if (hasDiscount && receiptData.subtotal != null) {
+      const discountSum = receiptData.adjustments.reduce((s, adj) => s + Number(adj.amount || 0), 0);
+      const netSales = Number((Number(receiptData.subtotal) + discountSum).toFixed(2));
+      output += rightAlignText('Net Sales:', `$${netSales.toFixed(2)}`, width) + LF;
+    }
   }
   
   // 세금
@@ -1668,10 +1676,18 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
     output += getStyleCommand(discountStyle);
     receiptData.adjustments.forEach(adj => {
       const amount = Number(adj.amount || 0);
-      const label = adj.label || adj.name || 'Discount';
+      let label = adj.label || adj.name || 'Discount';
+      if (amount < 0) label = label.replace(/^Discount\b/, 'D/C');
       const sign = amount < 0 ? '-' : '';
       output += rightAlignText(`${label}:`, `${sign}$${Math.abs(amount).toFixed(2)}`, width) + LF;
     });
+    // Net Sales (할인 적용 후 순매출)
+    const hasDiscount = receiptData.adjustments.some(adj => Number(adj.amount || 0) < 0);
+    if (hasDiscount && receiptData.subtotal != null) {
+      const discountSum = receiptData.adjustments.reduce((s, adj) => s + Number(adj.amount || 0), 0);
+      const netSales = Number((Number(receiptData.subtotal) + discountSum).toFixed(2));
+      output += rightAlignText('Net Sales:', `$${netSales.toFixed(2)}`, width) + LF;
+    }
     output += getStyleResetCommand();
   }
   

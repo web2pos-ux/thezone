@@ -10799,11 +10799,11 @@ const SalesPage: React.FC = () => {
                               {totals.discountTotal > 0 && (
                                 <>
                                   <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
-                                    <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? 'ðŸ·ï¸' : '🎁'} {totals.promotionName || 'Discount'}:</span>
+                                    <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? 'ðŸ·ï¸' : '🎁'} {(totals.promotionName || 'Discount').replace(/^Discount\b/, 'D/C')}:</span>
                                     <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
                                   </div>
                                   <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
-                                    <span className="font-medium text-xs">After Discount:</span>
+                                    <span className="font-medium text-xs">Net Sales:</span>
                                     <span className="font-medium text-xs">${totals.subtotalAfterDiscount.toFixed(2)}</span>
                                   </div>
                                 </>
