@@ -10063,6 +10063,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       
                       // Cash drawer 오픈 (결제 완료 시 즉시)
                       try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+                      // Save change_amount to DB
+                      if (data.change > 0 && data.hasCashPayment && savedOrderIdRef.current) {
+                        try { fetch(`${API_URL}/payments/order/${savedOrderIdRef.current}/change`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeAmount: data.change }) }); } catch {}
+                      }
                       
                       setPaymentCompleteData({
                         ...data,

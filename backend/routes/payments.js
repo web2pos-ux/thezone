@@ -49,8 +49,9 @@ module.exports = (db) => {
 	// create payment
 	router.post('/', async (req, res) => {
 		try {
-			const { orderId, method, amount, tip = 0, ref=null, status='APPROVED', guestNumber=null } = req.body || {};
+			const { orderId, method, amount, tip = 0, ref=null, status='APPROVED', guestNumber=null, changeAmount = 0 } = req.body || {};
 			const tipAmount = Number(tip);
+			const changeAmt = Number(changeAmount) || 0;
 			if (!orderId || !method || typeof amount !== 'number') {
 				return res.status(400).json({ success:false, error:'orderId, method, amount are required' });
 			}
@@ -59,9 +60,9 @@ module.exports = (db) => {
 			}
 			const createdAt = new Date().toISOString();
 			const result = await dbRun(
-				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
-				 VALUES(?,?,?,?,?,?,?,?)`,
-				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt]
+				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at, change_amount)
+				 VALUES(?,?,?,?,?,?,?,?,?)`,
+				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeAmt]
 			);
 			
 			// Firebase에도 결제 데이터 저장
@@ -93,6 +94,26 @@ module.exports = (db) => {
 		} catch (e) {
 			console.error('Failed to create payment:', e);
 			res.status(500).json({ success:false, error:'Failed to create payment' });
+		}
+	});
+
+	// update change_amount for the last cash payment of an order
+	router.post('/order/:orderId/change', async (req, res) => {
+		try {
+			const orderId = Number(req.params.orderId);
+			const { changeAmount = 0 } = req.body || {};
+			const amt = Math.max(0, Number(changeAmount) || 0);
+			const lastCash = await dbGet(
+				`SELECT id FROM payments WHERE order_id = ? AND UPPER(payment_method) = 'CASH' AND (status IS NULL OR UPPER(status) != 'VOIDED') ORDER BY id DESC LIMIT 1`,
+				[orderId]
+			);
+			if (lastCash) {
+				await dbRun(`UPDATE payments SET change_amount = ? WHERE id = ?`, [amt, lastCash.id]);
+			}
+			res.json({ success: true, updated: !!lastCash, changeAmount: amt });
+		} catch (e) {
+			console.error('Failed to update change_amount:', e);
+			res.status(500).json({ success: false, error: 'Failed to update change_amount' });
 		}
 	});
 

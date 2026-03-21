@@ -1475,6 +1475,7 @@ function renderReceiptGraphic(receiptData) {
   const splitIndex = Number(equalSplit?.index || 0);
   
   let estimatedHeight = 280 + topMarginPx; // 헤더 + 상단 마진 (Delivery: PAID/고객정보 라인 여유 포함)
+  if (receiptData.isReprint) estimatedHeight += 45; // REPRINT banner
   if (splitCount > 1 && splitIndex >= 1) estimatedHeight += 35; // EQUAL SPLIT label
   
   // 아이템 높이
@@ -1618,6 +1619,20 @@ function renderReceiptGraphic(receiptData) {
   });
   const ITEM_BASE_FONT_SIZE = Math.max(Number(stItemsBaseForSizing.fontSize) || 0, 26);
   
+  // === REPRINT 배너 (Receipt) ===
+  const isReceiptReprint = receiptData.isReprint || false;
+  if (isReceiptReprint) {
+    const reprintFontSize = Math.round(PRINTER_CONFIG.fontSize.xlarge * 0.85);
+    y = drawTextBlock(ctx, {
+      text: '** REPRINT **',
+      fontSize: reprintFontSize,
+      fontWeight: 'bold',
+      align: 'center',
+      inverse: false
+    }, y);
+    y += 5;
+  }
+
   // === 스토어 헤더 (반전) ===
   const stStoreName = getGraphicElementStyle(layout, 'storeName', {
     fontSize: PRINTER_CONFIG.fontSize.xlarge,

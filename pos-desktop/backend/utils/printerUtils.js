@@ -544,6 +544,13 @@ function buildReceiptText(receiptData) {
   const storeAddress = header.storeAddress || receiptData.storeAddress || '';
   const storePhone = header.storePhone || receiptData.storePhone || '';
   
+  // === REPRINT 배너 (Receipt) ===
+  if (receiptData.isReprint) {
+    output += CENTER + BOLD_ON + DOUBLE_HEIGHT;
+    output += '** REPRINT **' + LF;
+    output += NORMAL_SIZE + BOLD_OFF;
+  }
+
   // === 스토어 헤더 (반전 + 큰 글씨) ===
   output += CENTER;
   output += REVERSE_ON + BOLD_ON + DOUBLE_SIZE;

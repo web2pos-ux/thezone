@@ -5294,6 +5294,7 @@ const SalesPage: React.FC = () => {
         payments: payments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
         tip: tipTotal,
         change: Math.max(0, Number(change.toFixed(2))),
+        isReprint: true,
         footer: { message: 'Thank you!' }
       };
       console.log('📋 Receipt payload keys:', Object.keys(receiptPayload), 'items:', receiptPayload.items?.length);
@@ -11672,6 +11673,11 @@ const SalesPage: React.FC = () => {
           // Cash drawer ì¦‰ì‹œ ì˜¤í”ˆ
           try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
           
+          // Save change_amount to DB
+          if (data.change > 0 && data.hasCashPayment && onlineTogoPaymentOrder?.id) {
+            try { fetch(`${API_URL}/payments/order/${onlineTogoPaymentOrder.id}/change`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeAmount: data.change }) }); } catch {}
+          }
+          
           // ì™„ë£Œ ë°ì´í„° ì €ìž¥ (close handlerì—ì„œ ì‚¬ìš©)
           onlineTogoCompletionRef.current = {
             orderType: selectedOrderType,
@@ -11819,8 +11825,11 @@ const SalesPage: React.FC = () => {
               alert('An error occurred during payment processing.');
             }
           }}
-          onPaymentComplete={() => {
+          onPaymentComplete={(data: any) => {
             try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
+            if (data?.change > 0 && data?.hasCashPayment && orderListPaymentOrder?.id) {
+              try { fetch(`${API_URL}/payments/order/${orderListPaymentOrder.id}/change`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeAmount: data.change }) }); } catch {}
+            }
             (async () => {
               try {
                 const orderId = Number(orderListPaymentOrder?.id);
