@@ -29,6 +29,7 @@ import DayOpeningModal from '../components/DayOpeningModal';
 import OrderDetailModal, { OrderData, OrderChannelType } from '../components/OrderDetailModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
+import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
 // SoldOutModal removed - Sold Out is handled in OrderPage
 
 interface TableElement {
@@ -299,7 +300,7 @@ const SalesPage: React.FC = () => {
     } catch {}
     return { togo: true, delivery: true };
   });
-  const rightPanelVisible = channelVis.togo || channelVis.delivery;
+  const rightPanelVisible = true;
   // 현재 시간 표시용 상태
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const now = new Date();
@@ -309,6 +310,10 @@ const SalesPage: React.FC = () => {
   const [togoSort, setTogoSort] = useState<'time' | 'number'>('time');
   const [togoDir, setTogoDir] = useState<'asc' | 'desc'>('asc');
   const [togoStaleMinutes, setTogoStaleMinutes] = useState<number>(10);
+
+  // Swipe-to-pickup state for order list cards
+  const swipeDragRef = useRef<{ id: string; startX: number; currentX: number; type: string } | null>(null);
+  const [swipeDragState, setSwipeDragState] = useState<{ id: string; offsetX: number } | null>(null);
   const [softKbOpen, setSoftKbOpen] = useState(false);
   const [kbLang, setKbLang] = useState<string>('EN');
   const [refreshOrdersTrigger, setRefreshOrdersTrigger] = useState(0);
@@ -774,6 +779,10 @@ const SalesPage: React.FC = () => {
     }
     return { menuId: null, menuName: '' };
   });
+  const [togoInfoTiming, setTogoInfoTiming] = useState<'before' | 'after'>(() => {
+    const saved = localStorage.getItem('togo_info_timing');
+    return saved === 'after' ? 'after' : 'before';
+  });
   const menuCache = useMenuCache();
   const prefetchWorkerRef = useRef<Worker | null>(null);
   const idlePrefetchHandleRef = useRef<number | null>(null);
@@ -858,6 +867,23 @@ const SalesPage: React.FC = () => {
       }
     };
     loadDefaultSetup();
+  }, []);
+
+  useEffect(() => {
+    const loadTogoSetup = async () => {
+      try {
+        const res = await fetch(`${API_URL}/order-page-setups/type/togo`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const rows = Array.isArray(json?.data) ? json.data : [];
+        if (rows.length > 0) {
+          const timing = rows[0].togoInfoTiming === 'after' ? 'after' : 'before';
+          setTogoInfoTiming(timing);
+          localStorage.setItem('togo_info_timing', timing);
+        }
+      } catch {}
+    };
+    loadTogoSetup();
   }, []);
 
   useEffect(() => {
@@ -1082,6 +1108,10 @@ const SalesPage: React.FC = () => {
 
   // Togo ì£¼ë¬¸ ê´€ë ¨ ìƒíƒœë“¤
   const [showTogoOrderModal, setShowTogoOrderModal] = useState(false);
+  const [showFsrPickupModal, setShowFsrPickupModal] = useState(false);
+  const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
+    try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch { return true; }
+  });
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [pickupTime, setPickupTime] = useState(15);
@@ -3860,8 +3890,67 @@ const SalesPage: React.FC = () => {
     setHistoryDetailsMap({});
     setHistoryOrderDetail(null);
     setHistoryError('');
+
+    if (togoInfoTiming === 'after') {
+      const createdLocal = getLocalDatetimeString();
+      const readyTimeLabel = computeReadyDisplayFromNow(15);
+      const newOrder: any = {
+        id: Date.now(),
+        type: 'Togo',
+        time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+        createdAt: createdLocal,
+        phone: '',
+        phoneRaw: '',
+        name: '',
+        firstName: '',
+        lastName: '',
+        nameOrder: 'western',
+        status: 'pending',
+        serverId: server?.employee_id || null,
+        serverName: server?.employee_name || '',
+        address: '',
+        zip: '',
+        note: '',
+        fulfillment: 'togo',
+        pickup: { minutes: 15, ampm: getCurrentAmPm(), dateLabel: formatPickupDateLabel() },
+        readyTimeLabel,
+        virtualChannel: 'togo' as VirtualOrderChannel,
+        virtualTableId: null as string | null,
+      };
+      const usedVirtualIds = new Set<string>();
+      Object.values(togoOrderMeta).forEach((meta) => {
+        if (meta?.virtualTableId) usedVirtualIds.add(meta.virtualTableId);
+      });
+      const provisionalVirtualId = allocateVirtualTableId('togo', usedVirtualIds);
+      newOrder.virtualTableId = provisionalVirtualId;
+      setTogoOrderMeta((prev) => ({
+        ...prev,
+        [String(newOrder.id)]: { virtualTableId: provisionalVirtualId, channel: 'togo' },
+      }));
+      setTogoOrders((prev) => assignDailySequenceNumbers([...prev, newOrder], 'TOGO'));
+      navigate('/sales/order', {
+        state: {
+          orderType: 'togo',
+          menuId: defaultMenu.menuId,
+          menuName: defaultMenu.menuName,
+          orderId: newOrder.id,
+          serverId: server?.employee_id || null,
+          serverName: server?.employee_name || '',
+          customerName: '',
+          customerPhone: '',
+          customerAddress: '',
+          customerZip: '',
+          customerNote: '',
+          togoFulfillment: 'togo',
+          pickup: newOrder.pickup,
+          togoInfoTiming: 'after',
+        },
+      });
+      return;
+    }
+
     setShowTogoOrderModal(true);
-  }, []);
+  }, [togoInfoTiming, togoOrderMeta, defaultMenu.menuId, defaultMenu.menuName, navigate]);
 
   const handleNewTogoClick = () => {
     if (isMoveMergeMode) {
@@ -3892,6 +3981,90 @@ const SalesPage: React.FC = () => {
     setDeliveryCompany('');
     setDeliveryOrderNumber('');
     setShowDeliveryOrderModal(true);
+  };
+
+  const SWIPE_THRESHOLD = 80;
+
+  const handleSwipeStart = (e: React.TouchEvent | React.MouseEvent, id: string, orderType: string) => {
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    swipeDragRef.current = { id, startX: clientX, currentX: clientX, type: orderType };
+    setSwipeDragState({ id, offsetX: 0 });
+  };
+
+  const handleSwipeMove = (e: React.TouchEvent | React.MouseEvent) => {
+    if (!swipeDragRef.current) return;
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    swipeDragRef.current.currentX = clientX;
+    const deltaX = clientX - swipeDragRef.current.startX;
+    const clamped = Math.min(0, deltaX);
+    setSwipeDragState({ id: swipeDragRef.current.id, offsetX: clamped });
+  };
+
+  const handleSwipeEnd = async () => {
+    if (!swipeDragRef.current) return;
+    const { id, startX, currentX, type: orderType } = swipeDragRef.current;
+    const delta = startX - currentX;
+    swipeDragRef.current = null;
+    setSwipeDragState(null);
+
+    if (delta < SWIPE_THRESHOLD) return;
+
+    try {
+      if (orderType === 'delivery') {
+        const order = togoOrders.find(o => String(o.id) === String(id));
+        if (!order) return;
+        const actualOrderId = order.order_id || order.id;
+        if (Number.isFinite(Number(actualOrderId))) {
+          await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'PICKED_UP' }),
+          });
+        }
+        const deliveryMetaId = order.deliveryMetaId || order.delivery_meta_id || null;
+        if (deliveryMetaId != null && String(deliveryMetaId).trim() !== '') {
+          try {
+            await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(deliveryMetaId))}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          } catch {}
+        }
+        setTogoOrders(prev => prev.filter(o => String(o.id) !== String(id) && String(o.deliveryMetaId || '') !== String(deliveryMetaId || '')));
+      } else if (orderType === 'online') {
+        const card = onlineQueueCards.find(c => String(c.id) === String(id));
+        if (!card) return;
+        const localOrderId = card.fullOrder?.localOrderId || card.number;
+        await fetch(`${API_URL}/online-orders/order/${id}/pickup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (localOrderId && typeof localOrderId === 'number') {
+          await fetch(`${API_URL}/orders/${localOrderId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'PICKED_UP' }),
+          });
+        }
+        setOnlineQueueCards(prev => prev.filter(c => String(c.id) !== String(id)));
+      }
+      loadOnlineOrders();
+      loadTogoOrders();
+    } catch (err) {
+      console.error('Swipe pickup error:', err);
+    }
+  };
+
+  const isOnlineCardPaymentLinked = (card: OnlineQueueCard): boolean => {
+    const fo = card.fullOrder;
+    if (!fo) return false;
+    const ps = (fo.paymentStatus || fo.payment_status || '').toLowerCase();
+    if (ps === 'paid' || ps === 'completed') return true;
+    const pm = (fo.paymentMethod || fo.payment_method || '').toLowerCase();
+    if (pm && pm !== 'cash' && pm !== 'cod' && pm !== '') return true;
+    if (fo.payment?.method || fo.payment?.status === 'paid') return true;
+    return false;
   };
 
   const handleServerModalClose = () => {
@@ -4129,6 +4302,9 @@ const SalesPage: React.FC = () => {
           });
         } catch {}
       }
+      if (e.key === 'fsrTogoButtonVisible') {
+        setFsrTogoButtonVisible(e.newValue !== 'false');
+      }
     };
     window.addEventListener('storage', onChannelVisChange);
     return () => window.removeEventListener('storage', onChannelVisChange);
@@ -4170,6 +4346,9 @@ const SalesPage: React.FC = () => {
             delivery: parsed?.delivery !== false,
           });
         }
+      } catch {}
+      try {
+        setFsrTogoButtonVisible(localStorage.getItem('fsrTogoButtonVisible') !== 'false');
       } catch {}
     };
     window.addEventListener('focus', onFocus);
@@ -8511,7 +8690,7 @@ const SalesPage: React.FC = () => {
                 {currentTime}
               </span>
             </div>
-            {/* Delivery + EXIT 버튼 (오른쪽) */}
+            {/* Delivery + TOGO + EXIT 버튼 (오른쪽) */}
             <div className="flex justify-end items-center gap-2">
               {channelVis.delivery && <button
                 className="h-9 px-3 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
@@ -8520,6 +8699,15 @@ const SalesPage: React.FC = () => {
               >
                 Delivery
               </button>}
+              {fsrTogoButtonVisible && (
+                <button
+                  className="h-10 px-5 rounded-lg text-sm font-bold bg-green-700 text-white hover:bg-green-800 border-2 border-green-800 shadow-md transition-all"
+                  onClick={() => setShowFsrPickupModal(true)}
+                  title="Togo Order"
+                >
+                  TOGO
+                </button>
+              )}
               <button
                 className="h-10 px-5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 border-2 border-red-700 shadow-md transition-all"
                 onClick={() => setShowExitModal(true)}
@@ -8624,24 +8812,30 @@ const SalesPage: React.FC = () => {
           {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
             {/* ìƒë‹¨ ê³ ì • ë²„íŠ¼ ì˜ì—­ */}
             <div className="flex gap-2 p-2 pb-1 flex-shrink-0">
-              {channelVis.delivery && <button
+              <button
                 onClick={handleNewDeliveryClick}
                 className="flex-1 py-2 min-h-[40px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
-                Delivery
-              </button>}
-              {channelVis.togo && <button
+                DLVR
+              </button>
+              <button
+                onClick={() => setShowOnlineOrderPanel(true)}
+                className="flex-1 py-2 min-h-[40px] bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+              >
+                Online
+              </button>
+              <button
                 onClick={handleNewTogoClick}
                 className="flex-1 py-2 min-h-[40px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
                 Togo
-              </button>}
+              </button>
             </div>
             {/* ìŠ¤í¬ë¡¤ ê°€ëŠ¥í•œ ì£¼ë¬¸ ëª©ë¡ ì˜ì—­ */}
             <div className="flex-1 overflow-auto px-2 pb-[85px]">
-              <div className={`grid ${channelVis.delivery && channelVis.togo ? 'grid-cols-2' : 'grid-cols-1'} gap-1`}>
+              <div className="grid grid-cols-2 gap-1">
                 {/* ì™¼ìª½: Delivery ì£¼ë¬¸ ëª©ë¡ */}
-                {channelVis.delivery && <div className="space-y-1">
+                <div className="space-y-1">
                   {(() => {
                     const deliveryFiltered = togoOrders.filter(order => 
                       String(order.fulfillment || '').toLowerCase() === 'delivery' ||
@@ -8652,7 +8846,27 @@ const SalesPage: React.FC = () => {
                     console.log('ðŸš— [UI] deliveryFiltered:', deliveryFiltered.length, deliveryFiltered);
                     return deliveryFiltered;
                   })()
-                    .sort((a, b) => (a.readyTimeLabel || '99:99').localeCompare(b.readyTimeLabel || '99:99'))
+                    .sort((a, b) => {
+                      const now = new Date();
+                      const parseReady = (label: string) => {
+                        const [h, m] = (label || '99:99').split(':').map(Number);
+                        if (!isNaN(h) && !isNaN(m)) {
+                          const d = new Date();
+                          d.setHours(h, m, 0, 0);
+                          return d.getTime();
+                        }
+                        return Infinity;
+                      };
+                      const msA = parseReady(a.readyTimeLabel);
+                      const msB = parseReady(b.readyTimeLabel);
+                      const nowMs = now.getTime();
+                      const overdueA = msA < nowMs;
+                      const overdueB = msB < nowMs;
+                      if (overdueA && !overdueB) return -1;
+                      if (!overdueA && overdueB) return 1;
+                      if (overdueA && overdueB) return msA - msB; // oldest overdue first
+                      return msA - msB; // nearest future first
+                    })
                     .map(order => {
                       const isSourceTogo = isMoveMergeMode && sourceTogoOrder?.id === order.id;
                       const isTargetSelectable = isMoveMergeMode && (
@@ -8673,15 +8887,35 @@ const SalesPage: React.FC = () => {
                         borderWidth = 3;
                       }
                       return (
-                        <button 
+                        <div
                           key={`delivery-${order.id}`}
-                          className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
-                          style={{ backgroundColor, borderColor, borderWidth }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleVirtualOrderCardClick('delivery', order);
-                          }}
+                          className="relative overflow-hidden rounded-lg"
                         >
+                          {swipeDragState?.id === String(order.id) && swipeDragState.offsetX < -20 && (
+                            <div className="absolute inset-0 flex items-center justify-end pr-3 bg-emerald-500 rounded-lg z-0">
+                              <span className="text-white font-bold text-xs">Pickup ✓</span>
+                            </div>
+                          )}
+                          <button 
+                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            style={{
+                              backgroundColor, borderColor, borderWidth,
+                              transform: swipeDragState?.id === String(order.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
+                              transition: swipeDragState?.id === String(order.id) ? 'none' : 'transform 0.2s ease',
+                            }}
+                            onClick={(e) => {
+                              if (swipeDragRef.current) return;
+                              e.stopPropagation();
+                              handleVirtualOrderCardClick('delivery', order);
+                            }}
+                            onTouchStart={(e) => handleSwipeStart(e, String(order.id), 'delivery')}
+                            onTouchMove={handleSwipeMove}
+                            onTouchEnd={handleSwipeEnd}
+                            onMouseDown={(e) => handleSwipeStart(e, String(order.id), 'delivery')}
+                            onMouseMove={handleSwipeMove}
+                            onMouseUp={handleSwipeEnd}
+                            onMouseLeave={() => { if (swipeDragRef.current?.id === String(order.id)) { swipeDragRef.current = null; setSwipeDragState(null); } }}
+                          >
                           {/* ìœ—ì¤„: ë”œë¦¬ë²„ë¦¬ì±„ë„(ë³¼ë“œ) / ë”œë¦¬ë²„ë¦¬ì£¼ë¬¸ë²ˆí˜¸(ë³¼ë“œ) */}
                           <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
                             <span className="text-purple-700 font-bold">{order.deliveryCompany || 'Delivery'}</span>
@@ -8693,6 +8927,7 @@ const SalesPage: React.FC = () => {
                             Ready: {order.readyTimeLabel || '--:--'}
                           </div>
                         </button>
+                        </div>
                       );
                     })}
                   {togoOrders.filter(order => 
@@ -8702,9 +8937,9 @@ const SalesPage: React.FC = () => {
                   ).length === 0 && (
                     <div className="text-center text-gray-400 text-xs py-4">No Delivery Orders</div>
                   )}
-                </div>}
+                </div>
                 
-                {channelVis.togo && <div className="space-y-1">
+                <div className="space-y-1">
                   {(() => {
                     // Togo (delivery ì œì™¸)ì™€ Onlineì„ í•©ì³ì„œ í”½ì—…ì‹œê°„ ìˆœìœ¼ë¡œ ì •ë ¬
                     const getPickupTimeMs = (order: any, type: 'togo' | 'online'): number => {
@@ -8742,7 +8977,15 @@ const SalesPage: React.FC = () => {
                         .map(o => ({ order: o, type: 'togo' as const, pickupMs: getPickupTimeMs(o, 'togo') })),
                       ...onlineQueueCards.map(o => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
                     ];
-                    combinedOrders.sort((a, b) => a.pickupMs - b.pickupMs);
+                    combinedOrders.sort((a, b) => {
+                      const nowMs = Date.now();
+                      const overdueA = a.pickupMs < nowMs && a.pickupMs !== Infinity;
+                      const overdueB = b.pickupMs < nowMs && b.pickupMs !== Infinity;
+                      if (overdueA && !overdueB) return -1;
+                      if (!overdueA && overdueB) return 1;
+                      if (overdueA && overdueB) return a.pickupMs - b.pickupMs;
+                      return a.pickupMs - b.pickupMs;
+                    });
                     return combinedOrders.map(({ order, type }) => {
                       if (type === 'togo') {
                         const isSourceTogo = isMoveMergeMode && sourceTogoOrder?.id === order.id;
@@ -8791,6 +9034,7 @@ const SalesPage: React.FC = () => {
                         const card = order;
                         const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
                         const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
+                        const canSwipe = isOnlineCardPaymentLinked(card as OnlineQueueCard);
                         let backgroundColor = '#B1C4DD';
                         let borderColor = '#9BB3D1';
                         let borderWidth = 1;
@@ -8804,12 +9048,33 @@ const SalesPage: React.FC = () => {
                           borderWidth = 3;
                         }
                         return (
-                          <button
+                          <div
                             key={`online-${card.id}`}
-                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
-                            style={{ backgroundColor, borderColor, borderWidth }}
-                            onClick={() => handleVirtualOrderCardClick('online', card)}
+                            className="relative overflow-hidden rounded-lg"
                           >
+                            {canSwipe && swipeDragState?.id === String(card.id) && swipeDragState.offsetX < -20 && (
+                              <div className="absolute inset-0 flex items-center justify-end pr-3 bg-emerald-500 rounded-lg z-0">
+                                <span className="text-white font-bold text-xs">Pickup ✓</span>
+                              </div>
+                            )}
+                            <button
+                              className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg relative z-10 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                              style={{
+                                backgroundColor, borderColor, borderWidth,
+                                transform: canSwipe && swipeDragState?.id === String(card.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
+                                transition: canSwipe && swipeDragState?.id === String(card.id) ? 'none' : 'transform 0.2s ease',
+                              }}
+                              onClick={() => { if (!swipeDragRef.current) handleVirtualOrderCardClick('online', card); }}
+                              {...(canSwipe ? {
+                                onTouchStart: (e: React.TouchEvent) => handleSwipeStart(e, String(card.id), 'online'),
+                                onTouchMove: handleSwipeMove,
+                                onTouchEnd: handleSwipeEnd,
+                                onMouseDown: (e: React.MouseEvent) => handleSwipeStart(e, String(card.id), 'online'),
+                                onMouseMove: handleSwipeMove,
+                                onMouseUp: handleSwipeEnd,
+                                onMouseLeave: () => { if (swipeDragRef.current?.id === String(card.id)) { swipeDragRef.current = null; setSwipeDragState(null); } },
+                              } : {})}
+                            >
                             {/* ìœ—ì¤„: Online(ë³¼ë“œ), ì£¼ë¬¸ë²ˆí˜¸(ë³¼ë“œ), í”½ì—…ì‹œê°„ */}
                             <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
                               <span className="w-[45px] text-left text-blue-700 font-bold">Online</span>
@@ -8822,11 +9087,12 @@ const SalesPage: React.FC = () => {
                               <span className="text-right">{card.name}</span>
                             </div>
                           </button>
+                          </div>
                         );
                       }
                     });
                   })()}
-                </div>}
+                </div>
               </div>
             </div>
 
@@ -11987,7 +12253,81 @@ const SalesPage: React.FC = () => {
         </div>
       )}
 
-      {/* EXIT ëª¨ë‹¬ */}
+      {/* FSR Pickup Order Modal (TOGO 버튼 클릭 시) */}
+      <PickupOrderModal
+        isOpen={showFsrPickupModal}
+        onClose={() => setShowFsrPickupModal(false)}
+        onConfirm={(data: PickupOrderConfirmData) => {
+          setShowFsrPickupModal(false);
+          const readyTimeLabel = data.readyTimeLabel;
+          const createdLocal = getLocalDatetimeString();
+          const newOrder: any = {
+            id: Date.now(),
+            type: data.fulfillmentMode === 'delivery' ? 'Delivery' : 'Togo',
+            time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+            createdAt: createdLocal,
+            phone: data.customerPhone,
+            phoneRaw: (data.customerPhone || '').replace(/\D/g, ''),
+            name: data.customerName,
+            firstName: '',
+            lastName: '',
+            nameOrder: 'western',
+            status: 'pending',
+            serverId: null,
+            serverName: '',
+            address: data.customerAddress,
+            zip: data.customerZip,
+            note: data.note,
+            fulfillment: data.fulfillmentMode,
+            pickup: { minutes: data.pickupMinutes, ampm: 'PM', dateLabel: '' },
+            readyTimeLabel,
+            virtualChannel: (data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo') as VirtualOrderChannel,
+            virtualTableId: null as string | null,
+          };
+          const usedVirtualIds = new Set<string>();
+          Object.values(togoOrderMeta).forEach((meta) => {
+            if (meta?.virtualTableId) usedVirtualIds.add(meta.virtualTableId);
+          });
+          const channel: VirtualOrderChannel = data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo';
+          const provisionalVirtualId = allocateVirtualTableId(channel, usedVirtualIds);
+          newOrder.virtualTableId = provisionalVirtualId;
+          setTogoOrderMeta((prev) => ({
+            ...prev,
+            [String(newOrder.id)]: { virtualTableId: provisionalVirtualId, channel },
+          }));
+          setTogoOrders((prev) => assignDailySequenceNumbers([...prev, newOrder], channel === 'delivery' ? 'DELIVERY' : 'TOGO'));
+          navigate('/sales/order', {
+            state: {
+              orderType: data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo',
+              menuId: defaultMenu.menuId,
+              menuName: defaultMenu.menuName,
+              orderId: newOrder.id,
+              serverId: null,
+              serverName: '',
+              customerName: data.customerName,
+              customerPhone: data.customerPhone,
+              customerAddress: data.customerAddress,
+              customerZip: data.customerZip,
+              customerNote: data.note,
+              togoFulfillment: data.fulfillmentMode,
+              pickup: newOrder.pickup,
+            },
+          });
+        }}
+        onPickupComplete={async (order) => {
+          const orderId: any = (order as any)?.order_id ?? order?.id;
+          if (!orderId) return;
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          } catch (e) { console.error('[FSR Pickup] Pickup complete error:', e); }
+        }}
+      />
+
+      {/* EXIT 모달 */}
       {showExitModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80]">
           <div className="bg-white rounded-2xl shadow-2xl w-[350px] overflow-hidden">
