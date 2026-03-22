@@ -34,7 +34,7 @@ interface ReportData {
   bottomItems?: Array<{ rank: number; name: string; quantity: number; revenue: number }>;
   totalItems: { totalQuantity: number; uniqueItems: number };
   categorySales?: Array<{ category: string; quantity: number; revenue: number }>;
-  unpaid?: { orderCount: number; totalAmount: number; subtotal?: number; taxTotal?: number; channels: Record<string, { count: number; amount: number }> };
+  unpaid?: { orderCount: number; totalAmount: number; subtotal?: number; taxTotal?: number; taxDetails?: TaxDetail[]; channels: Record<string, { count: number; amount: number }> };
   hourlySales?: Array<{ hour: string; order_count: number; revenue: number }>;
   paymentBreakdown?: Array<{ payment_method: string; count: number; net_amount: number; tips: number }>;
   tableTurnover?: Array<{ table_name: string; order_count: number; avg_duration_min: number }>;
@@ -186,31 +186,59 @@ const OperationalReportsPanel: React.FC = () => {
           {/* ===== 1. All Orders ===== */}
           <div>
             <div className="text-xs text-slate-500 font-bold mb-1.5">All Orders</div>
-            <div className="grid grid-cols-4 gap-3">
-              {(() => {
-                const up = data.unpaid;
-                const hasUnpaid = up && up.orderCount > 0;
-                const items = [
-                  { label: 'Orders', paid: data.overall.orderCount.toString(), unpaid: hasUnpaid ? `+${up!.orderCount}` : '', combined: hasUnpaid ? (data.overall.orderCount + up!.orderCount).toString() : '', isTax: false },
-                  { label: 'Subtotal', paid: fmt(data.overall.subtotal), unpaid: hasUnpaid ? `+${fmt(up!.subtotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.subtotal + (up!.subtotal || 0)) : '', isTax: false },
-                  { label: 'Tax', paid: fmt(data.overall.taxTotal), unpaid: hasUnpaid ? `+${fmt(up!.taxTotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.taxTotal + (up!.taxTotal || 0)) : '', isTax: true },
-                  { label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '', isTax: false },
-                ];
-                return items.map(s => (
-                  <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
-                    <div className="text-xs text-gray-500 font-medium">{s.label}</div>
-                    <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.paid}</div>
-                    {s.unpaid && <div className="text-xs text-amber-600 mt-0.5">{s.unpaid}</div>}
-                    {s.combined && <div className="text-xs text-gray-400 mt-0.5">{s.combined}</div>}
-                    {s.isTax && data.taxDetails && data.taxDetails.length > 0 && (
-                      <div className="mt-1 space-y-0.5">
-                        {data.taxDetails.map((t, i) => <div key={i} className="text-[11px] text-gray-500">{t.name} ({t.rate}%): {fmt(t.amount)}</div>)}
-                      </div>
-                    )}
-                  </div>
-                ));
-              })()}
-            </div>
+            {(() => {
+              const up = data.unpaid;
+              const hasUnpaid = up && up.orderCount > 0;
+              const taxList = data.taxDetails && data.taxDetails.length > 0 ? data.taxDetails : [];
+              const unpaidTaxList = (up as any)?.taxDetails || [];
+              const items: Array<{ label: string; paid: string; unpaid: string; combined: string }> = [
+                { label: 'Orders', paid: data.overall.orderCount.toString(), unpaid: hasUnpaid ? `+${up!.orderCount}` : '', combined: hasUnpaid ? (data.overall.orderCount + up!.orderCount).toString() : '' },
+                { label: 'Subtotal', paid: fmt(data.overall.subtotal), unpaid: hasUnpaid ? `+${fmt(up!.subtotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.subtotal + (up!.subtotal || 0)) : '' },
+              ];
+              if (taxList.length > 0) {
+                taxList.forEach(t => {
+                  const unpaidMatch = unpaidTaxList.find((ut: TaxDetail) => ut.name === t.name);
+                  const unpaidAmt = unpaidMatch ? unpaidMatch.amount : 0;
+                  items.push({
+                    label: t.rate > 0 ? `${t.name} ${t.rate}%` : t.name,
+                    paid: fmt(t.amount),
+                    unpaid: hasUnpaid && unpaidAmt > 0 ? `+${fmt(unpaidAmt)}` : '',
+                    combined: hasUnpaid && unpaidAmt > 0 ? fmt(t.amount + unpaidAmt) : ''
+                  });
+                });
+                unpaidTaxList.forEach((ut: TaxDetail) => {
+                  if (!taxList.find(t => t.name === ut.name) && ut.amount > 0) {
+                    items.push({
+                      label: ut.rate > 0 ? `${ut.name} ${ut.rate}%` : ut.name,
+                      paid: fmt(0),
+                      unpaid: `+${fmt(ut.amount)}`,
+                      combined: fmt(ut.amount)
+                    });
+                  }
+                });
+              } else if (data.overall.taxTotal > 0) {
+                items.push({
+                  label: 'Tax',
+                  paid: fmt(data.overall.taxTotal),
+                  unpaid: hasUnpaid ? `+${fmt(up!.taxTotal || 0)}` : '',
+                  combined: hasUnpaid ? fmt(data.overall.taxTotal + (up!.taxTotal || 0)) : ''
+                });
+              }
+              items.push({ label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '' });
+              const cols = Math.min(items.length, 6);
+              return (
+                <div className={`grid gap-3`} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+                  {items.map(s => (
+                    <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
+                      <div className="text-xs text-gray-500 font-medium">{s.label}</div>
+                      <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.paid}</div>
+                      {s.unpaid && <div className="text-xs text-amber-600 mt-0.5">{s.unpaid}</div>}
+                      {s.combined && <div className="text-xs text-gray-400 mt-0.5">{s.combined}</div>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {data.unpaid && data.unpaid.orderCount > 0 && (
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <div className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1">

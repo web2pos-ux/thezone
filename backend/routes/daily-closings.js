@@ -393,17 +393,17 @@ module.exports = (db) => {
     salesData.online_sales = chMap['ONLINE'] || 0;
     salesData.delivery_sales = chMap['DELIVERY'] || 0;
 
-    // GST / PST separation from order_items + tax_groups (Canadian tax compliance)
+    // GST / PST separation (Canadian tax compliance)
+    // Uses orders.tax + orders.subtotal to calculate effective rate, then splits by tax table rates
     let gstTotal = 0, pstTotal = 0;
     try {
       const oTf = tfPrefixed('o');
+      // First try: tax_group_links based
       const taxSplit = await dbGet(`
         SELECT
           COALESCE(SUM(
             (oi.price * oi.quantity) * (
-              SELECT COALESCE(SUM(CASE WHEN UPPER(t.name) LIKE '%GST%' THEN t.rate ELSE 0 END),
-                CASE WHEN oi.tax_group_id IS NULL OR NOT EXISTS (SELECT 1 FROM tax_group_links tgl2 WHERE tgl2.tax_group_id = oi.tax_group_id) THEN 5 ELSE 0 END
-              ) / 100
+              SELECT COALESCE(SUM(CASE WHEN UPPER(t.name) LIKE '%GST%' THEN t.rate ELSE 0 END), 0) / 100
               FROM tax_group_links tgl
               JOIN taxes t ON t.tax_id = tgl.tax_id
               WHERE tgl.tax_group_id = oi.tax_group_id
@@ -424,6 +424,45 @@ module.exports = (db) => {
       `, oTf.params);
       gstTotal = Number(taxSplit?.gst_total || 0);
       pstTotal = Number(taxSplit?.pst_total || 0);
+
+      // Fallback: if tax_group_id is NULL for all items, use orders.tax + taxes table
+      if (gstTotal === 0 && pstTotal === 0) {
+        const activeTaxes = await dbAll(`
+          SELECT DISTINCT t.name, t.rate FROM taxes t
+          JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+          JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+          WHERE COALESCE(t.is_deleted, 0) = 0
+          ORDER BY t.rate ASC
+        `, []);
+        const gstRate = (activeTaxes || []).find(t => /gst/i.test(t.name))?.rate || 0;
+        const pstRates = (activeTaxes || []).filter(t => /pst/i.test(t.name)).map(t => Number(t.rate));
+        const mainPstRate = pstRates.length > 0 ? Math.min(...pstRates) : 0;
+
+        if (gstRate > 0) {
+          const orders = await dbAll(`
+            SELECT o.subtotal, o.tax FROM orders o
+            WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+              AND COALESCE(o.tax, 0) > 0
+          `, oTf.params);
+          (orders || []).forEach(o => {
+            const sub = Number(o.subtotal || 0);
+            const totalTax = Number(o.tax || 0);
+            if (sub <= 0 || totalTax <= 0) return;
+            const effRate = (totalTax / sub) * 100;
+            if (effRate <= gstRate + 0.5) {
+              gstTotal += totalTax;
+            } else if (mainPstRate > 0) {
+              const combinedRate = gstRate + mainPstRate;
+              gstTotal += (gstRate / combinedRate) * totalTax;
+              pstTotal += (mainPstRate / combinedRate) * totalTax;
+            } else {
+              gstTotal += totalTax;
+            }
+          });
+          gstTotal = Number(gstTotal.toFixed(2));
+          pstTotal = Number(pstTotal.toFixed(2));
+        }
+      }
     } catch (e) { /* tax_groups/taxes may not exist */ }
 
     // ---- CASH DRAWER CORRECT CALCULATION ----
@@ -1485,20 +1524,38 @@ module.exports = (db) => {
       const { zReportData, closingCash = 0, cashBreakdown = {}, copies: rawCopies } = req.body;
       const copies = Math.max(1, Math.min(5, parseInt(rawCopies) || 1));
 
-      const { buildGraphicZReport } = require('../utils/graphicPrinterUtils');
-      const singleCopyBuffer = buildGraphicZReport(zReportData, closingCash, cashBreakdown);
+      // Read printer layout settings (paperWidth, rightPadding) same as Receipt/Bill
+      let printerOpts = {};
+      try {
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
+        }
+      } catch (e) { /* layout settings may not exist */ }
 
-      const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      // Read per-device graphicScale from printers table
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
       let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
       if (!targetPrinter) {
         const anyPrinter = await dbGet(
-          "SELECT selected_printer FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
         );
         targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
       }
       if (!targetPrinter) {
         return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
       }
+
+      console.log(`📃 [Z-Report] printerOpts: paperWidth=${printerOpts.paperWidth}, rightPaddingPx=${printerOpts.rightPaddingPx}, graphicScale=${printerOpts.graphicScale}`);
+      const { buildGraphicZReport } = require('../utils/graphicPrinterUtils');
+      const singleCopyBuffer = buildGraphicZReport(zReportData, closingCash, cashBreakdown, printerOpts);
 
       const { sendRawToPrinter } = require('../utils/printerUtils');
       const fullBuffer = copies > 1 ? Buffer.concat(Array(copies).fill(singleCopyBuffer)) : singleCopyBuffer;
@@ -1616,6 +1673,7 @@ module.exports = (db) => {
       // 1b) 개별 세금 항목 (GST, PST 등 동적 조회)
       let taxDetails = [];
       try {
+        // First try: tax_group_links 기반 (아이템에 tax_group_id가 있는 경우)
         const taxRows = await dbAll(`
           SELECT t.name as tax_name,
             t.rate as tax_rate,
@@ -1623,19 +1681,70 @@ module.exports = (db) => {
           FROM order_items oi
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
-          JOIN taxes t ON t.tax_id = tgl.tax_id
+          JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
           WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
             AND ${paidStatuses}
             AND COALESCE(oi.is_voided, 0) = 0
-            AND COALESCE(t.is_deleted, 0) = 0
           GROUP BY t.tax_id, t.name, t.rate
           ORDER BY t.name
         `, [startDate, endDate]);
-        taxDetails = (taxRows || []).map(r => ({
+        taxDetails = (taxRows || []).filter(r => r.tax_name && Number(r.tax_amount) > 0).map(r => ({
           name: r.tax_name,
           rate: Number(r.tax_rate || 0),
-          amount: Number(r.tax_amount || 0),
+          amount: Number(Number(r.tax_amount || 0).toFixed(2)),
         }));
+
+        // Fallback: order_items에 tax_group_id가 없는 경우 orders.tax + taxes 테이블로 분리
+        if (taxDetails.length === 0) {
+          const activeTaxes = await dbAll(`
+            SELECT DISTINCT t.name, t.rate 
+            FROM taxes t 
+            JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+            JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+            WHERE COALESCE(t.is_deleted, 0) = 0
+            ORDER BY t.rate ASC
+          `, []);
+          const uniqueTaxes = [];
+          const seenRates = new Set();
+          (activeTaxes || []).forEach(t => {
+            const key = `${t.name}_${t.rate}`;
+            if (!seenRates.has(key)) { seenRates.add(key); uniqueTaxes.push({ name: t.name, rate: Number(t.rate) }); }
+          });
+
+          if (uniqueTaxes.length > 0) {
+            const totalRateSum = uniqueTaxes.reduce((s, t) => s + t.rate, 0);
+            const orders = await dbAll(`
+              SELECT o.subtotal, o.tax
+              FROM orders o
+              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+                AND ${paidStatuses} AND COALESCE(o.tax, 0) > 0
+            `, [startDate, endDate]);
+
+            const taxMap = {};
+            uniqueTaxes.forEach(t => { taxMap[t.name] = { name: t.name, rate: t.rate, amount: 0 }; });
+
+            (orders || []).forEach(o => {
+              const sub = Number(o.subtotal || 0);
+              const totalTax = Number(o.tax || 0);
+              if (sub <= 0 || totalTax <= 0) return;
+              const effRate = (totalTax / sub) * 100;
+
+              // 각 주문의 effective rate에 맞는 세금만 분배
+              const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
+              const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
+              if (matchedRateSum <= 0) return;
+
+              matchedTaxes.forEach(t => {
+                const portion = (t.rate / matchedRateSum) * totalTax;
+                taxMap[t.name].amount += portion;
+              });
+            });
+
+            taxDetails = Object.values(taxMap)
+              .filter(t => t.amount > 0.001)
+              .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
+          }
+        }
       } catch (e) { /* taxes/tax_group_links may not exist */ }
 
       const paidOrderCount = paidOrders?.order_count || 0;
@@ -1787,6 +1896,76 @@ module.exports = (db) => {
 
       const unpaidChannelMap = {};
       (unpaidByChannel || []).forEach(r => { unpaidChannelMap[r.ch] = { count: r.cnt, amount: Number(r.amount) }; });
+
+      // Unpaid individual tax breakdown
+      let unpaidTaxDetails = [];
+      try {
+        const unpaidTaxRows = await dbAll(`
+          SELECT t.name as tax_name,
+            t.rate as tax_rate,
+            COALESCE(SUM(oi.price * oi.quantity * t.rate / 100), 0) as tax_amount
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
+          JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
+          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+            AND ${unpaidStatuses}
+            AND COALESCE(oi.is_voided, 0) = 0
+          GROUP BY t.tax_id, t.name, t.rate
+          ORDER BY t.name
+        `, [startDate, endDate]);
+        unpaidTaxDetails = (unpaidTaxRows || []).filter(r => r.tax_name && Number(r.tax_amount) > 0).map(r => ({
+          name: r.tax_name,
+          rate: Number(r.tax_rate || 0),
+          amount: Number(Number(r.tax_amount || 0).toFixed(2)),
+        }));
+
+        if (unpaidTaxDetails.length === 0) {
+          const activeTaxes = await dbAll(`
+            SELECT DISTINCT t.name, t.rate 
+            FROM taxes t 
+            JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+            JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+            WHERE COALESCE(t.is_deleted, 0) = 0
+            ORDER BY t.rate ASC
+          `, []);
+          const uniqueTaxes = [];
+          const seenRates = new Set();
+          (activeTaxes || []).forEach(t => {
+            const key = `${t.name}_${t.rate}`;
+            if (!seenRates.has(key)) { seenRates.add(key); uniqueTaxes.push({ name: t.name, rate: Number(t.rate) }); }
+          });
+
+          if (uniqueTaxes.length > 0) {
+            const orders = await dbAll(`
+              SELECT o.subtotal, o.tax
+              FROM orders o
+              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+                AND ${unpaidStatuses} AND COALESCE(o.tax, 0) > 0
+            `, [startDate, endDate]);
+
+            const taxMap = {};
+            uniqueTaxes.forEach(t => { taxMap[t.name] = { name: t.name, rate: t.rate, amount: 0 }; });
+
+            (orders || []).forEach(o => {
+              const sub = Number(o.subtotal || 0);
+              const totalTax = Number(o.tax || 0);
+              if (sub <= 0 || totalTax <= 0) return;
+              const effRate = (totalTax / sub) * 100;
+              const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
+              const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
+              if (matchedRateSum <= 0) return;
+              matchedTaxes.forEach(t => {
+                taxMap[t.name].amount += (t.rate / matchedRateSum) * totalTax;
+              });
+            });
+
+            unpaidTaxDetails = Object.values(taxMap)
+              .filter(t => t.amount > 0.001)
+              .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
+          }
+        }
+      } catch (e) { /* taxes/tax_group_links may not exist */ }
 
       // 7) Hourly sales
       const hourlySales = await dbAll(`
@@ -1956,6 +2135,7 @@ module.exports = (db) => {
           totalAmount: Number((Number(unpaidOverall?.subtotal || 0) + Number(unpaidOverall?.tax_total || 0)).toFixed(2)),
           subtotal: Number(unpaidOverall?.subtotal || 0),
           taxTotal: Number(unpaidOverall?.tax_total || 0),
+          taxDetails: unpaidTaxDetails,
           channels: {
             'DINE-IN': unpaidChannelMap['DINE-IN'] || { count: 0, amount: 0 },
             'TOGO': unpaidChannelMap['TOGO'] || { count: 0, amount: 0 },

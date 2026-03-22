@@ -4489,6 +4489,39 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     });
   };
 
+  const [showScrollButtons, setShowScrollButtons] = useState(false);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
+
+  useEffect(() => {
+    const el = orderListRef.current;
+    if (!el) return;
+    const check = () => {
+      const overflows = el.scrollHeight > el.clientHeight + 2;
+      setShowScrollButtons(overflows);
+      setCanScrollUp(el.scrollTop > 2);
+      setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 2);
+    };
+    check();
+    el.addEventListener('scroll', check);
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    const mo = new MutationObserver(check);
+    mo.observe(el, { childList: true, subtree: true });
+    return () => {
+      el.removeEventListener('scroll', check);
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [orderItems]);
+
+  const handleScrollOrder = (dir: 'up' | 'down') => {
+    const el = orderListRef.current;
+    if (!el) return;
+    const step = el.clientHeight * 0.6;
+    el.scrollBy({ top: dir === 'up' ? -step : step, behavior: 'smooth' });
+  };
+
   // Item Memo 관련 함수들
   const handleItemMemoClick = () => {
     if (!selectedOrderItemId) {
@@ -5470,7 +5503,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       }),
       // Split 테이블인 경우 Guest 분리 표시를 위한 guestSections 생성
       guestSections: (() => {
-        // Guest별로 아이템 그룹화
         const byGuest: Record<number, any[]> = {};
         items.forEach((item: any) => {
           const g = item.guestNumber || 1;
@@ -5494,15 +5526,35 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           });
         });
         
-        // 단일 Guest인 경우 guestSections 생략 (기존 동작 유지)
         const guestNumbers = Object.keys(byGuest).map(Number).sort((a, b) => a - b);
         if (guestNumbers.length <= 1) return [];
         
-        // 다중 Guest인 경우 guestSections 생성
-        return guestNumbers.map(gNum => ({
-          guestNumber: gNum,
-          items: byGuest[gNum]
-        }));
+        // Per-guest subtotal / taxLines / adjustments
+        const allGuestSubtotals: Record<number, number> = {};
+        let totalGuestSubtotal = 0;
+        guestNumbers.forEach(gNum => {
+          const gt = computeGuestTotals(gNum);
+          allGuestSubtotals[gNum] = gt.subtotal;
+          totalGuestSubtotal += gt.subtotal;
+        });
+        
+        return guestNumbers.map(gNum => {
+          const gt = computeGuestTotals(gNum);
+          const ratio = totalGuestSubtotal > 0 ? gt.subtotal / totalGuestSubtotal : 1 / guestNumbers.length;
+          const guestAdj = adjustments.map(a => ({
+            label: a.label,
+            amount: Number((Number(a.amount) * ratio).toFixed(2))
+          }));
+          return {
+            guestNumber: gNum,
+            items: byGuest[gNum],
+            guestSubtotal: gt.subtotal,
+            guestTaxLines: gt.taxLines,
+            guestTaxesTotal: gt.taxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0),
+            guestTotal: gt.grand,
+            guestAdjustments: guestAdj
+          };
+        });
       })(),
       // Show original subtotal if there are item discounts, otherwise show net subtotal
       subtotal: totalItemDiscount > 0.01 ? Number(grossSubtotal.toFixed(2)) : billSubtotal,
@@ -9179,7 +9231,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       </div>
                     </div>
                   )}
-                  <div ref={orderListRef} className="absolute inset-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-100 pt-0" data-pos-lock="order-items-scroll">
+                  <div ref={orderListRef} className="absolute inset-0 overflow-y-auto pt-0" data-pos-lock="order-items-scroll" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                   <DndContext sensors={sensors} onDragEnd={handleOrderDragEnd} onDragOver={handleOrderDragOver} collisionDetection={pointerWithin}>
                     {guestIds.map((g) => {
                       // 해당 게스트의 모든 아이템(Separator 제외)을 원본 인덱스와 함께 수집
@@ -9760,6 +9812,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 )}
 
                 </div>
+
+                {/* Scroll Up/Down Buttons */}
+                {showScrollButtons && (
+                  <div className="flex-shrink-0 flex items-stretch border-t-2 border-blue-400">
+                    <button
+                      onClick={() => handleScrollOrder('up')}
+                      disabled={!canScrollUp}
+                      className={`flex-1 flex items-center justify-center py-2 font-extrabold text-2xl transition-colors border-r-2 border-blue-400 ${canScrollUp ? 'bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                    >
+                      ▲
+                    </button>
+                    <button
+                      onClick={() => handleScrollOrder('down')}
+                      disabled={!canScrollDown}
+                      className={`flex-1 flex items-center justify-center py-2 font-extrabold text-2xl transition-colors ${canScrollDown ? 'bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                    >
+                      ▼
+                    </button>
+                  </div>
+                )}
 
                 {/* Summary Section */}
                 <div className="px-2 py-0.5 bg-blue-200 border-t border-blue-300 flex-shrink-0" data-pos-lock="order-summary" style={{ fontSize: 'var(--order-summary-font)' }}>
