@@ -9,6 +9,10 @@ const fmt = (n: number) => `$${(n || 0).toFixed(2)}`;
 const fmtK = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : fmt(n);
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+const DELIVERY_COLORS = ['#f97316', '#a855f7', '#14b8a6', '#e11d48', '#6366f1'];
+const TIP_PM_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+const TIP_CH_COLORS = ['#f97316', '#14b8a6', '#6366f1', '#e11d48', '#a855f7'];
+const TIP_SV_COLORS = ['#0ea5e9', '#d946ef', '#84cc16', '#f43f5e', '#8b5cf6', '#10b981', '#f59e0b', '#06b6d4'];
 const HOUR_LABELS: Record<string, string> = {
   '06': '6a', '07': '7a', '08': '8a', '09': '9a', '10': '10a', '11': '11a',
   '12': '12p', '13': '1p', '14': '2p', '15': '3p', '16': '4p', '17': '5p',
@@ -17,30 +21,38 @@ const HOUR_LABELS: Record<string, string> = {
 
 type PeriodKey = 'today' | 'lastWeek' | '7days' | '30days' | 'lastMonth' | 'thisMonth' | 'custom';
 
+interface TaxDetail { name: string; rate: number; amount: number }
 interface ReportData {
   period: { startDate: string; endDate: string };
   overall: { orderCount: number; subtotal: number; taxTotal: number; totalSales: number; totalTip?: number; serviceCharge?: number };
-  taxDetails?: Array<{ name: string; rate: number; amount: number }>;
+  taxDetails?: TaxDetail[];
   channels: Record<string, { count: number; subtotal: number; tax: number; sales: number; tips: number }>;
+  channelTaxDetails?: Record<string, TaxDetail[]>;
   dineInTableStats: { tableOrderCount: number; avgPerTable: number };
   deliveryPlatforms: Record<string, { count: number; sales: number }>;
   topItems: Array<{ rank: number; name: string; quantity: number; revenue: number }>;
   bottomItems?: Array<{ rank: number; name: string; quantity: number; revenue: number }>;
   totalItems: { totalQuantity: number; uniqueItems: number };
-  unpaid?: { orderCount: number; totalAmount: number; channels: Record<string, { count: number; amount: number }> };
+  categorySales?: Array<{ category: string; quantity: number; revenue: number }>;
+  unpaid?: { orderCount: number; totalAmount: number; subtotal?: number; taxTotal?: number; channels: Record<string, { count: number; amount: number }> };
   hourlySales?: Array<{ hour: string; order_count: number; revenue: number }>;
   paymentBreakdown?: Array<{ payment_method: string; count: number; net_amount: number; tips: number }>;
   tableTurnover?: Array<{ table_name: string; order_count: number; avg_duration_min: number }>;
   employeeSales?: Array<{ employee: string; order_count: number; revenue: number; avg_check: number }>;
   refundsVoids?: Array<{ type: string; count: number; total: number }>;
+  tipBreakdown?: {
+    total: number;
+    byServer: Array<{ server: string; tips: number; orderCount: number }>;
+    byChannel: Array<{ channel: string; tips: number; orderCount: number }>;
+    byPaymentMethod: Array<{ method: string; tips: number; count: number }>;
+  };
 }
 
-const CHANNEL_STYLES = [
-  { bg: 'from-blue-50 to-blue-100', border: 'border-blue-200', title: 'text-blue-700', accent: 'text-blue-600', badge: 'bg-blue-600' },
-  { bg: 'from-emerald-50 to-emerald-100', border: 'border-emerald-200', title: 'text-emerald-700', accent: 'text-emerald-600', badge: 'bg-emerald-600' },
-  { bg: 'from-violet-50 to-violet-100', border: 'border-violet-200', title: 'text-violet-700', accent: 'text-violet-600', badge: 'bg-violet-600' },
-  { bg: 'from-orange-50 to-orange-100', border: 'border-orange-200', title: 'text-orange-700', accent: 'text-orange-600', badge: 'bg-orange-600' },
-];
+const PAYMENT_ORDER = ['Cash', 'Debit', 'Visa', 'MC', 'Other Card', 'From Delivery', 'Gift Card', 'Coupon'];
+const paymentSortIdx = (name: string) => {
+  const idx = PAYMENT_ORDER.findIndex(p => p.toUpperCase() === name.toUpperCase());
+  return idx >= 0 ? idx : PAYMENT_ORDER.length;
+};
 
 function getDateRange(period: PeriodKey, customStart: string, customEnd: string) {
   const today = new Date();
@@ -66,6 +78,48 @@ function getDateRange(period: PeriodKey, customStart: string, customEnd: string)
     case 'custom': return { s: customStart || f(today), e: customEnd || f(today) };
   }
 }
+
+const LabelPie: React.FC<{ data: Array<{ name: string; value: number }>; colors?: string[]; size?: number; title?: string }> = ({ data, colors = COLORS, size = 160, title }) => {
+  if (data.length === 0) return <div className="text-xs text-gray-400 text-center py-4">No data</div>;
+  const total = data.reduce((a, d) => a + d.value, 0);
+  return (
+    <div className="flex flex-col items-center">
+      {title && <div className="text-[11px] font-bold text-gray-600 mb-1">{title}</div>}
+      <div style={{ width: size, height: size }}>
+        <PieChart width={size} height={size}>
+          <Pie data={data} dataKey="value" cx="50%" cy="50%" outerRadius={size / 2 - 12} innerRadius={size / 4} strokeWidth={1} isAnimationActive={false}>
+            {data.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}
+          </Pie>
+          <Tooltip formatter={(v: number) => fmt(v)} />
+        </PieChart>
+      </div>
+      <div className="space-y-0.5 mt-1 w-full max-w-[200px]">
+        {data.map((d, i) => (
+          <div key={d.name} className="flex items-center gap-1.5 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: colors[i % colors.length] }} />
+            <span className="text-gray-600 truncate flex-1">{d.name}</span>
+            <span className="font-bold text-gray-800">{fmt(d.value)}</span>
+            <span className="text-gray-400 text-[10px] w-8 text-right">{total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : ''}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const MiniDonut: React.FC<{ data: Array<{ name: string; value: number }>; colors?: string[]; size?: number }> = ({ data, colors = COLORS, size = 70 }) => {
+  if (data.length === 0) return null;
+  return (
+    <div style={{ width: size, height: size }}>
+      <PieChart width={size} height={size}>
+        <Pie data={data} dataKey="value" cx="50%" cy="50%" outerRadius={size / 2 - 4} innerRadius={size / 4} strokeWidth={1} isAnimationActive={false}>
+          {data.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}
+        </Pie>
+        <Tooltip formatter={(v: number) => fmt(v)} />
+      </PieChart>
+    </div>
+  );
+};
 
 const OperationalReportsPanel: React.FC = () => {
   const [period, setPeriod] = useState<PeriodKey>('today');
@@ -97,9 +151,11 @@ const OperationalReportsPanel: React.FC = () => {
     { key: 'custom', label: 'Custom' },
   ];
 
+  const TH = 'text-[11px] text-gray-500 font-semibold py-1 px-1';
+  const TD = 'text-xs py-1 px-1';
+
   return (
     <div className="p-5 flex-1 overflow-y-auto">
-      {/* Period Selector */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         {periods.map(p => (
           <button key={p.key} onClick={() => setPeriod(p.key)}
@@ -120,40 +176,40 @@ const OperationalReportsPanel: React.FC = () => {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-        </div>
+        <div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" /></div>
       ) : !data ? (
         <div className="text-center py-16 text-gray-400 text-sm">No data available for this period.</div>
       ) : (
         <div className="space-y-5">
           <div className="text-xs text-gray-500">{data.period.startDate} ~ {data.period.endDate}</div>
 
-          {/* ===== 1. Overall Stats ===== */}
+          {/* ===== 1. All Orders ===== */}
           <div>
-            <div className="text-xs text-slate-500 font-bold mb-1.5">All Orders (incl. Unpaid)</div>
-            <div className="grid grid-cols-5 gap-3">
-              {([
-                { label: 'Orders', value: data.overall.orderCount.toString(), isTax: false },
-                { label: 'Subtotal', value: fmt(data.overall.subtotal), isTax: false },
-                { label: 'Tax', value: fmt(data.overall.taxTotal), isTax: true },
-                { label: 'Tip', value: fmt(data.overall.totalTip || 0), isTax: false },
-                { label: 'Total', value: fmt(data.overall.totalSales), isTax: false },
-              ] as const).map(s => (
-                <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
-                  <div className="text-xs text-gray-500 font-medium">{s.label}</div>
-                  <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.value}</div>
-                  {s.isTax && data.taxDetails && data.taxDetails.length > 0 && (
-                    <div className="mt-1 space-y-0.5">
-                      {data.taxDetails.map((t, i) => (
-                        <div key={i} className="text-[11px] text-gray-500">
-                          {t.name} ({t.rate}%): {fmt(t.amount)}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="text-xs text-slate-500 font-bold mb-1.5">All Orders</div>
+            <div className="grid grid-cols-4 gap-3">
+              {(() => {
+                const up = data.unpaid;
+                const hasUnpaid = up && up.orderCount > 0;
+                const items = [
+                  { label: 'Orders', paid: data.overall.orderCount.toString(), unpaid: hasUnpaid ? `+${up!.orderCount}` : '', combined: hasUnpaid ? (data.overall.orderCount + up!.orderCount).toString() : '', isTax: false },
+                  { label: 'Subtotal', paid: fmt(data.overall.subtotal), unpaid: hasUnpaid ? `+${fmt(up!.subtotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.subtotal + (up!.subtotal || 0)) : '', isTax: false },
+                  { label: 'Tax', paid: fmt(data.overall.taxTotal), unpaid: hasUnpaid ? `+${fmt(up!.taxTotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.taxTotal + (up!.taxTotal || 0)) : '', isTax: true },
+                  { label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '', isTax: false },
+                ];
+                return items.map(s => (
+                  <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
+                    <div className="text-xs text-gray-500 font-medium">{s.label}</div>
+                    <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.paid}</div>
+                    {s.unpaid && <div className="text-xs text-amber-600 mt-0.5">{s.unpaid}</div>}
+                    {s.combined && <div className="text-xs text-gray-400 mt-0.5">{s.combined}</div>}
+                    {s.isTax && data.taxDetails && data.taxDetails.length > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        {data.taxDetails.map((t, i) => <div key={i} className="text-[11px] text-gray-500">{t.name} ({t.rate}%): {fmt(t.amount)}</div>)}
+                      </div>
+                    )}
+                  </div>
+                ));
+              })()}
             </div>
             {data.unpaid && data.unpaid.orderCount > 0 && (
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -163,57 +219,195 @@ const OperationalReportsPanel: React.FC = () => {
                 {(['DINE-IN', 'TOGO', 'ONLINE', 'DELIVERY'] as const).map(ch => {
                   const d = data.unpaid?.channels?.[ch];
                   if (!d || d.count === 0) return null;
-                  return (
-                    <div key={ch} className="text-xs text-amber-600 bg-amber-50/60 border border-amber-100 rounded px-2 py-0.5">
-                      {ch}: {fmt(d.amount)} ({d.count})
-                    </div>
-                  );
+                  return <div key={ch} className="text-xs text-amber-600 bg-amber-50/60 border border-amber-100 rounded px-2 py-0.5">{ch}: {fmt(d.amount)} ({d.count})</div>;
                 })}
               </div>
             )}
           </div>
 
-          {/* ===== 2. Channel Breakdown ===== */}
-          <div>
-            <div className="text-xs text-slate-500 font-bold mb-2">Channel Breakdown <span className="font-normal text-gray-400">(incl. Unpaid)</span></div>
-            <div className="grid grid-cols-4 gap-3">
-              {[
-                { label: 'Dine-In', key: 'DINE-IN', extra: data.dineInTableStats ? [
-                  { k: 'Tables', v: String(data.dineInTableStats.tableOrderCount) },
-                  { k: 'Avg/Table', v: fmt(data.dineInTableStats.avgPerTable) }
-                ] : [] },
-                { label: 'Togo', key: 'TOGO', extra: [] },
-                { label: 'Online', key: 'ONLINE', extra: [] },
-                { label: 'Delivery', key: 'DELIVERY', extra: [] },
-              ].map((p, i) => {
-                const ch = data.channels[p.key] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 };
-                const c = CHANNEL_STYLES[i];
-                return (
-                  <div key={p.label} className={`bg-gradient-to-br ${c.bg} rounded-xl border ${c.border} p-3 flex flex-col`}>
-                    <div className="flex items-center gap-1.5 mb-2">
-                      <span className={`inline-block w-2 h-2 rounded-full ${c.badge}`} />
-                      <span className={`font-extrabold text-sm ${c.title}`}>{p.label}</span>
-                    </div>
-                    <div className={`text-xl font-extrabold ${c.title} leading-tight`}>{fmt(ch.sales)}</div>
-                    <div className="mt-1.5 space-y-0.5">
-                      <div className="text-xs"><span className="text-gray-400">Orders:</span> <span className={`font-bold ${c.accent}`}>{ch.count}</span></div>
-                      <div className="text-xs"><span className="text-gray-400">Subtotal:</span> <span className={`font-bold ${c.accent}`}>{fmt(ch.subtotal)}</span></div>
-                      <div className="text-xs"><span className="text-gray-400">Tax:</span> <span className={`font-bold ${c.accent}`}>{fmt(ch.tax)}</span></div>
-                      {ch.tips > 0 && (
-                        <div className="text-xs"><span className="text-gray-400">Tip:</span> <span className={`font-bold ${c.accent}`}>{fmt(ch.tips)}</span></div>
-                      )}
-                      <div className="text-xs"><span className="text-gray-400">Avg/Order:</span> <span className={`font-bold ${c.accent}`}>{ch.count > 0 ? fmt(ch.sales / ch.count) : '-'}</span></div>
-                      {(p.extra || []).map(e => (
-                        <div key={e.k} className="text-xs"><span className="text-gray-400">{e.k}:</span> <span className={`font-bold ${c.accent}`}>{e.v}</span></div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+          {/* ===== 2. Channel Breakdown (incl. Unpaid) ===== */}
+          <div className="bg-blue-50 rounded-xl border border-blue-200 p-4">
+            <div className="text-xs text-blue-800 font-bold mb-2">Channel Breakdown <span className="font-normal text-blue-400">(incl. Unpaid)</span></div>
+            {/* Table */}
+            {(() => {
+              const chList = [
+                { label: 'Dine-In', key: 'DINE-IN' }, { label: 'Togo', key: 'TOGO' },
+                { label: 'Online', key: 'ONLINE' }, { label: 'Delivery', key: 'DELIVERY' },
+              ];
+              const allCh = chList.map(p => ({ ...p, ...(data.channels[p.key] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 }) }));
+              const totalSales = allCh.reduce((a, c) => a + c.sales, 0);
+              const totalSub = allCh.reduce((a, c) => a + c.subtotal, 0);
+              const totalTax = allCh.reduce((a, c) => a + c.tax, 0);
+              const totalTip = allCh.reduce((a, c) => a + c.tips, 0);
+              const totalCount = allCh.reduce((a, c) => a + c.count, 0);
+              const taxNames = data.taxDetails?.map(t => t.name) || [];
+              return (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b border-blue-200">
+                      <th className={`${TH} text-left`}>Channel</th>
+                      <th className={`${TH} text-right`}>Amount</th>
+                      <th className={`${TH} text-right`}>%</th>
+                      <th className={`${TH} text-right`}>Orders</th>
+                      <th className={`${TH} text-right`}>Subtotal</th>
+                      {taxNames.map(tn => <th key={tn} className={`${TH} text-right`}>{tn}</th>)}
+                      <th className={`${TH} text-right`}>Avg</th>
+                      <th className={`${TH} text-right`}>Tip</th>
+                    </tr></thead>
+                    <tbody>
+                      {allCh.map(ch => {
+                        const pct = totalSales > 0 ? ((ch.sales / totalSales) * 100).toFixed(1) : '0';
+                        const ctd = data.channelTaxDetails?.[ch.key] || [];
+                        return (
+                          <tr key={ch.key} className="border-b border-blue-50 hover:bg-blue-100/40">
+                            <td className={`${TD} font-bold text-blue-800`}>{ch.label}</td>
+                            <td className={`${TD} text-right font-extrabold text-blue-900`}>{fmt(ch.sales)}</td>
+                            <td className={`${TD} text-right text-blue-500`}>{pct}%</td>
+                            <td className={`${TD} text-right text-blue-700`}>{ch.count}</td>
+                            <td className={`${TD} text-right text-gray-600`}>{fmt(ch.subtotal)}</td>
+                            {taxNames.map(tn => {
+                              const td = ctd.find(t => t.name === tn);
+                              return <td key={tn} className={`${TD} text-right text-gray-500`}>{td ? fmt(td.amount) : '-'}</td>;
+                            })}
+                            <td className={`${TD} text-right text-gray-500`}>{ch.count > 0 ? fmt(ch.sales / ch.count) : '-'}</td>
+                            <td className={`${TD} text-right text-amber-600`}>{ch.tips > 0 ? fmt(ch.tips) : '-'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot><tr className="border-t-2 border-blue-300 font-extrabold">
+                      <td className={`${TD} text-blue-800`}>TOTAL</td>
+                      <td className={`${TD} text-right text-blue-900`}>{fmt(totalSales)}</td>
+                      <td className={`${TD} text-right text-blue-500`}>100%</td>
+                      <td className={`${TD} text-right text-blue-700`}>{totalCount}</td>
+                      <td className={`${TD} text-right text-gray-600`}>{fmt(totalSub)}</td>
+                      {taxNames.map(tn => {
+                        const total = Object.values(data.channelTaxDetails || {}).flat().filter(t => t.name === tn).reduce((a, t) => a + t.amount, 0);
+                        return <td key={tn} className={`${TD} text-right text-gray-500`}>{fmt(total)}</td>;
+                      })}
+                      <td className={`${TD} text-right text-gray-500`}>{totalCount > 0 ? fmt(totalSales / totalCount) : '-'}</td>
+                      <td className={`${TD} text-right text-amber-600`}>{totalTip > 0 ? fmt(totalTip) : '-'}</td>
+                    </tr></tfoot>
+                  </table>
+                  {data.dineInTableStats && data.dineInTableStats.tableOrderCount > 0 && (
+                    <div className="text-[11px] text-blue-500 mt-1.5">Dine-In: {data.dineInTableStats.tableOrderCount} tables | Avg/Table: {fmt(data.dineInTableStats.avgPerTable)}</div>
+                  )}
+                </div>
+              );
+            })()}
+            {/* Two pie charts below the table */}
+            <div className="flex gap-6 mt-4 justify-center">
+              <LabelPie
+                title="Sales by Channel"
+                data={Object.entries(data.channels).filter(([, v]) => v.sales > 0).map(([k, v]) => ({ name: k, value: v.sales }))}
+                colors={COLORS} size={150}
+              />
+              <LabelPie
+                title="Delivery by Platform"
+                data={Object.entries(data.deliveryPlatforms || {}).filter(([, v]) => v.sales > 0).map(([k, v]) => ({ name: k, value: v.sales }))}
+                colors={DELIVERY_COLORS} size={150}
+              />
             </div>
           </div>
 
-          {/* ===== 3. Hourly Sales ===== */}
+          {/* ===== 3. Payments by Method ===== */}
+          {data.paymentBreakdown && data.paymentBreakdown.length > 0 && (() => {
+            const sorted = [...data.paymentBreakdown!].sort((a, b) => paymentSortIdx(a.payment_method) - paymentSortIdx(b.payment_method));
+            const payTotal = sorted.reduce((a, p) => a + (p.net_amount || 0), 0);
+            const tipTotal = sorted.reduce((a, p) => a + (p.tips || 0), 0);
+            const countTotal = sorted.reduce((a, p) => a + p.count, 0);
+            const pieData = sorted.filter(p => p.net_amount > 0).map(p => ({ name: p.payment_method, value: p.net_amount }));
+            return (
+              <div className="bg-green-50 rounded-xl border border-green-200 p-4">
+                <div className="text-xs text-green-800 font-bold mb-2">Payments by Method</div>
+                <div className="flex gap-4">
+                  {/* Left: compact data table */}
+                  <div className="min-w-0" style={{ flex: '0 0 55%' }}>
+                    <table className="w-full text-xs">
+                      <thead><tr className="border-b border-green-200">
+                        <th className={`${TH} text-left`}>Method</th>
+                        <th className={`${TH} text-right`}>Amount</th>
+                        <th className={`${TH} text-right`}>%</th>
+                        <th className={`${TH} text-right`}>Txn</th>
+                        <th className={`${TH} text-right`}>Tip</th>
+                      </tr></thead>
+                      <tbody>
+                        {sorted.map(p => {
+                          const pct = payTotal > 0 ? ((p.net_amount / payTotal) * 100).toFixed(1) : '0';
+                          return (
+                            <tr key={p.payment_method} className="border-b border-green-50 hover:bg-green-100/40">
+                              <td className={`${TD} font-bold text-green-800`}>{p.payment_method}</td>
+                              <td className={`${TD} text-right font-extrabold text-green-900`}>{fmt(p.net_amount)}</td>
+                              <td className={`${TD} text-right text-green-500`}>{pct}%</td>
+                              <td className={`${TD} text-right text-green-700`}>{p.count}</td>
+                              <td className={`${TD} text-right text-amber-600`}>{p.tips > 0 ? fmt(p.tips) : '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot><tr className="border-t-2 border-green-300 font-extrabold">
+                        <td className={`${TD} text-green-800`}>TOTAL</td>
+                        <td className={`${TD} text-right text-green-900`}>{fmt(payTotal)}</td>
+                        <td className={`${TD} text-right text-green-500`}>100%</td>
+                        <td className={`${TD} text-right text-green-700`}>{countTotal}</td>
+                        <td className={`${TD} text-right text-amber-600`}>{tipTotal > 0 ? fmt(tipTotal) : '-'}</td>
+                      </tr></tfoot>
+                    </table>
+                  </div>
+                  {/* Right: pie chart */}
+                  <div className="flex-1 flex items-center justify-center">
+                    <LabelPie data={pieData} colors={COLORS} size={180} />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ===== 4. Tips ===== */}
+          {(() => {
+            const tb = data.tipBreakdown;
+            const totalTip = data.overall.totalTip || 0;
+            const byPM = tb?.byPaymentMethod || [];
+            const byCh = tb?.byChannel || [];
+            const bySv = tb?.byServer || [];
+            const pmPie = byPM.map(m => ({ name: m.method, value: m.tips }));
+            const chPie = byCh.map(c => ({ name: c.channel, value: c.tips }));
+            const svPie = bySv.map(s => ({ name: s.server, value: s.tips }));
+            return (
+              <div className="bg-gradient-to-br from-yellow-50 to-amber-50 rounded-xl border border-amber-200 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-sm font-bold text-amber-800">Tips</span>
+                  <span className="text-xl font-extrabold text-amber-700">{fmt(totalTip)}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { title: 'By Payment Method', items: byPM.map(m => ({ name: m.method, value: m.tips, sub: `${m.count} txn` })), pie: pmPie, colors: TIP_PM_COLORS },
+                    { title: 'By Channel', items: byCh.map(c => ({ name: c.channel, value: c.tips, sub: `${c.orderCount} orders` })), pie: chPie, colors: TIP_CH_COLORS },
+                    { title: 'By Server', items: bySv.map(s => ({ name: s.server, value: s.tips, sub: `${s.orderCount} orders` })), pie: svPie, colors: TIP_SV_COLORS },
+                  ].map(sec => (
+                    <div key={sec.title} className="bg-white/60 rounded-lg p-3 border border-amber-100">
+                      <div className="text-xs font-bold text-amber-800 mb-2 border-b border-amber-200 pb-1">{sec.title}</div>
+                      <div className="flex gap-2">
+                        <div className="flex-1 space-y-1">
+                          {sec.items.length > 0 ? sec.items.map((it, i) => (
+                            <div key={i} className="flex items-center justify-between text-xs">
+                              <span className="text-gray-700 font-medium truncate">{it.name}</span>
+                              <span className="font-extrabold text-amber-800 ml-1">{fmt(it.value)}</span>
+                            </div>
+                          )) : <div className="text-xs text-gray-400">No data</div>}
+                        </div>
+                        {sec.pie.length > 0 && (
+                          <div className="flex-shrink-0"><MiniDonut data={sec.pie} colors={sec.colors} size={70} /></div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ===== 5. Hourly Sales ===== */}
           {data.hourlySales && data.hourlySales.length > 0 && (() => {
             const allHours = Array.from({ length: 18 }, (_, i) => String(i + 6).padStart(2, '0'));
             const hourMap = Object.fromEntries(data.hourlySales!.map(h => [h.hour, h]));
@@ -234,153 +428,28 @@ const OperationalReportsPanel: React.FC = () => {
             );
           })()}
 
-          {/* ===== 4. Pie Charts Row ===== */}
-          <div className="grid grid-cols-2 gap-4">
-            {/* Channel Pie */}
-            <div className="bg-white rounded-xl border border-gray-200 p-3">
-              <div className="text-sm font-bold text-gray-700 mb-2">Sales by Channel</div>
-              {(() => {
-                const pieData = Object.entries(data.channels).filter(([, v]) => v.sales > 0).map(([k, v]) => ({ name: k, value: v.sales }));
-                const total = pieData.reduce((s, d) => s + d.value, 0);
-                if (pieData.length === 0) return <div className="text-center text-gray-400 text-sm py-8">No data</div>;
-                return (
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 space-y-1.5 min-w-0">
-                      {pieData.map((d, i) => (
-                        <div key={d.name} className="flex items-center gap-1.5">
-                          <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
-                          <span className="text-xs text-gray-600 truncate">{d.name}</span>
-                          <span className="text-xs font-bold text-gray-800 ml-auto flex-shrink-0">{fmt(d.value)}</span>
-                          <span className="text-[10px] text-gray-400 flex-shrink-0 w-8 text-right">{total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : ''}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex-shrink-0" style={{ width: 150, height: 150 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart><Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60} labelLine={false} fontSize={10}>
-                          {pieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                        </Pie><Tooltip formatter={(v: number) => fmt(v)} /></PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-            {/* Delivery Platform Pie */}
-            <div className="bg-white rounded-xl border border-gray-200 p-3">
-              <div className="text-sm font-bold text-gray-700 mb-2">Delivery by Platform</div>
-              {(() => {
-                const dp = data.deliveryPlatforms || {};
-                const pieData = Object.entries(dp).filter(([, v]) => v.sales > 0).map(([k, v]) => ({ name: k, value: v.sales }));
-                const total = pieData.reduce((s, d) => s + d.value, 0);
-                if (pieData.length === 0) return <div className="text-center text-gray-400 text-sm py-8">No delivery data</div>;
-                return (
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 space-y-1.5 min-w-0">
-                      {pieData.map((d, i) => (
-                        <div key={d.name} className="flex items-center gap-1.5">
-                          <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: COLORS[(i + 3) % COLORS.length] }} />
-                          <span className="text-xs text-gray-600 truncate">{d.name}</span>
-                          <span className="text-xs font-bold text-gray-800 ml-auto flex-shrink-0">{fmt(d.value)}</span>
-                          <span className="text-[10px] text-gray-400 flex-shrink-0 w-8 text-right">{total > 0 ? `${((d.value / total) * 100).toFixed(0)}%` : ''}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex-shrink-0" style={{ width: 150, height: 150 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart><Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60} labelLine={false} fontSize={10}>
-                          {pieData.map((_, i) => <Cell key={i} fill={COLORS[(i + 3) % COLORS.length]} />)}
-                        </Pie><Tooltip formatter={(v: number) => fmt(v)} /></PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-
-          {/* ===== 5. Payment Methods + Table Turnover ===== */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Payment Methods */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="text-sm font-bold text-gray-700 mb-3">Payment Methods</div>
-              {(() => {
-                const pay = data.paymentBreakdown || [];
-                const payTotal = pay.reduce((a, p) => a + (p.net_amount || 0), 0);
-                const chart = pay.map(p => ({ name: p.payment_method, value: p.net_amount || 0, pct: payTotal > 0 ? Math.round(p.net_amount / payTotal * 100) : 0 }));
-                if (chart.length === 0) return <div className="text-xs text-gray-400 py-4 text-center">No payment data</div>;
-                return (
-                  <div className="flex items-center gap-4">
-                    <ResponsiveContainer width={140} height={140}>
-                      <PieChart><Pie data={chart} dataKey="value" cx="50%" cy="50%" outerRadius={60} innerRadius={35}>
-                        {chart.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                      </Pie></PieChart>
-                    </ResponsiveContainer>
-                    <div className="flex-1 space-y-1.5">
-                      {chart.map((p, i) => (
-                        <div key={i} className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2">
-                            <div className="w-2.5 h-2.5 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
-                            <span className="font-medium text-gray-700">{p.name}</span>
-                          </div>
-                          <span className="font-bold text-gray-900">{fmt(p.value)} ({p.pct}%)</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-            {/* Table Turnover */}
+          {/* ===== 6. Table Turnover ===== */}
+          {data.tableTurnover && data.tableTurnover.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <div className="text-sm font-bold text-gray-700 mb-3">Table Turnover</div>
-              {(!data.tableTurnover || data.tableTurnover.length === 0) ? (
-                <div className="text-xs text-gray-400 py-4 text-center">No table data</div>
-              ) : (
-                <div className="max-h-[160px] overflow-y-auto">
-                  <table className="w-full text-xs">
-                    <thead><tr className="text-gray-500 border-b">
-                      <th className="text-left py-1 font-semibold">Table</th>
-                      <th className="text-right py-1 font-semibold">Orders</th>
-                      <th className="text-right py-1 font-semibold">Avg Min</th>
-                    </tr></thead>
-                    <tbody>
-                      {data.tableTurnover.map((t, i) => (
-                        <tr key={i} className="border-b border-gray-50">
-                          <td className="py-1 font-medium text-gray-800">{t.table_name}</td>
-                          <td className="py-1 text-right text-gray-700">{t.order_count}</td>
-                          <td className="py-1 text-right text-gray-700">{Math.round(t.avg_duration_min)}m</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ===== 6. Employee Sales ===== */}
-          {data.employeeSales && data.employeeSales.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="text-sm font-bold text-gray-700 mb-2">Employee Sales</div>
-              <table className="w-full text-xs">
-                <thead><tr className="text-gray-500 border-b">
-                  <th className="text-left py-1">Employee</th>
-                  <th className="text-right py-1">Orders</th>
-                  <th className="text-right py-1">Revenue</th>
-                  <th className="text-right py-1">Avg Check</th>
-                </tr></thead>
-                <tbody>
-                  {data.employeeSales.map((e, i) => (
-                    <tr key={i} className="border-b border-gray-50">
-                      <td className="py-1.5 font-medium text-gray-800">{e.employee}</td>
-                      <td className="py-1.5 text-right text-gray-700">{e.order_count}</td>
-                      <td className="py-1.5 text-right font-bold text-gray-900">{fmt(e.revenue)}</td>
-                      <td className="py-1.5 text-right text-gray-600">{fmt(e.avg_check)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="max-h-[180px] overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="text-gray-500 border-b">
+                    <th className="text-left py-1 font-semibold">Table</th>
+                    <th className="text-right py-1 font-semibold">Orders</th>
+                    <th className="text-right py-1 font-semibold">Avg Min</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.tableTurnover.map((t, i) => (
+                      <tr key={i} className="border-b border-gray-50">
+                        <td className="py-1 font-medium text-gray-800">{t.table_name}</td>
+                        <td className="py-1 text-right text-gray-700">{t.order_count}</td>
+                        <td className="py-1 text-right text-gray-700">{Math.round(t.avg_duration_min)}m</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -399,83 +468,6 @@ const OperationalReportsPanel: React.FC = () => {
               </div>
             );
           })()}
-
-          {/* ===== 8. Top Items Bar Chart ===== */}
-          {data.topItems && data.topItems.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-3">
-              <div className="text-sm font-bold text-gray-700 mb-2 flex items-center justify-between">
-                <span>Top 30 Items
-                  <span className="ml-2 text-xs font-normal text-gray-400">(Total: {data.totalItems.uniqueItems} items, {data.totalItems.totalQuantity} qty)</span>
-                </span>
-                <span className="inline-flex items-center gap-3 text-xs font-normal">
-                  <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#3b82f6' }} />Revenue</span>
-                  <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: '#f59e0b' }} />Qty</span>
-                </span>
-              </div>
-              {(() => {
-                const top30 = data.topItems.slice(0, 30);
-                const bottomNames = new Set((data.bottomItems || []).map(b => b.name));
-                const topData = top30.map(item => ({ ...item, overlap: bottomNames.has(item.name) }));
-                return (
-                  <ResponsiveContainer width="100%" height={topData.length * 38 + 30}>
-                    <BarChart data={topData} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                      <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`} />
-                      <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#1f2937', fontWeight: 600 }} interval={0} />
-                      <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? fmt(v) : `${v} qty`} />
-                      <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]}>
-                        {topData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#a78bfa' : '#3b82f6'} />)}
-                      </Bar>
-                      <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]}>
-                        {topData.map((entry, i) => <Cell key={i} fill={entry.overlap ? '#c4b5fd' : '#f59e0b'} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                );
-              })()}
-            </div>
-          )}
-
-          {/* Items #31+ */}
-          {data.topItems && data.topItems.length > 30 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-3">
-              <div className="text-sm font-bold text-gray-700 mb-2">Items #31 ~ #{data.topItems.length} <span className="ml-2 text-xs font-normal text-gray-400">(by revenue)</span></div>
-              {(() => {
-                const rest = data.topItems.slice(30);
-                return (
-                  <ResponsiveContainer width="100%" height={rest.length * 38 + 30}>
-                    <BarChart data={rest} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                      <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`} />
-                      <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#4b5563', fontWeight: 600 }} interval={0} />
-                      <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? fmt(v) : `${v} qty`} />
-                      <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]} fill="#93c5fd" />
-                      <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]} fill="#fcd34d" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                );
-              })()}
-            </div>
-          )}
-
-          {/* Least Sold Items */}
-          {data.bottomItems && data.bottomItems.length > 0 && (
-            <div className="bg-white rounded-xl border border-red-200 p-3">
-              <div className="text-sm font-bold text-red-700 mb-2">Least Sold 20 Items</div>
-              {(() => {
-                const items = [...data.bottomItems!].reverse();
-                return (
-                  <ResponsiveContainer width="100%" height={items.length * 38 + 30}>
-                    <BarChart data={items} layout="vertical" margin={{ left: 0, right: 15, top: 5, bottom: 5 }}>
-                      <XAxis type="number" fontSize={10} tickFormatter={(v: number) => v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`} />
-                      <YAxis type="category" dataKey="name" width={170} fontSize={14} tick={{ fill: '#991b1b', fontWeight: 600 }} interval={0} />
-                      <Tooltip formatter={(v: number, name: string) => name === 'Revenue' ? fmt(v) : `${v} qty`} />
-                      <Bar dataKey="revenue" name="Revenue" barSize={18} radius={[0, 3, 3, 0]} fill="#fca5a5" />
-                      <Bar dataKey="quantity" name="Qty" barSize={18} radius={[0, 3, 3, 0]} fill="#fdba74" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                );
-              })()}
-            </div>
-          )}
         </div>
       )}
     </div>

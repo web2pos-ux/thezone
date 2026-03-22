@@ -164,7 +164,7 @@ const ServerSettlementPage: React.FC = () => {
       });
       const json = await res.json().catch(() => ({} as any));
       if (!res.ok || json?.success === false) throw new Error(json?.error || 'Print failed');
-      alert('Server sales printed successfully.');
+      // print success - no alert needed
     } catch (e: any) {
       alert(e?.message || 'Print failed');
     } finally {

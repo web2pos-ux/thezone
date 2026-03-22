@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
 import { getLocalDateString } from '../utils/datetimeUtils';
+import {
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend
+} from 'recharts';
 
 const OperationalReportsPanel = lazy(() => import('./OperationalReportsPanel'));
 
@@ -157,6 +160,7 @@ interface ItemReportData {
     netAmount?: number;
   };
   dailyBreakdown: Array<{ date: string; orderCount: number; totalSales: number }>;
+  categorySales?: Array<{ category: string; quantity: number; revenue: number }>;
 }
 
 type ServerSalesRow = {
@@ -232,6 +236,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [itemCustomStartDate, setItemCustomStartDate] = useState<string>('');
   const [itemCustomEndDate, setItemCustomEndDate] = useState<string>('');
   const [isPrintingItemReport, setIsPrintingItemReport] = useState(false);
+  const [topTrend, setTopTrend] = useState<{ items: Array<{ name: string; trend: Array<{ period: string; qty: number; revenue: number }> }>; periods: string[] } | null>(null);
+  const [bottomTrend, setBottomTrend] = useState<{ items: Array<{ name: string; trend: Array<{ period: string; qty: number; revenue: number }> }>; periods: string[] } | null>(null);
 
   // Server Sales tab state
   const [serverSalesDate, setServerSalesDate] = useState<string>(() => {
@@ -374,6 +380,20 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     if (activeTab === 'item-report' && accessGranted) fetchItemReport(itemReportPeriod);
   }, [activeTab, itemReportPeriod, accessGranted, fetchItemReport]);
 
+  useEffect(() => {
+    if (activeTab === 'item-report' && accessGranted) {
+      const fetchTrend = async (type: string, setter: (d: any) => void) => {
+        try {
+          const r = await fetch(`${API_URL}/daily-closings/item-trend?type=${type}`);
+          const j = await r.json();
+          if (j.success) setter(j);
+        } catch { /* ignore */ }
+      };
+      fetchTrend('top', setTopTrend);
+      fetchTrend('bottom', setBottomTrend);
+    }
+  }, [activeTab, accessGranted]);
+
   const fetchServerSales = useCallback(async () => {
     if (!serverSalesDate) return;
     setIsServerSalesLoading(true);
@@ -421,7 +441,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       });
       const json = await res.json().catch(() => ({} as any));
       if (!res.ok || json?.success === false) throw new Error(json?.error || 'Print failed');
-      alert('Server sales printed successfully!');
+      // print success - no alert needed
     } catch (e: any) {
       alert(e?.message || 'Print failed');
     } finally {
@@ -1389,65 +1409,34 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   ))}
                 </div>
 
-                {/* Channel Breakdown */}
-                {itemReportData.channels.length > 0 && (
-                  <div className="bg-white rounded-xl border border-gray-200 p-4">
-                    <div className="text-sm font-bold text-gray-700 mb-3">Sales by Channel</div>
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left py-1.5 text-xs text-gray-500 font-bold">Channel</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Orders</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Sales</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Avg/Order</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {itemReportData.channels.map(ch => (
-                          <tr key={ch.channel} className="border-b border-gray-100">
-                            <td className="py-1.5 font-bold text-gray-800">{ch.channel}</td>
-                            <td className="py-1.5 text-right text-gray-700">{ch.orderCount}</td>
-                            <td className="py-1.5 text-right font-bold text-gray-800">{formatMoney(ch.totalSales)}</td>
-                            <td className="py-1.5 text-right text-gray-600">{formatMoney(ch.avgPerOrder)}</td>
-                          </tr>
-                        ))}
-                        <tr className="border-t-2 border-gray-300 font-extrabold">
-                          <td className="py-2 text-gray-900">TOTAL</td>
-                          <td className="py-2 text-right text-gray-900">{itemReportData.summary.totalOrders}</td>
-                          <td className="py-2 text-right text-gray-900">{formatMoney(itemReportData.summary.totalSales)}</td>
-                          <td className="py-2 text-right text-gray-900">{formatMoney(itemReportData.summary.avgPerOrder)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {/* Payment Methods */}
-                {itemReportData.paymentMethods.length > 0 && (
-                  <div className="bg-white rounded-xl border border-gray-200 p-4">
-                    <div className="text-sm font-bold text-gray-700 mb-3">Payment Methods</div>
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left py-1.5 text-xs text-gray-500 font-bold">Method</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Orders</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Amount</th>
-                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Tips</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {itemReportData.paymentMethods.map(pm => (
-                          <tr key={pm.method} className="border-b border-gray-100">
-                            <td className="py-1.5 font-bold text-gray-800">{pm.method}</td>
-                            <td className="py-1.5 text-right text-gray-700">{pm.orderCount}</td>
-                            <td className="py-1.5 text-right font-bold text-gray-800">{formatMoney(pm.totalAmount)}</td>
-                            <td className="py-1.5 text-right text-gray-600">{pm.totalTip > 0 ? formatMoney(pm.totalTip) : '-'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {/* Category Sales */}
+                {itemReportData.categorySales && itemReportData.categorySales.length > 0 && (() => {
+                  const totalRev = itemReportData.categorySales!.reduce((a: number, c: any) => a + c.revenue, 0);
+                  const totalQty = itemReportData.categorySales!.reduce((a: number, c: any) => a + c.quantity, 0);
+                  return (
+                    <div className="bg-white rounded-xl border border-gray-200 p-4">
+                      <div className="text-sm font-bold text-gray-700 mb-2">Sales by Category <span className="text-xs font-normal text-gray-400">({formatMoney(totalRev)} / {totalQty} qty)</span></div>
+                      <table className="w-full text-sm">
+                        <thead><tr className="border-b border-gray-200">
+                          <th className="text-left py-1.5 text-xs text-gray-500 font-bold">Category</th>
+                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Revenue</th>
+                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">Qty</th>
+                          <th className="text-right py-1.5 text-xs text-gray-500 font-bold">%</th>
+                        </tr></thead>
+                        <tbody>
+                          {itemReportData.categorySales!.map((c: any, i: number) => (
+                            <tr key={i} className="border-b border-gray-100">
+                              <td className="py-1.5 font-medium text-gray-800">{c.category}</td>
+                              <td className="py-1.5 text-right font-bold text-gray-800">{formatMoney(c.revenue)}</td>
+                              <td className="py-1.5 text-right text-gray-700">{c.quantity}</td>
+                              <td className="py-1.5 text-right text-gray-500">{totalRev > 0 ? ((c.revenue / totalRev) * 100).toFixed(1) : 0}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
 
                 {/* Item Sales Table */}
                 {itemReportData.items.length > 0 && (
@@ -1480,16 +1469,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                             <td className="py-1 text-xs text-gray-400">{item.rank}</td>
                             <td className="py-1 font-medium text-gray-800 truncate max-w-[200px]">{item.name}</td>
                             <td className="py-1 text-right font-bold text-gray-800">
-                              {item.soldQty ?? item.quantity} / {formatMoney(item.soldAmount ?? item.revenue)}
+                              {formatMoney(item.soldAmount ?? item.revenue)} / {item.soldQty ?? item.quantity}
                             </td>
                             <td className="py-1 text-right font-bold text-rose-700">
-                              {(item.refundQty || 0)} / {formatMoney(item.refundAmount || 0)}
+                              {formatMoney(item.refundAmount || 0)} / {(item.refundQty || 0)}
                             </td>
                             <td className="py-1 text-right font-bold text-orange-700">
-                              {(item.voidQty || 0)} / {formatMoney(item.voidAmount || 0)}
+                              {formatMoney(item.voidAmount || 0)} / {(item.voidQty || 0)}
                             </td>
                             <td className="py-1 text-right font-extrabold text-slate-900">
-                              {(item.netQty ?? ((item.soldQty ?? item.quantity) - (item.refundQty || 0) - (item.voidQty || 0)))} / {formatMoney(item.netAmount ?? ((item.soldAmount ?? item.revenue) - (item.refundAmount || 0) - (item.voidAmount || 0)))}
+                              {formatMoney(item.netAmount ?? ((item.soldAmount ?? item.revenue) - (item.refundAmount || 0) - (item.voidAmount || 0)))} / {(item.netQty ?? ((item.soldQty ?? item.quantity) - (item.refundQty || 0) - (item.voidQty || 0)))}
                             </td>
                           </tr>
                         ))}
@@ -1497,16 +1486,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                           <td className="py-2" />
                           <td className="py-2 text-gray-900">TOTAL</td>
                           <td className="py-2 text-right text-gray-900">
-                            {itemReportData.itemTotals.totalQuantity} / {formatMoney(itemReportData.itemTotals.totalRevenue)}
+                            {formatMoney(itemReportData.itemTotals.totalRevenue)} / {itemReportData.itemTotals.totalQuantity}
                           </td>
                           <td className="py-2 text-right text-rose-800">
-                            {(itemReportData.itemTotals.refundQuantity || 0)} / {formatMoney(itemReportData.itemTotals.refundAmount || 0)}
+                            {formatMoney(itemReportData.itemTotals.refundAmount || 0)} / {(itemReportData.itemTotals.refundQuantity || 0)}
                           </td>
                           <td className="py-2 text-right text-orange-800">
-                            {(itemReportData.itemTotals.voidQuantity || 0)} / {formatMoney(itemReportData.itemTotals.voidAmount || 0)}
+                            {formatMoney(itemReportData.itemTotals.voidAmount || 0)} / {(itemReportData.itemTotals.voidQuantity || 0)}
                           </td>
                           <td className="py-2 text-right text-gray-900">
-                            {(itemReportData.itemTotals.netQuantity ?? (itemReportData.itemTotals.totalQuantity - (itemReportData.itemTotals.refundQuantity || 0) - (itemReportData.itemTotals.voidQuantity || 0)))} / {formatMoney(itemReportData.itemTotals.netAmount ?? (itemReportData.itemTotals.totalRevenue - (itemReportData.itemTotals.refundAmount || 0) - (itemReportData.itemTotals.voidAmount || 0)))}
+                            {formatMoney(itemReportData.itemTotals.netAmount ?? (itemReportData.itemTotals.totalRevenue - (itemReportData.itemTotals.refundAmount || 0) - (itemReportData.itemTotals.voidAmount || 0)))} / {(itemReportData.itemTotals.netQuantity ?? (itemReportData.itemTotals.totalQuantity - (itemReportData.itemTotals.refundQuantity || 0) - (itemReportData.itemTotals.voidQuantity || 0)))}
                           </td>
                         </tr>
                       </tbody>
@@ -1543,6 +1532,64 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     </table>
                   </div>
                 )}
+
+                {/* Trend: Most Sold 15 Items */}
+                {topTrend && topTrend.items.length > 0 && (() => {
+                  const LINE_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#d946ef', '#f97316', '#14b8a6', '#6366f1', '#e11d48', '#a3e635', '#0ea5e9'];
+                  const fmtM = (n: number) => `$${(n || 0).toFixed(2)}`;
+                  const fmtKM = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : fmtM(n);
+                  const chartData = topTrend.periods.map((p: string, pi: number) => {
+                    const row: Record<string, any> = { period: p };
+                    topTrend.items.forEach((item: any) => { row[item.name] = item.trend[pi]?.revenue || 0; });
+                    return row;
+                  });
+                  return (
+                    <div className="bg-white rounded-xl border border-blue-200 p-4">
+                      <div className="text-sm font-bold text-blue-800 mb-3">Trend: Most Sold 15 Items (Revenue)</div>
+                      <ResponsiveContainer width="100%" height={320}>
+                        <LineChart data={chartData} margin={{ left: 5, right: 15, top: 5, bottom: 5 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                          <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtKM} />
+                          <Tooltip formatter={(v: number) => fmtM(v)} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          {topTrend.items.map((item: any, i: number) => (
+                            <Line key={item.name} type="monotone" dataKey={item.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  );
+                })()}
+
+                {/* Trend: Least Sold 15 Items */}
+                {bottomTrend && bottomTrend.items.length > 0 && (() => {
+                  const LINE_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e'];
+                  const fmtM = (n: number) => `$${(n || 0).toFixed(2)}`;
+                  const fmtKM = (n: number) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : fmtM(n);
+                  const chartData = bottomTrend.periods.map((p: string, pi: number) => {
+                    const row: Record<string, any> = { period: p };
+                    bottomTrend.items.forEach((item: any) => { row[item.name] = item.trend[pi]?.revenue || 0; });
+                    return row;
+                  });
+                  return (
+                    <div className="bg-white rounded-xl border border-red-200 p-4">
+                      <div className="text-sm font-bold text-red-800 mb-3">Trend: Least Sold 15 Items (Revenue)</div>
+                      <ResponsiveContainer width="100%" height={320}>
+                        <LineChart data={chartData} margin={{ left: 5, right: 15, top: 5, bottom: 5 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                          <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtKM} />
+                          <Tooltip formatter={(v: number) => fmtM(v)} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          {bottomTrend.items.map((item: any, i: number) => (
+                            <Line key={item.name} type="monotone" dataKey={item.name} stroke={LINE_COLORS[i % LINE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  );
+                })()}
               </div>
             ) : (
               <div className="py-12 text-center text-gray-400">Select a period to view the report</div>
