@@ -2245,14 +2245,6 @@ function renderReceiptGraphic(receiptData) {
         inverse: false,
         extraBold: true
       });
-    } else {
-      y = drawLeftRightText(ctx, 'CHANGE', '$0.00', y, {
-        fontSize: ITEM_BASE_FONT_SIZE + 2,
-        fontWeight: 'bold',
-        fontStyle: 'normal',
-        inverse: false,
-        extraBold: true
-      });
     }
 
     y = drawSeparator(ctx, y, 'solid');

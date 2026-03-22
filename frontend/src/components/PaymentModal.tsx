@@ -713,7 +713,7 @@ useEffect(() => {
           t = Number((totalChange - clampedChangeDue).toFixed(2));
           setLastChange(clampedChangeDue > 0 ? clampedChangeDue : null);
           committedChangeRef.current = clampedChangeDue;
-        } else if (isCashLikeMethod) {
+        } else if (isCashMethod) {
           const nextChange = Math.max(0, Number((rawAmt - scopeDueNow - t).toFixed(2)));
           setLastChange(nextChange > 0 ? nextChange : null);
           committedChangeRef.current = nextChange;
