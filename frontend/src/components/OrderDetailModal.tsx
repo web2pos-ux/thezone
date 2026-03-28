@@ -9,6 +9,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { API_URL } from '../config/constants';
 import { calculateOrderPricing } from '../utils/orderPricing';
+import {
+  classifyPickupChannel,
+  getPickupListAmountLabel,
+  channelDisplayLabel,
+  resolveOrderChannelTypeForModal,
+  shouldShowInPickupList,
+} from '../utils/pickupListRules';
 
 // 주문 타입 정의
 export type OrderChannelType = 'delivery' | 'online' | 'togo' | 'pickup';
@@ -263,15 +270,25 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     if (!exists) {
       const next = visibleOrders[0];
       setSelectedOrderDetail({ ...next, isLoading: true });
-      Promise.resolve(fetchOrderDetails(next, selectedOrderType)).catch(() => {});
+      const ch = embedded ? resolveOrderChannelTypeForModal(next) : selectedOrderType;
+      Promise.resolve(fetchOrderDetails(next, ch)).catch(() => {});
     }
-  }, [isOpen, selectedOrderType, onlineOrders, togoOrders, deliveryOrders, selectedOrderDetail, fetchOrderDetails]);
+  }, [isOpen, embedded, selectedOrderType, onlineOrders, togoOrders, deliveryOrders, selectedOrderDetail, fetchOrderDetails]);
 
   // 주문 클릭 핸들러
-  const handleOrderClick = useCallback(async (order: OrderData, orderType: OrderChannelType) => {
-    setSelectedOrderDetail({ ...order, isLoading: true });
-    await fetchOrderDetails(order, orderType);
-  }, [fetchOrderDetails]);
+  const handleOrderClick = useCallback(
+    async (order: OrderData, orderType: OrderChannelType) => {
+      setSelectedOrderDetail({ ...order, isLoading: true });
+      await fetchOrderDetails(order, orderType);
+    },
+    [fetchOrderDetails],
+  );
+
+  const resolveClickChannel = useCallback(
+    (order: OrderData): OrderChannelType =>
+      embedded ? resolveOrderChannelTypeForModal(order) : selectedOrderType,
+    [embedded, selectedOrderType],
+  );
 
   // Print Bill 핸들러
   const handlePrintBill = useCallback(async () => {
@@ -283,11 +300,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
       const deliveryCompany = selectedOrderDetail.deliveryCompany || '';
       const deliveryOrderNumber = selectedOrderDetail.deliveryOrderNumber || '';
       
-      const orderNum = isDelivery 
-        ? (deliveryOrderNumber || orderId)
-        : (selectedOrderType === 'togo' || selectedOrderType === 'pickup')
-          ? String(orderId).padStart(3, '0')
-          : (selectedOrderDetail.number || orderId);
+      const orderNum = String((selectedOrderDetail as any).order_number ?? selectedOrderDetail.number ?? orderId).padStart(3, '0');
       
       const items = selectedOrderDetail.fullOrder?.items || [];
       let grossSubtotal = 0;
@@ -437,11 +450,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
       const deliveryOrderNumber = selectedOrderDetail.deliveryOrderNumber || '';
       const pickupTime = selectedOrderDetail.readyTimeLabel || selectedOrderDetail.fullOrder?.ready_time || '';
       
-      const orderNum = isDelivery 
-        ? (deliveryOrderNumber || orderId)
-        : (selectedOrderType === 'togo' || selectedOrderType === 'pickup')
-          ? String(orderId).padStart(3, '0')
-          : (selectedOrderDetail.number || orderId);
+      const orderNum = String((selectedOrderDetail as any).order_number ?? selectedOrderDetail.number ?? orderId).padStart(3, '0');
       
       const rawItems = (selectedOrderDetail.fullOrder?.items || selectedOrderDetail.items || []) as any[];
       let items = (Array.isArray(rawItems) ? rawItems : [])
@@ -579,10 +588,13 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   // Pay/Pickup 버튼 핸들러
   const handlePayPickup = useCallback(async () => {
     if (!selectedOrderDetail) return;
-    
+
+    const effectiveOrderType: OrderChannelType =
+      embedded ? resolveOrderChannelTypeForModal(selectedOrderDetail) : selectedOrderType;
+
     const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
-    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' || 
-      selectedOrderType === 'delivery'; // Delivery는 항상 PAID
+    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' ||
+      effectiveOrderType === 'delivery'; // Delivery는 항상 PAID
     
     if (!isPaid) {
       // UNPAID: 결제 모달 열기
@@ -627,23 +639,25 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
         totals = null;
       }
 
-      onPayment({ ...(selectedOrderDetail as any), __togoTotals: totals }, selectedOrderType);
+      onPayment({ ...(selectedOrderDetail as any), __togoTotals: totals }, effectiveOrderType);
     } else {
       // PAID: Pickup Complete 처리
-      onPickupComplete(selectedOrderDetail, selectedOrderType);
+      onPickupComplete(selectedOrderDetail, effectiveOrderType);
     }
-  }, [selectedOrderDetail, selectedOrderType, onPayment, onPickupComplete]);
+  }, [selectedOrderDetail, selectedOrderType, embedded, onPayment, onPickupComplete]);
 
   const handleVoid = useCallback(() => {
     if (!selectedOrderDetail || !onVoid) return;
-    onVoid(selectedOrderDetail, selectedOrderType);
-  }, [selectedOrderDetail, selectedOrderType, onVoid]);
+    const t: OrderChannelType = embedded ? resolveOrderChannelTypeForModal(selectedOrderDetail) : selectedOrderType;
+    onVoid(selectedOrderDetail, t);
+  }, [selectedOrderDetail, selectedOrderType, embedded, onVoid]);
 
   const handleBackToOrder = useCallback(() => {
     if (!selectedOrderDetail || !onBackToOrder) return;
-    onBackToOrder(selectedOrderDetail, selectedOrderType);
+    const t: OrderChannelType = embedded ? resolveOrderChannelTypeForModal(selectedOrderDetail) : selectedOrderType;
+    onBackToOrder(selectedOrderDetail, t);
     try { onClose(); } catch {}
-  }, [selectedOrderDetail, selectedOrderType, onBackToOrder, onClose]);
+  }, [selectedOrderDetail, selectedOrderType, embedded, onBackToOrder, onClose]);
 
   const isPickedUp = useCallback((order: OrderData | null | undefined) => {
     if (!order) return false;
@@ -740,86 +754,201 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
             <table className="w-full text-xs">
               <thead className="bg-gray-100 sticky top-0">
                 <tr>
-                  <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Seq#</th>
-                  <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
-                    {selectedOrderType === 'delivery' ? 'Channel' : 'Order#'}
-                  </th>
-                  <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
-                    {selectedOrderType === 'delivery' ? 'Order#' : 'Placed'}
-                  </th>
-                  <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">
-                    {selectedOrderType === 'delivery' ? 'Ready' : 'Pickup'}
-                  </th>
-                  <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Customer</th>
-                  {selectedOrderType !== 'delivery' && (
-                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
+                  {embedded ? (
+                    <>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">#</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Channel</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Order Number</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Placed</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Pickup</th>
+                      <th className="px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Seq#</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Order#</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Placed</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Pickup</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">{selectedOrderType === 'delivery' ? 'Company/Order' : 'Customer'}</th>
+                      <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
+                      <th className="px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                    </>
                   )}
-                  <th className="px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {getCurrentOrders().map((order, idx) => {
+                {(() => {
+                  const rows = embedded
+                    ? getCurrentOrders().filter((o) => shouldShowInPickupList(o))
+                    : getCurrentOrders();
+                  return rows.map((order, idx) => {
                   const isSelected = selectedOrderDetail?.id === order.id;
-                  const bgHover = selectedOrderType === 'delivery' ? 'hover:bg-purple-50' :
-                    selectedOrderType === 'online' ? 'hover:bg-blue-50' : 'hover:bg-orange-50';
-                  const borderColor = selectedOrderType === 'delivery' ? 'border-purple-500' :
-                    selectedOrderType === 'online' ? 'border-blue-500' : 'border-orange-500';
-                  const bgSelected = selectedOrderType === 'delivery' ? 'bg-purple-100' :
-                    selectedOrderType === 'online' ? 'bg-blue-100' : 'bg-orange-100';
-                  
+                  const pch = classifyPickupChannel(order);
+                  const bgHover = embedded
+                    ? (pch === 'DELIVERY' ? 'hover:bg-purple-50' : pch === 'ONLINE' ? 'hover:bg-blue-50' : 'hover:bg-orange-50')
+                    : selectedOrderType === 'delivery'
+                      ? 'hover:bg-purple-50'
+                      : selectedOrderType === 'online'
+                        ? 'hover:bg-blue-50'
+                        : 'hover:bg-orange-50';
+                  const borderColor = embedded
+                    ? (pch === 'DELIVERY' ? 'border-purple-500' : pch === 'ONLINE' ? 'border-blue-500' : 'border-orange-500')
+                    : selectedOrderType === 'delivery'
+                      ? 'border-purple-500'
+                      : selectedOrderType === 'online'
+                        ? 'border-blue-500'
+                        : 'border-orange-500';
+                  const bgSelected = embedded
+                    ? (pch === 'DELIVERY' ? 'bg-purple-100' : pch === 'ONLINE' ? 'bg-blue-100' : 'bg-orange-100')
+                    : selectedOrderType === 'delivery'
+                      ? 'bg-purple-100'
+                      : selectedOrderType === 'online'
+                        ? 'bg-blue-100'
+                        : 'bg-orange-100';
+
+                  const orderStatus = String(order.fullOrder?.status ?? order.status ?? '').toUpperCase();
+                  const isPaidRow = orderStatus === 'PAID' || orderStatus === 'COMPLETED' || orderStatus === 'CLOSED';
+                  const isPickedUpRow = orderStatus === 'PICKED_UP';
+                  const rowBg = isSelected ? undefined : isPickedUpRow ? undefined : isPaidRow ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
+                  const rowLabel = embedded ? getPickupListAmountLabel(order) : (!isPaidRow && !isPickedUpRow ? 'Unpaid' : isPaidRow && !isPickedUpRow ? 'Ready' : null);
+
+                  const placedStr =
+                    order.placedTime || order.createdAt
+                      ? new Date(order.placedTime || order.createdAt || '').toLocaleTimeString('en-US', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: true,
+                        })
+                      : order.time || '—';
+                  const pickupStr =
+                    order.readyTimeLabel ||
+                    (order.pickupTime
+                      ? new Date(order.pickupTime).toLocaleTimeString('en-US', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: true,
+                        })
+                      : '—');
+
+                  let orderNumStr = '';
+                  if (embedded) {
+                    if (pch === 'DELIVERY') {
+                      const extNum = String(order.deliveryOrderNumber || '').replace(/^#/, '').trim();
+                      const company = order.deliveryCompany || 'Delivery';
+                      orderNumStr = extNum ? `${company} / ${extNum}`.toUpperCase() : company.toUpperCase();
+                    } else if (pch === 'ONLINE') orderNumStr = String(order.number || order.id || '').toUpperCase();
+                    else
+                      orderNumStr =
+                        String((order as any).order_number ?? order.number ?? '').trim() || String(order.id).padStart(3, '0');
+                  }
+
                   return (
-                    <tr 
-                      key={order.id}
-                      onClick={() => handleOrderClick(order, selectedOrderType)}
+                    <React.Fragment key={order.id}>
+                    <tr
+                      onClick={() => handleOrderClick(order, resolveClickChannel(order))}
                       className={`cursor-pointer ${bgHover} transition min-h-[44px] ${
-                        isSelected 
-                          ? `${bgSelected} border-l-4 ${borderColor}` 
-                          : 'border-l-4 border-transparent'
+                        isSelected ? `${bgSelected} border-l-4 ${borderColor}` : 'border-l-4 border-transparent'
                       }`}
-                      style={{ height: '44px' }}
+                      style={{ height: '44px', backgroundColor: rowBg }}
                     >
-                      <td className="px-2 py-3 text-gray-800">{idx + 1}</td>
-                      {selectedOrderType === 'delivery' ? (
+                      {embedded ? (
                         <>
-                          <td className="px-2 py-3 text-gray-800 font-bold">{order.deliveryCompany || 'Delivery'}</td>
-                          <td className="px-2 py-3 text-purple-700 font-bold">#{order.deliveryOrderNumber || order.id}</td>
+                          <td className="px-2 py-3 text-gray-800 font-mono">{String((order as any).order_number ?? order.number ?? order.id).padStart(3, '0')}</td>
+                          <td className="px-2 py-3">
+                            <span className="text-[10px] font-bold text-slate-700">{channelDisplayLabel(pch)}</span>
+                          </td>
+                          <td className="px-2 py-3 text-gray-800 font-semibold truncate max-w-[100px]" title={orderNumStr}>
+                            {orderNumStr}
+                          </td>
+                          <td className="px-2 py-3 text-gray-600">{placedStr}</td>
+                          <td className="px-2 py-3 text-gray-600">{pickupStr}</td>
+                          <td className="px-2 py-3 text-right text-gray-800">
+                            <span className="inline-flex items-center justify-end gap-1">
+                              <span className="inline-block w-[38px] text-center">
+                                {rowLabel && (
+                                  <span
+                                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
+                                      rowLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'
+                                    }`}
+                                  >
+                                    {rowLabel}
+                                  </span>
+                                )}
+                              </span>
+                              <span>${Number(order.total || order.fullOrder?.total || 0).toFixed(2)}</span>
+                            </span>
+                          </td>
                         </>
                       ) : (
                         <>
+                          <td className="px-2 py-3 text-gray-800">{idx + 1}</td>
                           <td className="px-2 py-3 text-gray-800 font-bold">
-                            #{selectedOrderType === 'online' 
-                              ? (order.number || order.id) 
-                              : String(order.id).padStart(3, '0')}
+                            #{String((order as any).order_number ?? order.number ?? order.id).padStart(3, '0')}
                           </td>
                           <td className="px-2 py-3 text-gray-600">
                             {order.placedTime || order.createdAt
-                              ? new Date(order.placedTime || order.createdAt || '').toLocaleTimeString('en-US', { 
-                                  hour: '2-digit', minute: '2-digit', hour12: false 
+                              ? new Date(order.placedTime || order.createdAt || '').toLocaleTimeString('en-US', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  hour12: false,
                                 })
                               : order.time || '-'}
                           </td>
+                          <td className="px-2 py-3 text-gray-600">
+                            {order.readyTimeLabel ||
+                              (order.pickupTime
+                                ? new Date(order.pickupTime).toLocaleTimeString('en-US', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    hour12: false,
+                                  })
+                                : '-')}
+                          </td>
+                          <td className="px-2 py-3 text-gray-800">
+                            {selectedOrderType === 'delivery'
+                              ? (() => {
+                                  const co = order.deliveryCompany || 'Delivery';
+                                  const ext = String(order.deliveryOrderNumber || '').replace(/^#/, '').trim();
+                                  return ext ? `${co} / ${ext}`.toUpperCase() : co.toUpperCase();
+                                })()
+                              : (order.name || order.customerName || '-')}
+                          </td>
+                          <td className="px-2 py-3 text-gray-800 font-bold">{order.phone || order.customerPhone || '-'}</td>
+                          <td className="px-2 py-3 text-right text-gray-800">
+                            <span className="flex items-center justify-end gap-1.5">
+                              <span className="inline-block w-[38px] text-center">
+                                {rowLabel && (
+                                  <span
+                                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${
+                                      rowLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'
+                                    }`}
+                                  >
+                                    {rowLabel}
+                                  </span>
+                                )}
+                              </span>
+                              <span>${Number(order.total || order.fullOrder?.total || 0).toFixed(2)}</span>
+                            </span>
+                          </td>
                         </>
                       )}
-                      <td className="px-2 py-3 text-gray-600">
-                        {order.readyTimeLabel || (order.pickupTime 
-                          ? new Date(order.pickupTime).toLocaleTimeString('en-US', { 
-                              hour: '2-digit', minute: '2-digit', hour12: false 
-                            })
-                          : '-')}
-                      </td>
-                      <td className="px-2 py-3 text-gray-800">{order.name || order.customerName || '-'}</td>
-                      {selectedOrderType !== 'delivery' && (
-                        <td className="px-2 py-3 text-gray-800 font-bold">{order.phone || order.customerPhone || '-'}</td>
-                      )}
-                      <td className="px-2 py-3 text-right text-gray-800">
-                        ${Number(order.total || order.fullOrder?.total || 0).toFixed(2)}
-                      </td>
                     </tr>
+                    <tr>
+                      <td
+                        colSpan={embedded ? 6 : 7}
+                        style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', padding: 0 }}
+                      />
+                    </tr>
+                    </React.Fragment>
                   );
-                })}
-                {getCurrentOrders().length === 0 && (
+                  });
+                })()}
+                {getCurrentOrders().filter((o) => !embedded || shouldShowInPickupList(o)).length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                    <td
+                      colSpan={embedded ? 6 : 7}
+                      className="px-4 py-6 text-center text-gray-400"
+                    >
                       No orders found
                     </td>
                   </tr>
@@ -886,12 +1015,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               <div className="bg-white rounded-lg p-3 shadow-sm">
                 <div className="flex justify-between items-center mb-1">
                   <div className="text-2xl font-bold text-gray-800">
-                    {selectedOrderType === 'delivery'
-                      ? `${selectedOrderDetail.deliveryCompany || 'Delivery'} #${selectedOrderDetail.deliveryOrderNumber || selectedOrderDetail.id}`
-                      : `#${(selectedOrderType === 'togo' || selectedOrderType === 'pickup')
-                          ? String(selectedOrderDetail.id).padStart(3, '0') 
-                          : (selectedOrderDetail.number || selectedOrderDetail.id)}`
-                    }
+                    {`#${String((selectedOrderDetail as any).order_number ?? selectedOrderDetail.number ?? selectedOrderDetail.id).padStart(3, '0')}`}
                   </div>
                   <div className="text-3xl font-bold text-red-600">
                     {(() => {

@@ -58,7 +58,7 @@ const getActiveShift = async (serverId, businessDate) => {
 // - Tips: cash + card (delivery/online excluded, same as settlement logic)
 // ============================================================
 const calcServerDaySummary = async ({ serverId, businessDate }) => {
-  const dayFilter = `date(o.created_at,'localtime') = ?`;
+  const dayFilter = `date(o.created_at) = ?`;
   const baseWhere = `${dayFilter} AND ${paidOrderStatusesSql} AND COALESCE(o.server_id,'') = ?`;
 
   // Payments-based gross sales (actual revenue collected)
@@ -144,7 +144,7 @@ const calcServerDaySummary = async ({ serverId, businessDate }) => {
 
 const calcSettlement = async ({ serverId, shiftId, businessDate }) => {
   // Orders scoped to server + business day (localtime)
-  const dayFilter = `date(o.created_at,'localtime') = ?`;
+  const dayFilter = `date(o.created_at) = ?`;
   const baseWhere = `${dayFilter} AND ${paidOrderStatusesSql} AND COALESCE(o.server_id,'') = ?`;
 
   // A) Sales summary - payments 기반
@@ -219,7 +219,7 @@ const calcSettlement = async ({ serverId, shiftId, businessDate }) => {
       SELECT COALESCE(SUM(v.grand_total),0) as void_total
       FROM voids v
       JOIN orders o ON v.order_id = o.id
-      WHERE date(v.created_at,'localtime') = ?
+      WHERE date(v.created_at) = ?
         AND COALESCE(o.server_id,'') = ?
       `,
       [businessDate, serverId]
@@ -238,7 +238,7 @@ const calcSettlement = async ({ serverId, shiftId, businessDate }) => {
       SELECT COALESCE(SUM(r.total),0) as refund_total
       FROM refunds r
       JOIN orders o ON r.order_id = o.id
-      WHERE date(r.created_at,'localtime') = ?
+      WHERE date(r.created_at) = ?
         AND COALESCE(o.server_id,'') = ?
         AND UPPER(COALESCE(r.status,'COMPLETED')) IN ('COMPLETED','APPROVED','SETTLED','PAID')
       `,
@@ -250,7 +250,7 @@ const calcSettlement = async ({ serverId, shiftId, businessDate }) => {
       SELECT COALESCE(SUM(r.total),0) as cash_refund_total
       FROM refunds r
       JOIN orders o ON r.order_id = o.id
-      WHERE date(r.created_at,'localtime') = ?
+      WHERE date(r.created_at) = ?
         AND COALESCE(o.server_id,'') = ?
         AND UPPER(COALESCE(r.payment_method,'')) = 'CASH'
         AND UPPER(COALESCE(r.status,'COMPLETED')) IN ('COMPLETED','APPROVED','SETTLED','PAID')
@@ -615,7 +615,7 @@ router.get('/server-sales', async (req, res) => {
         COALESCE(o.server_id,'') as server_id,
         COALESCE(MAX(o.server_name), '') as server_name
       FROM orders o
-      WHERE date(o.created_at,'localtime') = ?
+      WHERE date(o.created_at) = ?
         AND ${paidOrderStatusesSql}
         AND COALESCE(o.server_id,'') <> ''
         ${requestedServerId ? "AND COALESCE(o.server_id,'') = ?" : ''}
@@ -688,7 +688,7 @@ router.post('/print-server-sales', async (req, res) => {
         COALESCE(o.server_id,'') as server_id,
         COALESCE(MAX(o.server_name), '') as server_name
       FROM orders o
-      WHERE date(o.created_at,'localtime') = ?
+      WHERE date(o.created_at) = ?
         AND ${paidOrderStatusesSql}
         AND COALESCE(o.server_id,'') <> ''
         ${requestedServerId ? "AND COALESCE(o.server_id,'') = ?" : ''}

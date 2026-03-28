@@ -113,6 +113,7 @@ export interface ReceiptData {
   total?: number;
   payments?: any[];
   change?: number;
+  cashTendered?: number;
   footer?: any;
 }
 
@@ -131,6 +132,8 @@ export interface KitchenTicketData {
     serverName?: string;
     customerName?: string | null;
     customerPhone?: string;
+    /** Online: modal Order Number for kitchen ticket quoted id */
+    onlineOrderNumber?: string;
     orderId?: any;
     orderSource?: string;
     readyTime?: string;

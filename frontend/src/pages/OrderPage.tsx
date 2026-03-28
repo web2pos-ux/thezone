@@ -156,6 +156,9 @@ const OrderPage = () => {
   const [serverBootstrapComplete, setServerBootstrapComplete] = useState(false);
   const initialCustomerName = typeof locationState.customerName === 'string' ? locationState.customerName : '';
   const initialCustomerPhone = typeof locationState.customerPhone === 'string' ? locationState.customerPhone : '';
+  const initialOnlineOrderNumber =
+    typeof locationState.onlineOrderNumber === 'string' ? String(locationState.onlineOrderNumber).trim() : '';
+  const onlineOrderNumberForKitchenRef = useRef<string>(initialOnlineOrderNumber);
   const sanitizeCustomerName = (value?: string | null) => {
     const raw = typeof value === 'string' ? value.trim() : '';
     if (!raw) return '';
@@ -165,9 +168,31 @@ const OrderPage = () => {
     name: sanitizeCustomerName(initialCustomerName),
     phone: initialCustomerPhone,
   });
+  const togoInfoTimingFromState = locationState.togoInfoTiming || 'before';
+  const [showTogoInfoAfterModal, setShowTogoInfoAfterModal] = useState(false);
+  const [togoInfoAfterName, setTogoInfoAfterName] = useState('');
+  const [togoInfoAfterPhone, setTogoInfoAfterPhone] = useState('');
+  const [togoInfoAfterAddress, setTogoInfoAfterAddress] = useState('');
+  const [togoInfoAfterZip, setTogoInfoAfterZip] = useState('');
+  const [togoInfoAfterNote, setTogoInfoAfterNote] = useState('');
+  const [togoInfoAfterPickupMinutes, setTogoInfoAfterPickupMinutes] = useState(15);
+  const [togoInfoAfterPrepLocked, setTogoInfoAfterPrepLocked] = useState(false);
+  const [togoInfoAfterFulfillment, setTogoInfoAfterFulfillment] = useState<'togo' | 'delivery'>('togo');
+  const pendingTogoInfoRef = useRef<{ name: string; phone: string } | null>(null);
+  const togoAfterPhoneRef = useRef<HTMLInputElement>(null);
+  const togoAfterNameRef = useRef<HTMLInputElement>(null);
+  const togoAfterAddressRef = useRef<HTMLTextAreaElement>(null);
+  const togoAfterZipRef = useRef<HTMLInputElement>(null);
+  const togoAfterNoteRef = useRef<HTMLTextAreaElement>(null);
+  const [togoAfterKbTarget, setTogoAfterKbTarget] = useState<'togoAfterPhone' | 'togoAfterName' | 'togoAfterAddress' | 'togoAfterZip' | 'togoAfterNote'>('togoAfterPhone');
   const getPersistableCustomerName = () => {
+    if (pendingTogoInfoRef.current) return pendingTogoInfoRef.current.name || null;
     const safe = sanitizeCustomerName(orderCustomerInfo.name);
     return safe || null;
+  };
+  const getPersistableCustomerPhone = () => {
+    if (pendingTogoInfoRef.current) return pendingTogoInfoRef.current.phone || null;
+    return orderCustomerInfo.phone || null;
   };
   const initialPickup = (locationState && typeof locationState.pickup === 'object') ? locationState.pickup : null;
   const initialPickupMinutes = (initialPickup && typeof initialPickup.minutes === 'number') ? Number(initialPickup.minutes) : null;
@@ -586,6 +611,11 @@ const OrderPage = () => {
     | 'customTypeF2'
     | 'editPrice'
     | 'voidNote'
+    | 'togoAfterPhone'
+    | 'togoAfterName'
+    | 'togoAfterAddress'
+    | 'togoAfterZip'
+    | 'togoAfterNote'
     | null
   >(null);
   // Void UI state
@@ -1066,6 +1096,8 @@ const handleVoidPinClear = useCallback(() => {
   const allModeStickyRef = useRef<boolean>(false);
   // Track whether receipt has been printed for this payment session (prevent duplicate prints)
   const receiptPrintedRef = useRef<boolean>(false);
+  // Track whether kitchen ticket has been printed for this order (prevent duplicate prints on Payment path)
+  const kitchenTicketPrintedRef = useRef<boolean>(false);
   // Prevent accidental duplicate guest-receipt prints (double-click / re-render edge cases)
   const lastGuestReceiptPrintRef = useRef<{ key: string; ts: number } | null>(null);
   // Payment Complete Modal state
@@ -1131,6 +1163,39 @@ const handleVoidPinClear = useCallback(() => {
       localStorage.setItem('togo_settings_v1', JSON.stringify(togoSettings));
     } catch {}
   }, [togoSettings]);
+
+  // Per-order bag fee toggle: online orders default ON, togo follows settings
+  const [orderBagFeeEnabled, setOrderBagFeeEnabled] = useState<boolean>(() => {
+    const ot = (orderType || '').toLowerCase();
+    if (ot === 'online') return true;
+    return false;
+  });
+  const effectiveBagFeeEnabled = (orderType || '').toLowerCase() === 'online'
+    ? orderBagFeeEnabled
+    : togoSettings.bagFeeEnabled;
+
+  // Restore pending payments from localStorage on mount (browser crash recovery)
+  useEffect(() => {
+    const oid = orderIdFromState || savedOrderIdRef.current;
+    if (!oid) return;
+    try {
+      const raw = localStorage.getItem(`pendingPayments_${oid}`);
+      if (!raw) return;
+      const restored = JSON.parse(raw);
+      if (Array.isArray(restored) && restored.length > 0) {
+        setSessionPayments(restored);
+        const byGuest: Record<string, number> = {};
+        restored.forEach((p: any) => {
+          if (typeof p.guestNumber === 'number') {
+            const key = String(p.guestNumber);
+            byGuest[key] = (byGuest[key] || 0) + (p.amount || 0);
+          }
+        });
+        if (Object.keys(byGuest).length > 0) setPaymentsByGuest(byGuest);
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // POS promotions for Togo orders
   const [togoFirebasePromotions, setTogoFirebasePromotions] = useState<FirebasePromotion[]>([]);
@@ -1384,6 +1449,7 @@ const handleVoidPinClear = useCallback(() => {
     const baseSubtotal = Number((orderTotals.subtotal || 0).toFixed(2));
     const baseTaxLines = (orderTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
     const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const isOnline = (orderType || '').toLowerCase() === 'online';
     const adjustments: any[] = [];
     if (isTogo) {
       if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
@@ -1391,16 +1457,16 @@ const handleVoidPinClear = useCallback(() => {
         const discountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
         if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
       }
-      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
-        const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
-        if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
-      }
+    }
+    if ((isTogo || isOnline) && effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+      const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
+      if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
     }
     const applied = applySubtotalAdjustments({ subtotal: baseSubtotal, taxLines: baseTaxLines }, adjustments);
     const calcSubtotal = Number((applied.subtotal || 0).toFixed(2));
     const calcTax = Number((applied.taxesTotal || 0).toFixed(2));
     const calcTotal = Number((applied.total || 0).toFixed(2));
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR' }) });
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR', isPrepaid: !!(location.state as any)?.isPrepaid }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
@@ -1614,7 +1680,7 @@ const handleVoidPinClear = useCallback(() => {
         const paySubtotal = Number((payTotals.subtotal || 0).toFixed(2));
         const payTax = Number(((payTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
         const payTotal = Number((paySubtotal + payTax).toFixed(2));
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, orderMode: 'FSR' }) });
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), orderMode: 'FSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
@@ -1625,12 +1691,8 @@ const handleVoidPinClear = useCallback(() => {
         window.dispatchEvent(new CustomEvent('orderCreated', { detail: { orderId: saved.orderId, tableId: tableIdForOrder } }));
       }
       const orderId = savedOrderIdRef.current as number;
+      const tempId = Date.now() + Math.floor(Math.random() * 100000);
       if (guestPaymentMode === 'ALL') {
-        // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null }) });
-        if (!payRes.ok) throw new Error('Failed to save payment');
-        const payData = await payRes.json();
-        // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
         setPaymentsByGuest(prev => {
                       const perGuestTotals = guestIds.reduce((acc: Record<string, number>, g: number) => {
             const { grand } = computeGuestTotals(g);
@@ -1651,21 +1713,23 @@ const handleVoidPinClear = useCallback(() => {
           }
           return next;
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ]));
-        // onPaymentComplete 콜백이 PaymentModal에서 결제 완료를 감지하여 PaymentCompleteModal을 표시함
+        setSessionPayments(prev => {
+          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ];
+          try { localStorage.setItem(`pendingPayments_${orderId}`, JSON.stringify(next)); } catch {}
+          return next;
+        });
         return;
       } else {
-        // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) }) });
-        if (!payRes.ok) throw new Error('Failed to save payment');
-        const payData = await payRes.json();
-        // Track paid locally for live due update
         setPaymentsByGuest(prev => {
           const key = String(guestPaymentMode);
           const current = prev[key] || 0;
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
+        setSessionPayments(prev => {
+          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ];
+          try { localStorage.setItem(`pendingPayments_${orderId}`, JSON.stringify(next)); } catch {}
+          return next;
+        });
         
         // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
@@ -1773,6 +1837,44 @@ const handleVoidPinClear = useCallback(() => {
   };
   const handleCompletePayment = async (receiptCount: number = 2) => {
     try {
+      // Flush pending payments to DB before closing order
+      const flushOrderId = savedOrderIdRef.current;
+      if (flushOrderId && sessionPayments.length > 0) {
+        const needsFlush = sessionPayments.some(p => !(p as any)._flushed);
+        if (needsFlush) {
+          const savedIds: number[] = [];
+          for (const p of sessionPayments) {
+            if ((p as any)._flushed) { savedIds.push(p.paymentId); continue; }
+            try {
+              const res = await fetch(`${API_URL}/payments`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  orderId: flushOrderId,
+                  method: p.method,
+                  amount: Number((p.amount || 0).toFixed(2)),
+                  tip: p.tip || 0,
+                  guestNumber: p.guestNumber ?? null
+                })
+              });
+              if (res.ok) {
+                const d = await res.json();
+                savedIds.push(d.paymentId);
+              } else {
+                savedIds.push(p.paymentId);
+              }
+            } catch (e) {
+              console.error('Failed to flush payment:', e);
+              savedIds.push(p.paymentId);
+            }
+          }
+          setSessionPayments(prev =>
+            prev.map((p, i) => ({ ...p, paymentId: savedIds[i] || p.paymentId, _flushed: true } as any))
+          );
+          try { localStorage.removeItem(`pendingPayments_${flushOrderId}`); } catch {}
+        }
+      }
+
       // Guard: only close order when ALL guests are fully paid
       const totals = computeGuestTotals('ALL');
       const baseNetSubtotal = Number((totals.subtotal || 0).toFixed(2)); // after item+order discounts (pre-TOGO adj)
@@ -1787,6 +1889,7 @@ const handleVoidPinClear = useCallback(() => {
       const subtotalForReceipt = Number((baseNetSubtotal + orderDiscountTotal).toFixed(2));
 
       const isTogo = (orderType || '').toLowerCase() === 'togo';
+      const isOnline = (orderType || '').toLowerCase() === 'online';
       const togoAdjustments: any[] = [];
       let togoDiscountAmt = 0;
       let bagFeeAmt = 0;
@@ -1795,7 +1898,7 @@ const handleVoidPinClear = useCallback(() => {
         togoDiscountAmt = computeDiscountAmount(baseNetSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
         if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
       }
-      if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+      if ((isTogo || isOnline) && effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
         bagFeeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
         if (bagFeeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: bagFeeAmt });
       }
@@ -1860,6 +1963,23 @@ const handleVoidPinClear = useCallback(() => {
 
       // Live Order 실시간 업데이트를 위한 이벤트 발생
       window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
+
+      // Kitchen Ticket: if OK was not pressed before Payment, print kitchen ticket now
+      if (!kitchenTicketPrintedRef.current) {
+        kitchenTicketPrintedRef.current = true;
+        try {
+          const kitchenItems = (orderItems || []).filter((it: any) => it && it.type === 'item');
+          if (kitchenItems.length > 0) {
+            if (!savedOrderIdRef.current) {
+              await saveOrderToBackend();
+            }
+            await printKitchenOrders(false);
+            console.log('🖨️ Kitchen ticket printed on payment completion (OK was skipped)');
+          }
+        } catch (ktErr) {
+          console.warn('Kitchen ticket print on payment failed (ignored):', ktErr);
+        }
+      }
 
       // Open Cash Drawer (Till) after payment completion
       try {
@@ -1980,6 +2100,7 @@ const handleVoidPinClear = useCallback(() => {
             tip: p.tip || 0
           })),
           change: 0,
+          cashTendered: 0,
           footer: {}
         };
 
@@ -2023,6 +2144,46 @@ const handleVoidPinClear = useCallback(() => {
     setShowPaymentCompleteModal(false);
     setPaymentCompleteData(null);
 
+    // --- Confirmed save: flush all pending payments to DB ---
+    const orderId_confirm = savedOrderIdRef.current;
+    const unflushed = sessionPayments.filter(p => !(p as any)._flushed);
+    if (orderId_confirm && unflushed.length > 0) {
+      const savedIds: number[] = [];
+      for (const p of unflushed) {
+        try {
+          const res = await fetch(`${API_URL}/payments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: orderId_confirm,
+              method: p.method,
+              amount: Number((p.amount || 0).toFixed(2)),
+              tip: p.tip || 0,
+              guestNumber: p.guestNumber ?? null
+            })
+          });
+          if (res.ok) {
+            const d = await res.json();
+            savedIds.push(d.paymentId);
+          } else {
+            savedIds.push(p.paymentId);
+          }
+        } catch (e) {
+          console.error('Failed to save payment to DB:', e);
+          savedIds.push(p.paymentId);
+        }
+      }
+      setSessionPayments(prev => {
+        let idx = 0;
+        return prev.map(p => {
+          if ((p as any)._flushed) return p;
+          const newId = savedIds[idx++];
+          return { ...p, paymentId: newId || p.paymentId, _flushed: true } as any;
+        });
+      });
+      try { localStorage.removeItem(`pendingPayments_${orderId_confirm}`); } catch {}
+    }
+
     // Equal Split(adhoc) / Split 결제에서 "마지막 게스트"까지 결제 완료된 경우:
     // - Receipt 선택 후 즉시 테이블맵으로 이동
     // - 테이블 상태/주문 close/current-order 해제는 백그라운드로 처리 (UX 개선)
@@ -2054,9 +2215,10 @@ const handleVoidPinClear = useCallback(() => {
           const discountedSub = Number((pmDiscount.discountedSubtotal || 0).toFixed(2));
           const discountedTax = Number((pmDiscount.taxesTotal || 0).toFixed(2));
           expectedGrand = Number((discountedSub + discountedTax).toFixed(2));
-        } else if ((orderType || '').toLowerCase() === 'togo') {
-          const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-          const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
+        } else if ((orderType || '').toLowerCase() === 'togo' || (orderType || '').toLowerCase() === 'online') {
+          const otLower = (orderType || '').toLowerCase();
+          const discountActive = otLower === 'togo' && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
+          const bagActive = effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
           const discountValue = Number(togoSettings.discountValue || 0);
           const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
           const discountAmtBase = discountActive
@@ -2163,6 +2325,7 @@ const handleVoidPinClear = useCallback(() => {
         const subtotalForReceipt = Number((baseNetSubtotal + orderDiscountTotal).toFixed(2));
 
         const isTogo = (orderType || '').toLowerCase() === 'togo';
+        const isOnline = (orderType || '').toLowerCase() === 'online';
         const togoAdjustments: any[] = [];
         let togoDiscountAmt = 0;
         let bagFeeAmt = 0;
@@ -2171,7 +2334,7 @@ const handleVoidPinClear = useCallback(() => {
           togoDiscountAmt = computeDiscountAmount(baseNetSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
           if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
         }
-        if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+        if ((isTogo || isOnline) && effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
           bagFeeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
           if (bagFeeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: bagFeeAmt });
         }
@@ -2284,6 +2447,12 @@ const handleVoidPinClear = useCallback(() => {
             tip: p.tip || 0
           })),
           change: savedPaymentData?.change || 0,
+          cashTendered: (() => {
+            const ch = Number(savedPaymentData?.change || 0);
+            if (ch <= 0) return 0;
+            const cashPaid = sessionPayments.filter(p => (p.method || '').toUpperCase() === 'CASH').reduce((s, p) => s + (p.amount || 0), 0);
+            return Number((cashPaid + ch).toFixed(2));
+          })(),
           footer: {}
         };
 
@@ -2470,6 +2639,12 @@ const handleVoidPinClear = useCallback(() => {
         total: guestTotal,
         payments: guestPaymentsList,
         change: paymentCompleteData?.change || 0,
+        cashTendered: (() => {
+          const ch = Number(paymentCompleteData?.change || 0);
+          if (ch <= 0) return 0;
+          const cashPaid = (guestPaymentsList || []).filter((p: any) => (p.method || '').toUpperCase() === 'CASH').reduce((s: number, p: any) => s + (p.amount || 0), 0);
+          return Number((cashPaid + ch).toFixed(2));
+        })(),
         footer: { message: 'Thank you for dining with us!' }
       };
       
@@ -2489,28 +2664,16 @@ const handleVoidPinClear = useCallback(() => {
   const handleAddCashTip = async (tipAmount: number) => {
     const orderId = savedOrderIdRef.current;
     if (!orderId || tipAmount <= 0) return;
-    try {
-      const payRes = await fetch(`${API_URL}/payments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId,
-          method: 'CASH',
-          amount: tipAmount,  // 전액 팁
-          tip: tipAmount,
-          guestNumber: typeof guestPaymentMode === 'number' ? guestPaymentMode : null
-        })
-      });
-      if (!payRes.ok) throw new Error('Failed to save cash tip');
-      const payData = await payRes.json();
-      setSessionPayments(prev => ([
+    const tempId = Date.now() + Math.floor(Math.random() * 100000);
+    setSessionPayments(prev => {
+      const next = [
         ...prev,
-        { paymentId: payData.paymentId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined }
-      ]));
-      console.log(`💰 Cash tip $${tipAmount} saved successfully`);
-    } catch (e) {
-      console.error('Failed to save cash tip:', e);
-    }
+        { paymentId: tempId, method: 'CASH', amount: tipAmount, tip: tipAmount, guestNumber: typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined }
+      ];
+      try { localStorage.setItem(`pendingPayments_${orderId}`, JSON.stringify(next)); } catch {}
+      return next;
+    });
+    console.log(`💰 Cash tip $${tipAmount} saved to memory`);
   };
 
   // 스플릿 결제 완료 모달에서 다음 게스트 선택
@@ -2520,6 +2683,7 @@ const handleVoidPinClear = useCallback(() => {
     allModeStickyRef.current = false;
     payInFullFromSplitRef.current = false;
     receiptPrintedRef.current = false;
+    kitchenTicketPrintedRef.current = false;
     setGuestPaymentMode(guestNumber);
     if (typeof guestNumber === 'number') {
       setActiveGuestNumber(guestNumber);
@@ -4605,7 +4769,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     togoDiscountAmt = computeDiscountAmount(baseSubtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
     if (togoDiscountAmt > 0) togoAdjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: togoDiscountAmt });
   }
-  if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+  const isOnlineForFee = (orderType || '').toLowerCase() === 'online';
+  if ((isTogo || isOnlineForFee) && effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
     const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
     if (feeAmt > 0) togoAdjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
   }
@@ -5455,8 +5620,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       }
     }
     
-    // Bag fee for TOGO
-    if (isTogo && togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+    // Bag fee for TOGO / Online
+    const isOnlineForBag = (orderType || '').toLowerCase() === 'online';
+    if ((isTogo || isOnlineForBag) && effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
       const bagFee = Number(togoSettings.bagFeeValue || 0);
       adjustments.push({ label: 'Bag Fee', amount: bagFee });
       billTotal = Number((billTotal + bagFee).toFixed(2));
@@ -5545,14 +5711,39 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             label: a.label,
             amount: Number((Number(a.amount) * ratio).toFixed(2))
           }));
+          // 할인 전 아이템 합산 (gross)
+          const guestGrossSubtotal = Number(
+            (byGuest[gNum] || []).reduce((sum: number, it: any) => {
+              const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0);
+              const memoAdd = Number((it.memo?.price) || 0);
+              return sum + (base + memoAdd) * (it.quantity || 1);
+            }, 0).toFixed(2)
+          );
+          // 아이템 할인 합계
+          const guestItemDiscount = Number(
+            (items.filter((it: any) => (it.guestNumber || 1) === gNum && it.discount))
+              .reduce((sum: number, it: any) => {
+                const base = Number((it.totalPrice != null ? it.totalPrice : it.price) || 0);
+                const memoAdd = Number((it.memo?.price) || 0);
+                const gross = (base + memoAdd) * (it.quantity || 1);
+                return sum + (gross * (it.discount.value || 0)) / 100;
+              }, 0).toFixed(2)
+          );
+          const hasGuestDiscount = guestItemDiscount > 0.005 || guestAdj.some(a => Number(a.amount) < -0.005);
           return {
             guestNumber: gNum,
             items: byGuest[gNum],
-            guestSubtotal: gt.subtotal,
+            guestSubtotal: hasGuestDiscount ? guestGrossSubtotal : gt.subtotal,
             guestTaxLines: gt.taxLines,
             guestTaxesTotal: gt.taxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0),
             guestTotal: gt.grand,
-            guestAdjustments: guestAdj
+            guestAdjustments: (() => {
+              const allAdj = [...guestAdj];
+              if (guestItemDiscount > 0.005) {
+                allAdj.unshift({ label: 'Item D/C', amount: -guestItemDiscount });
+              }
+              return allAdj;
+            })()
           };
         });
       })(),
@@ -5855,7 +6046,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     // Determine channel for promotion filtering
     const isTogo = (orderType||'').toLowerCase()==='togo';
-    const promoChannel = isTogo ? 'togo' : 'table';
+    const isOnlineForPromo = (orderType||'').toLowerCase()==='online';
+    const promoChannel = (isTogo || isOnlineForPromo) ? 'togo' : 'table';
     
     // Apply promotions (works for both Dine-In and Togo with channel filtering)
     const todayKey = new Date().toISOString().slice(0,10);
@@ -6005,8 +6197,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         }
     }
     
-    // Bag fee for Togo orders only
-    if (isTogo && togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
+    // Bag fee for Togo / Online orders
+    const isOnlineForSaveBag = (orderType || '').toLowerCase() === 'online';
+    if ((isTogo || isOnlineForSaveBag) && effectiveBagFeeEnabled && togoSettings.bagFeeValue>0) {
         const bv = Number(togoSettings.bagFeeValue)||0;
         const amountApplied = bv;
         adjustedTotal = Number((adjustedTotal + amountApplied).toFixed(2));
@@ -6040,12 +6233,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
             customerName: getPersistableCustomerName(),
-            customerPhone: orderCustomerInfo.phone || null,
+            customerPhone: getPersistableCustomerPhone(),
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
             kitchenNote: savedKitchenMemo || null,
-            orderSource: (location.state as any)?.deliveryCompany || null
+            orderSource: (location.state as any)?.deliveryCompany || null,
+            isPrepaid: !!(location.state as any)?.isPrepaid
           })
         });
         if (!saveRes.ok) throw new Error('Failed to save order');
@@ -6101,7 +6295,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
             customerName: getPersistableCustomerName(),
-            customerPhone: orderCustomerInfo.phone || null,
+            customerPhone: getPersistableCustomerPhone(),
             fulfillmentMode: orderFulfillmentMode || null,
             readyTime: orderPickupInfo.readyTimeLabel || null,
             pickupMinutes: orderPickupInfo.pickupMinutes ?? null,
@@ -6278,7 +6472,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               deliveryOrderNumber: deliveryOrderNumber,
               // 고객 정보 (입력값 있을 때만 출력됨)
               customerName: getPersistableCustomerName() || '',
-              customerPhone: orderCustomerInfo?.phone || ''
+              customerPhone: orderCustomerInfo?.phone || '',
+              onlineOrderNumber:
+                (orderType || '').toLowerCase() === 'online' ? onlineOrderNumberForKitchenRef.current || '' : '',
             },
             isAdditionalOrder: wasUpdateMode,
             // Delivery 주문은 항상 PAID로 출력
@@ -6352,6 +6548,56 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const handleOkClick = async () => {
     try {
       const items = (orderItems || []).filter(it => it.type === 'item');
+
+      if (togoInfoTimingFromState === 'after' && isTogo && items.length > 0 && !orderCustomerInfo.phone && !orderCustomerInfo.name) {
+        setTogoInfoAfterName('');
+        setTogoInfoAfterPhone('');
+        setTogoInfoAfterAddress('');
+        setTogoInfoAfterZip('');
+        setTogoInfoAfterNote('');
+        setTogoInfoAfterPickupMinutes(15);
+        setTogoInfoAfterPrepLocked(false);
+        setTogoInfoAfterFulfillment('togo');
+        setTogoAfterKbTarget('togoAfterPhone');
+        setShowTogoInfoAfterModal(true);
+        return;
+      }
+
+      await executeOkFlow();
+    } catch (e) {
+      console.error('OK flow failed', e);
+      alert('OK processing failed');
+    }
+  };
+
+  const handleTogoInfoAfterConfirm = async () => {
+    const name = togoInfoAfterName.trim();
+    const phone = togoInfoAfterPhone.trim();
+    pendingTogoInfoRef.current = { name, phone };
+    setOrderCustomerInfo({ name, phone });
+
+    const now = new Date();
+    const readyDate = new Date(now.getTime() + togoInfoAfterPickupMinutes * 60000);
+    const readyLabel = readyDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    setOrderPickupInfo({ readyTimeLabel: readyLabel, pickupMinutes: togoInfoAfterPickupMinutes });
+    if (togoInfoAfterFulfillment) {
+      setOrderFulfillmentMode(togoInfoAfterFulfillment);
+    }
+
+    setShowTogoInfoAfterModal(false);
+    try {
+      await executeOkFlow();
+    } catch (e) {
+      console.error('OK flow (after info) failed', e);
+      alert('OK processing failed');
+    } finally {
+      pendingTogoInfoRef.current = null;
+    }
+  };
+
+  const executeOkFlow = async () => {
+    try {
+      const items = (orderItems || []).filter(it => it.type === 'item');
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
       const floor = (location.state && (location.state as any).floor) || null;
       const allGuestsPaid = (() => {
@@ -6405,6 +6651,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (wasUpdateMode) {
         try {
           await printKitchenOrders(true, orderItemsSnapshot);
+          kitchenTicketPrintedRef.current = true;
         } catch {}
       }
 
@@ -6431,6 +6678,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (saved) {
          if (!wasUpdateMode) {
            await printKitchenOrders(false, orderItemsSnapshot);
+           kitchenTicketPrintedRef.current = true;
          }
       }
 
@@ -6504,21 +6752,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // 5) 정리 및 이동: 테이블맵으로 이동하지만, VOID 표시를 유지하기 위해 로컬 스냅샷은 삭제하지 않음
       navigate('/sales', { replace: true });
     } catch (e) {
-      console.error('OK flow failed', e);
+      console.error('executeOkFlow failed', e);
       alert('OK processing failed');
     }
   };
 
   const handleVoidPayment = async (paymentId: number) => {
     try {
-      const res = await fetch(`${API_URL}/payments/${paymentId}/void`, { method: 'POST' });
-      if (!res.ok) throw new Error('Payment cancellation failed');
       let removed: { paymentId: number; method: string; amount: number; tip: number; guestNumber?: number } | undefined;
       setSessionPayments(prev => {
         const idx = prev.findIndex(p => p.paymentId === paymentId);
         if (idx >= 0) removed = prev[idx];
         const copy = [...prev];
         if (idx >= 0) copy.splice(idx, 1);
+        const oid = savedOrderIdRef.current;
+        if (oid) { try { localStorage.setItem(`pendingPayments_${oid}`, JSON.stringify(copy)); } catch {} }
         return copy;
       });
       if (removed) {
@@ -6529,8 +6777,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             next[key] = Math.max(0, Number(((next[key] || 0) - (removed!.amount + (removed!.tip||0))).toFixed(2)));
             return next;
           });
-        } else {
-          // ALL bucket was not used for stored entries in current logic; skip
         }
       }
       alert('Payment has been cancelled.');
@@ -6541,22 +6787,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   };
 
   const handleClearAllPayments = async () => {
-    try {
-      const payments = [...sessionPayments];
-      for (const p of payments) {
-        try {
-          const res = await fetch(`${API_URL}/payments/${p.paymentId}/void`, { method: 'POST' });
-          if (!res.ok) throw new Error('Payment cancellation failed');
-        } catch (e) {
-          console.warn('Some payment cancellation failed:', p.paymentId, e);
-        }
-      }
-    } catch (e) {
-      console.error('Error during payment initialization:', e);
-    } finally {
-      setSessionPayments([]);
-      setPaymentsByGuest({});
-    }
+    setSessionPayments([]);
+    setPaymentsByGuest({});
+    const oid = savedOrderIdRef.current;
+    if (oid) { try { localStorage.removeItem(`pendingPayments_${oid}`); } catch {} }
   };
 
   const handleClearScopedPayments = async (paymentIds: number[]) => {
@@ -6564,17 +6798,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       const idSet = new Set((paymentIds || []).filter((id) => typeof id === 'number' && Number.isFinite(id)));
       if (idSet.size === 0) return;
       const toVoid = sessionPayments.filter(p => idSet.has(p.paymentId));
-      for (const p of toVoid) {
-        try {
-          const res = await fetch(`${API_URL}/payments/${p.paymentId}/void`, { method: 'POST' });
-          if (!res.ok) throw new Error('Payment cancellation failed');
-        } catch (e) {
-          console.warn('Some payment cancellation failed:', p.paymentId, e);
-        }
-      }
-      // Remove locally (single state update)
-      setSessionPayments(prev => prev.filter(p => !idSet.has(p.paymentId)));
-      // Adjust guest paid tracking (amount already includes tip in current model)
+      setSessionPayments(prev => {
+        const next = prev.filter(p => !idSet.has(p.paymentId));
+        const oid = savedOrderIdRef.current;
+        if (oid) { try { localStorage.setItem(`pendingPayments_${oid}`, JSON.stringify(next)); } catch {} }
+        return next;
+      });
       setPaymentsByGuest(prev => {
         const next = { ...prev } as Record<string, number>;
         toVoid.forEach((p) => {
@@ -6631,15 +6860,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const base = computeGuestTotals('ALL');
     const baseTaxLines = base.taxLines || [];
     const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const isOnline = (orderType || '').toLowerCase() === 'online';
 
     const adjustments: any[] = [];
-    if (isTogo) {
-      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+    if (isTogo || isOnline) {
+      if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
         const dv = Number(togoSettings.discountValue || 0);
         const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
         if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
       }
-      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+      if (effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
         const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
         if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
       }
@@ -6657,15 +6887,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const base = computeGuestTotals(guestPaymentMode);
     const baseTaxLines = base.taxLines || [];
     const isTogo = (orderType || '').toLowerCase() === 'togo';
+    const isOnline = (orderType || '').toLowerCase() === 'online';
 
     const adjustments: any[] = [];
-    if (isTogo) {
-      if (togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
+    if (isTogo || isOnline) {
+      if (isTogo && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0) {
         const dv = Number(togoSettings.discountValue || 0);
         const discountAmt = computeDiscountAmount(base.subtotal, (togoSettings.discountMode === 'amount' ? 'amount' : 'percent') as any, dv);
         if (discountAmt > 0) adjustments.push({ kind: 'DISCOUNT', label: 'TOGO Discount', amount: discountAmt });
       }
-      if (togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
+      if (effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0) {
         const feeAmt = Number(Number(togoSettings.bagFeeValue || 0).toFixed(2));
         if (feeAmt > 0) adjustments.push({ kind: 'FEE', label: 'Bag Fee', amount: feeAmt });
       }
@@ -7052,7 +7283,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         if (serverIdFromApi && serverNameFromApi) {
           setSelectedServer(prev => prev ?? { id: String(serverIdFromApi), name: String(serverNameFromApi) });
         }
-        if (json && json.order && String(json.order.status).toUpperCase() === 'PAID') {
+        const orderStatusUpper = String(json?.order?.status || '').toUpperCase();
+        if (json && json.order && (orderStatusUpper === 'PAID' || orderStatusUpper === 'PICKED_UP' || orderStatusUpper === 'CLOSED' || orderStatusUpper === 'COMPLETED')) {
           try { localStorage.removeItem(mapKey); } catch {}
           return;
         }
@@ -9521,9 +9753,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                   cur.count += 1;
                                                   grouped.set(key, cur);
                                                 });
+                                                const itemQty = item.quantity || 1;
                                                 return Array.from(grouped.values()).map((g, entryIdx: number) => {
-                                                  const label = `${g.count}x ${g.name}`;
-                                                  const totalDelta = Number((g.priceDelta * g.count).toFixed(2));
+                                                  const displayCount = g.count * itemQty;
+                                                  const label = `${displayCount}x ${g.name}`;
+                                                  const totalDelta = Number((g.priceDelta * displayCount).toFixed(2));
                                                   return (
                                                     <div key={`${item.id}-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                                       <div className="flex items-center">
@@ -9544,11 +9778,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                       const key = String(n || '');
                                                       counts.set(key, (counts.get(key) || 0) + 1);
                                                     });
+                                                    const itemQty2 = item.quantity || 1;
                                                     return Array.from(counts.entries()).map(([name, count], entryIdx: number) => (
                                                       <div key={`${item.id}-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none">
                                                         <div className="flex items-center">
                                                           <span className="text-blue-600 font-medium mr-2">{'>>'}</span>
-                                                          <span className="ml-0.5 font-medium italic">{`${count}x ${name}`}</span>
+                                                          <span className="ml-0.5 font-medium italic">{`${count * itemQty2}x ${name}`}</span>
                                                         </div>
                                                         <span className="text-gray-500 font-medium italic">0.00</span>
                                                       </div>
@@ -9684,9 +9919,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                   cur.count += 1;
                                                   grouped.set(key, cur);
                                                 });
+                                                const itemQty = item.quantity || 1;
                                                 return Array.from(grouped.values()).map((g, entryIdx: number) => {
-                                                  const label = `${g.count}x ${g.name}`;
-                                                  const totalDelta = Number((g.priceDelta * g.count).toFixed(2));
+                                                  const displayCount = g.count * itemQty;
+                                                  const label = `${displayCount}x ${g.name}`;
+                                                  const totalDelta = Number((g.priceDelta * displayCount).toFixed(2));
                                                   return (
                                                     <div key={`${item.id}-togo-mod-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-gray-600" data-pos-lock="order-item-modline" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                                       <div className="flex items-center">
@@ -9706,10 +9943,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                                       const key = String(n || '');
                                                       counts.set(key, (counts.get(key) || 0) + 1);
                                                     });
+                                                    const itemQty2 = item.quantity || 1;
                                                     return Array.from(counts.entries()).map(([name, count], entryIdx: number) => (
                                                       <div key={`${item.id}-togo-modname-${modIndex}-${entryIdx}`} className="flex items-center justify-between text-sm text-gray-600 leading-none" style={{ fontSize: 'var(--order-mod-font)', lineHeight: '1.2' }}>
                                                         <div className="flex items-center">
-                                                          <span className="ml-0.5 font-medium italic">{`${count}x ${name}`}</span>
+                                                          <span className="ml-0.5 font-medium italic">{`${count * itemQty2}x ${name}`}</span>
                                                         </div>
                                                         <span className="text-gray-500 font-medium italic">0.00</span>
                                                       </div>
@@ -9909,15 +10147,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       const items = (orderItems || []).filter(it => it.type !== 'separator');
                       const sub = items.reduce((s,it:any)=> s + ((it.totalPrice + ((it.memo?.price)||0)) * it.quantity), 0);
                       const adj: Array<{ label: string; amount: number }> = [];
-                      if ((orderType||'').toLowerCase()==='togo') {
-                        if (togoSettings.discountEnabled && togoSettings.discountValue>0) {
+                      const otL = (orderType||'').toLowerCase();
+                      if (otL==='togo' || otL==='online') {
+                        if (otL==='togo' && togoSettings.discountEnabled && togoSettings.discountValue>0) {
                           const dv = Number(togoSettings.discountValue)||0;
                           const amountApplied = togoSettings.discountMode==='percent' ? (sub*dv/100) : dv;
                           adj.push({ label: `Discount (${togoSettings.discountMode==='percent'?dv+'%':'$'+dv})`, amount: -Number(amountApplied.toFixed(2)) });
                         }
-                        if (togoSettings.bagFeeEnabled && togoSettings.bagFeeValue>0) {
+                        if (togoSettings.bagFeeValue>0) {
                           const bv = Number(togoSettings.bagFeeValue)||0;
-                          adj.push({ label: `Bag Fee ($${bv})`, amount: Number(bv.toFixed(2)) });
+                          if (effectiveBagFeeEnabled) {
+                            adj.push({ label: `Bag Fee ($${bv})`, amount: Number(bv.toFixed(2)) });
+                          } else if (otL === 'online') {
+                            adj.push({ label: `Bag Fee ($${bv})`, amount: 0 });
+                          }
                         }
                       } else {
                         // Calculate alreadyUsedToday first (needed for both local promo and BOGO)
@@ -9991,12 +10234,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           }
                         } catch {}
                       }
-                      return adj.map((a,idx) => (
-                        <div key={`adj-${idx}`} className="flex justify-between">
-                          <span>{a.label}:</span>
-                          <span>{a.amount>=0?'+':''}${a.amount.toFixed(2)}</span>
-                        </div>
-                      ));
+                      return adj.map((a,idx) => {
+                        const isBagFeeRow = a.label.startsWith('Bag Fee');
+                        const isOnlineOT = (orderType||'').toLowerCase() === 'online';
+                        if (isBagFeeRow && isOnlineOT) {
+                          return (
+                            <button key={`adj-${idx}`} type="button" onClick={() => setOrderBagFeeEnabled(prev => !prev)} className={`flex justify-between w-full text-left rounded px-0.5 transition-colors ${effectiveBagFeeEnabled ? 'hover:bg-red-50' : 'hover:bg-green-50 opacity-50 line-through'}`}>
+                              <span>{a.label} {effectiveBagFeeEnabled ? '✓' : '✗'}</span>
+                              <span>{effectiveBagFeeEnabled ? `+$${a.amount.toFixed(2)}` : '$0.00'}</span>
+                            </button>
+                          );
+                        }
+                        return (
+                          <div key={`adj-${idx}`} className="flex justify-between">
+                            <span>{a.label}:</span>
+                            <span>{a.amount>=0?'+':''}${a.amount.toFixed(2)}</span>
+                          </div>
+                        );
+                      });
                     })()}
                     {/* 기존 전체 세금 라인/총합은 중복이므로 제거 (미결제 기준 합계만 표시) */}
                   </div>
@@ -10015,7 +10270,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <button className="px-1 py-2 flex items-center justify-center rounded-xl font-bold bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))', lineHeight: '1.2', textAlign: 'center', wordBreak: 'keep-all' }} onClick={handlePrintBill}>
                       Print<br/>Bill
                     </button>
-                    {!isHandheldDevice && (
+                    {!isHandheldDevice && !(location.state as any)?.isPrepaid && (
                       <button className="px-1 py-2 flex items-center justify-center rounded-xl font-bold bg-[#e0e5ec] text-gray-700 transition-all duration-150 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500" style={{ height: 'var(--bottom-bar-btn-height, clamp(44px, 6vh, 68px))', fontSize: 'var(--bottom-bar-btn-font, clamp(13px, 1.9vh, 17px))', lineHeight: '1.2', textAlign: 'center' }} onClick={() => {
                         // reset any previous prefill intents; show keypad display as 0
                         try { setPrefillUseTotalOnceNonce(0); setPrefillDueNonce(n=>n+0); } catch {}
@@ -10050,6 +10305,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       openedFromSplitRef.current = false;
                       allModeStickyRef.current = false;
                       receiptPrintedRef.current = false; // Reset receipt print flag for next payment
+                      kitchenTicketPrintedRef.current = false;
                     },
                     paidGuests: Array.isArray(persistedPaidGuests) ? persistedPaidGuests : [],
                     onCreateAdhocGuests: (n: number) => {
@@ -13424,6 +13680,412 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       )}
         </>
       )}
+
+      {showTogoInfoAfterModal && (() => {
+        const prepDisplay = (() => {
+          const mins = togoInfoAfterPickupMinutes;
+          const h = Math.floor(mins / 60);
+          const m = mins % 60;
+          if (h > 0 && m > 0) return `${h}h ${m}m`;
+          if (h > 0) return `${h}h`;
+          return `${m}m`;
+        })();
+        const readyDisplay = (() => {
+          const d = new Date(Date.now() + togoInfoAfterPickupMinutes * 60000);
+          return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        })();
+        const currentDisplay = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const togoAfterActiveField = togoAfterKbTarget;
+        const togoAfterDisplayText = togoAfterActiveField === 'togoAfterPhone' ? togoInfoAfterPhone
+          : togoAfterActiveField === 'togoAfterName' ? togoInfoAfterName
+          : togoAfterActiveField === 'togoAfterAddress' ? togoInfoAfterAddress
+          : togoAfterActiveField === 'togoAfterZip' ? togoInfoAfterZip
+          : togoAfterActiveField === 'togoAfterNote' ? togoInfoAfterNote : '';
+        const togoAfterFieldLabel = togoAfterActiveField === 'togoAfterPhone' ? 'Phone'
+          : togoAfterActiveField === 'togoAfterName' ? 'Name'
+          : togoAfterActiveField === 'togoAfterAddress' ? 'Address'
+          : togoAfterActiveField === 'togoAfterZip' ? 'Zip'
+          : 'Note';
+        const focusBorder = (field: string) => togoAfterActiveField === field ? 'border-emerald-500 ring-1 ring-emerald-300' : 'border-slate-300';
+        const KEYBOARD_RESERVED = 260;
+        const modalMaxH = Math.max(360, window.innerHeight - KEYBOARD_RESERVED - 32);
+        const clampClock = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+        const sanitizeClockInput = (raw: string, maxDigits: number) => String(raw || '').replace(/[^\d]/g, '').slice(0, maxDigits);
+        return (
+        <>
+        <div className="fixed inset-0 z-[99999] flex items-start justify-center bg-black bg-opacity-70 p-3 sm:p-4 pt-6">
+          <div
+            className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-5 w-full border border-slate-200 flex flex-col"
+            style={{ maxWidth: '900px', maxHeight: `${modalMaxH}px` }}
+          >
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+              <h3 className="text-lg font-semibold text-slate-800">Customer Information</h3>
+            </div>
+
+            <div className="space-y-3 flex-1 min-h-0 overflow-y-auto">
+              <div className="grid gap-1.5">
+                {/* Phone & Name row */}
+                <div className="flex flex-col md:flex-row gap-2">
+                  <div className="relative md:w-[34%] md:flex-none">
+                    <input
+                      ref={togoAfterPhoneRef}
+                      type="tel"
+                      autoFocus
+                      value={togoInfoAfterPhone}
+                      onChange={e => setTogoInfoAfterPhone(e.target.value)}
+                      onFocus={() => setTogoAfterKbTarget('togoAfterPhone')}
+                      placeholder="(000)000-0000"
+                      className={`h-10 w-full px-3 rounded-lg border-2 ${focusBorder('togoAfterPhone')} focus:outline-none focus:ring-0 text-sm`}
+                    />
+                  </div>
+                  <div className="relative md:w-[31%] md:flex-none">
+                    <input
+                      ref={togoAfterNameRef}
+                      type="text"
+                      value={togoInfoAfterName}
+                      onChange={e => setTogoInfoAfterName(e.target.value)}
+                      onFocus={() => setTogoAfterKbTarget('togoAfterName')}
+                      placeholder="Customer name"
+                      className={`h-10 w-full px-3 rounded-lg border-2 ${focusBorder('togoAfterName')} focus:outline-none focus:ring-0 text-sm`}
+                    />
+                  </div>
+                  <div className="flex md:flex-1 items-center justify-end">
+                    <div className="inline-flex w-full max-w-[214px] rounded-lg border border-slate-300 bg-white text-xs font-semibold overflow-hidden h-10" role="group">
+                      {([
+                        { key: 'togo' as const, label: 'TOGO' },
+                        { key: 'delivery' as const, label: 'DELIVERY' },
+                      ]).map((option, idx) => {
+                        const active = togoInfoAfterFulfillment === option.key;
+                        return (
+                          <button
+                            type="button"
+                            key={option.key}
+                            onClick={() => setTogoInfoAfterFulfillment(option.key)}
+                            className={`h-full transition-all duration-150 focus:outline-none flex items-center justify-center text-center ${
+                              active ? 'bg-emerald-500 text-white' : 'bg-transparent text-slate-500 hover:text-slate-700'
+                            } ${idx === 0 ? 'border-r border-slate-300' : ''}`}
+                            style={idx === 1 ? { flex: '0 0 46%' } : { flex: '0 0 54%' }}
+                          >
+                            <span className="mx-auto text-center">{option.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                {/* Prep Time summary */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
+                    <div className="flex items-center gap-2 min-w-[140px]">
+                      <span className={togoInfoAfterPrepLocked ? 'text-slate-400' : ''}>Prep Time</span>
+                      <span className={`text-3xl font-mono font-semibold leading-none ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{prepDisplay}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
+                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${togoInfoAfterPrepLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                        Ready {readyDisplay}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${togoInfoAfterPrepLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                        Current {currentDisplay}
+                      </span>
+                    </div>
+                    <div className="flex-1" />
+                  </div>
+                </div>
+
+                {/* Minute buttons */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap gap-2">
+                      {[5, 10, 15, 20, 25].map((min) => (
+                        <button
+                          type="button"
+                          key={`top-${min}`}
+                          onClick={() => setTogoInfoAfterPickupMinutes(min)}
+                          disabled={togoInfoAfterPrepLocked}
+                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                            togoInfoAfterPrepLocked
+                              ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50'
+                              : min === 15
+                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                              : 'bg-slate-500 text-white hover:bg-slate-600'
+                          }`}
+                        >
+                          +{min}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[30, 40, 50, 60].map((min) => (
+                        <button
+                          type="button"
+                          key={`bottom-${min}`}
+                          onClick={() => setTogoInfoAfterPickupMinutes(min)}
+                          disabled={togoInfoAfterPrepLocked}
+                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                            togoInfoAfterPrepLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                          }`}
+                        >
+                          +{min}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTogoInfoAfterPrepLocked(prev => {
+                            if (!prev) { setTogoInfoAfterPickupMinutes(0); }
+                            else { setTogoInfoAfterPickupMinutes(15); }
+                            return !prev;
+                          });
+                        }}
+                        className={`w-[75px] h-[40px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
+                          togoInfoAfterPrepLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'
+                        }`}
+                      >
+                        {togoInfoAfterPrepLocked ? 'Prep On' : 'Prep Off'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Manual time input (HH:MM) */}
+                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (togoInfoAfterPrepLocked) return;
+                          const readyD = new Date(Date.now() + togoInfoAfterPickupMinutes * 60000);
+                          const curH = readyD.getHours();
+                          const newH = (curH - 1 + 24) % 24;
+                          const target = new Date(readyD);
+                          target.setHours(newH);
+                          const diff = Math.max(0, Math.round((target.getTime() - Date.now()) / 60000));
+                          setTogoInfoAfterPickupMinutes(diff);
+                        }}
+                        disabled={togoInfoAfterPrepLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        }`}
+                      >
+                        -H
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={(() => { const d = new Date(Date.now() + togoInfoAfterPickupMinutes * 60000); return String(d.getHours()).padStart(2, '0'); })()}
+                        readOnly
+                        disabled={togoInfoAfterPrepLocked}
+                        placeholder="HH"
+                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400'
+                            : 'bg-white border-slate-300 text-slate-800'
+                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (togoInfoAfterPrepLocked) return;
+                          const readyD = new Date(Date.now() + togoInfoAfterPickupMinutes * 60000);
+                          const curH = readyD.getHours();
+                          const newH = (curH + 1) % 24;
+                          const target = new Date(readyD);
+                          target.setHours(newH);
+                          if (target.getTime() < Date.now()) target.setDate(target.getDate() + 1);
+                          const diff = Math.max(0, Math.round((target.getTime() - Date.now()) / 60000));
+                          setTogoInfoAfterPickupMinutes(diff);
+                        }}
+                        disabled={togoInfoAfterPrepLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        }`}
+                      >
+                        +H
+                      </button>
+                    </div>
+                    <span className={togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-slate-500'}>:</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (togoInfoAfterPrepLocked) return;
+                          setTogoInfoAfterPickupMinutes(prev => Math.max(0, prev - 1));
+                        }}
+                        disabled={togoInfoAfterPrepLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        }`}
+                      >
+                        -M
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={(() => { const d = new Date(Date.now() + togoInfoAfterPickupMinutes * 60000); return String(d.getMinutes()).padStart(2, '0'); })()}
+                        readOnly
+                        disabled={togoInfoAfterPrepLocked}
+                        placeholder="MM"
+                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400'
+                            : 'bg-white border-slate-300 text-slate-800'
+                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (togoInfoAfterPrepLocked) return;
+                          setTogoInfoAfterPickupMinutes(prev => prev + 1);
+                        }}
+                        disabled={togoInfoAfterPrepLocked}
+                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
+                          togoInfoAfterPrepLocked
+                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        }`}
+                      >
+                        +M
+                      </button>
+                    </div>
+                    <div className={`text-xs font-semibold ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-slate-600'}`}>Time (HH:MM)</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                {/* Address & Zip */}
+                <div className="flex gap-2">
+                  <textarea
+                    ref={togoAfterAddressRef}
+                    value={togoInfoAfterAddress}
+                    onChange={e => setTogoInfoAfterAddress(e.target.value)}
+                    onFocus={() => setTogoAfterKbTarget('togoAfterAddress')}
+                    rows={1}
+                    className={`flex-1 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterAddress')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
+                    placeholder="Address"
+                  />
+                  <input
+                    ref={togoAfterZipRef}
+                    type="text"
+                    value={togoInfoAfterZip}
+                    onChange={e => setTogoInfoAfterZip(e.target.value)}
+                    onFocus={() => setTogoAfterKbTarget('togoAfterZip')}
+                    className={`w-24 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterZip')} focus:outline-none focus:ring-0 text-sm`}
+                    placeholder="Zip"
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                {/* Note */}
+                <textarea
+                  ref={togoAfterNoteRef}
+                  value={togoInfoAfterNote}
+                  onChange={e => setTogoInfoAfterNote(e.target.value)}
+                  onFocus={() => setTogoAfterKbTarget('togoAfterNote')}
+                  rows={1}
+                  className={`flex-1 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterNote')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
+                  placeholder="Note"
+                />
+              </div>
+            </div>
+
+            {/* Buttons */}
+            <div className="flex justify-end items-center mt-4 gap-3 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowTogoInfoAfterModal(false)}
+                className="px-5 py-2 rounded bg-gradient-to-b from-white to-slate-100 border border-slate-200 text-slate-600 font-semibold shadow hover:shadow-md"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleTogoInfoAfterConfirm}
+                className="px-6 py-2 rounded bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-semibold shadow hover:shadow-lg"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Virtual Keyboard */}
+        {VirtualKeyboardComponent && (
+          <KeyboardPortal>
+            <VirtualKeyboardComponent
+              open={true}
+              title={togoAfterFieldLabel}
+              zIndex={100000}
+              center={false}
+              keepOpen={true}
+              showNumpad={togoAfterActiveField === 'togoAfterPhone' || togoAfterActiveField === 'togoAfterZip'}
+              maxWidthPx={860}
+              bottomOffsetPx={0}
+              languages={(((layoutSettings as any).keyboardLanguages || []) as string[])}
+              currentLanguage={kbLang}
+              onToggleLanguage={(next: string) => setKbLang(next)}
+              displayText={togoAfterDisplayText}
+              onType={(k: string) => {
+                if (togoAfterActiveField === 'togoAfterPhone') setTogoInfoAfterPhone(prev => `${prev || ''}${k}`);
+                else if (togoAfterActiveField === 'togoAfterName') setTogoInfoAfterName(prev => {
+                  const next = `${prev || ''}${k}`;
+                  return next.replace(/(^|\s)([a-z])/g, (_m: string, p1: string, p2: string) => p1 + p2.toUpperCase());
+                });
+                else if (togoAfterActiveField === 'togoAfterAddress') setTogoInfoAfterAddress(prev => `${prev || ''}${k}`);
+                else if (togoAfterActiveField === 'togoAfterZip') setTogoInfoAfterZip(prev => `${prev || ''}${k}`);
+                else if (togoAfterActiveField === 'togoAfterNote') setTogoInfoAfterNote(prev => `${prev || ''}${k}`);
+              }}
+              onBackspace={() => {
+                if (togoAfterActiveField === 'togoAfterPhone') setTogoInfoAfterPhone(prev => prev ? prev.slice(0, -1) : '');
+                else if (togoAfterActiveField === 'togoAfterName') setTogoInfoAfterName(prev => prev ? prev.slice(0, -1) : '');
+                else if (togoAfterActiveField === 'togoAfterAddress') setTogoInfoAfterAddress(prev => prev ? prev.slice(0, -1) : '');
+                else if (togoAfterActiveField === 'togoAfterZip') setTogoInfoAfterZip(prev => prev ? prev.slice(0, -1) : '');
+                else if (togoAfterActiveField === 'togoAfterNote') setTogoInfoAfterNote(prev => prev ? prev.slice(0, -1) : '');
+              }}
+              onClear={() => {
+                if (togoAfterActiveField === 'togoAfterPhone') setTogoInfoAfterPhone('');
+                else if (togoAfterActiveField === 'togoAfterName') setTogoInfoAfterName('');
+                else if (togoAfterActiveField === 'togoAfterAddress') setTogoInfoAfterAddress('');
+                else if (togoAfterActiveField === 'togoAfterZip') setTogoInfoAfterZip('');
+                else if (togoAfterActiveField === 'togoAfterNote') setTogoInfoAfterNote('');
+              }}
+              onTab={() => {
+                const fields: Array<typeof togoAfterActiveField> = ['togoAfterPhone', 'togoAfterName', 'togoAfterAddress', 'togoAfterZip', 'togoAfterNote'];
+                const idx = fields.indexOf(togoAfterActiveField);
+                const next = fields[(idx + 1) % fields.length];
+                setTogoAfterKbTarget(next);
+                setTimeout(() => {
+                  const refMap: Record<string, React.RefObject<any>> = {
+                    togoAfterPhone: togoAfterPhoneRef,
+                    togoAfterName: togoAfterNameRef,
+                    togoAfterAddress: togoAfterAddressRef,
+                    togoAfterZip: togoAfterZipRef,
+                    togoAfterNote: togoAfterNoteRef,
+                  };
+                  const el = refMap[next]?.current;
+                  if (el) { el.focus(); }
+                }, 0);
+              }}
+              onEnter={() => {
+                handleTogoInfoAfterConfirm();
+              }}
+            />
+          </KeyboardPortal>
+        )}
+        </>
+        );
+      })()}
 
     </div>
   );

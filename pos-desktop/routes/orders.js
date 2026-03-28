@@ -976,12 +976,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource } = req.body || {};
+			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid } = req.body || {};
 			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
+			const isPrepaidOnline = !!isPrepaid;
 			const orderTypeToSave = isDelivery ? 'DELIVERY' : (orderType ? String(orderType).toUpperCase() : null);
-			const statusToSave = isDelivery ? 'PAID' : 'PENDING';
-			const closedAtToSave = isDelivery ? createdAt : null;
+			const statusToSave = (isDelivery || isPrepaidOnline) ? 'PAID' : 'PENDING';
+			const closedAtToSave = (isDelivery || isPrepaidOnline) ? createdAt : null;
 			
 			const itemsWithLineId = (Array.isArray(items) ? items : []).map((it, idx) => ({
 				...it,
@@ -1096,8 +1097,30 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 						);
 					}
 				} catch (payErr) {
-					// Non-blocking: order is still saved; payment can be backfilled on next start.
 					console.warn('[Orders] Delivery payment auto-create failed:', payErr?.message || payErr);
+				}
+			}
+
+			// Online prepaid orders: auto-create an APPROVED OTHER_CARD payment record.
+			if (isPrepaidOnline && !isDelivery) {
+				try {
+					const oRow = await dbGet(`SELECT order_number, total, created_at FROM orders WHERE id = ?`, [orderId]);
+					await dbRun(
+						`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
+						 VALUES(?,?,?,?,?,?,?,?)`,
+						[
+							orderId,
+							'OTHER_CARD',
+							Number(oRow?.total || total || 0),
+							0,
+							oRow?.order_number || null,
+							'APPROVED',
+							null,
+							oRow?.created_at || createdAt,
+						],
+					);
+				} catch (payErr) {
+					console.warn('[Orders] Online prepaid payment auto-create failed:', payErr?.message || payErr);
 				}
 			}
 

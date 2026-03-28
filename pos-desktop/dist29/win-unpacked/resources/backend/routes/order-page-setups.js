@@ -47,6 +47,14 @@ module.exports = (db) => {
     } catch (err) {
       // Column already exists, ignore error
     }
+
+    // Add togo_info_timing column if it doesn't exist
+    try {
+      await dbRun(`ALTER TABLE order_page_setups ADD COLUMN togo_info_timing TEXT DEFAULT 'before'`);
+      console.log('[order-page-setups] Added togo_info_timing column');
+    } catch (err) {
+      // Column already exists, ignore error
+    }
     
     console.log('[order-page-setups] Table initialized');
   };
@@ -57,7 +65,7 @@ module.exports = (db) => {
   router.get('/', async (req, res) => {
     try {
       const rows = await dbAll(`
-        SELECT id, order_type, menu_id, menu_name, price_type, created_at, updated_at
+        SELECT id, order_type, menu_id, menu_name, price_type, togo_info_timing, created_at, updated_at
         FROM order_page_setups
         ORDER BY created_at DESC
       `);
@@ -70,6 +78,7 @@ module.exports = (db) => {
           menuId: row.menu_id,
           menuName: row.menu_name,
           priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
+          togoInfoTiming: row.togo_info_timing || 'before',
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }))
@@ -90,7 +99,7 @@ module.exports = (db) => {
     
     try {
       const row = await dbGet(`
-        SELECT id, order_type, menu_id, menu_name, price_type, created_at, updated_at
+        SELECT id, order_type, menu_id, menu_name, price_type, togo_info_timing, created_at, updated_at
         FROM order_page_setups
         WHERE id = ?
       `, [id]);
@@ -110,6 +119,7 @@ module.exports = (db) => {
           menuId: row.menu_id,
           menuName: row.menu_name,
           priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
+          togoInfoTiming: row.togo_info_timing || 'before',
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }
@@ -126,7 +136,7 @@ module.exports = (db) => {
 
   // POST: 새로운 설정 저장 (같은 order_type이 있으면 업데이트)
   router.post('/', async (req, res) => {
-    const { orderType, menuId, menuName, priceType } = req.body;
+    const { orderType, menuId, menuName, priceType, togoInfoTiming } = req.body;
 
     if (!orderType || !menuId || !menuName) {
       return res.status(400).json({
@@ -137,22 +147,22 @@ module.exports = (db) => {
 
     const createdAt = getLocalDatetimeString();
     const validPriceType = priceType === 'price2' ? 'price2' : 'price';
+    const validTogoInfoTiming = togoInfoTiming === 'after' ? 'after' : 'before';
     
     try {
-      // UPSERT: 같은 order_type이 있으면 업데이트, 없으면 삽입
       await dbRun(`
-        INSERT INTO order_page_setups (order_type, menu_id, menu_name, price_type, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO order_page_setups (order_type, menu_id, menu_name, price_type, togo_info_timing, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(order_type) DO UPDATE SET
           menu_id = excluded.menu_id,
           menu_name = excluded.menu_name,
           price_type = excluded.price_type,
+          togo_info_timing = excluded.togo_info_timing,
           updated_at = excluded.updated_at
-      `, [orderType, menuId, menuName, validPriceType, createdAt, createdAt]);
+      `, [orderType, menuId, menuName, validPriceType, validTogoInfoTiming, createdAt, createdAt]);
 
-      // 저장된 설정 조회
       const saved = await dbGet(`
-        SELECT id, order_type, menu_id, menu_name, price_type, created_at, updated_at
+        SELECT id, order_type, menu_id, menu_name, price_type, togo_info_timing, created_at, updated_at
         FROM order_page_setups
         WHERE order_type = ?
       `, [orderType]);
@@ -166,6 +176,7 @@ module.exports = (db) => {
           menuId: saved.menu_id,
           menuName: saved.menu_name,
           priceType: saved.price_type === 'price1' ? 'price' : (saved.price_type || 'price'),
+          togoInfoTiming: saved.togo_info_timing || 'before',
           createdAt: saved.created_at,
           updatedAt: saved.updated_at
         }
@@ -183,7 +194,7 @@ module.exports = (db) => {
   // PUT: 기존 설정 업데이트
   router.put('/:id', async (req, res) => {
     const { id } = req.params;
-    const { orderType, menuId, menuName, priceType } = req.body;
+    const { orderType, menuId, menuName, priceType, togoInfoTiming } = req.body;
 
     if (!orderType || !menuId || !menuName) {
       return res.status(400).json({
@@ -194,13 +205,14 @@ module.exports = (db) => {
 
     const updatedAt = getLocalDatetimeString();
     const validPriceType = priceType === 'price2' ? 'price2' : 'price';
+    const validTogoInfoTiming = togoInfoTiming === 'after' ? 'after' : 'before';
     
     try {
       const result = await dbRun(`
         UPDATE order_page_setups 
-        SET order_type = ?, menu_id = ?, menu_name = ?, price_type = ?, updated_at = ?
+        SET order_type = ?, menu_id = ?, menu_name = ?, price_type = ?, togo_info_timing = ?, updated_at = ?
         WHERE id = ?
-      `, [orderType, menuId, menuName, validPriceType, updatedAt, id]);
+      `, [orderType, menuId, menuName, validPriceType, validTogoInfoTiming, updatedAt, id]);
 
       if (result.changes === 0) {
         return res.status(404).json({ 
@@ -218,6 +230,7 @@ module.exports = (db) => {
           menuId,
           menuName,
           priceType: validPriceType,
+          togoInfoTiming: validTogoInfoTiming,
           updatedAt
         }
       });
@@ -265,7 +278,7 @@ module.exports = (db) => {
     
     try {
       const rows = await dbAll(`
-        SELECT id, order_type, menu_id, menu_name, price_type, created_at, updated_at
+        SELECT id, order_type, menu_id, menu_name, price_type, togo_info_timing, created_at, updated_at
         FROM order_page_setups
         WHERE order_type = ?
         ORDER BY created_at DESC
@@ -279,6 +292,7 @@ module.exports = (db) => {
           menuId: row.menu_id,
           menuName: row.menu_name,
           priceType: row.price_type === 'price1' ? 'price' : (row.price_type || 'price'),
+          togoInfoTiming: row.togo_info_timing || 'before',
           createdAt: row.created_at,
           updatedAt: row.updated_at
         }))

@@ -376,8 +376,8 @@ app.use(cors({
   },
   credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(uploadsDir));
 // --- [카테고리 이미지 업로드 엔드포인트 추가] ---
 app.post('/api/menu/categories/:categoryId/image', categoryUpload.single('image'), (req, res) => {

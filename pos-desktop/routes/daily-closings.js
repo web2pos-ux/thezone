@@ -1538,8 +1538,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       const paidStatusesNoAlias = "UPPER(status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
-      const dateFilterO = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const dateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilterO = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const dateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Overall summary - payments 기반 실결제 매출
       const overallPayments = await dbGet(`
@@ -1651,7 +1651,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
         GROUP BY oi.name ORDER BY total_revenue DESC LIMIT 50
@@ -1663,7 +1663,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) > 0
         GROUP BY oi.name ORDER BY total_revenue ASC LIMIT 20
@@ -1675,7 +1675,7 @@ module.exports = (db) => {
                COUNT(DISTINCT oi.name) as unique_items
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
       `, [startDate, endDate]);
@@ -1894,8 +1894,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       // Use localtime so the UI's local date range matches DB filtering.
-      const dateFilter = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const eventDateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilter = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const eventDateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Channel breakdown - payments 기반 실결제 매출
       const channelRows = await dbAll(`
@@ -2119,7 +2119,7 @@ module.exports = (db) => {
       // 4) Daily breakdown - payments 기반
       const dailyRows = await dbAll(`
         SELECT
-          date(o.created_at,'localtime') as sale_date,
+          date(o.created_at) as sale_date,
           COUNT(DISTINCT o.id) as order_count,
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales
         FROM payments p

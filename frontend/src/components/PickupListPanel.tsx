@@ -1,5 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { API_URL } from '../config/constants';
+import { getLocalDateString } from '../utils/datetimeUtils';
+import { getDeliveryAbbr } from '../utils/deliveryChannels';
+import {
+  classifyPickupChannel,
+  getPickupListAmountLabel,
+  orderPaymentComplete,
+  shouldShowInPickupList,
+  channelDisplayLabel,
+  type PickupChannelClass,
+} from '../utils/pickupListRules';
+
+type ChannelFilter = 'ALL' | 'PICKUP' | 'ONLINE' | 'DELIVERY';
 
 interface PickupOrder {
   id: number | string;
@@ -27,6 +39,9 @@ interface PickupOrder {
   adjustments_json?: string;
   fullOrder?: any;
   isLoading?: boolean;
+  channel?: string;
+  delivery_company?: string;
+  deliveryCompany?: string;
   [key: string]: any;
 }
 
@@ -34,17 +49,27 @@ interface PickupListPanelProps {
   onPayment: (orderId: number) => Promise<void>;
   onPickupComplete: (orderId: number) => Promise<void>;
   onBackToOrder?: (orderId: number) => void;
+  initialChannelFilter?: ChannelFilter;
 }
+
+const CHANNEL_COLORS: Record<PickupChannelClass, { bg: string; text: string; label: string }> = {
+  PICKUP: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Pickup' },
+  ONLINE: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Online' },
+  DELIVERY: { bg: 'bg-red-100', text: 'text-red-700', label: 'Delivery' },
+  TOGO: { bg: 'bg-green-100', text: 'text-green-700', label: 'Togo' },
+};
 
 const PickupListPanel: React.FC<PickupListPanelProps> = ({
   onPayment,
   onPickupComplete,
   onBackToOrder,
+  initialChannelFilter,
 }) => {
   const [orders, setOrders] = useState<PickupOrder[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<PickupOrder | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>(initialChannelFilter || 'ALL');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const formatPhone = (phone: string) => {
@@ -98,7 +123,8 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
 
   const loadOrders = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO&status=PENDING,UNPAID,PAID&limit=100`);
+      const today = getLocalDateString();
+      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO,ONLINE,DELIVERY&date=${today}&limit=200`);
       const data = await res.json();
       const raw: any[] = Array.isArray(data)
         ? data
@@ -106,10 +132,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
         : Array.isArray(data?.data) ? data.data
         : [];
 
-      const filtered = raw.filter((o: any) => {
-        const s = String(o?.status ?? '').toUpperCase();
-        return s !== 'PICKED_UP' && s !== 'CANCELLED' && s !== 'MERGED';
-      });
+      const filtered = raw.filter((o: any) => shouldShowInPickupList(o));
 
       const mapped: PickupOrder[] = filtered.map((o: any) => ({
         ...o,
@@ -122,6 +145,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
         readyTime: o.ready_time || o.readyTime || '',
         readyTimeLabel: o.ready_time || o.readyTimeLabel || '',
         number: o.order_number || o.number || '',
+        channel: classifyPickupChannel(o),
       }));
 
       const sorted = sortOrders(mapped);
@@ -203,6 +227,10 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
   }, []);
 
   useEffect(() => {
+    if (initialChannelFilter) setChannelFilter(initialChannelFilter);
+  }, [initialChannelFilter]);
+
+  useEffect(() => {
     setLoading(true);
     loadOrders().finally(() => setLoading(false));
   }, []);
@@ -211,8 +239,11 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     pollRef.current = setInterval(() => {
       loadOrders();
     }, 10000);
+    const handleOrderPaid = () => { loadOrders(); };
+    window.addEventListener('orderPaid', handleOrderPaid);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      window.removeEventListener('orderPaid', handleOrderPaid);
     };
   }, [loadOrders]);
 
@@ -221,10 +252,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     await fetchDetail(order);
   }, [fetchDetail]);
 
-  const isPaid = (order: PickupOrder): boolean => {
-    const s = String(order?.status ?? '').toUpperCase();
-    return s === 'PAID' || s === 'COMPLETED';
-  };
+  const isPaid = (order: PickupOrder): boolean => orderPaymentComplete(order);
 
   const getPickupTimeDisplay = (order: PickupOrder): string => {
     const rt = order.readyTime || order.ready_time || order.pickupTime;
@@ -257,6 +285,8 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     }
 
     const order = selectedOrder;
+    const detailChannel = classifyPickupChannel(order);
+    const detailChColors = CHANNEL_COLORS[detailChannel];
     const items = order.fullOrder?.items || [];
     const orderPaid = isPaid(order);
 
@@ -397,8 +427,15 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
         {/* Order info header */}
         <div className="bg-white rounded-lg p-3 shadow-sm mx-2 mt-2">
           <div className="flex justify-between items-center mb-1">
-            <div className="text-xl font-bold text-gray-800">
-              #{String(order.id).padStart(3, '0')}
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-bold text-gray-800">
+                #{String(order.order_number ?? order.number ?? order.id).padStart(3, '0').toUpperCase()}
+              </span>
+              {order.channel && (
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${detailChColors.bg} ${detailChColors.text}`}>
+                  {detailChColors.label}
+                </span>
+              )}
             </div>
             <div className={`text-2xl font-bold ${isPickupOverdue(order) ? 'text-red-600 animate-pulse' : 'text-red-600'}`}>
               {pickupTimeDisplay}
@@ -408,6 +445,11 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
             <span className="font-medium">{order.name || order.customerName || '-'}</span>
             <span className="font-bold text-blue-700">{formatPhone(order.phone || order.customerPhone || '')}</span>
           </div>
+          {order.channel === 'DELIVERY' && (order.delivery_company || order.deliveryCompany) && (
+            <div className="text-xs text-gray-500 mt-1">
+              via {getDeliveryAbbr(order.delivery_company || order.deliveryCompany)}
+            </div>
+          )}
         </div>
 
         {/* Items */}
@@ -555,6 +597,20 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     );
   };
 
+  const filteredOrders =
+    channelFilter === 'ALL'
+      ? orders
+      : channelFilter === 'PICKUP'
+        ? orders.filter((o) => o.channel === 'PICKUP' || o.channel === 'TOGO')
+        : orders.filter((o) => o.channel === channelFilter);
+
+  const channelCounts = {
+    ALL: orders.length,
+    PICKUP: orders.filter((o) => o.channel === 'PICKUP' || o.channel === 'TOGO').length,
+    ONLINE: orders.filter((o) => o.channel === 'ONLINE').length,
+    DELIVERY: orders.filter((o) => o.channel === 'DELIVERY').length,
+  };
+
   return (
     <div className="flex flex-col h-full bg-gray-100">
       {/* Header */}
@@ -564,6 +620,31 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
           <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">
             {orders.length}
           </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {(['ALL', 'PICKUP', 'ONLINE', 'DELIVERY'] as ChannelFilter[]).map((ch) => {
+            const isActive = channelFilter === ch;
+            const count = channelCounts[ch];
+            const colors = ch === 'ALL'
+              ? { bg: 'bg-gray-600', text: 'text-white' }
+              : { bg: isActive ? (CHANNEL_COLORS[ch]?.bg || 'bg-gray-100') : 'bg-gray-100', text: isActive ? (CHANNEL_COLORS[ch]?.text || 'text-gray-600') : 'text-gray-500' };
+            return (
+              <button
+                key={ch}
+                onClick={() => setChannelFilter(ch)}
+                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all border ${
+                  isActive
+                    ? ch === 'ALL'
+                      ? 'bg-gray-700 text-white border-gray-700'
+                      : `${colors.bg} ${colors.text} border-current`
+                    : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {ch === 'ALL' ? 'All' : CHANNEL_COLORS[ch]?.label || ch}
+                {count > 0 && <span className="ml-1 opacity-70">({count})</span>}
+              </button>
+            );
+          })}
         </div>
         <button
           onClick={() => { setLoading(true); loadOrders().finally(() => setLoading(false)); }}
@@ -581,68 +662,90 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
           <div className="bg-gray-50 px-2 py-1.5 border-b flex-shrink-0">
             <div className="grid grid-cols-12 text-[10px] font-semibold text-gray-500 uppercase">
               <div className="col-span-1">#</div>
-              <div className="col-span-2">Order</div>
+              <div className="col-span-2">Channel</div>
+              <div className="col-span-2">Order #</div>
+              <div className="col-span-2">Placed</div>
               <div className="col-span-2">Pickup</div>
-              <div className="col-span-3">Phone</div>
-              <div className="col-span-2">Name</div>
-              <div className="col-span-2 text-right">Total</div>
+              <div className="col-span-3 text-right">Amount</div>
             </div>
           </div>
           <div className="flex-1 overflow-auto">
-            {orders.length === 0 ? (
+            {filteredOrders.length === 0 ? (
               <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-                {loading ? 'Loading...' : 'No pickup orders'}
+                {loading ? 'Loading...' : 'No orders'}
               </div>
             ) : (
-              orders.map((order) => {
+              filteredOrders.map((order) => {
                 const isSelected = selectedOrder && String(selectedOrder.id) === String(order.id);
                 const overdue = isPickupOverdue(order);
-                const paid = isPaid(order);
+                const chInfo = CHANNEL_COLORS[(order.channel as PickupChannelClass) || 'PICKUP'] || CHANNEL_COLORS.PICKUP;
+                const amountLabel = getPickupListAmountLabel(order);
+                const placedStr = formatTime(order.createdAt || order.placedTime);
+                const orderNumRaw = String(order.order_number ?? order.number ?? '').trim() || String(order.id).padStart(3, '0');
+                const chType = (order.channel || '').toUpperCase();
+                const orderNumStr = (chType === 'ONLINE' || chType === 'DELIVERY') ? orderNumRaw.toUpperCase() : orderNumRaw;
 
                 return (
+                <React.Fragment key={order.id}>
                   <div
-                    key={order.id}
                     onClick={() => handleOrderClick(order)}
-                    className={`px-2 py-2 cursor-pointer transition border-l-4 ${
+                    className={`px-2 py-2 cursor-pointer transition border-l-4 border-b border-white ${
                       isSelected
-                        ? 'bg-blue-50 border-blue-500'
-                        : overdue
-                          ? 'bg-red-50/50 border-transparent hover:bg-red-50'
-                          : 'border-transparent hover:bg-gray-50'
+                        ? 'bg-blue-50 border-l-blue-500'
+                        : 'border-l-transparent'
                     }`}
+                    style={!isSelected ? {
+                      backgroundColor: (() => {
+                        const s = String(order.status || '').toUpperCase();
+                        const isPaidStatus = s === 'PAID' || s === 'CLOSED' || s === 'COMPLETED';
+                        if (s === 'PICKED_UP') return undefined;
+                        if (isPaidStatus) return 'rgba(229,236,240,0.1)';
+                        return 'rgba(219,229,239,0.15)';
+                      })(),
+                    } : undefined}
                   >
                     <div className="grid grid-cols-12 items-center text-xs gap-0.5">
                       <div className="col-span-1 text-gray-500 font-mono">
-                        {String(order.id).padStart(3, '0')}
+                        {String(order.order_number ?? order.number ?? order.id).padStart(3, '0')}
                       </div>
-                      <div className="col-span-2 text-gray-500">
-                        {formatTime(order.createdAt || order.created_at || order.placedTime)}
+                      <div className="col-span-2">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${chInfo.bg} ${chInfo.text}`}>
+                          {channelDisplayLabel((order.channel as PickupChannelClass) || 'PICKUP')}
+                        </span>
+                        {order.channel === 'DELIVERY' && (order.delivery_company || order.deliveryCompany) && (
+                          <span className="ml-1 text-[8px] font-bold text-gray-500">
+                            {getDeliveryAbbr(order.delivery_company || order.deliveryCompany)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="col-span-2 font-semibold text-gray-800 truncate" title={orderNumStr}>
+                        {orderNumStr}
+                      </div>
+                      <div className="col-span-2 text-gray-600">
+                        {placedStr}
                       </div>
                       <div className={`col-span-2 font-bold ${overdue ? 'text-red-600 animate-pulse' : 'text-emerald-700'}`}>
                         {getPickupTimeDisplay(order)}
                       </div>
-                      <div className="col-span-3 font-bold text-blue-700 truncate">
-                        {formatPhone(order.phone || order.customerPhone || '')}
-                      </div>
-                      <div className="col-span-2 text-gray-700 truncate">
-                        {order.name || order.customerName || '-'}
-                      </div>
-                      <div className="col-span-2 text-right font-semibold text-gray-800">
-                        ${Number(order.total || 0).toFixed(2)}
+                      <div className="col-span-3 flex items-center justify-end gap-1">
+                        <span className="inline-block w-[38px] text-center">
+                          {amountLabel && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${amountLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>
+                              {amountLabel}
+                            </span>
+                          )}
+                        </span>
+                        <span className="font-semibold text-gray-800 text-right">${Number(order.total || 0).toFixed(2)}</span>
                       </div>
                     </div>
-                    {/* Status badge */}
-                    <div className="flex items-center gap-1 mt-0.5">
-                      {paid ? (
-                        <span className="text-[9px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">PAID</span>
-                      ) : (
-                        <span className="text-[9px] font-bold text-red-600 bg-red-100 px-1.5 py-0.5 rounded">UNPAID</span>
-                      )}
-                      {overdue && (
+                    {overdue && (
+                      <div className="mt-0.5">
                         <span className="text-[9px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded border border-red-200">OVERDUE</span>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
+                  <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)' }} />
+                </React.Fragment>
                 );
               })
             )}

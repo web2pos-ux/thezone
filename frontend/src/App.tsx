@@ -54,7 +54,6 @@ import SalesReportPage from './pages/SalesReportPage';
 import PaymentReportPage from './pages/PaymentReportPage';
 import CustomerReportPage from './pages/CustomerReportPage';
 import InventoryReportPage from './pages/InventoryReportPage';
-import DebugPaymentPage from './pages/DebugPaymentPage';
 import BackofficeTogoSettingsPage from './pages/BackofficeTogoSettingsPage';
 import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
@@ -372,7 +371,7 @@ function App() {
                 <OrderPage />
               </Suspense>
             } />
-            <Route path="/debug/payment" element={<DebugPaymentPage />} />
+            <Route path="/debug/payment" element={<Navigate to="/sales/order" replace />} />
           </Route>
           
           {/* Back Office 레이아웃 */}

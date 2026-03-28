@@ -38,7 +38,6 @@ const protectedGroups = [
       'frontend/src/components/PaymentCompleteModal.tsx',
       'frontend/src/components/SplitBillModal.tsx',
       'frontend/src/pages/order/modules/PaymentSplitModals.tsx',
-      'frontend/src/pages/DebugPaymentPage.tsx',
       'backend/routes/payments.js',
       'pos-desktop/backend/routes/payments.js',
     ],

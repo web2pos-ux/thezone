@@ -1243,6 +1243,21 @@ module.exports = (db) => {
         [activeSession.session_id, shiftNumber]
       );
 
+      let serverTipTotal = null;
+      if (closedBy) {
+        const serverTipData = await dbGet(`
+          SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) as server_tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+            AND o.server_name = ?
+        `, [startTime, endTime, closedBy]);
+        serverTipTotal = Number(serverTipData?.server_tips || 0);
+      }
+
       res.json({
         success: true,
         message: `Shift #${shiftNumber} closed successfully`,
@@ -1256,7 +1271,8 @@ module.exports = (db) => {
           online_count: chMap['ONLINE']?.count || 0,
           delivery_sales: chMap['DELIVERY']?.sales || 0,
           delivery_count: chMap['DELIVERY']?.count || 0,
-          session_opened_at: activeSession.opened_at
+          session_opened_at: activeSession.opened_at,
+          server_tip_total: serverTipTotal
         }
       });
     } catch (error) {
@@ -1564,8 +1580,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       const paidStatusesNoAlias = "UPPER(status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
-      const dateFilterO = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const dateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilterO = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const dateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Overall summary - Paid 주문만 (Subtotal + Tax + Tip = Total 정확히 일치)
       const paidOrders = await dbGet(`
@@ -1583,11 +1599,11 @@ module.exports = (db) => {
       const tipData = await dbGet(`
         SELECT COALESCE(
           (SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) FROM payments p JOIN orders o ON p.order_id = o.id
-           WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
              AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID'))
           +
           (SELECT COALESCE(SUM(t.amount), 0) FROM tips t JOIN orders o ON t.order_id = o.id
-           WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
              AND ${paidStatuses})
         , 0) as total_tip
       `, [startDate, endDate, startDate, endDate]);
@@ -1599,7 +1615,7 @@ module.exports = (db) => {
             COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips,
             COUNT(DISTINCT o.id) as order_count
           FROM payments p JOIN orders o ON p.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           GROUP BY COALESCE(o.server_name, 'Unknown')
           UNION ALL
@@ -1607,7 +1623,7 @@ module.exports = (db) => {
             COALESCE(SUM(t.amount), 0) as tips,
             COUNT(DISTINCT o.id) as order_count
           FROM tips t JOIN orders o ON t.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
           GROUP BY COALESCE(o.server_name, 'Unknown')
         ) combined
@@ -1621,14 +1637,14 @@ module.exports = (db) => {
         SELECT payment_method, SUM(tips) as tips, SUM(cnt) as count FROM (
           SELECT p.payment_method, COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips, COUNT(*) as cnt
           FROM payments p JOIN orders o ON p.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND COALESCE(p.tip, 0) > 0
           GROUP BY p.payment_method
           UNION ALL
           SELECT t.payment_method, COALESCE(SUM(t.amount), 0) as tips, COUNT(*) as cnt
           FROM tips t JOIN orders o ON t.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
           GROUP BY t.payment_method
         ) combined
@@ -1639,7 +1655,6 @@ module.exports = (db) => {
       // 1b) 개별 세금 항목 (GST, PST 등 동적 조회)
       let taxDetails = [];
       try {
-        // First try: tax_group_links 기반 (아이템에 tax_group_id가 있는 경우)
         const taxRows = await dbAll(`
           SELECT t.name as tax_name,
             t.rate as tax_rate,
@@ -1648,9 +1663,8 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
-            AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY t.tax_id, t.name, t.rate
           ORDER BY t.name
         `, [startDate, endDate]);
@@ -1659,9 +1673,11 @@ module.exports = (db) => {
           rate: Number(r.tax_rate || 0),
           amount: Number(Number(r.tax_amount || 0).toFixed(2)),
         }));
+      } catch (e) { /* tax_group_links may not exist */ }
 
-        // Fallback: order_items에 tax_group_id가 없는 경우 orders.tax + taxes 테이블로 분리
-        if (taxDetails.length === 0) {
+      // Fallback: tax_group_id가 없는 경우 orders.tax를 세금 비율로 분배
+      if (taxDetails.length === 0) {
+        try {
           const activeTaxes = await dbAll(`
             SELECT DISTINCT t.name, t.rate 
             FROM taxes t 
@@ -1678,11 +1694,10 @@ module.exports = (db) => {
           });
 
           if (uniqueTaxes.length > 0) {
-            const totalRateSum = uniqueTaxes.reduce((s, t) => s + t.rate, 0);
             const orders = await dbAll(`
               SELECT o.subtotal, o.tax
               FROM orders o
-              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
                 AND ${paidStatuses} AND COALESCE(o.tax, 0) > 0
             `, [startDate, endDate]);
 
@@ -1695,7 +1710,6 @@ module.exports = (db) => {
               if (sub <= 0 || totalTax <= 0) return;
               const effRate = (totalTax / sub) * 100;
 
-              // 각 주문의 effective rate에 맞는 세금만 분배
               const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
               const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
               if (matchedRateSum <= 0) return;
@@ -1710,8 +1724,8 @@ module.exports = (db) => {
               .filter(t => t.amount > 0.001)
               .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
           }
-        }
-      } catch (e) { /* taxes/tax_group_links may not exist */ }
+        } catch (e) { /* taxes table may not exist */ }
+      }
 
       const paidOrderCount = paidOrders?.order_count || 0;
 
@@ -1806,7 +1820,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
         GROUP BY oi.name ORDER BY total_revenue DESC LIMIT 50
@@ -1818,7 +1832,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) > 0
         GROUP BY oi.name ORDER BY total_revenue ASC LIMIT 20
@@ -1830,7 +1844,7 @@ module.exports = (db) => {
                COUNT(DISTINCT oi.name) as unique_items
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
       `, [startDate, endDate]);
@@ -1874,9 +1888,8 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${unpaidStatuses}
-            AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY t.tax_id, t.name, t.rate
           ORDER BY t.name
         `, [startDate, endDate]);
@@ -1885,8 +1898,10 @@ module.exports = (db) => {
           rate: Number(r.tax_rate || 0),
           amount: Number(Number(r.tax_amount || 0).toFixed(2)),
         }));
+      } catch (e) { /* tax_group_links may not exist */ }
 
-        if (unpaidTaxDetails.length === 0) {
+      if (unpaidTaxDetails.length === 0) {
+        try {
           const activeTaxes = await dbAll(`
             SELECT DISTINCT t.name, t.rate 
             FROM taxes t 
@@ -1906,7 +1921,7 @@ module.exports = (db) => {
             const orders = await dbAll(`
               SELECT o.subtotal, o.tax
               FROM orders o
-              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
                 AND ${unpaidStatuses} AND COALESCE(o.tax, 0) > 0
             `, [startDate, endDate]);
 
@@ -1930,8 +1945,8 @@ module.exports = (db) => {
               .filter(t => t.amount > 0.001)
               .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
           }
-        }
-      } catch (e) { /* taxes/tax_group_links may not exist */ }
+        } catch (e) { /* taxes table may not exist */ }
+      }
 
       // 7) Hourly sales
       const hourlySales = await dbAll(`
@@ -1940,7 +1955,7 @@ module.exports = (db) => {
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
@@ -1956,7 +1971,7 @@ module.exports = (db) => {
           COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND ${paidStatuses}
         GROUP BY p.payment_method
@@ -1973,7 +1988,7 @@ module.exports = (db) => {
           ), 0) as avg_duration_min
         FROM orders o
         LEFT JOIN table_map_elements t ON o.table_id = t.element_id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND o.table_id IS NOT NULL AND o.table_id != ''
         GROUP BY COALESCE(t.name, o.table_id)
@@ -1988,7 +2003,7 @@ module.exports = (db) => {
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
@@ -1999,10 +2014,10 @@ module.exports = (db) => {
       // 11) Refunds & Voids
       const refundsVoids = await dbAll(`
         SELECT 'refund' as type, COUNT(*) as count, COALESCE(SUM(total), 0) as total
-        FROM refunds WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+        FROM refunds WHERE date(created_at) >= ? AND date(created_at) <= ?
         UNION ALL
         SELECT 'void' as type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
-        FROM voids WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+        FROM voids WHERE date(created_at) >= ? AND date(created_at) <= ?
       `, [startDate, endDate, startDate, endDate]);
 
       // 12) Category Sales
@@ -2016,7 +2031,7 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
           LEFT JOIN menu_categories c ON mi.category_id = c.category_id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
             AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY c.category_id
@@ -2043,7 +2058,7 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
             AND COALESCE(oi.is_voided, 0) = 0
             AND COALESCE(t.is_deleted, 0) = 0
@@ -2160,7 +2175,7 @@ module.exports = (db) => {
           COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
         GROUP BY oi.item_id
         ORDER BY ${type === 'bottom' ? 'revenue ASC' : 'revenue DESC'}
@@ -2183,7 +2198,7 @@ module.exports = (db) => {
           FROM order_items oi
           JOIN orders o ON oi.order_id = o.id
           WHERE oi.item_id IN (${placeholders})
-            AND date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+            AND date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY oi.item_id
         `, [...itemIds, p.start, p.end]);
@@ -2344,8 +2359,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       // Use localtime so the UI's local date range matches DB filtering.
-      const dateFilter = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const eventDateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilter = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const eventDateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Channel breakdown - payments 기반 실결제 매출
       const channelRows = await dbAll(`
@@ -2569,7 +2584,7 @@ module.exports = (db) => {
       // 4) Daily breakdown - payments 기반
       const dailyRows = await dbAll(`
         SELECT
-          date(o.created_at,'localtime') as sale_date,
+          date(o.created_at) as sale_date,
           COUNT(DISTINCT o.id) as order_count,
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales
         FROM payments p

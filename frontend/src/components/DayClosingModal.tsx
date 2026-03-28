@@ -192,6 +192,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [isClosing, setIsClosing] = useState(false);
   const [isShiftClosing, setIsShiftClosing] = useState(false);
   const [showShiftCloseCashOk, setShowShiftCloseCashOk] = useState(false);
+  const [shiftCloseServerName, setShiftCloseServerName] = useState<string>('');
+  const [shiftEmployeeList, setShiftEmployeeList] = useState<any[]>([]);
   const [dayCloseMinLevel, setDayCloseMinLevel] = useState<number>(4);
   const [accessPin, setAccessPin] = useState<string>('');
   const [accessError, setAccessError] = useState<string>('');
@@ -320,8 +322,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       });
       const json = await res.json().catch(() => ({} as any));
       if (!res.ok || json?.success === false) throw new Error(json?.error || 'Print failed');
-      alert('Z-Report printed successfully!');
-    } catch (err: any) { alert(err?.message || 'Print failed'); }
+    } catch (err: any) { console.error('Z-Report print error:', err?.message); }
     finally { setIsPrintingZReport(false); }
   }, [zReportHistoryData]);
 
@@ -371,8 +372,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       });
       const json = await res.json().catch(() => ({} as any));
       if (!res.ok || json?.success === false) throw new Error(json?.error || 'Print failed');
-      alert('Item Report printed successfully!');
-    } catch (err: any) { alert(err?.message || 'Print failed'); }
+    } catch (err: any) { console.error('Item Report print error:', err?.message); }
     finally { setIsPrintingItemReport(false); }
   }, [itemReportData]);
 
@@ -880,7 +880,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         body: JSON.stringify({
           countedCash: closingCashTotal,
           cashDetails: cashCounts,
-          closedBy: ''
+          closedBy: shiftCloseServerName || ''
         })
       });
       const result = await response.json();
@@ -1276,13 +1276,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
                       L(''); L(C('-- SALES SUMMARY --')); L(DOT());
                       const col3 = (l: any, c: any, r: any) => {
-                        const Lc = String(l ?? '').slice(0, 20).padEnd(20, ' ');
-                        const Cc = String(c ?? '').slice(0, 6);
-                        const CpadL = Math.floor((6 - Cc.length) / 2);
-                        const CpadR = 6 - Cc.length - CpadL;
+                        const LW = 17;
+                        const CW = 6;
+                        const RW = W - LW - CW;
+                        const Lc = String(l ?? '').slice(0, LW).padEnd(LW, ' ');
+                        const Cc = String(c ?? '').slice(0, CW);
+                        const CpadL = Math.floor((CW - Cc.length) / 2);
+                        const CpadR = CW - Cc.length - CpadL;
                         const Cm = ' '.repeat(Math.max(0, CpadL)) + Cc + ' '.repeat(Math.max(0, CpadR));
                         const Rc = String(r ?? '');
-                        const Rm = Rc.length > 22 ? Rc.slice(0, 22) : Rc.padStart(22, ' ');
+                        const Rm = Rc.length > RW ? Rc.slice(0, RW) : Rc.padStart(RW, ' ');
                         return Lc + Cm + Rm;
                       };
                       const salesSubtotal = Number((Number((d as any).subtotal || 0) + Number((d as any).tax_total || 0)).toFixed(2));
@@ -1971,9 +1974,17 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   Cancel
                 </button>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     setActiveTab('closing');
                     setViewMode('cash-count');
+                    setShiftCloseServerName('');
+                    try {
+                      const res = await fetch(`${API_URL}/work-schedule/employees`);
+                      if (res.ok) {
+                        const data = await res.json();
+                        setShiftEmployeeList(Array.isArray(data) ? data : (data.employees || []));
+                      }
+                    } catch (e) { /* ignore */ }
                     setShowShiftCloseCashOk(true);
                   }}
                   disabled={isLoading || isShiftClosing}
@@ -2007,15 +2018,40 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   </div>
 
                   <div className="p-5 flex-1 overflow-y-auto">
+                    {/* Server Selection */}
+                    {shiftEmployeeList.length > 0 && (
+                      <div className="mb-4">
+                        <div className="text-xs font-bold text-gray-600 mb-2">Select Server</div>
+                        <div className="flex flex-wrap gap-2">
+                          {shiftEmployeeList.map((emp: any) => (
+                            <button
+                              key={emp.id}
+                              type="button"
+                              onClick={() => setShiftCloseServerName(shiftCloseServerName === emp.name ? '' : emp.name)}
+                              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+                                shiftCloseServerName === emp.name
+                                  ? 'bg-orange-500 text-white shadow-md'
+                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'
+                              }`}
+                            >
+                              {emp.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-4 gap-2 mb-4">
                       <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-200 col-span-2">
                         <div className="text-xs text-blue-700 font-bold">Counted Cash</div>
                         <div className="text-2xl font-extrabold text-blue-900">{formatCurrency(closingCashTotal)}</div>
                       </div>
                       <div className="bg-white rounded-xl p-3 border border-gray-200 col-span-2">
-                        <div className="text-xs text-gray-600 font-bold">Note</div>
+                        <div className="text-xs text-gray-600 font-bold">{shiftCloseServerName ? `Server: ${shiftCloseServerName}` : 'Note'}</div>
                         <div className="text-[12px] text-gray-700 leading-snug">
-                          Enter cash counts the same as closing. Press <span className="font-bold">OK</span> to proceed with <span className="font-bold">Shift Close & Print</span>.
+                          {shiftCloseServerName
+                            ? <span>Shift report will show <span className="font-bold">{shiftCloseServerName}</span>'s tips only.</span>
+                            : <span>Enter cash counts the same as closing. Press <span className="font-bold">OK</span> to proceed.</span>
+                          }
                         </div>
                       </div>
                     </div>
@@ -2328,13 +2364,15 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   L(LR('Discounts:', `-${formatMoney(d?.discount_total || 0)}`));
   const netSales = grossSales - (d?.discount_total || 0);
   L(LR('Net Sales:', formatMoney(netSales)));
-  if ((d as any)?.gst_total) L(LR('GST:', formatMoney((d as any).gst_total)));
-  if ((d as any)?.pst_total) L(LR('PST:', formatMoney((d as any).pst_total)));
+  if ((d as any)?.gst_total != null) L(LR('GST:', formatMoney((d as any).gst_total || 0)));
+  if ((d as any)?.pst_total != null) L(LR('PST:', formatMoney((d as any).pst_total || 0)));
   L(LR('Tax:', formatMoney(d?.tax_total || 0)));
   if (!isQSR && (d?.gratuity_total || 0) > 0) {
     L(LR('Gratuity:', formatMoney(d?.gratuity_total || 0)));
   }
-  const total = netSales + (d?.tax_total || 0) + (isQSR ? 0 : (d?.gratuity_total || 0));
+  const tipTotal = d?.tip_total || 0;
+  L(LR('Tips:', formatMoney(tipTotal)));
+  const total = netSales + (d?.tax_total || 0) + (isQSR ? 0 : (d?.gratuity_total || 0)) + tipTotal;
   L(LR('TOTAL:', formatMoney(total)));
   L('');
 
@@ -2345,8 +2383,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const togoLabel = isQSR ? 'Pickup:' : 'Togo:';
   L(LR(dineLabel, formatMoney(d?.dine_in_sales || 0)));
   L(LR(togoLabel, formatMoney(d?.togo_sales || 0)));
-  if ((d?.online_sales || 0) > 0) L(LR('Online:', formatMoney(d?.online_sales || 0)));
-  if ((d?.delivery_sales || 0) > 0) L(LR('Delivery:', formatMoney(d?.delivery_sales || 0)));
+  L(LR('Online:', formatMoney(d?.online_sales || 0)));
+  L(LR('Delivery:', formatMoney(d?.delivery_sales || 0)));
   L('');
 
   // PAYMENTS
@@ -2359,6 +2397,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         : pm.method === 'OTHER_CARD' ? 'Other Card'
         : pm.method.charAt(0).toUpperCase() + pm.method.slice(1).toLowerCase();
       L(LR(`${label} (${pm.count}):`, formatMoney(pm.net)));
+      if ((pm.tip || 0) > 0) L(LR(`  ${label} Tips:`, formatMoney(pm.tip)));
     }
   } else {
     L(LR('(none):', '$0.00'));
@@ -2423,6 +2462,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const expectedCash = Number(d?.expected_cash || 0);
   L(LR('Opening Cash:', formatMoney(d?.opening_cash || 0)));
   L(LR('Cash Sales:', formatMoney(d?.cash_sales || 0)));
+  L(LR('Cash Tips:', formatMoney(d?.cash_tips || 0)));
   if ((d?.cash_refund_total || 0) > 0) L(LR('Cash Refunds:', `-${formatMoney(d?.cash_refund_total || 0)}`));
   L(LR('Expected Cash:', formatMoney(expectedCash)));
   SEP();

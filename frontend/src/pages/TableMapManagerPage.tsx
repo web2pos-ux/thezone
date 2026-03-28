@@ -2826,14 +2826,17 @@ const TableMapManagerPage = () => {
         ) : (
           // 일반 모드 - 텍스트는 역회전하여 수평 유지
           <div 
-            className="w-full h-full flex items-center justify-center text-white font-bold"
+            className="w-full h-full flex flex-col items-center justify-center text-white font-bold"
             style={{ 
-              fontSize: `${element.fontSize || 12}px`,
+              fontSize: `${(element.fontSize || 12) * 1.6}px`,
               transform: `rotate(${-(element.rotation || 0)}deg)`,
               transformOrigin: 'center center'
             }}
           >
-            {element.text || getElementDisplayName(element)}
+            <span>{element.text || getElementDisplayName(element)}</span>
+            <span style={{ fontSize: '23px', opacity: 0.9, fontWeight: 'bold', lineHeight: 1 }}>
+              {element.size.width}×{element.size.height}
+            </span>
           </div>
         )}
         
@@ -3526,56 +3529,6 @@ const TableMapManagerPage = () => {
             </button>
           </div>
 
-          {/* Channel Management */}
-          <div className="flex items-center space-x-1 bg-yellow-50 p-1 rounded-lg border border-yellow-200">
-            <label className="text-xs font-medium text-gray-700">Ch:</label>
-            <div className="flex space-x-0.5">
-              <button
-                onClick={() => toggleChannelVisibility('table-map')}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                  channelVisibility['table-map']
-                    ? 'bg-blue-500 text-white hover:bg-blue-600'
-                    : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
-                }`}
-                title={channelVisibility['table-map'] ? 'Table Map 숨기기' : 'Table Map 보이기'}
-              >
-                TM
-              </button>
-              <button
-                onClick={() => toggleChannelVisibility('togo')}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                  channelVisibility['togo']
-                    ? 'bg-green-800 text-white hover:bg-green-900'
-                    : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
-                }`}
-                title={channelVisibility['togo'] ? 'Togo 숨기기' : 'Togo 보이기'}
-              >
-                TG
-              </button>
-              <button
-                onClick={() => toggleChannelVisibility('delivery')}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                  channelVisibility['delivery']
-                    ? 'bg-orange-500 text-white hover:bg-orange-600'
-                    : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
-                }`}
-                title={channelVisibility['delivery'] ? 'Delivery 숨기기' : 'Delivery 보이기'}
-              >
-                DL
-              </button>
-              <button
-                onClick={() => toggleChannelVisibility('online')}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                  channelVisibility['online']
-                    ? 'bg-purple-500 text-white hover:bg-purple-600'
-                    : 'bg-gray-300 text-gray-600 hover:bg-gray-400'
-                }`}
-                title={channelVisibility['online'] ? 'Online 숨기기' : 'Online 보이기'}
-              >
-                OL
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* 기능 버튼들 */}

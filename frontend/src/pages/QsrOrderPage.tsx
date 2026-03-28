@@ -11103,9 +11103,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               {isQsrMode && (
                 <div className="bg-gradient-to-r from-slate-700 to-slate-800 px-3 py-2 flex items-center gap-2 flex-shrink-0">
                   <button
-                    onClick={() => setQsrOrderType('forhere')}
+                    onClick={() => { setQsrOrderType('forhere'); setShowPickupListPanel(false); }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
-                      qsrOrderType === 'forhere'
+                      qsrOrderType === 'forhere' && !showPickupListPanel
                         ? 'bg-amber-500 text-white shadow-lg'
                         : 'bg-white/10 text-white/80 hover:bg-white/20'
                     }`}
@@ -11114,9 +11114,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     Eat In
                   </button>
                   <button
-                    onClick={() => setQsrOrderType('togo')}
+                    onClick={() => { setQsrOrderType('togo'); setShowPickupListPanel(false); }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
-                      qsrOrderType === 'togo'
+                      qsrOrderType === 'togo' && !showPickupListPanel
                         ? 'bg-green-500 text-white shadow-lg'
                         : 'bg-white/10 text-white/80 hover:bg-white/20'
                     }`}
@@ -11127,11 +11127,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <button
                     onClick={() => {
                       setQsrOrderType('pickup');
+                      setShowPickupListPanel(false);
                       setQsrPickupModalTab('pickup');
                       setShowQsrTogoModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
-                      qsrOrderType === 'pickup'
+                      qsrOrderType === 'pickup' && !showPickupListPanel
                         ? 'bg-blue-500 text-white shadow-lg'
                         : 'bg-white/10 text-white/80 hover:bg-white/20'
                     }`}
@@ -11142,10 +11143,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <button
                     onClick={() => {
                       setQsrOrderType('online');
+                      setShowPickupListPanel(false);
                       setShowQsrOnlineModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
-                      qsrOrderType === 'online'
+                      qsrOrderType === 'online' && !showPickupListPanel
                         ? 'bg-purple-500 text-white shadow-lg'
                         : 'bg-white/10 text-white/80 hover:bg-white/20'
                     }`}
@@ -11156,10 +11158,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <button
                     onClick={() => {
                       setQsrOrderType('delivery');
+                      setShowPickupListPanel(false);
                       setShowQsrDeliveryModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
-                      qsrOrderType === 'delivery'
+                      qsrOrderType === 'delivery' && !showPickupListPanel
                         ? 'bg-red-500 text-white shadow-lg'
                         : 'bg-white/10 text-white/80 hover:bg-white/20'
                     }`}

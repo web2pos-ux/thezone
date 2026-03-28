@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
 	const dbRun = (sql, params=[]) => new Promise((resolve, reject) => {
@@ -58,7 +59,7 @@ module.exports = (db) => {
 			if (!Number.isFinite(tipAmount) || tipAmount < 0) {
 				return res.status(400).json({ success:false, error:'tip must be a valid number (>= 0)' });
 			}
-			const createdAt = new Date().toISOString();
+			const createdAt = getLocalDatetimeString();
 			const result = await dbRun(
 				`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at, change_amount)
 				 VALUES(?,?,?,?,?,?,?,?,?)`,

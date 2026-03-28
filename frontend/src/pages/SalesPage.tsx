@@ -22,7 +22,7 @@ import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
 import { PartialSelectionPayload } from '../types/MoveMergeTypes';
-import OnlineOrderPanel from '../components/OnlineOrderPanel';
+import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
 import TablePaymentModal from '../components/PaymentModal';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
@@ -71,6 +71,7 @@ type MoveEndpointKind = 'table' | 'virtual';
 interface OnlineQueueCard {
   id: string;
   number: string | number;
+  localOrderId?: number | string | null;
   time: string;
   phone: string;
   name: string;
@@ -300,7 +301,7 @@ const SalesPage: React.FC = () => {
     } catch {}
     return { togo: true, delivery: true };
   });
-  const rightPanelVisible = true;
+  const rightPanelVisible = channelVis.togo;
   // 현재 시간 표시용 상태
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const now = new Date();
@@ -323,9 +324,6 @@ const SalesPage: React.FC = () => {
   const [showWaitingModal, setShowWaitingModal] = useState<boolean>(false);
   const [selectedWaitingEntry, setSelectedWaitingEntry] = useState<any|null>(null);
   
-  // Online Order Panel state
-  const [showOnlineOrderPanel, setShowOnlineOrderPanel] = useState<boolean>(false);
-
   // Sold Out state (badge count only)
   const [soldOutItems, setSoldOutItems] = useState<Set<string>>(new Set());
   const [onlineOrderRestaurantId, setOnlineOrderRestaurantId] = useState<string | null>(
@@ -710,6 +708,8 @@ const SalesPage: React.FC = () => {
   const [showOrderListCalendar, setShowOrderListCalendar] = useState<boolean>(false);
   const [orderListCalendarMonth, setOrderListCalendarMonth] = useState<Date>(new Date());
   const [orderListTab, setOrderListTab] = useState<'history' | 'live'>('history');
+  const [orderListOpenMode, setOrderListOpenMode] = useState<'history' | 'pickup'>('history');
+  const [orderListChannelFilter, setOrderListChannelFilter] = useState<'all' | 'delivery' | 'online' | 'togo'>('all');
   const [liveOrders, setLiveOrders] = useState<any[]>([]);
   const [liveOrderHighlightItem, setLiveOrderHighlightItem] = useState<string | null>(null);
   const [orderListTaxRate, setOrderListTaxRate] = useState<number>(0);
@@ -1109,6 +1109,8 @@ const SalesPage: React.FC = () => {
   // Togo ì£¼ë¬¸ ê´€ë ¨ ìƒíƒœë“¤
   const [showTogoOrderModal, setShowTogoOrderModal] = useState(false);
   const [showFsrPickupModal, setShowFsrPickupModal] = useState(false);
+  const [pickupModalInitialMode, setPickupModalInitialMode] = useState<'togo' | 'delivery' | 'online'>('togo');
+  const [showPickupListModal, setShowPickupListModal] = useState(false);
   const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
     try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch { return true; }
   });
@@ -2479,45 +2481,55 @@ const SalesPage: React.FC = () => {
   const loadTogoOrders = useCallback(async () => {
     try {
       // PENDINGê³¼ PAID ìƒíƒœ ëª¨ë‘ ë¶ˆëŸ¬ì˜¤ê¸° (PICKED_UPì€ ì œì™¸) - TOGO + DELIVERY
-      const [togoOpenRes, togoPendingRes, togoPaidRes, deliveryOpenRes, deliveryPendingRes, deliveryPaidRes, deliveryOrdersRes] = await Promise.all([
-        fetch(`${API_URL}/orders?type=TOGO&status=OPEN&limit=50`),
-        fetch(`${API_URL}/orders?type=TOGO&status=PENDING&limit=50`),
-        fetch(`${API_URL}/orders?type=TOGO&status=PAID&limit=50`),
-        fetch(`${API_URL}/orders?type=DELIVERY&status=OPEN&limit=50`),
-        fetch(`${API_URL}/orders?type=DELIVERY&status=PENDING&limit=50`),
-        fetch(`${API_URL}/orders?type=DELIVERY&status=PAID&limit=50`),
+      const today = getLocalDateString();
+      const [togoRes, deliveryRes, onlineRes, deliveryOrdersRes] = await Promise.all([
+        fetch(`${API_URL}/orders?type=TOGO&date=${today}&limit=200`),
+        fetch(`${API_URL}/orders?type=DELIVERY&date=${today}&limit=200`),
+        fetch(`${API_URL}/orders?type=ONLINE&date=${today}&limit=200`),
         fetch(`${API_URL}/orders/delivery-orders`), // delivery_orders í…Œì´ë¸”ì—ì„œë„ ë¶ˆëŸ¬ì˜¤ê¸°
       ]);
       
-      const togoOpenJson = togoOpenRes.ok ? await togoOpenRes.json() : { orders: [] };
-      const togoPendingJson = togoPendingRes.ok ? await togoPendingRes.json() : { orders: [] };
-      const togoPaidJson = togoPaidRes.ok ? await togoPaidRes.json() : { orders: [] };
-      const deliveryOpenJson = deliveryOpenRes.ok ? await deliveryOpenRes.json() : { orders: [] };
-      const deliveryPendingJson = deliveryPendingRes.ok ? await deliveryPendingRes.json() : { orders: [] };
-      const deliveryPaidJson = deliveryPaidRes.ok ? await deliveryPaidRes.json() : { orders: [] };
+      const togoJson = togoRes.ok ? await togoRes.json() : { orders: [] };
+      const deliveryJson = deliveryRes.ok ? await deliveryRes.json() : { orders: [] };
+      const onlineJson = onlineRes.ok ? await onlineRes.json() : { orders: [] };
       const deliveryOrdersJson = deliveryOrdersRes.ok ? await deliveryOrdersRes.json() : { orders: [] };
       
-      const togoOpenOrders = Array.isArray(togoOpenJson.orders) ? togoOpenJson.orders : [];
-      const togoPendingOrders = Array.isArray(togoPendingJson.orders) ? togoPendingJson.orders : [];
-      const togoPaidOrders = Array.isArray(togoPaidJson.orders) ? togoPaidJson.orders : [];
-      const deliveryOpenOrders = Array.isArray(deliveryOpenJson.orders) ? deliveryOpenJson.orders : [];
-      const deliveryPendingOrders = Array.isArray(deliveryPendingJson.orders) ? deliveryPendingJson.orders : [];
-      const deliveryPaidOrders = Array.isArray(deliveryPaidJson.orders) ? deliveryPaidJson.orders : [];
-      const deliveryMetaOrders = Array.isArray(deliveryOrdersJson.orders) ? deliveryOrdersJson.orders : [];
+      const EXCLUDE_STATUSES = ['PICKED_UP', 'CANCELLED', 'MERGED', 'CLOSED', 'VOIDED', 'VOID', 'REFUNDED'];
+      const togoAllOrders = (Array.isArray(togoJson.orders) ? togoJson.orders : []).filter((o: any) => !EXCLUDE_STATUSES.includes((o.status || '').toUpperCase()));
+      const DELIVERY_EXCLUDE = [...EXCLUDE_STATUSES, 'PAID', 'COMPLETED'];
+      const deliveryAllRaw = (Array.isArray(deliveryJson.orders) ? deliveryJson.orders : []);
+      const deliveryAllOrders = deliveryAllRaw.filter((o: any) => !DELIVERY_EXCLUDE.includes((o.status || '').toUpperCase()));
+      const deliveryDoneIds = new Set(deliveryAllRaw.filter((o: any) => {
+        const st = (o.status || '').toUpperCase();
+        return DELIVERY_EXCLUDE.includes(st);
+      }).map((o: any) => {
+        if (o.table_id && String(o.table_id).startsWith('DL')) return String(o.table_id).substring(2);
+        return null;
+      }).filter(Boolean));
+      const onlineAllOrders = (Array.isArray(onlineJson.orders) ? onlineJson.orders : []).filter((o: any) => !EXCLUDE_STATUSES.includes((o.status || '').toUpperCase()));
+      const allDeliveryMeta = Array.isArray(deliveryOrdersJson.orders) ? deliveryOrdersJson.orders : [];
+      const deliveryMetaOrders = allDeliveryMeta.filter((m: any) => {
+        const st = (m.status || '').toUpperCase();
+        if (EXCLUDE_STATUSES.includes(st)) return false;
+        const created = m.created_at || m.createdAt || '';
+        if (created && today && !String(created).startsWith(today)) return false;
+        if (deliveryDoneIds.has(String(m.id))) return false;
+        return true;
+      });
       
       // ë””ë²„ê·¸ ë¡œê·¸
-      console.log('ðŸš— [loadTogoOrders] deliveryPendingOrders:', deliveryPendingOrders.length);
-      console.log('ðŸš— [loadTogoOrders] deliveryPaidOrders:', deliveryPaidOrders.length);
+      console.log('ðŸš— [loadTogoOrders] togoAllOrders:', togoAllOrders.length);
+      console.log('ðŸš— [loadTogoOrders] deliveryAllOrders:', deliveryAllOrders.length);
       console.log('ðŸš— [loadTogoOrders] deliveryMetaOrders:', deliveryMetaOrders.length, deliveryMetaOrders);
       
       // ë‘ ëª©ë¡ í•©ì¹˜ê¸° (ì¤‘ë³µ ì œê±°)
       const orderMap = new Map();
-      [...togoOpenOrders, ...togoPendingOrders, ...togoPaidOrders, ...deliveryOpenOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach(o => orderMap.set(o.id, o));
+      [...togoAllOrders, ...deliveryAllOrders, ...onlineAllOrders].forEach(o => orderMap.set(o.id, o));
       
       // orders í…Œì´ë¸”ì˜ delivery ì£¼ë¬¸ì—ì„œ table_idë¡œ delivery_orders.id ë§¤í•‘ ìƒì„±
       // table_id = "DL" + delivery_orders.id í˜•ì‹
       const tableIdToOrderId = new Map();
-      [...deliveryOpenOrders, ...deliveryPendingOrders, ...deliveryPaidOrders].forEach((o: any) => {
+      [...deliveryAllOrders].forEach((o: any) => {
         if (o.table_id && String(o.table_id).startsWith('DL')) {
           const deliveryMetaId = String(o.table_id).substring(2); // "DL" ì œê±°
           tableIdToOrderId.set(deliveryMetaId, o.id);
@@ -2573,7 +2585,7 @@ const SalesPage: React.FC = () => {
       // PICKED_UP ìƒíƒœë§Œ ì œì™¸ (Pickup Complete ëœ ê²ƒë§Œ ì œì™¸)
       const orders = allOrders.filter((o: any) => {
         const status = (o.status || '').toUpperCase();
-        return status !== 'PICKED_UP';
+        return !EXCLUDE_STATUSES.includes(status);
       });
       const mapped = orders.map((o: any, idx: number) => {
         const parsedId = Number(o.id);
@@ -2622,6 +2634,8 @@ const SalesPage: React.FC = () => {
         const fulfillment =
           fulfillmentRaw === 'delivery'
             ? 'delivery'
+            : fulfillmentRaw === 'online' || fulfillmentRaw === 'web' || fulfillmentRaw === 'qr'
+            ? 'online'
             : fulfillmentRaw === 'togo' || fulfillmentRaw === 'pickup'
             ? 'togo'
             : null;
@@ -2630,7 +2644,7 @@ const SalesPage: React.FC = () => {
         return {
           id: safeId,
           order_id: o.order_id || null, // orders í…Œì´ë¸”ì˜ ì‹¤ì œ id (delivery ì£¼ë¬¸ì—ì„œ items ì¡°íšŒìš©)
-          type: fulfillment === 'delivery' ? 'Delivery' : 'Togo',
+          type: fulfillment === 'delivery' ? 'Delivery' : fulfillment === 'online' ? 'Online' : 'Togo',
           number: o.order_number || o.id,
           time: new Date(createdRaw || Date.now()).toLocaleTimeString('ko-KR', {
             hour: '2-digit',
@@ -3094,7 +3108,12 @@ const SalesPage: React.FC = () => {
               };
               setSelectedOrderDetail({ ...order, fullOrder });
               setSelectedOrderType(channel);
-              setShowOrderDetailModal(true);
+              setOrderListOpenMode('pickup');
+              setOrderListChannelFilter('all');
+              setOrderListTab('history');
+              setShowOrderListModal(true);
+              fetchOrderList(orderListDate, 'pickup');
+              setTimeout(() => fetchOrderDetails(order.id), 300);
               return;
             }
           }
@@ -3104,7 +3123,13 @@ const SalesPage: React.FC = () => {
       }
       setSelectedOrderDetail(order);
       setSelectedOrderType(channel);
-      setShowOrderDetailModal(true);
+      setOrderListOpenMode('pickup');
+      setOrderListChannelFilter('all');
+      setOrderListTab('history');
+      setShowOrderListModal(true);
+      fetchOrderList(orderListDate, 'pickup');
+      const orderId = channel === 'delivery' ? (order.order_id || order.id) : order.id;
+      if (orderId) setTimeout(() => fetchOrderDetails(orderId), 300);
     },
     [isMoveMergeMode, sourceTableId, sourceTogoOrder, sourceOnlineOrder, selectionChoice, selectedFloor, loadTogoOrders, clearMoveMergeSelection, API_URL]
   );
@@ -3894,7 +3919,7 @@ const SalesPage: React.FC = () => {
     if (togoInfoTiming === 'after') {
       const createdLocal = getLocalDatetimeString();
       const readyTimeLabel = computeReadyDisplayFromNow(15);
-      const newOrder: any = {
+      const newOrder = {
         id: Date.now(),
         type: 'Togo',
         time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
@@ -3904,7 +3929,7 @@ const SalesPage: React.FC = () => {
         name: '',
         firstName: '',
         lastName: '',
-        nameOrder: 'western',
+        nameOrder: 'firstLast' as const,
         status: 'pending',
         serverId: server?.employee_id || null,
         serverName: server?.employee_name || '',
@@ -3936,14 +3961,8 @@ const SalesPage: React.FC = () => {
           orderId: newOrder.id,
           serverId: server?.employee_id || null,
           serverName: server?.employee_name || '',
-          customerName: '',
-          customerPhone: '',
-          customerAddress: '',
-          customerZip: '',
-          customerNote: '',
           togoFulfillment: 'togo',
           pickup: newOrder.pickup,
-          togoInfoTiming: 'after',
         },
       });
       return;
@@ -3969,6 +3988,16 @@ const SalesPage: React.FC = () => {
     } else {
       startTogoOrderFlow(null);
     }
+  };
+
+  const handleNewOnlineClick = () => {
+    if (isMoveMergeMode) {
+      setMoveMergeStatus('❌ Cannot create new Online order in Move/Merge mode');
+      setTimeout(() => setMoveMergeStatus(''), 2000);
+      return;
+    }
+    setPickupModalInitialMode('online');
+    setShowFsrPickupModal(true);
   };
 
   const handleNewDeliveryClick = () => {
@@ -4932,8 +4961,51 @@ const SalesPage: React.FC = () => {
   /**
    * Order List ê´€ë ¨ í•¨ìˆ˜ë“¤
    */
-  const fetchOrderList = async (date: string) => {
-    console.log('[fetchOrderList] Fetching orders for date:', date);
+  const mergeOnlineCardsForPickup = useCallback((dbOrders: any[], mode?: 'history' | 'pickup') => {
+    const effectiveMode = mode ?? orderListOpenMode;
+    if (effectiveMode !== 'pickup' || onlineQueueCards.length === 0) return dbOrders;
+    const dbIds = new Set(dbOrders.map((o: any) => String(o.id)));
+    const dbLocalIds = new Set(
+      dbOrders.filter((o: any) => o.order_number).map((o: any) => String(o.order_number))
+    );
+    const onlineAsOrderRows = onlineQueueCards
+      .filter((card) => {
+        if (dbIds.has(String(card.id))) return false;
+        if (card.localOrderId && dbIds.has(String(card.localOrderId))) return false;
+        const fullNum = card.fullOrder?.orderNumber || card.fullOrder?.localOrderId;
+        if (fullNum && dbLocalIds.has(String(fullNum))) return false;
+        return true;
+      })
+      .map((card) => {
+        const fo = card.fullOrder || {};
+        return {
+          id: card.localOrderId || `online-${card.id}`,
+          firebase_id: card.id,
+          order_number: fo.orderNumber || fo.localOrderId || card.number,
+          order_type: 'ONLINE',
+          fulfillment_mode: fo.fulfillmentMode || 'pickup',
+          status: (fo.paymentStatus === 'paid' || fo.status === 'paid') ? 'PAID' : 'PENDING',
+          payment_status: fo.paymentStatus || 'unpaid',
+          customer_name: card.name || fo.customerName || 'Online Order',
+          customer_phone: card.phone || fo.customerPhone || '',
+          table_id: fo.tableId || `OL${card.sequenceNumber || ''}`,
+          created_at: fo.createdAt
+            ? (typeof fo.createdAt === 'object' && fo.createdAt._seconds
+              ? new Date(fo.createdAt._seconds * 1000).toISOString()
+              : new Date(fo.createdAt).toISOString())
+            : new Date().toISOString(),
+          total: card.total || fo.total || 0,
+          items: fo.items || [],
+          _fromOnlineQueue: true,
+        };
+      });
+    if (onlineAsOrderRows.length === 0) return dbOrders;
+    return [...dbOrders, ...onlineAsOrderRows];
+  }, [orderListOpenMode, onlineQueueCards]);
+
+  const fetchOrderList = async (date: string, mode?: 'history' | 'pickup') => {
+    const effectiveMode = mode ?? orderListOpenMode;
+    console.log('[fetchOrderList] Fetching orders for date:', date, 'mode:', effectiveMode);
     // FSR ëª¨ë“œì—ì„œëŠ” FSR ì£¼ë¬¸ë§Œ ì¡°íšŒ
     console.log('[fetchOrderList] API URL:', `${API_URL}/orders?date=${date}&order_mode=FSR`);
     setOrderListLoading(true);
@@ -4973,8 +5045,11 @@ const SalesPage: React.FC = () => {
         }
       }
 
+      const ordersUrl = effectiveMode === 'pickup'
+        ? `${API_URL}/orders?date=${date}`
+        : `${API_URL}/orders?date=${date}&order_mode=FSR`;
       const [ordersRes, deliveryMetaRes] = await Promise.all([
-        fetch(`${API_URL}/orders?date=${date}&order_mode=FSR`),
+        fetch(ordersUrl),
         fetch(`${API_URL}/orders/delivery-orders`)
       ]);
       const data = await ordersRes.json();
@@ -5008,14 +5083,14 @@ const SalesPage: React.FC = () => {
               existing.fulfillment_mode = existing.fulfillment_mode || 'delivery';
             }
           });
-          setOrderListOrders(Array.from(orderMap.values()));
+          setOrderListOrders(mergeOnlineCardsForPickup(Array.from(orderMap.values()), effectiveMode));
         } else {
-          setOrderListOrders(baseOrders);
+          setOrderListOrders(mergeOnlineCardsForPickup(baseOrders, effectiveMode));
         }
       } else if (Array.isArray(data)) {
-        setOrderListOrders(data);
+        setOrderListOrders(mergeOnlineCardsForPickup(data, effectiveMode));
       } else {
-        setOrderListOrders([]);
+        setOrderListOrders(mergeOnlineCardsForPickup([], effectiveMode));
       }
     } catch (error) {
       console.error('Failed to fetch order list:', error);
@@ -5667,7 +5742,9 @@ const SalesPage: React.FC = () => {
             deliveryCompany: metaDeliveryCompany || '',
             deliveryOrderNumber: metaDeliveryOrderNumber || '',
             customerName: orderListSelectedOrder.customer_name || '',
-            customerPhone: orderListSelectedOrder.customer_phone || ''
+            customerPhone: orderListSelectedOrder.customer_phone || '',
+            onlineOrderNumber:
+              orderTypeDisplay === 'ONLINE' ? String(orderListSelectedOrder.customer_name || '').trim() : '',
           },
           printMode: 'graphic',
           isReprint: true, // Reprint í‘œì‹œ (** REPRINT ** ë°°ë„ˆ ì¶œë ¥)
@@ -5803,9 +5880,14 @@ const SalesPage: React.FC = () => {
       const type = (order.order_type || '').toUpperCase();
       const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
       const isDelivery = type === 'DELIVERY' || fulfillment === 'delivery';
-      // Delivery는 table_id(DL...) 대신 고객정보만 표시
-      if (!isDelivery) {
-        // table_name (JOIN으로 가져온 실제 테이블 이름) 우선 사용
+      if (isDelivery) {
+        const { company, orderNumber: extNum } = orderListGetDeliveryMeta(order);
+        const abbr = orderListNormalizeDeliveryAbbr(company);
+        const extClean = String(extNum || '').replace(/^#/, '').trim().toUpperCase();
+        if (abbr || extClean) {
+          parts.push(`${abbr || 'Delivery'} / ${extClean || '-'}`);
+        }
+      } else {
         const tableName = order.table_name || '';
         if (tableName) {
           parts.push(`Table ${tableName}`);
@@ -6609,8 +6691,10 @@ const SalesPage: React.FC = () => {
         setShowPrepTimeModal(true);
         break;
       case 'Order History':
+        setOrderListOpenMode('history');
+        setOrderListChannelFilter('all');
         setShowOrderListModal(true);
-        fetchOrderList(orderListDate);
+        fetchOrderList(orderListDate, 'history');
         break;
       case 'Reserve':
         console.log('Reservation ë²„íŠ¼ í´ë¦­ë¨, ëª¨ë‹¬ ì—´ê¸°');
@@ -6636,7 +6720,7 @@ const SalesPage: React.FC = () => {
         break;
       case 'Online Order':
         console.log('Online Order ë²„íŠ¼ í´ë¦­ë¨');
-        setShowOnlineOrderPanel(true);
+        handleNewOnlineClick();
         break;
       case 'Refund':
         console.log('Refund ë²„íŠ¼ í´ë¦­ë¨');
@@ -7822,23 +7906,39 @@ const SalesPage: React.FC = () => {
                       const isSelected = normalized != null && normalized === selectedHistoryOrderId;
                       const orderDate = formatOrderHistoryDate(order);
                       const totalValue = formatCurrency(getOrderTotalValue(order));
+                      const hStatus = String(order.status || '').toUpperCase();
+                      const hIsPaid = hStatus === 'PAID' || hStatus === 'COMPLETED' || hStatus === 'CLOSED' || hStatus === 'PICKED_UP';
+                      const hIsPickedUp = hStatus === 'PICKED_UP';
+                      const hBg = isSelected ? undefined : hIsPickedUp ? undefined : hIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
+                      const hType = String(order.order_type || order.orderType || '').toUpperCase();
+                      const hIsDineIn = hType === 'DINE_IN' || hType === 'DINE-IN' || hType === 'POS';
+                      const hLabel = hIsDineIn ? null : !hIsPaid ? 'Unpaid' : (hIsPaid && !hIsPickedUp) ? 'Ready' : null;
                       return (
+                        <div key={`${order.id}-${order.number}`}>
             <button
                           type="button"
-                          key={`${order.id}-${order.number}`}
                           onClick={() => normalized != null && handleHistoryOrderClick(normalized)}
-                          className={`text-left px-3 py-2 rounded-xl border transition ${
+                          className={`w-full text-left px-3 py-2 rounded-xl border transition ${
                             isSelected
                               ? 'border-emerald-500 bg-emerald-50 shadow'
-                              : 'border-slate-200 bg-white hover:bg-slate-50'
+                              : 'border-slate-200 hover:brightness-95'
                           }`}
-                          style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem' }}
+                          style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem', backgroundColor: hBg }}
                         >
                           <div className="flex items-center justify-between text-[12px] font-semibold text-slate-800 gap-2">
                             <span className="truncate">{orderDate}</span>
-                            <span className="text-sm text-slate-900">{totalValue}</span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="inline-block w-[38px] text-center">
+                                {hLabel && (
+                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${hLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{hLabel}</span>
+                                )}
+                              </span>
+                              <span className="text-sm text-slate-900">{totalValue}</span>
+                            </span>
                           </div>
                         </button>
+                        <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
+                        </div>
                       );
                     })}
                   </div>
@@ -7886,7 +7986,6 @@ const SalesPage: React.FC = () => {
                             const qty = item.quantity || 1;
                             const unitPrice = Number(item.price || item.unit_price || 0);
                             const lineTotal = unitPrice * qty;
-                            // 모디파이어 파싱 - 다양한 형식 지원
                             let rawMods = item.modifiers || [];
                             if (typeof rawMods === 'string') {
                               try { rawMods = JSON.parse(rawMods); } catch { rawMods = []; }
@@ -7913,16 +8012,27 @@ const SalesPage: React.FC = () => {
                                 }
                               });
                             }
+                            let itemDiscountLabel = '';
+                            try {
+                              const dRaw = item.discount_json || item.discount;
+                              const dObj = typeof dRaw === 'string' ? JSON.parse(dRaw) : dRaw;
+                              if (dObj && (dObj.percent || dObj.amount || dObj.value)) {
+                                if (dObj.percent) itemDiscountLabel = `${dObj.percent}% off`;
+                                else if (dObj.amount) itemDiscountLabel = `-${formatCurrency(dObj.amount)}`;
+                                else if (dObj.value) itemDiscountLabel = `-${formatCurrency(dObj.value)}`;
+                              }
+                            } catch {}
                             const noteText = item.note || (typeof item.memo === 'string' ? item.memo : item.memo?.text) || item.specialRequest;
                             return (
                               <div key={item.order_line_id || `${item.id}-${idx}`} className="px-3 py-[3px] text-sm text-slate-700">
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="flex-1 min-w-0">
                                     <div className="font-semibold truncate">{item.name}</div>
-                                    {(modifiers.length > 0 || noteText) && (
+                                    {(modifiers.length > 0 || noteText || itemDiscountLabel) && (
                                       <div className="text-[11px] text-slate-500 space-y-0.5 mt-[2px]">
                                         {modifiers.length > 0 && <div>· {modifiers.join(', ')}</div>}
                                         {noteText && <div>· {noteText}</div>}
+                                        {itemDiscountLabel && <div className="text-rose-500 font-semibold">· {itemDiscountLabel}</div>}
                                       </div>
                                     )}
                                   </div>
@@ -7934,6 +8044,65 @@ const SalesPage: React.FC = () => {
                           })
                         )}
                       </div>
+                      {/* Order Summary: Subtotal, Discounts, Adjustments, Gratuity, Tax, Total */}
+                      {(() => {
+                        const ho = historyOrderDetail.order;
+                        if (!ho) return null;
+                        const itemsSubtotal = historyOrderDetail.items.reduce((s: number, it: any) => s + (Number(it.price || it.unit_price || 0) * (it.quantity || 1)), 0);
+                        const orderSubtotal = Number(ho.subtotal || 0);
+                        const subtotal = orderSubtotal > 0 ? orderSubtotal : itemsSubtotal;
+                        const tax = Number(ho.tax || 0);
+                        const serviceCharge = Number(ho.service_charge || 0);
+                        const total = Number(ho.total || 0);
+                        let adjRaw = ho.adjustments_json;
+                        if (typeof adjRaw === 'string') { try { adjRaw = JSON.parse(adjRaw); } catch { adjRaw = []; } }
+                        const adjustments: any[] = Array.isArray(adjRaw) ? adjRaw : [];
+                        const orderAdjustments = Array.isArray(historyOrderDetail.adjustments) ? historyOrderDetail.adjustments : [];
+                        const allAdj = [...adjustments, ...orderAdjustments.filter((a: any) => !adjustments.some((b: any) => b.label === a.label && Math.abs(Number(b.amount || b.amountApplied || b.amount_applied || 0)) === Math.abs(Number(a.amount_applied || a.amountApplied || a.amount || 0))))];
+                        const hasDiscount = allAdj.length > 0 || (subtotal > 0 && itemsSubtotal > subtotal);
+                        const discountAmount = hasDiscount && itemsSubtotal > subtotal ? itemsSubtotal - subtotal : 0;
+
+                        return (
+                          <div className="border-t border-slate-200 px-3 py-2 space-y-[2px] text-sm text-slate-700">
+                            <div className="flex justify-between">
+                              <span>Subtotal</span>
+                              <span>{formatCurrency(itemsSubtotal)}</span>
+                            </div>
+                            {allAdj.map((adj: any, i: number) => {
+                              const adjAmount = Number(adj.amount || adj.amountApplied || adj.amount_applied || 0);
+                              const adjLabel = adj.label || adj.kind || 'Adjustment';
+                              return (
+                                <div key={`adj-${i}`} className="flex justify-between text-rose-600">
+                                  <span>{adjLabel}</span>
+                                  <span>{adjAmount < 0 ? `-${formatCurrency(Math.abs(adjAmount))}` : formatCurrency(adjAmount)}</span>
+                                </div>
+                              );
+                            })}
+                            {discountAmount > 0 && allAdj.length === 0 && (
+                              <div className="flex justify-between text-rose-600">
+                                <span>Discount</span>
+                                <span>-{formatCurrency(discountAmount)}</span>
+                              </div>
+                            )}
+                            {serviceCharge > 0 && (
+                              <div className="flex justify-between">
+                                <span>Gratuity</span>
+                                <span>{formatCurrency(serviceCharge)}</span>
+                              </div>
+                            )}
+                            {tax > 0 && (
+                              <div className="flex justify-between">
+                                <span>Tax</span>
+                                <span>{formatCurrency(tax)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between font-bold border-t border-slate-300 pt-1 mt-1">
+                              <span>Total</span>
+                              <span>{formatCurrency(total > 0 ? total : (subtotal + tax + serviceCharge))}</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   ) : null}
                 </div>
@@ -8407,6 +8576,10 @@ const SalesPage: React.FC = () => {
       });
     };
     
+    // Kitchen Ticket: SKIP — orders from Pickup List / Order History already had their
+    // kitchen ticket printed when the order was originally sent (OK flow).
+    // Only Receipt is printed on payment completion from these lists.
+
     try {
       if (orderType === 'online' && orderId) {
         // Online order: update Firebase status to completed
@@ -8626,6 +8799,9 @@ const SalesPage: React.FC = () => {
     onlineTogoCompletionRef.current = null;
     setOnlineTogoPaymentCompleteData(null);
     
+    // Notify other components (PickupListPanel, etc.) that payment completed
+    window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId: paymentOrder?.id } }));
+
     // Refresh order lists
     loadOnlineOrders();
     loadTogoOrders();
@@ -8690,28 +8866,82 @@ const SalesPage: React.FC = () => {
                 {currentTime}
               </span>
             </div>
-            {/* Delivery + TOGO + EXIT 버튼 (오른쪽) */}
-            <div className="flex justify-end items-center gap-2">
-              {channelVis.delivery && <button
-                className="h-9 px-3 rounded-md text-sm font-medium border transition-colors bg-purple-600 border-purple-600 text-white"
-                onClick={() => setSelectedChannelTab('delivery')}
-                title="Delivery"
-              >
-                Delivery
-              </button>}
+            {/* Delivery + TOGO + Online Alert + EXIT 버튼 (오른쪽) */}
+            <div className="flex justify-end items-center gap-1.5">
               {fsrTogoButtonVisible && (
                 <button
-                  className="h-10 px-5 rounded-lg text-sm font-bold bg-green-700 text-white hover:bg-green-800 border-2 border-green-800 shadow-md transition-all"
-                  onClick={() => setShowFsrPickupModal(true)}
+                  className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
+                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#4B5563', cursor: 'pointer' }}
+                  onClick={() => { setPickupModalInitialMode('togo'); setShowFsrPickupModal(true); }}
                   title="Togo Order"
+                  onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                  onMouseDown={(e) => { e.currentTarget.style.boxShadow = 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff'; }}
+                  onMouseUp={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
                 >
                   TOGO
                 </button>
               )}
+              {fsrTogoButtonVisible && (
+                <button
+                  className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
+                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#4B5563', cursor: 'pointer' }}
+                  onClick={() => { setPickupModalInitialMode('online'); setShowFsrPickupModal(true); }}
+                  title="Online Order"
+                  onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                  onMouseDown={(e) => { e.currentTarget.style.boxShadow = 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff'; }}
+                  onMouseUp={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                >
+                  Online
+                </button>
+              )}
+              {fsrTogoButtonVisible && (
+                <button
+                  className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
+                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#4B5563', cursor: 'pointer' }}
+                  onClick={handleNewDeliveryClick}
+                  title="Delivery"
+                  onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                  onMouseDown={(e) => { e.currentTarget.style.boxShadow = 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff'; }}
+                  onMouseUp={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                >
+                  Delivery
+                </button>
+              )}
+              {fsrTogoButtonVisible && (
+                <button
+                  className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
+                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#4B5563', cursor: 'pointer' }}
+                  onClick={() => { setOrderListOpenMode('pickup'); setOrderListChannelFilter('all'); setOrderListTab('history'); setShowOrderListModal(true); fetchOrderList(orderListDate, 'pickup'); }}
+                  title="Pickup List"
+                  onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                  onMouseDown={(e) => { e.currentTarget.style.boxShadow = 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff'; }}
+                  onMouseUp={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                >
+                  Pickup List
+                </button>
+              )}
+              {fsrTogoButtonVisible && <OnlineOrderAlertButton
+                restaurantId={onlineOrderRestaurantId}
+                onOrderAccepted={(order, readyTime) => {
+                  console.log('Online order accepted:', order.orderNumber, readyTime);
+                }}
+                onOrderRejected={(order, reason) => {
+                  console.log('Online order rejected:', order.orderNumber, reason);
+                }}
+              />}
               <button
-                className="h-10 px-5 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 border-2 border-red-700 shadow-md transition-all"
+                className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
+                style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#dc2626', cursor: 'pointer' }}
                 onClick={() => setShowExitModal(true)}
                 title="Exit Menu"
+                onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
+                onMouseDown={(e) => { e.currentTarget.style.boxShadow = 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff'; }}
+                onMouseUp={(e) => { e.currentTarget.style.boxShadow = '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff'; }}
               >
                 EXIT
               </button>
@@ -8814,19 +9044,19 @@ const SalesPage: React.FC = () => {
             <div className="flex gap-2 p-2 pb-1 flex-shrink-0">
               <button
                 onClick={handleNewDeliveryClick}
-                className="flex-1 py-2 min-h-[40px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+                className="flex-1 py-2 min-h-[51px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
-                DLVR
+                DLV
               </button>
               <button
-                onClick={() => setShowOnlineOrderPanel(true)}
-                className="flex-1 py-2 min-h-[40px] bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+                onClick={handleNewOnlineClick}
+                className="flex-1 py-2 min-h-[51px] bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
                 Online
               </button>
               <button
                 onClick={handleNewTogoClick}
-                className="flex-1 py-2 min-h-[40px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
+                className="flex-1 py-2 min-h-[51px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
               >
                 Togo
               </button>
@@ -8874,7 +9104,10 @@ const SalesPage: React.FC = () => {
                         (sourceTogoOrder && sourceTogoOrder.id !== order.id) ||
                         (sourceOnlineOrder)
                       );
-                      let backgroundColor = '#E9D5FF';
+                      const dStatus = String(order.status || '').toUpperCase();
+                      const dIsPaid = dStatus === 'PAID' || dStatus === 'COMPLETED' || dStatus === 'CLOSED';
+                      const dIsPickedUp = dStatus === 'PICKED_UP';
+                      let backgroundColor = dIsPickedUp ? '#E9D5FF' : dIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                       let borderColor = '#C084FC';
                       let borderWidth = 1;
                       if (isSourceTogo) {
@@ -8927,6 +9160,7 @@ const SalesPage: React.FC = () => {
                             Ready: {order.readyTimeLabel || '--:--'}
                           </div>
                         </button>
+                        <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                         </div>
                       );
                     })}
@@ -8974,7 +9208,10 @@ const SalesPage: React.FC = () => {
                           String(o.type || '').toLowerCase() !== 'delivery' &&
                           !o.deliveryCompany
                         )
-                        .map(o => ({ order: o, type: 'togo' as const, pickupMs: getPickupTimeMs(o, 'togo') })),
+                        .map(o => {
+                          const isOnline = String(o.fulfillment || '').toLowerCase() === 'online' || String(o.type || '').toLowerCase() === 'online';
+                          return { order: o, type: (isOnline ? 'online' : 'togo') as 'togo' | 'online', pickupMs: getPickupTimeMs(o, isOnline ? 'online' : 'togo') };
+                        }),
                       ...onlineQueueCards.map(o => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
                     ];
                     combinedOrders.sort((a, b) => {
@@ -8994,7 +9231,10 @@ const SalesPage: React.FC = () => {
                           (sourceTogoOrder && sourceTogoOrder.id !== order.id) ||
                           (sourceOnlineOrder)
                         );
-                        let backgroundColor = '#A8D5A8';
+                        const tStatus = String(order.status || '').toUpperCase();
+                        const tIsPaid = tStatus === 'PAID' || tStatus === 'COMPLETED' || tStatus === 'CLOSED';
+                        const tIsPickedUp = tStatus === 'PICKED_UP';
+                        let backgroundColor = tIsPickedUp ? '#A8D5A8' : tIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                         let borderColor = '#95C295';
                         let borderWidth = 1;
                         if (isSourceTogo) {
@@ -9007,8 +9247,8 @@ const SalesPage: React.FC = () => {
                           borderWidth = 3;
                         }
                         return (
+                          <div key={`togo-${order.id}`}>
                           <button 
-                            key={`togo-${order.id}`}
                             className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{ backgroundColor, borderColor, borderWidth }}
                             onClick={(e) => {
@@ -9028,6 +9268,8 @@ const SalesPage: React.FC = () => {
                               <span className="text-gray-800 truncate text-right">{order.name || ''}</span>
                             </div>
                           </button>
+                          <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
+                          </div>
                         );
                       } else {
                         // Online ì¹´ë“œ ë Œë”ë§
@@ -9035,7 +9277,10 @@ const SalesPage: React.FC = () => {
                         const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
                         const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
                         const canSwipe = isOnlineCardPaymentLinked(card as OnlineQueueCard);
-                        let backgroundColor = '#B1C4DD';
+                        const oStatus = String(card.status || '').toUpperCase();
+                        const oIsPaid = oStatus === 'PAID' || oStatus === 'COMPLETED' || oStatus === 'CLOSED';
+                        const oIsPickedUp = oStatus === 'PICKED_UP';
+                        let backgroundColor = oIsPickedUp ? '#B1C4DD' : oIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                         let borderColor = '#9BB3D1';
                         let borderWidth = 1;
                         if (isSourceOnline) {
@@ -9087,6 +9332,7 @@ const SalesPage: React.FC = () => {
                               <span className="text-right">{card.name}</span>
                             </div>
                           </button>
+                          <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                           </div>
                         );
                       }
@@ -10503,31 +10749,54 @@ const SalesPage: React.FC = () => {
                     </svg>
                   </button>
                   {/* íƒ­ ë²„íŠ¼: Order History / Live Order */}
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => { setOrderListTab('history'); setLiveOrderHighlightItem(null); }}
-                      className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                        orderListTab === 'history'
-                          ? 'bg-white text-slate-700'
-                          : 'bg-slate-600 text-white hover:bg-slate-500'
-                      }`}
-                    >
-                      Order History
-                    </button>
-                    <button
-                      onClick={() => setOrderListTab('live')}
-                      className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                        orderListTab === 'live'
-                          ? 'bg-green-500 text-white'
-                          : 'bg-slate-600 text-white hover:bg-slate-500'
-                      }`}
-                    >
-                      🟢 Live Order
-                    </button>
-                  </div>
+                  {orderListOpenMode === 'pickup' ? (
+                    <div className="flex items-center gap-1.5">
+                      {([
+                        { key: 'all' as const, label: 'All', activeBg: 'bg-white', activeText: 'text-slate-700' },
+                        { key: 'delivery' as const, label: 'Delivery', activeBg: 'bg-red-500', activeText: 'text-white' },
+                        { key: 'online' as const, label: 'Online', activeBg: 'bg-blue-500', activeText: 'text-white' },
+                        { key: 'togo' as const, label: 'Togo', activeBg: 'bg-green-500', activeText: 'text-white' },
+                      ]).map((ch) => (
+                        <button
+                          key={ch.key}
+                          onClick={() => setOrderListChannelFilter(ch.key)}
+                          className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                            orderListChannelFilter === ch.key
+                              ? `${ch.activeBg} ${ch.activeText}`
+                              : 'bg-slate-600 text-white hover:bg-slate-500'
+                          }`}
+                        >
+                          {ch.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => { setOrderListTab('history'); setLiveOrderHighlightItem(null); }}
+                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                          orderListTab === 'history'
+                            ? 'bg-white text-slate-700'
+                            : 'bg-slate-600 text-white hover:bg-slate-500'
+                        }`}
+                      >
+                        Order History
+                      </button>
+                      <button
+                        onClick={() => setOrderListTab('live')}
+                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                          orderListTab === 'live'
+                            ? 'bg-green-500 text-white'
+                            : 'bg-slate-600 text-white hover:bg-slate-500'
+                        }`}
+                      >
+                        🟢 Live Order
+                      </button>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 sm:gap-3 relative" style={{ marginRight: "55px" }}>
                     {/* ë‚ ì§œ ì„ íƒì€ Order History íƒ­ì—ì„œë§Œ í‘œì‹œ */}
-                    {orderListTab === 'history' && (
+                    {orderListOpenMode === 'history' && orderListTab === 'history' && (
                       <>
                         <button
                           onClick={() => handleOrderListDateChange(-1)}
@@ -10600,8 +10869,8 @@ const SalesPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Content - Order History Tab */}
-                {orderListTab === 'history' && (
+                {/* Content - Order History Tab (also used in pickup mode) */}
+                {(orderListTab === 'history' || orderListOpenMode === 'pickup') && (
                 <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
                   {/* Left Panel - Order List (55%) */}
                   <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
@@ -10628,7 +10897,24 @@ const SalesPage: React.FC = () => {
                       ) : orderListOrders.length === 0 ? (
                         <div className="flex items-center justify-center h-32 text-gray-500 text-base">No orders found</div>
                       ) : (
-                        orderListOrders.map((order) => {
+                        orderListOrders.filter((order) => {
+                          if (orderListOpenMode !== 'pickup') return true;
+                          const _t = (order.order_type || '').toUpperCase();
+                          const _f = String(order.fulfillment_mode || '').toLowerCase();
+                          const _s = String(order.status || '').toUpperCase();
+                          const _ps = String(order.payment_status || '').toUpperCase();
+                          const isDineIn = _t === 'DINE_IN' || _t === 'DINE-IN' || _t === 'POS';
+                          if (isDineIn) return false;
+                          if (_s === 'PICKED_UP') return false;
+                          if (_s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
+                          const isDeliveryOrder = _t === 'DELIVERY' || _f === 'delivery' || _t === 'UBEREATS' || _t === 'UBER' || _t === 'DOORDASH' || _t === 'SKIP' || _t === 'SKIPTHEDISHES' || _t === 'FANTUAN';
+                          const isOnlineOrder = _t === 'ONLINE' || _t === 'WEB' || _t === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL');
+                          const isTogoOrder = _t === 'TOGO' || _f === 'togo' || _f === 'pickup';
+                          if (orderListChannelFilter === 'delivery') return isDeliveryOrder;
+                          if (orderListChannelFilter === 'online') return isOnlineOrder;
+                          if (orderListChannelFilter === 'togo') return isTogoOrder;
+                          return true;
+                        }).map((order) => {
                           const badge = orderListGetChannelBadge(order);
                           const type = (order.order_type || '').toUpperCase();
                           const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
@@ -10636,9 +10922,7 @@ const SalesPage: React.FC = () => {
                           const { company: deliveryCompanyRaw, orderNumber: deliveryOrderNumberRaw } = orderListGetDeliveryMeta(order);
                           const deliveryCompanyAbbr = orderListNormalizeDeliveryAbbr(deliveryCompanyRaw);
                           const deliveryOrderNumber = String(deliveryOrderNumberRaw || '').replace(/^#/, '').trim();
-                          const displayIdText = (isDelivery && (deliveryCompanyAbbr || deliveryOrderNumber))
-                            ? `${deliveryCompanyAbbr || 'Delivery'} / ${deliveryOrderNumber || String(order.id)}`
-                            : (order.order_number ? `#${order.order_number}` : `#${order.id}`);
+                          const displayIdText = order.order_number ? `#${order.order_number}` : `#${String(order.id).padStart(3, '0')}`;
                           const subtotalVal = Number(order.subtotal || 0);
                           const taxVal = Number(order.tax || 0);
                           // Order History list Amount should be tax-inclusive (subtotal + tax).
@@ -10646,25 +10930,38 @@ const SalesPage: React.FC = () => {
                           const totalVal = Number(order.total || 0);
                           const hasSubtotalOrTax = Number.isFinite(subtotalVal) && Number.isFinite(taxVal) && (Math.abs(subtotalVal) > 0 || Math.abs(taxVal) > 0);
                           const displayAmount = hasSubtotalOrTax ? Number((subtotalVal + taxVal).toFixed(2)) : totalVal;
+                          const olStatus = String(order.status || '').toUpperCase();
+                          const olIsPaid = olStatus === 'PAID' || olStatus === 'COMPLETED' || olStatus === 'CLOSED' || isDelivery;
+                          const olIsPickedUp = olStatus === 'PICKED_UP';
+                          const olIsSelected = orderListSelectedOrder?.id === order.id;
+                          const olBg = olIsSelected ? '#BFDBFE' : olIsPickedUp ? '#FFFFFF' : olIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
+                          const olIsLabelTarget = !olIsPickedUp && (badge.label === 'Online' || badge.label === 'Delivery' || badge.label === 'Togo' || badge.label === 'Pickup');
+                          const olLabel = olIsLabelTarget ? (!olIsPaid ? 'Unpaid' : 'Ready') : null;
                           return (
+                            <React.Fragment key={order.id}>
                             <div
-                              key={order.id}
                               onClick={(e) => { e.stopPropagation(); fetchOrderDetails(order.id); }}
-                              className={`flex items-center gap-1.5 px-2 py-3 text-sm cursor-pointer hover:bg-blue-100 border-b border-gray-200 ${
-                                orderListSelectedOrder?.id === order.id ? 'bg-blue-200' : 'bg-white'
-                              }`}
+                              className={`flex items-center gap-1.5 px-2 py-3 text-sm cursor-pointer hover:brightness-95`}
+                              style={{ backgroundColor: olBg }}
                             >
                               {/* ì±„ë„ ë ì§€ */}
                               <span className={`w-16 px-1.5 py-1 rounded text-center text-xs font-bold ${badge.bgColor} ${badge.textColor}`}>
                                 {badge.label}
                               </span>
-                              <span className="w-28 leading-tight truncate" title={isDelivery ? displayIdText : (order.order_number || '')}>
-                                <span className="font-bold text-gray-700">{displayIdText}</span>
+                              <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
+                                <span className="font-bold text-gray-700">{(isDelivery || type === 'ONLINE' || type === 'WEB' || type === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL')) ? displayIdText.toUpperCase() : displayIdText}</span>
                               </span>
                               <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
                               <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
+                              <span className="inline-block w-[38px] text-center">
+                                {olLabel && (
+                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
+                                )}
+                              </span>
                               <span className="w-18 text-right font-bold">${Number(displayAmount || 0).toFixed(2)}</span>
                             </div>
+                            <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)' }} />
+                            </React.Fragment>
                           );
                         })
                       )}
@@ -10681,6 +10978,107 @@ const SalesPage: React.FC = () => {
                       <>
                         {/* Action Buttons - ë§¨ ìœ„ë¡œ ì´ë™ */}
                         <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                          {orderListOpenMode === 'pickup' ? (
+                            <>
+                              <button
+                                onClick={handleOrderListPrintBill}
+                                style={{ flex: 1 }}
+                                className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold"
+                              >
+                                Print Bill
+                              </button>
+                              <button
+                                onClick={handleOrderListPrintKitchen}
+                                style={{ flex: 1 }}
+                                className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold"
+                              >
+                                Reprint
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                    const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                    const rawTableId = String(orderListSelectedOrder.table_id || '').toUpperCase();
+                                    const voidType =
+                                      rawType.includes('delivery') || rawFulfillment.includes('delivery') || rawTableId.startsWith('DL')
+                                        ? 'delivery'
+                                        : rawType.includes('online') ? 'online'
+                                        : rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup') ? 'togo'
+                                        : 'pos';
+                                    const items = (orderListSelectedItems || []).map((it: any) => {
+                                      let mods: any[] = [];
+                                      try { if (it.modifiers_json) { mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json; } } catch {}
+                                      return { ...it, modifiers: mods };
+                                    });
+                                    if (!items.length) { alert('No items to void.'); return; }
+                                    const sels: Record<string, { checked: boolean; qty: number }> = {};
+                                    items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
+                                    const orderForVoid = { ...orderListSelectedOrder, number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || orderListSelectedOrder.id };
+                                    setTogoVoidOrder(orderForVoid); setTogoVoidOrderType(voidType); setTogoVoidItems(items); setTogoVoidSelections(sels);
+                                    setTogoVoidPin(''); setTogoVoidPinError(''); setTogoVoidReason(''); setTogoVoidReasonPreset(''); setTogoVoidNote(''); setTogoVoidLoading(false);
+                                    setShowTogoVoidModal(true);
+                                  } catch (e) { console.error('[Pickup Void] Failed:', e); alert('Failed to open void.'); }
+                                }}
+                                style={{ flex: 1 }}
+                                className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-sm font-bold"
+                              >
+                                Void
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const orderId = orderListSelectedOrder?.id;
+                                  if (!orderId) return;
+                                  try {
+                                    const _oType = (orderListSelectedOrder.order_type || '').toUpperCase();
+                                    const _oTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
+                                    const _firebaseId = orderListSelectedOrder.firebase_id;
+                                    const isOnlineOrder = _oType === 'ONLINE' || _oType === 'WEB' || _oType === 'QR' || _oTableId.startsWith('OL') || !!_firebaseId;
+                                    const isDeliveryOrder = _oType === 'DELIVERY' || _oType === 'UBEREATS' || _oType === 'UBER' || _oType === 'DOORDASH' || _oType === 'SKIP' || _oType === 'SKIPTHEDISHES' || _oType === 'FANTUAN' || _oTableId.startsWith('DL');
+
+                                    await fetch(`${API_URL}/orders/${orderId}/status`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ status: 'PICKED_UP' }),
+                                    });
+
+                                    if (isOnlineOrder && _firebaseId) {
+                                      try {
+                                        await fetch(`${API_URL}/online-orders/order/${_firebaseId}/pickup`, {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                        });
+                                      } catch (e) { console.error('[Pickup] Firebase pickup failed:', e); }
+                                    }
+
+                                    if (isDeliveryOrder && _oTableId.startsWith('DL')) {
+                                      const deliveryMetaId = _oTableId.substring(2);
+                                      if (deliveryMetaId) {
+                                        try {
+                                          await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(deliveryMetaId)}/status`, {
+                                            method: 'PATCH',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ status: 'PICKED_UP' }),
+                                          });
+                                        } catch (e) { console.error('[Pickup] Delivery meta pickup failed:', e); }
+                                      }
+                                    }
+
+                                    setOrderListSelectedOrder(null);
+                                    setOrderListSelectedItems([]);
+                                    fetchOrderList(orderListDate, orderListOpenMode);
+                                    loadTogoOrders();
+                                    loadOnlineOrders();
+                                  } catch (e) { console.error('[Pickup Complete] Error:', e); }
+                                }}
+                                style={{ flex: 1 }}
+                                className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                              >
+                                Pickup
+                              </button>
+                            </>
+                          ) : (
+                          <>
                           {/* 1. Back to Order */}
                           {(() => {
                             const _type = (orderListSelectedOrder.order_type || '').toUpperCase();
@@ -10879,6 +11277,8 @@ const SalesPage: React.FC = () => {
                               </button>
                             );
                           })()}
+                          </>
+                          )}
                         </div>
 
                         {/* Channel Header - ë²„íŠ¼ ì•„ëž˜ë¡œ ì´ë™ (ë†’ì´ 10% ê°ì†Œ) */}
@@ -11002,13 +11402,26 @@ const SalesPage: React.FC = () => {
                                             if (existing) existing.count++;
                                             else grouped.push({ name: n, count: 1 });
                                           });
+                                          const itemQty = item.quantity || 1;
                                           return (
                                             <div className="text-xs text-gray-500 ml-2" style={{ lineHeight: 1.1 }}>
                                               {grouped.map((g, mi) => (
-                                                <div key={mi}>· {g.count > 1 ? `${g.count}x ` : ''}{g.name}</div>
+                                                <div key={mi}>· {(g.count * itemQty) > 1 ? `${g.count * itemQty}x ` : ''}{g.name}</div>
                                               ))}
                                             </div>
                                           );
+                                        })()}
+                                        {(() => {
+                                          let memoText = '';
+                                          try {
+                                            if (item.memo_json) {
+                                              const parsed = typeof item.memo_json === 'string' ? JSON.parse(item.memo_json) : item.memo_json;
+                                              memoText = parsed?.text || (typeof parsed === 'string' ? parsed : '');
+                                            }
+                                          } catch {}
+                                          return memoText ? (
+                                            <div className="text-xs text-amber-600 ml-2 italic" style={{ lineHeight: 1.1 }}>* {memoText}</div>
+                                          ) : null;
                                         })()}
                                         {item.discountPercent > 0 && (
                                           <div className="text-xs text-green-600 ml-2 font-medium" style={{ lineHeight: 1.1 }}>
@@ -11113,8 +11526,8 @@ const SalesPage: React.FC = () => {
                 </div>
                 )}
 
-                {/* Content - Live Order Tab */}
-                {orderListTab === 'live' && (
+                {/* Content - Live Order Tab (hidden in pickup mode) */}
+                {orderListOpenMode !== 'pickup' && orderListTab === 'live' && (
                 <div className="flex-1 p-3 overflow-hidden flex flex-col">
                   {/* í•˜ì´ë¼ì´íŠ¸ëœ ì•„ì´í…œì´ ìžˆëŠ” í…Œì´ë¸” ëª©ë¡ í‘œì‹œ */}
                   {liveOrderHighlightItem && (() => {
@@ -11391,34 +11804,96 @@ const SalesPage: React.FC = () => {
 
       {/* Delivery ì „ìš© ëª¨ë‹¬ */}
       {showDeliveryOrderModal && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm p-2"
-          style={{ paddingBottom: DELIVERY_KEYBOARD_RESERVED_HEIGHT }}
-        >
-          <div className="w-full h-full flex flex-col items-center justify-start pt-2">
-            <div
-              className="w-full max-w-[950px] flex flex-col gap-2"
-              style={{ maxHeight: `calc(100vh - ${DELIVERY_KEYBOARD_RESERVED_HEIGHT}px)` }}
-            >
-              <div className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-2xl w-full border border-slate-200 overflow-hidden flex flex-col flex-1 min-h-0">
-            <div className="px-4 sm:px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <div>
-                <div className="text-lg font-semibold text-slate-800">New Delivery</div>
-                <div className="text-xs text-slate-500 font-semibold">Channel · Order # · Prep time</div>
-              </div>
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-start justify-center z-[9999] p-2 sm:p-3 pt-2">
+          <div
+            className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-3 w-full border border-slate-200 flex flex-col overflow-hidden"
+            style={{ maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
+          >
+            {/* Header with Close X Button — same as Togo */}
+            <div className="flex items-center justify-between mb-2 flex-shrink-0">
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={() => setShowDeliveryOrderModal(false)}
+                className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700"
+                style={{ background: 'rgba(156,163,175,0.25)' }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+              <div><h3 className="text-lg font-semibold text-slate-800">New Delivery</h3></div>
               <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setShowDeliveryOrderModal(false)} className="px-4 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-600 font-semibold hover:bg-slate-200 transition-colors">Cancel</button>
                 <button
                   type="button"
-                  onClick={() => setShowDeliveryOrderModal(false)}
-                  className="h-10 px-4 rounded-xl bg-white border border-slate-300 text-slate-700 font-semibold shadow-sm hover:bg-slate-50"
+                  onClick={async () => {
+                    if (!deliveryCompany) { alert('Select channel'); return; }
+                    if (!deliveryOrderNumber.trim()) { alert('Enter order #'); return; }
+                    const clockApplied = applyDeliveryClockIfProvided();
+                    const minutesForOrder = clockApplied?.minutes ?? deliveryPrepTime;
+                    const readyTimeLabel = clockApplied?.readyLabel ?? computeDeliveryReadyLabel(minutesForOrder);
+                    const deliveryOrderNumberTrimmed = deliveryOrderNumber.trim();
+                    const newOrder = {
+                      id: Date.now(),
+                      type: 'Delivery',
+                      time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+                      createdAt: getLocalDatetimeString(),
+                      phone: '',
+                      name: `${deliveryCompany} #${deliveryOrderNumberTrimmed}`,
+                      status: 'pending',
+                      serverId: null,
+                      serverName: '',
+                      items: [],
+                      orderItems: [],
+                      fulfillment: 'delivery',
+                      deliveryCompany,
+                      deliveryOrderNumber: deliveryOrderNumberTrimmed,
+                      readyTimeLabel,
+                      prepTime: minutesForOrder,
+                    };
+                    setTogoOrders(prev => [...prev, newOrder]);
+                    try {
+                      await fetch(`${API_URL}/orders/delivery-orders`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ storeId: 'STORE001', ...newOrder }),
+                      });
+                    } catch (err) {
+                      console.error('❌ Failed to save delivery order:', err);
+                    }
+                    setShowDeliveryOrderModal(false);
+                    navigate('/sales/order', {
+                      state: {
+                        tableId: `DL${newOrder.id}`,
+                        tableName: newOrder.name,
+                        channel: 'delivery',
+                        orderType: 'delivery',
+                        priceType: 'price2',
+                        menuId: defaultMenu.menuId,
+                        menuName: defaultMenu.menuName,
+                        deliveryMetaId: newOrder.id,
+                        deliveryCompany,
+                        deliveryOrderNumber: deliveryOrderNumberTrimmed,
+                        readyTimeLabel,
+                        pickup: { minutes: minutesForOrder },
+                      },
+                    });
+                  }}
+                  disabled={!deliveryCompany || !deliveryOrderNumber.trim()}
+                  className={`px-5 py-2 rounded-lg font-bold transition-colors ${
+                    deliveryCompany && deliveryOrderNumber.trim()
+                      ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
                 >
-                  Close
+                  OK
                 </button>
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
-              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-4 mt-2 flex-1 min-h-0" style={{ overflow: 'visible' }}>
               {/* Left: order # + channel */}
               <div className="space-y-2">
                 <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
@@ -11453,84 +11928,6 @@ const SalesPage: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!deliveryCompany) { alert('Select channel'); return; }
-                      if (!deliveryOrderNumber.trim()) { alert('Enter order #'); return; }
-
-                      const clockApplied = applyDeliveryClockIfProvided();
-                      const minutesForOrder = clockApplied?.minutes ?? deliveryPrepTime;
-                      const readyTimeLabel = clockApplied?.readyLabel ?? computeDeliveryReadyLabel(minutesForOrder);
-                      const deliveryOrderNumberTrimmed = deliveryOrderNumber.trim();
-
-                      const newOrder = {
-                        id: Date.now(),
-                        type: 'Delivery',
-                        time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
-                        createdAt: getLocalDatetimeString(),
-                        phone: '',
-                        name: `${deliveryCompany} #${deliveryOrderNumberTrimmed}`,
-                        status: 'pending',
-                        serverId: null,
-                        serverName: '',
-                        items: [],
-                        orderItems: [],
-                        fulfillment: 'delivery',
-                        deliveryCompany,
-                        deliveryOrderNumber: deliveryOrderNumberTrimmed,
-                        readyTimeLabel,
-                        prepTime: minutesForOrder,
-                      };
-
-                      setTogoOrders(prev => [...prev, newOrder]);
-
-                      try {
-                        await fetch(`${API_URL}/orders/delivery-orders`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ storeId: 'STORE001', ...newOrder }),
-                        });
-                      } catch (err) {
-                        console.error('❌ Failed to save delivery order:', err);
-                      }
-
-                      setShowDeliveryOrderModal(false);
-                      navigate('/sales/order', {
-                        state: {
-                          tableId: `DL${newOrder.id}`,
-                          tableName: newOrder.name,
-                          channel: 'delivery',
-                          orderType: 'delivery',
-                          priceType: 'price2',
-                          menuId: defaultMenu.menuId,
-                          menuName: defaultMenu.menuName,
-                          deliveryMetaId: newOrder.id,
-                          deliveryCompany,
-                          deliveryOrderNumber: deliveryOrderNumberTrimmed,
-                          readyTimeLabel,
-                          pickup: { minutes: minutesForOrder },
-                        },
-                      });
-                    }}
-                    disabled={!deliveryCompany || !deliveryOrderNumber.trim()}
-                    className={`flex-1 h-12 rounded-2xl font-bold transition-all shadow ${
-                      deliveryCompany && deliveryOrderNumber.trim()
-                        ? 'bg-gradient-to-b from-emerald-400 to-emerald-600 text-white hover:shadow-lg'
-                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                    }`}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowDeliveryOrderModal(false)}
-                    className="flex-1 h-12 rounded-2xl bg-white border border-slate-300 text-slate-700 font-bold shadow-sm hover:bg-slate-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
               </div>
 
               {/* Right: prep time panels (match Togo) */}
@@ -11691,11 +12088,10 @@ const SalesPage: React.FC = () => {
                 </div>
               </div>
             </div>
-            </div>
-          </div>
 
-              {/* 키보드: 모달 아래 (겹침 방지) */}
-              <div className="w-full bg-white rounded-2xl shadow-2xl p-2 flex-shrink-0">
+            {/* Virtual Keyboard — inside modal card, same position as Togo */}
+            {/* Virtual Keyboard — inside modal card, same position as Togo */}
+            <div className="mt-2 flex-shrink-0">
                 <VirtualKeyboard
                   open={true}
                   onType={(char) => setDeliveryOrderNumber(prev => (prev + char).toUpperCase())}
@@ -11706,9 +12102,8 @@ const SalesPage: React.FC = () => {
                   showNumpad={true}
                   languages={['EN']}
                   currentLanguage="EN"
-                  maxWidthPx={920}
+                  maxWidthPx={1000}
                 />
-              </div>
             </div>
           </div>
         </div>
@@ -11788,14 +12183,6 @@ const SalesPage: React.FC = () => {
           );
         })()}
 
-      {/* Online Order Panel */}
-      <OnlineOrderPanel
-        restaurantId={onlineOrderRestaurantId}
-        isOpen={showOnlineOrderPanel}
-        onClose={() => setShowOnlineOrderPanel(false)}
-        autoConfirm={false}
-        soundEnabled={true}
-      />
 
       {/* Online/Togo ê²°ì œ ëª¨ë‹¬ - z-indexë¥¼ ë” ë†’ê²Œ ì„¤ì • */}
       <div style={{ position: 'relative', zIndex: 60 }}>
@@ -12101,6 +12488,7 @@ const SalesPage: React.FC = () => {
                 const orderId = Number(orderListPaymentOrder?.id);
                 if (!Number.isFinite(orderId)) return;
                 await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' });
+                window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId } }));
               } catch (e) {
                 console.error('[Order History Pay] Failed to close order:', e);
               } finally {
@@ -12117,6 +12505,7 @@ const SalesPage: React.FC = () => {
                 const orderId = Number(orderListPaymentOrder?.id);
                 if (!Number.isFinite(orderId)) return;
                 await fetch(`${API_URL}/orders/${orderId}/close`, { method: 'POST' });
+                window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId } }));
               } catch (e) {
                 console.error('[Order History Pay] Failed to close order:', e);
               } finally {
@@ -12257,18 +12646,21 @@ const SalesPage: React.FC = () => {
       <PickupOrderModal
         isOpen={showFsrPickupModal}
         onClose={() => setShowFsrPickupModal(false)}
+        initialMode={pickupModalInitialMode}
         onConfirm={(data: PickupOrderConfirmData) => {
           setShowFsrPickupModal(false);
           const readyTimeLabel = data.readyTimeLabel;
           const createdLocal = getLocalDatetimeString();
+          const fm = data.fulfillmentMode;
           const newOrder: any = {
             id: Date.now(),
-            type: data.fulfillmentMode === 'delivery' ? 'Delivery' : 'Togo',
+            type: fm === 'delivery' ? 'Delivery' : fm === 'online' ? 'Online' : 'Togo',
             time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
             createdAt: createdLocal,
             phone: data.customerPhone,
             phoneRaw: (data.customerPhone || '').replace(/\D/g, ''),
             name: data.customerName,
+            onlineOrderNumber: fm === 'online' ? String(data.onlineOrderNumber || '').trim() : undefined,
             firstName: '',
             lastName: '',
             nameOrder: 'western',
@@ -12278,27 +12670,28 @@ const SalesPage: React.FC = () => {
             address: data.customerAddress,
             zip: data.customerZip,
             note: data.note,
-            fulfillment: data.fulfillmentMode,
+            fulfillment: fm,
             pickup: { minutes: data.pickupMinutes, ampm: 'PM', dateLabel: '' },
             readyTimeLabel,
-            virtualChannel: (data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo') as VirtualOrderChannel,
+            virtualChannel: (fm === 'delivery' ? 'delivery' : fm === 'online' ? 'online' : 'togo') as VirtualOrderChannel,
             virtualTableId: null as string | null,
           };
           const usedVirtualIds = new Set<string>();
           Object.values(togoOrderMeta).forEach((meta) => {
             if (meta?.virtualTableId) usedVirtualIds.add(meta.virtualTableId);
           });
-          const channel: VirtualOrderChannel = data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo';
+          const channel: VirtualOrderChannel = fm === 'delivery' ? 'delivery' : fm === 'online' ? 'online' : 'togo';
           const provisionalVirtualId = allocateVirtualTableId(channel, usedVirtualIds);
           newOrder.virtualTableId = provisionalVirtualId;
           setTogoOrderMeta((prev) => ({
             ...prev,
             [String(newOrder.id)]: { virtualTableId: provisionalVirtualId, channel },
           }));
-          setTogoOrders((prev) => assignDailySequenceNumbers([...prev, newOrder], channel === 'delivery' ? 'DELIVERY' : 'TOGO'));
+          const seqLabel = fm === 'delivery' ? 'DELIVERY' : fm === 'online' ? 'ONLINE' : 'TOGO';
+          setTogoOrders((prev) => assignDailySequenceNumbers([...prev, newOrder], seqLabel));
           navigate('/sales/order', {
             state: {
-              orderType: data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo',
+              orderType: fm,
               menuId: defaultMenu.menuId,
               menuName: defaultMenu.menuName,
               orderId: newOrder.id,
@@ -12309,10 +12702,80 @@ const SalesPage: React.FC = () => {
               customerAddress: data.customerAddress,
               customerZip: data.customerZip,
               customerNote: data.note,
-              togoFulfillment: data.fulfillmentMode,
+              togoFulfillment: fm,
               pickup: newOrder.pickup,
+              onlineOrderNumber: fm === 'online' ? String(data.onlineOrderNumber || '').trim() : undefined,
+              isPrepaid: !!data.isPrepaid,
             },
           });
+        }}
+        onPayment={(order, orderType) => {
+          try {
+            const rawItems = (order.fullOrder?.items ?? order.items ?? []) as any[];
+            const t = (order as any)?.__togoTotals || (order?.fullOrder as any)?.__togoTotals || null;
+            const totals = t && typeof t.total === 'number'
+              ? t
+              : (() => {
+                  try {
+                    const normalizedItems = (rawItems || []).map((it: any) => {
+                      let discountObj: any = it.discount ?? null;
+                      if (!discountObj && it.discount_json) {
+                        try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
+                      }
+                      return {
+                        id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
+                        orderLineId: it.order_line_id ?? it.orderLineId,
+                        name: it.name,
+                        type: it.type,
+                        quantity: it.quantity,
+                        price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
+                        totalPrice: (it.total_price ?? it.totalPrice),
+                        modifiers: it.modifiers ?? it.options ?? [],
+                        memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+                        discount: discountObj,
+                        guestNumber: it.guestNumber ?? it.guest_number,
+                        taxGroupId: it.taxGroupId ?? it.tax_group_id,
+                        void_id: it.void_id,
+                        voidId: it.voidId,
+                        is_void: it.is_void,
+                      };
+                    });
+                    const pricing = calculateOrderPricing(normalizedItems as any);
+                    const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+                    const storedTotalRaw = Number((order.fullOrder?.total ?? order.total ?? pricing.totals.total ?? 0) as any);
+                    const storedTotal = Number.isFinite(storedTotalRaw) ? Number(storedTotalRaw.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
+                    const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+                    return { subtotal: netSubtotal, tax: derivedTax, taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [], total: storedTotal };
+                  } catch {
+                    return { subtotal: 0, tax: 0, taxLines: [], total: 0 };
+                  }
+                })();
+
+            const orderForPayment = {
+              id: order.id,
+              type: orderType === 'online' ? 'Online' : 'Togo',
+              orderType: orderType,
+              number: (orderType === 'togo' || orderType === 'pickup')
+                ? String(order.id).padStart(3, '0')
+                : (order.number || order.id),
+              time: order.time,
+              phone: order.phone || order.customerPhone || '',
+              name: order.name || order.customerName || '',
+              total: Number((totals.total || 0).toFixed(2)),
+              subtotal: Number((totals.subtotal || 0).toFixed(2)),
+              tax: Number((totals.tax || 0).toFixed(2)),
+              taxLines: Array.isArray(totals.taxLines) ? totals.taxLines : (Number(totals.tax || 0) ? [{ name: 'Tax', amount: Number((totals.tax || 0).toFixed(2)) }] : []),
+              __togoTotals: totals,
+              items: rawItems as any,
+              localOrderId: order.localOrderId || order.fullOrder?.localOrderId || order.number,
+              fullOrder: order.fullOrder,
+              status: order.fullOrder?.status || order.status || 'pending',
+            };
+            setSelectedOrderType(orderType === 'delivery' ? 'delivery' : 'togo');
+            setOnlineTogoPaymentOrder(orderForPayment);
+            setShowFsrPickupModal(false);
+            setShowOnlineTogoPaymentModal(true);
+          } catch (err: any) { console.error('[FSR Pickup onPayment] ERROR:', err); alert('Payment open error: ' + (err?.message || err)); }
         }}
         onPickupComplete={async (order) => {
           const orderId: any = (order as any)?.order_id ?? order?.id;
@@ -12324,6 +12787,93 @@ const SalesPage: React.FC = () => {
               body: JSON.stringify({ status: 'PICKED_UP' }),
             });
           } catch (e) { console.error('[FSR Pickup] Pickup complete error:', e); }
+        }}
+      />
+
+      {/* Pickup List Modal (통합 Pickup/Togo/Delivery/Online 리스트) */}
+      <PickupOrderModal
+        isOpen={showPickupListModal}
+        onClose={() => setShowPickupListModal(false)}
+        initialMode="togo"
+        initialTab="complete"
+        onConfirm={() => setShowPickupListModal(false)}
+        onPayment={(order, orderType) => {
+          try {
+            const rawItems = (order.fullOrder?.items ?? order.items ?? []) as any[];
+            const t = (order as any)?.__togoTotals || (order?.fullOrder as any)?.__togoTotals || null;
+            const totals = t && typeof t.total === 'number'
+              ? t
+              : (() => {
+                  try {
+                    const normalizedItems = rawItems.map((it: any) => {
+                      const discountObj = (() => {
+                        const d = it.discount ?? it.discountData ?? null;
+                        if (!d) return null;
+                        if (typeof d === 'object') return d;
+                        try { return JSON.parse(d); } catch { return null; }
+                      })();
+                      return {
+                        ...it,
+                        type: it.type || 'item',
+                        quantity: it.quantity ?? 1,
+                        price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
+                        totalPrice: (it.total_price ?? it.totalPrice),
+                        modifiers: it.modifiers ?? it.options ?? [],
+                        memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+                        discount: discountObj,
+                        guestNumber: it.guestNumber ?? it.guest_number,
+                        taxGroupId: it.taxGroupId ?? it.tax_group_id,
+                        void_id: it.void_id,
+                        voidId: it.voidId,
+                        is_void: it.is_void,
+                      };
+                    });
+                    const pricing = calculateOrderPricing(normalizedItems as any);
+                    const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+                    const storedTotalRaw = Number((order.fullOrder?.total ?? order.total ?? pricing.totals.total ?? 0) as any);
+                    const storedTotal = Number.isFinite(storedTotalRaw) ? Number(storedTotalRaw.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
+                    const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+                    return { subtotal: netSubtotal, tax: derivedTax, taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [], total: storedTotal };
+                  } catch {
+                    return { subtotal: 0, tax: 0, taxLines: [], total: 0 };
+                  }
+                })();
+            const orderForPayment = {
+              id: order.id,
+              type: orderType === 'online' ? 'Online' : orderType === 'delivery' ? 'Delivery' : 'Togo',
+              orderType: orderType,
+              number: (orderType === 'togo' || orderType === 'pickup')
+                ? String(order.id).padStart(3, '0')
+                : (order.number || order.id),
+              time: order.time,
+              phone: order.phone || order.customerPhone || '',
+              name: order.name || order.customerName || '',
+              total: Number((totals.total || 0).toFixed(2)),
+              subtotal: Number((totals.subtotal || 0).toFixed(2)),
+              tax: Number((totals.tax || 0).toFixed(2)),
+              taxLines: Array.isArray(totals.taxLines) ? totals.taxLines : (Number(totals.tax || 0) ? [{ name: 'Tax', amount: Number((totals.tax || 0).toFixed(2)) }] : []),
+              __togoTotals: totals,
+              items: rawItems as any,
+              localOrderId: order.localOrderId || order.fullOrder?.localOrderId || order.number,
+              fullOrder: order.fullOrder,
+              status: order.fullOrder?.status || order.status || 'pending',
+            };
+            setSelectedOrderType(orderType === 'delivery' ? 'delivery' : 'togo');
+            setOnlineTogoPaymentOrder(orderForPayment);
+            setShowPickupListModal(false);
+            setShowOnlineTogoPaymentModal(true);
+          } catch (err: any) { console.error('[PickupList onPayment] ERROR:', err); alert('Payment open error: ' + (err?.message || err)); }
+        }}
+        onPickupComplete={async (order) => {
+          const orderId: any = (order as any)?.order_id ?? order?.id;
+          if (!orderId) return;
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          } catch (e) { console.error('[PickupList] Pickup complete error:', e); }
         }}
       />
 
@@ -12433,12 +12983,13 @@ const SalesPage: React.FC = () => {
           setSelectedOrderType(null);
         }}
         onBackToOrder={handleBackToOrderFromDetailModal}
-        onlineOrders={onlineQueueCards as OrderData[]}
-        togoOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany) as OrderData[]}
+        onlineOrders={[...onlineQueueCards, ...togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'online' || String(o.type || '').toLowerCase() === 'online')] as OrderData[]}
+        togoOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany && String(o.fulfillment || '').toLowerCase() !== 'online' && String(o.type || '').toLowerCase() !== 'online') as OrderData[]}
         deliveryOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany) as OrderData[]}
         initialOrderType={(selectedOrderType as OrderChannelType) || 'togo'}
         initialSelectedOrder={selectedOrderDetail as OrderData}
         onPayment={(order, orderType) => {
+          try {
           const rawItems = (order.fullOrder?.items ?? order.items ?? []) as any[];
           const t = (order as any)?.__togoTotals || (order?.fullOrder as any)?.__togoTotals || null;
           const totals = t && typeof t.total === 'number'
@@ -12501,7 +13052,9 @@ const SalesPage: React.FC = () => {
             status: order.fullOrder?.status || order.status || 'pending',
           };
           setOnlineTogoPaymentOrder(orderForPayment);
+          setShowOrderDetailModal(false);
           setShowOnlineTogoPaymentModal(true);
+          } catch (err: any) { console.error('❌ [onPayment] ERROR:', err); alert('Payment open error: ' + (err?.message || err)); }
         }}
         onPickupComplete={async (order, orderType) => {
           const orderId = order.id;

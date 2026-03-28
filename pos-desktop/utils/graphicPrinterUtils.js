@@ -338,7 +338,8 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
     fontWeight = 'normal',
     inverse = false,
     lineHeight = null,
-    paddingY = 4
+    paddingY = 4,
+    extraBold = false
   } = options;
   
   const fontScale = Number(ctx?._fontScale || 1);
@@ -378,6 +379,13 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   
   ctx.fillText(displayLeftText, padding, textY);
   ctx.fillText(rightText, width - rightWidth - safeRightPadding, textY);
+
+  if (extraBold) {
+    ctx.fillText(displayLeftText, padding + 0.4, textY);
+    ctx.fillText(displayLeftText, padding - 0.4, textY);
+    ctx.fillText(rightText, width - rightWidth - safeRightPadding + 0.4, textY);
+    ctx.fillText(rightText, width - rightWidth - safeRightPadding - 0.4, textY);
+  }
   
   return y + actualLineHeight;
 }
@@ -996,6 +1004,7 @@ function renderReceiptGraphic(receiptData) {
     estimatedHeight += 35; // "Payment" 헤더
     estimatedHeight += receiptData.payments.length * 35; // 결제 방법별
     estimatedHeight += 35; // Tip
+    if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) estimatedHeight += 35; // Cash Tendered
     if (receiptData.change && Number(receiptData.change) > 0) estimatedHeight += 45; // Change
   }
   
@@ -1230,7 +1239,8 @@ function renderReceiptGraphic(receiptData) {
       const unitLabel = quantity > 1 ? ` @$${basePrice.toFixed(2)}` : '';
       y = drawLeftRightText(ctx, `${quantity}x ${itemName}${unitLabel}`, `$${itemOnlyTotal.toFixed(2)}`, y, {
         fontSize: 26,
-        fontWeight: 'bold'
+        fontWeight: 'bold',
+        extraBold: true
       });
       
       // Modifiers (flatten nested structures)
@@ -1241,7 +1251,8 @@ function renderReceiptGraphic(receiptData) {
           const priceText = modPrice > 0 ? `$${(modPrice * quantity).toFixed(2)}` : '';
           y = drawLeftRightText(ctx, `  + ${mod.name}`, priceText, y, {
             fontSize: PRINTER_CONFIG.fontSize.normal,
-            fontWeight: 'bold'
+            fontWeight: 'bold',
+            extraBold: true
           });
         }
       });
@@ -1253,7 +1264,8 @@ function renderReceiptGraphic(receiptData) {
         const memoPriceText = memoPrice > 0 ? `$${(memoPrice * quantity).toFixed(2)}` : '';
         y = drawLeftRightText(ctx, `  * ${memoStr}`, memoPriceText, y, {
           fontSize: PRINTER_CONFIG.fontSize.normal,
-          fontWeight: 'bold'
+          fontWeight: 'bold',
+          extraBold: true
         });
       }
       
@@ -1275,7 +1287,8 @@ function renderReceiptGraphic(receiptData) {
   if (receiptData.subtotal != null) {
     y = drawLeftRightText(ctx, 'Subtotal', `$${Number(receiptData.subtotal).toFixed(2)}`, y, {
       fontSize: PRINTER_CONFIG.fontSize.normal,
-      fontWeight: 'bold'
+      fontWeight: 'bold',
+      extraBold: true
     });
   }
   
@@ -1308,7 +1321,8 @@ function renderReceiptGraphic(receiptData) {
     receiptData.taxLines.forEach(tax => {
       y = drawLeftRightText(ctx, `${tax.name}`, `$${Number(tax.amount).toFixed(2)}`, y, {
         fontSize: PRINTER_CONFIG.fontSize.normal,
-        fontWeight: 'bold'
+        fontWeight: 'bold',
+        extraBold: true
       });
     });
   }
@@ -1387,7 +1401,7 @@ function renderReceiptGraphic(receiptData) {
       y = drawSeparator(ctx, y, 'dashed');
     }
 
-    // PAID (박스 스타일)
+    // PAID (Reverse — 검은 배경 + 흰 글씨)
     {
       const paidLabel = 'PAID';
       const paidAmountStr = `$${Number(grossPaidTotal).toFixed(2)}`;
@@ -1397,11 +1411,10 @@ function renderReceiptGraphic(receiptData) {
       const boxPadY = 6;
       const lineH = paidFontSize + boxPadY * 2;
 
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(padX, y, width - padX * 2, lineH);
-
       ctx.fillStyle = '#000000';
+      ctx.fillRect(padX, y, width - padX * 2, lineH);
+
+      ctx.fillStyle = '#FFFFFF';
       ctx.textBaseline = 'middle';
       ctx.font = `normal bold ${paidFontSize}px "Arial", "Malgun Gothic", sans-serif`;
       const textY = y + lineH / 2;
@@ -1410,6 +1423,7 @@ function renderReceiptGraphic(receiptData) {
       const amountW = ctx.measureText(paidAmountStr).width;
       ctx.fillText(paidAmountStr, width - padX - 8 - amountW, textY);
       ctx.fillText(paidAmountStr, width - padX - 8 - amountW + 0.5, textY);
+      ctx.fillStyle = '#000000';
       y += lineH + 2;
     }
 
@@ -1425,6 +1439,14 @@ function renderReceiptGraphic(receiptData) {
 
     y = drawSeparator(ctx, y, 'dashed');
     
+    // CASH TENDERED
+    if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) {
+      y = drawLeftRightText(ctx, 'CASH TENDERED', `$${Number(receiptData.cashTendered).toFixed(2)}`, y, {
+        fontSize: PRINTER_CONFIG.fontSize.normal + 2,
+        fontWeight: 'bold',
+        extraBold: true
+      });
+    }
     // CHANGE
     if (receiptData.change && Number(receiptData.change) > 0) {
       y = drawLeftRightText(ctx, 'CHANGE', `$${Number(receiptData.change).toFixed(2)}`, y, {

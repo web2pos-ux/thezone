@@ -15,6 +15,7 @@ interface OrderPageSetup {
   menuId: number;
   menuName: string;
   priceType: 'price' | 'price1' | 'price2';  // price1 for backward compatibility
+  togoInfoTiming?: 'before' | 'after';
   createdAt: string;
 }
 
@@ -32,6 +33,17 @@ const OrderSetupPage = () => {
   const [selectedOrderType, setSelectedOrderType] = useState<string>('');
   const [selectedMenu, setSelectedMenu] = useState<number | null>(null);
   const [selectedPriceType, setSelectedPriceType] = useState<'price' | 'price1' | 'price2'>('price');
+  const [selectedTogoInfoTiming, setSelectedTogoInfoTiming] = useState<'before' | 'after'>('before');
+  const [togoPanelEnabled, setTogoPanelEnabled] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('tableMapChannelVisibility');
+      if (raw) { const parsed = JSON.parse(raw); return parsed?.togo !== false; }
+    } catch {}
+    return true;
+  });
+  const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
+    try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch {} return true;
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -89,6 +101,27 @@ const OrderSetupPage = () => {
     return setup ? setup.priceType : null;
   };
 
+  const getChannelTogoInfoTiming = (channelId: string) => {
+    const setup = savedSetups.find(s => s.orderType === channelId);
+    return setup?.togoInfoTiming || 'before';
+  };
+
+  useEffect(() => {
+    const onStorageChange = (e: StorageEvent) => {
+      if (e.key === 'tableMapChannelVisibility' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setTogoPanelEnabled(parsed?.togo !== false);
+        } catch {}
+      }
+      if (e.key === 'fsrTogoButtonVisible') {
+        setFsrTogoButtonVisible(e.newValue !== 'false');
+      }
+    };
+    window.addEventListener('storage', onStorageChange);
+    return () => window.removeEventListener('storage', onStorageChange);
+  }, []);
+
   // 채널 클릭 핸들러 - 저장된 설정이 있으면 자동으로 불러오기
   const handleChannelClick = (channelId: string) => {
     setSelectedOrderType(channelId);
@@ -98,6 +131,61 @@ const OrderSetupPage = () => {
     if (setup) {
       setSelectedMenu(setup.menuId);
       setSelectedPriceType(setup.priceType === 'price1' ? 'price' : (setup.priceType || 'price'));
+      setSelectedTogoInfoTiming(setup.togoInfoTiming || 'before');
+    }
+  };
+
+  const handleTogoSave = async () => {
+    try {
+      setIsSaving(true);
+      const existingSetup = savedSetups.find(s => s.orderType === 'togo');
+      const setupData = {
+        orderType: 'togo',
+        menuId: existingSetup?.menuId || menus[0]?.menu_id || 0,
+        menuName: existingSetup?.menuName || menus[0]?.name || '',
+        priceType: existingSetup?.priceType || 'price',
+        togoInfoTiming: selectedTogoInfoTiming,
+        createdAt: getLocalDatetimeString()
+      };
+      let response;
+      if (existingSetup && existingSetup.id) {
+        response = await fetch(`${API_URL}/order-page-setups/${existingSetup.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(setupData),
+        });
+      } else {
+        response = await fetch(`${API_URL}/order-page-setups`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(setupData),
+        });
+      }
+      if (response.ok) {
+        setSaveMessage({ type: 'success', text: 'Togo settings saved!' });
+        localStorage.setItem('togo_info_timing', selectedTogoInfoTiming);
+        const listRes = await fetch(`${API_URL}/order-page-setups`);
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          const rows = Array.isArray(listData.setups) ? listData.setups : Array.isArray(listData) ? listData : [];
+          setSavedSetups(rows.map((r: any) => ({
+            id: r.id,
+            orderType: r.orderType || r.order_type,
+            menuId: r.menuId || r.menu_id,
+            menuName: r.menuName || r.menu_name || '',
+            priceType: r.priceType || r.price_type || 'price',
+            togoInfoTiming: r.togoInfoTiming || r.togo_info_timing || 'before',
+            createdAt: r.createdAt || r.created_at || '',
+          })));
+        }
+      } else {
+        setSaveMessage({ type: 'error', text: 'Failed to save.' });
+      }
+    } catch (e) {
+      setSaveMessage({ type: 'error', text: 'Save error.' });
+    } finally {
+      setIsSaving(false);
+      setTimeout(() => setSaveMessage(null), 3000);
     }
   };
 
@@ -114,6 +202,7 @@ const OrderSetupPage = () => {
         menuId: selectedMenu,
         menuName: menus.find(m => m.menu_id === selectedMenu)?.name || '',
         priceType: selectedPriceType,
+        togoInfoTiming: selectedOrderType === 'togo' ? selectedTogoInfoTiming : 'before',
         createdAt: getLocalDatetimeString()
       };
       console.log('💾 Saving setup data:', setupData);
@@ -238,6 +327,33 @@ const OrderSetupPage = () => {
                             }`}>
                               {getChannelPriceType(type.id) === 'price2' ? 'Price 2' : 'Price 1'}
                             </span>
+                            {type.id === 'togo' && (
+                              <span className={`ml-1 px-2 py-0.5 rounded text-xs ${
+                                getChannelTogoInfoTiming(type.id) === 'after'
+                                  ? 'bg-orange-100 text-orange-700'
+                                  : 'bg-blue-100 text-blue-700'
+                              }`}>
+                                {getChannelTogoInfoTiming(type.id) === 'after' ? 'Info After' : 'Info Before'}
+                              </span>
+                            )}
+                            {type.id === 'togo' && (
+                              <span className={`ml-1 px-2 py-0.5 rounded text-xs ${
+                                togoPanelEnabled
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-rose-100 text-rose-700'
+                              }`}>
+                                {togoPanelEnabled ? 'Panel ON' : 'Panel OFF'}
+                              </span>
+                            )}
+                            {type.id === 'togo' && (
+                              <span className={`ml-1 px-2 py-0.5 rounded text-xs ${
+                                fsrTogoButtonVisible
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-gray-100 text-gray-500'
+                              }`}>
+                                {fsrTogoButtonVisible ? 'Btns ON' : 'Btns OFF'}
+                              </span>
+                            )}
                           </p>
                         )}
                       </div>
@@ -279,7 +395,8 @@ const OrderSetupPage = () => {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* Dropdown selector */}
+                {/* Dropdown selector (hide for togo) */}
+                {selectedOrderType !== 'togo' && (
                 <div className="relative">
                   <label htmlFor="menu-select" className="block text-sm font-medium text-gray-700 mb-2">
                     Select a menu
@@ -298,9 +415,10 @@ const OrderSetupPage = () => {
                     ))}
                   </select>
                 </div>
+                )}
 
-                {/* Selected menu info display */}
-                {selectedMenu && (
+                {/* Selected menu info display (hide for togo) */}
+                {selectedOrderType !== 'togo' && selectedMenu && (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                     <div className="flex items-center space-x-3">
                       <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
@@ -325,7 +443,8 @@ const OrderSetupPage = () => {
                   </div>
                 )}
 
-                {/* Price Type Selection */}
+                {/* Price Type Selection (hide for togo) */}
+                {selectedOrderType !== 'togo' && (
                 <div className="mt-4">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     💰 Price Selection <span className="text-red-500">*</span>
@@ -373,6 +492,50 @@ const OrderSetupPage = () => {
                     </button>
                   </div>
                 </div>
+                )}
+
+                {/* Togo Settings (only for Togo channel) */}
+                {selectedOrderType === 'togo' && (
+                  <div className="space-y-4">
+                    {/* Customer Info Timing */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Customer Info Timing</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => setSelectedTogoInfoTiming('before')} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${selectedTogoInfoTiming === 'before' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>Before Order</button>
+                        <button type="button" onClick={() => setSelectedTogoInfoTiming('after')} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${selectedTogoInfoTiming === 'after' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>After Order</button>
+                      </div>
+                    </div>
+
+                    {/* TOGO Panel */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">TOGO Panel (Right Side)</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: true }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(true); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${togoPanelEnabled ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>ON</button>
+                        <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: false }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(false); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${!togoPanelEnabled ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>OFF</button>
+                      </div>
+                    </div>
+
+                    {/* TOGO Button */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Pickup Order Buttons (Header)</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => { localStorage.setItem('fsrTogoButtonVisible', 'true'); window.dispatchEvent(new StorageEvent('storage', { key: 'fsrTogoButtonVisible', newValue: 'true' })); setFsrTogoButtonVisible(true); }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${fsrTogoButtonVisible ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>ON</button>
+                        <button type="button" onClick={() => { localStorage.setItem('fsrTogoButtonVisible', 'false'); window.dispatchEvent(new StorageEvent('storage', { key: 'fsrTogoButtonVisible', newValue: 'false' })); setFsrTogoButtonVisible(false); }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${!fsrTogoButtonVisible ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>OFF</button>
+                      </div>
+                    </div>
+
+                    {/* Save Button for Togo */}
+                    <div className="pt-2">
+                      <button
+                        onClick={handleTogoSave}
+                        disabled={isSaving}
+                        className={`w-full py-3 rounded-lg font-semibold text-base transition-all ${isSaving ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700 shadow-lg'}`}
+                      >
+                        {isSaving ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Action Buttons */}
                 <div className="pt-4">
@@ -478,6 +641,7 @@ const OrderSetupPage = () => {
                         setSelectedOrderType(setup.orderType);
                         setSelectedMenu(setup.menuId);
                         setSelectedPriceType(setup.priceType === 'price1' ? 'price' : (setup.priceType || 'price'));
+                        setSelectedTogoInfoTiming(setup.togoInfoTiming || 'before');
                       }}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
                     >

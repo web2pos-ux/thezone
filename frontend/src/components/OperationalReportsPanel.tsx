@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, CartesianGrid
@@ -76,6 +76,10 @@ function getDateRange(period: PeriodKey, customStart: string, customEnd: string)
     }
     case 'thisMonth': { const d = new Date(today.getFullYear(), today.getMonth(), 1); return { s: f(d), e: f(today) }; }
     case 'custom': return { s: customStart || f(today), e: customEnd || f(today) };
+    default: {
+      const d = new Date(today);
+      return { s: f(d), e: f(today) };
+    }
   }
 }
 
@@ -127,19 +131,57 @@ const OperationalReportsPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [isPrinting, setIsPrinting] = useState(false);
+  const salesReportAbortRef = useRef<AbortController | null>(null);
 
-  const fetchData = useCallback(async (p: PeriodKey) => {
+  const fetchData = useCallback(async () => {
+    salesReportAbortRef.current?.abort();
+    const ac = new AbortController();
+    salesReportAbortRef.current = ac;
     setLoading(true);
     try {
-      const { s, e } = getDateRange(p, customStart, customEnd);
-      const r = await fetch(`${API_URL}/daily-closings/sales-report?startDate=${s}&endDate=${e}`);
+      const { s, e } = getDateRange(period, customStart, customEnd);
+      const qs = new URLSearchParams({
+        startDate: s,
+        endDate: e,
+        _t: String(Date.now()),
+      });
+      const r = await fetch(`${API_URL}/daily-closings/sales-report?${qs.toString()}`, {
+        cache: 'no-store',
+        signal: ac.signal,
+        headers: { Accept: 'application/json' },
+      });
       const j = await r.json();
       if (j.success) setData(j);
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, [customStart, customEnd]);
+    } catch (err: unknown) {
+      const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: string }).name) : '';
+      if (name === 'AbortError') return;
+    } finally {
+      if (!ac.signal.aborted) setLoading(false);
+    }
+  }, [period, customStart, customEnd]);
 
-  useEffect(() => { fetchData(period); }, [period, fetchData]);
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const printSalesReport = useCallback(async () => {
+    if (!data) return;
+    setIsPrinting(true);
+    try {
+      const res = await fetch(`${API_URL}/daily-closings/print-sales-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reportData: data, copies: 1 }),
+      });
+      const json = await res.json().catch(() => ({} as { success?: boolean; error?: string }));
+      if (!res.ok || json?.success === false) throw new Error(json?.error || 'Print failed');
+    } catch (err: unknown) {
+      console.error('Report Dashboard print error:', err instanceof Error ? err.message : err);
+    } finally {
+      setIsPrinting(false);
+    }
+  }, [data]);
 
   const periods: { key: PeriodKey; label: string }[] = [
     { key: 'today', label: 'Today' },
@@ -170,8 +212,18 @@ const OperationalReportsPanel: React.FC = () => {
             <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="border rounded px-2 py-1 text-sm" />
             <span className="text-gray-400">~</span>
             <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="border rounded px-2 py-1 text-sm" />
-            <button onClick={() => fetchData('custom')} className="px-3 py-1 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700">Search</button>
+            <button onClick={() => fetchData()} className="px-3 py-1 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700">Search</button>
           </div>
+        )}
+        {data && (
+          <button
+            type="button"
+            onClick={printSalesReport}
+            disabled={isPrinting}
+            className="ml-auto px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {isPrinting ? 'Printing...' : '🖨 Print'}
+          </button>
         )}
       </div>
 
@@ -225,7 +277,12 @@ const OperationalReportsPanel: React.FC = () => {
                 });
               }
               items.push({ label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '' });
-              const cols = Math.min(items.length, 6);
+              const paidTip = Number(data.overall.totalTip || 0);
+              items.push({ label: 'Tips', paid: paidTip > 0 ? fmt(paidTip) : '-', unpaid: '', combined: '' });
+              const grandTotal = data.overall.totalSales + paidTip;
+              const unpaidGrand = hasUnpaid ? (up!.totalAmount || 0) : 0;
+              items.push({ label: 'Grand Total', paid: fmt(grandTotal), unpaid: hasUnpaid && unpaidGrand > 0 ? `+${fmt(unpaidGrand)}` : '', combined: hasUnpaid && unpaidGrand > 0 ? fmt(grandTotal + unpaidGrand) : '' });
+              const cols = Math.min(items.length, 8);
               return (
                 <div className={`grid gap-3`} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                   {items.map(s => (
@@ -269,52 +326,51 @@ const OperationalReportsPanel: React.FC = () => {
               const totalTip = allCh.reduce((a, c) => a + c.tips, 0);
               const totalCount = allCh.reduce((a, c) => a + c.count, 0);
               const taxNames = data.taxDetails?.map(t => t.name) || [];
+              const totalGrand = totalSales + totalTip;
               return (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead><tr className="border-b border-blue-200">
                       <th className={`${TH} text-left`}>Channel</th>
-                      <th className={`${TH} text-right`}>Amount</th>
-                      <th className={`${TH} text-right`}>%</th>
                       <th className={`${TH} text-right`}>Orders</th>
-                      <th className={`${TH} text-right`}>Subtotal</th>
-                      {taxNames.map(tn => <th key={tn} className={`${TH} text-right`}>{tn}</th>)}
+                      <th className={`${TH} text-right`}>Ord%</th>
+                      <th className={`${TH} text-right`}>Amount</th>
+                      <th className={`${TH} text-right`}>Amt%</th>
+                      <th className={`${TH} text-right`}>Tax</th>
                       <th className={`${TH} text-right`}>Avg</th>
                       <th className={`${TH} text-right`}>Tip</th>
+                      <th className={`${TH} text-right`}>Grand</th>
                     </tr></thead>
                     <tbody>
                       {allCh.map(ch => {
-                        const pct = totalSales > 0 ? ((ch.sales / totalSales) * 100).toFixed(1) : '0';
-                        const ctd = data.channelTaxDetails?.[ch.key] || [];
+                        const amtPct = totalSales > 0 ? ((ch.sales / totalSales) * 100).toFixed(1) : '0';
+                        const ordPct = totalCount > 0 ? ((ch.count / totalCount) * 100).toFixed(1) : '0';
+                        const chGrand = ch.sales + ch.tips;
                         return (
                           <tr key={ch.key} className="border-b border-blue-50 hover:bg-blue-100/40">
                             <td className={`${TD} font-bold text-blue-800`}>{ch.label}</td>
-                            <td className={`${TD} text-right font-extrabold text-blue-900`}>{fmt(ch.sales)}</td>
-                            <td className={`${TD} text-right text-blue-500`}>{pct}%</td>
                             <td className={`${TD} text-right text-blue-700`}>{ch.count}</td>
-                            <td className={`${TD} text-right text-gray-600`}>{fmt(ch.subtotal)}</td>
-                            {taxNames.map(tn => {
-                              const td = ctd.find(t => t.name === tn);
-                              return <td key={tn} className={`${TD} text-right text-gray-500`}>{td ? fmt(td.amount) : '-'}</td>;
-                            })}
+                            <td className={`${TD} text-right text-blue-400`}>{ordPct}%</td>
+                            <td className={`${TD} text-right font-extrabold text-blue-900`}>{fmt(ch.sales)}</td>
+                            <td className={`${TD} text-right text-blue-500`}>{amtPct}%</td>
+                            <td className={`${TD} text-right text-gray-500`}>{ch.tax > 0 ? fmt(ch.tax) : '-'}</td>
                             <td className={`${TD} text-right text-gray-500`}>{ch.count > 0 ? fmt(ch.sales / ch.count) : '-'}</td>
                             <td className={`${TD} text-right text-amber-600`}>{ch.tips > 0 ? fmt(ch.tips) : '-'}</td>
+                            <td className={`${TD} text-right font-bold text-indigo-700`}>{chGrand > 0 ? fmt(chGrand) : '-'}</td>
                           </tr>
                         );
                       })}
                     </tbody>
                     <tfoot><tr className="border-t-2 border-blue-300 font-extrabold">
                       <td className={`${TD} text-blue-800`}>TOTAL</td>
+                      <td className={`${TD} text-right text-blue-700`}>{totalCount}</td>
+                      <td className={`${TD} text-right text-blue-400`}>100%</td>
                       <td className={`${TD} text-right text-blue-900`}>{fmt(totalSales)}</td>
                       <td className={`${TD} text-right text-blue-500`}>100%</td>
-                      <td className={`${TD} text-right text-blue-700`}>{totalCount}</td>
-                      <td className={`${TD} text-right text-gray-600`}>{fmt(totalSub)}</td>
-                      {taxNames.map(tn => {
-                        const total = Object.values(data.channelTaxDetails || {}).flat().filter(t => t.name === tn).reduce((a, t) => a + t.amount, 0);
-                        return <td key={tn} className={`${TD} text-right text-gray-500`}>{fmt(total)}</td>;
-                      })}
+                      <td className={`${TD} text-right text-gray-500`}>{totalTax > 0 ? fmt(totalTax) : '-'}</td>
                       <td className={`${TD} text-right text-gray-500`}>{totalCount > 0 ? fmt(totalSales / totalCount) : '-'}</td>
                       <td className={`${TD} text-right text-amber-600`}>{totalTip > 0 ? fmt(totalTip) : '-'}</td>
+                      <td className={`${TD} text-right font-bold text-indigo-700`}>{fmt(totalGrand)}</td>
                     </tr></tfoot>
                   </table>
                   {data.dineInTableStats && data.dineInTableStats.tableOrderCount > 0 && (
@@ -344,31 +400,41 @@ const OperationalReportsPanel: React.FC = () => {
             const payTotal = sorted.reduce((a, p) => a + (p.net_amount || 0), 0);
             const tipTotal = sorted.reduce((a, p) => a + (p.tips || 0), 0);
             const countTotal = sorted.reduce((a, p) => a + p.count, 0);
+            const grandTotal = payTotal + tipTotal;
+            const overallTax = Number(data.overall.taxTotal || 0);
+            const overallSub = Number(data.overall.subtotal || 0);
+            const taxRatio = (overallSub + overallTax) > 0 ? overallTax / (overallSub + overallTax) : 0;
             const pieData = sorted.filter(p => p.net_amount > 0).map(p => ({ name: p.payment_method, value: p.net_amount }));
             return (
               <div className="bg-green-50 rounded-xl border border-green-200 p-4">
                 <div className="text-xs text-green-800 font-bold mb-2">Payments by Method</div>
                 <div className="flex gap-4">
                   {/* Left: compact data table */}
-                  <div className="min-w-0" style={{ flex: '0 0 55%' }}>
+                  <div className="min-w-0" style={{ flex: '0 0 65%' }}>
                     <table className="w-full text-xs">
                       <thead><tr className="border-b border-green-200">
                         <th className={`${TH} text-left`}>Method</th>
                         <th className={`${TH} text-right`}>Amount</th>
+                        <th className={`${TH} text-right`}>Tax</th>
                         <th className={`${TH} text-right`}>%</th>
                         <th className={`${TH} text-right`}>Txn</th>
                         <th className={`${TH} text-right`}>Tip</th>
+                        <th className={`${TH} text-right`}>Grand</th>
                       </tr></thead>
                       <tbody>
                         {sorted.map(p => {
                           const pct = payTotal > 0 ? ((p.net_amount / payTotal) * 100).toFixed(1) : '0';
+                          const estTax = Number((p.net_amount * taxRatio).toFixed(2));
+                          const rowGrand = p.net_amount + p.tips;
                           return (
                             <tr key={p.payment_method} className="border-b border-green-50 hover:bg-green-100/40">
                               <td className={`${TD} font-bold text-green-800`}>{p.payment_method}</td>
                               <td className={`${TD} text-right font-extrabold text-green-900`}>{fmt(p.net_amount)}</td>
+                              <td className={`${TD} text-right text-gray-500`}>{estTax > 0 ? fmt(estTax) : '-'}</td>
                               <td className={`${TD} text-right text-green-500`}>{pct}%</td>
                               <td className={`${TD} text-right text-green-700`}>{p.count}</td>
                               <td className={`${TD} text-right text-amber-600`}>{p.tips > 0 ? fmt(p.tips) : '-'}</td>
+                              <td className={`${TD} text-right font-bold text-indigo-700`}>{fmt(rowGrand)}</td>
                             </tr>
                           );
                         })}
@@ -376,9 +442,11 @@ const OperationalReportsPanel: React.FC = () => {
                       <tfoot><tr className="border-t-2 border-green-300 font-extrabold">
                         <td className={`${TD} text-green-800`}>TOTAL</td>
                         <td className={`${TD} text-right text-green-900`}>{fmt(payTotal)}</td>
+                        <td className={`${TD} text-right text-gray-500`}>{overallTax > 0 ? fmt(overallTax) : '-'}</td>
                         <td className={`${TD} text-right text-green-500`}>100%</td>
                         <td className={`${TD} text-right text-green-700`}>{countTotal}</td>
                         <td className={`${TD} text-right text-amber-600`}>{tipTotal > 0 ? fmt(tipTotal) : '-'}</td>
+                        <td className={`${TD} text-right font-bold text-indigo-700`}>{fmt(grandTotal)}</td>
                       </tr></tfoot>
                     </table>
                   </div>

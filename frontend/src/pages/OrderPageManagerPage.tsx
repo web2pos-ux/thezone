@@ -115,6 +115,25 @@ const OrderPageManagerPage: React.FC = () => {
   const [activeItemDragId, setActiveItemDragId] = useState<string | null>(null);
   const [overItemId, setOverItemId] = useState<string | null>(null);
 
+  const [togoPanelEnabled, setTogoPanelEnabled] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('tableMapChannelVisibility');
+      if (raw) { const parsed = JSON.parse(raw); return parsed?.togo !== false; }
+    } catch {}
+    return true;
+  });
+
+  const handleTogoPanelToggle = (enabled: boolean) => {
+    try {
+      const raw = localStorage.getItem('tableMapChannelVisibility');
+      const current = raw ? JSON.parse(raw) : { togo: true, delivery: true };
+      const updated = { ...current, togo: enabled };
+      localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) }));
+      setTogoPanelEnabled(enabled);
+    } catch {}
+  };
+
   // distance: 10 으로 완화 → 클릭 시 의도치 않은 드래그 방지
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 10 } }),
@@ -515,12 +534,60 @@ const OrderPageManagerPage: React.FC = () => {
         </div>
       </div>
 
+      {/* TOGO Panel Toggle */}
+      <div className="mb-6 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold text-gray-900 text-sm">TOGO Panel (Right Side)</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Show or hide the Togo/Delivery/Online order panel on the Sales screen</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleTogoPanelToggle(true)}
+              className={`px-4 py-2 rounded-lg border-2 text-sm font-semibold transition-all ${
+                togoPanelEnabled
+                  ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                  : 'border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}
+            >
+              ON
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTogoPanelToggle(false)}
+              className={`px-4 py-2 rounded-lg border-2 text-sm font-semibold transition-all ${
+                !togoPanelEnabled
+                  ? 'border-rose-500 bg-rose-50 text-rose-700'
+                  : 'border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}
+            >
+              OFF
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Column 1: Categories & Merged Groups */}
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="bg-indigo-50 px-4 py-3 border-b border-indigo-100">
-            <h2 className="font-semibold text-indigo-900">Categories & Groups</h2>
-            <p className="text-xs text-indigo-600 mt-0.5">Drag to reorder the category bar</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-indigo-900">Categories & Groups</h2>
+                <p className="text-xs text-indigo-600 mt-0.5">Drag to reorder the category bar</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, categoryFontBold: !layoutSettings.categoryFontBold, categoryFontExtraBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.categoryFontBold && !layoutSettings.categoryFontExtraBold ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Bold</button>
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, categoryFontExtraBold: !layoutSettings.categoryFontExtraBold, categoryFontBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.categoryFontExtraBold ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Extra Bold</button>
+              </div>
+            </div>
           </div>
           <div className="p-3 max-h-[70vh] overflow-y-auto">
             <DndContext
@@ -604,6 +671,14 @@ const OrderPageManagerPage: React.FC = () => {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, menuFontBold: !layoutSettings.menuFontBold, menuFontExtraBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.menuFontBold && !layoutSettings.menuFontExtraBold ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Bold</button>
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, menuFontExtraBold: !layoutSettings.menuFontExtraBold, menuFontBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.menuFontExtraBold ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Extra Bold</button>
                 <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">
                   {gridCols} cols
                 </span>
@@ -673,13 +748,23 @@ const OrderPageManagerPage: React.FC = () => {
                 </h2>
                 <p className="text-xs text-amber-600 mt-0.5">Drag to reorder modifiers for this item.</p>
               </div>
-              <button
-                onClick={insertBlankIntoModifiers}
-                className="text-xs px-3 py-1 rounded bg-white/70 border border-amber-200 hover:bg-white"
-                title="Insert a blank slot into this item's modifier layout"
-              >
-                + Blank
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, modifierFontBold: !layoutSettings.modifierFontBold, modifierFontExtraBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.modifierFontBold && !layoutSettings.modifierFontExtraBold ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Bold</button>
+                <button
+                  onClick={() => setLayoutSettings({ ...layoutSettings, modifierFontExtraBold: !layoutSettings.modifierFontExtraBold, modifierFontBold: false })}
+                  className={`text-xs px-2 py-1 rounded border ${layoutSettings.modifierFontExtraBold ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >Extra Bold</button>
+                <button
+                  onClick={insertBlankIntoModifiers}
+                  className="text-xs px-3 py-1 rounded bg-white/70 border border-amber-200 hover:bg-white"
+                  title="Insert a blank slot into this item's modifier layout"
+                >
+                  + Blank
+                </button>
+              </div>
             </div>
           </div>
           <div className="p-3 max-h-[40vh] overflow-y-auto">

@@ -761,6 +761,14 @@ router.delete('/time-off/:id', (req, res) => {
 // CLOCK IN/OUT ENDPOINTS
 // ======================
 
+const getLocalBusinessDate = () => {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 // POST verify PIN and get employee info
 router.post('/verify-pin', (req, res) => {
   const { pin } = req.body;
@@ -797,7 +805,7 @@ router.post('/clock-in', (req, res) => {
   
   const db = getDb();
   const now = new Date().toISOString();
-  const today = now.split('T')[0];
+  const today = getLocalBusinessDate();
   
   // Verify PIN first
   db.get(
@@ -892,7 +900,7 @@ router.post('/clock-out', (req, res) => {
   
   const db = getDb();
   const now = new Date().toISOString();
-  const today = now.split('T')[0];
+  const today = getLocalBusinessDate();
   
   // Verify PIN first
   db.get(
@@ -993,7 +1001,6 @@ router.post('/clock-out', (req, res) => {
 // GET currently clocked in employees
 router.get('/clocked-in', (req, res) => {
   const db = getDb();
-  const today = new Date().toISOString().split('T')[0];
   
   db.all(
     `SELECT 
@@ -1005,10 +1012,9 @@ router.get('/clocked-in', (req, res) => {
        e.department
      FROM clock_records cr
      JOIN employees e ON cr.employee_id = e.id
-     WHERE date(cr.clock_in_time) = ? 
-     AND cr.clock_out_time IS NULL
+     WHERE cr.clock_out_time IS NULL
      ORDER BY cr.clock_in_time`,
-    [today],
+    [],
     (err, rows) => {
       // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {

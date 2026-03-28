@@ -475,7 +475,8 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
     fontWeight = 'normal',
     inverse = false,
     lineHeight = null,
-    paddingY = 4
+    paddingY = 4,
+    extraBold = false
   } = options;
   
   const fontSize = rawFontSize;
@@ -515,6 +516,13 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   
   ctx.fillText(displayLeftText, padding, textY);
   ctx.fillText(rightText, width - rightWidth - safeRightPadding, textY);
+
+  if (extraBold) {
+    ctx.fillText(displayLeftText, padding + 0.4, textY);
+    ctx.fillText(displayLeftText, padding - 0.4, textY);
+    ctx.fillText(rightText, width - rightWidth - safeRightPadding + 0.4, textY);
+    ctx.fillText(rightText, width - rightWidth - safeRightPadding - 0.4, textY);
+  }
   
   return y + actualLineHeight;
 }
@@ -744,12 +752,23 @@ function renderKitchenTicketGraphic(orderData) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
     rightBoxChannelPart = 'ONLINE';
-    if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+    const onlineModalNum = String(
+      orderInfo.onlineOrderNumber ?? orderData.onlineOrderNumber ?? header.onlineOrderNumber ?? ''
+    )
+      .trim()
+      .replace(/"/g, '');
+    let quoteBody = '';
+    if (onlineModalNum) {
+      quoteBody = onlineModalNum;
+    } else if (phoneDigits.length >= 4) {
+      quoteBody = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      quoteBody = phoneDigits.slice(0, Math.min(4, phoneDigits.length));
     } else if (cleanPosSeq) {
-      rightBoxInfoPart = `#${cleanPosSeq}`;
+      quoteBody = String(cleanPosSeq);
+    }
+    if (quoteBody) {
+      rightBoxInfoPart = `"${quoteBody.toUpperCase()}"`;
     }
     rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isDeliveryLike) {
@@ -780,7 +799,8 @@ function renderKitchenTicketGraphic(orderData) {
   const headerStartY = y;
   const headerFontSize = 55;
   const orderNumberFontSize = Math.max(8, Math.round(headerFontSize * 0.772));
-  const channelFontSize = Math.max(8, Math.round(headerFontSize * 1.105));
+  // Channel + info (right box): 5% + 5% smaller than original 1.105× header base
+  const channelFontSize = Math.max(8, Math.round(headerFontSize * 1.105 * 0.95 * 0.95));
   const headerPaddingY = 4;
   const headerLineHeight = channelFontSize + Math.max(1, Math.round(headerPaddingY)) * 2;
 
@@ -1121,7 +1141,7 @@ function renderKitchenTicketGraphic(orderData) {
     });
 
     modOrder.forEach(name => {
-      const count = modCounts.get(name) || 0;
+      const count = (modCounts.get(name) || 0) * quantity;
       if (!count) return;
       y = drawTextBlock(ctx, {
         text: `  >> ${count}x ${name}`,
@@ -1460,6 +1480,7 @@ function renderReceiptGraphic(receiptData) {
       estimatedHeight += 35; // Payment
       estimatedHeight += receiptData.payments.length * 35;
     }
+    if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) estimatedHeight += 35; // Cash Tendered
     if (receiptData.change && Number(receiptData.change) > 0) estimatedHeight += 45; // Change
   }
   
@@ -1832,40 +1853,50 @@ function renderReceiptGraphic(receiptData) {
       }, y);
       y += 2;
     } else if (entry.type === 'guest_summary') {
-      const smFontSize = Math.max(PRINTER_CONFIG.fontSize.normal - 2, 18);
+      const guestSumRegularOpts = {
+        fontSize: ITEM_BASE_FONT_SIZE,
+        fontWeight: 'normal',
+        fontStyle: 'normal',
+        inverse: false,
+        extraBold: false
+      };
+      const guestSumBoldOpts = {
+        fontSize: ITEM_BASE_FONT_SIZE,
+        fontWeight: 'bold',
+        fontStyle: 'normal',
+        inverse: false,
+        extraBold: true
+      };
       y += 4;
       // Guest subtotal
       if (entry.guestSubtotal != null) {
-        y = drawLeftRightText(ctx, `  Subtotal`, `$${Number(entry.guestSubtotal).toFixed(2)}`, y, {
-          fontSize: smFontSize, fontWeight: 'normal', fontStyle: 'normal'
-        });
+        y = drawLeftRightText(ctx, `  Subtotal`, `$${Number(entry.guestSubtotal).toFixed(2)}`, y, guestSumRegularOpts);
       }
       // Guest adjustments (discount, gratuity, fees)
-      if (Array.isArray(entry.guestAdjustments) && entry.guestAdjustments.length > 0) {
+      const hasGuestAdj = Array.isArray(entry.guestAdjustments) && entry.guestAdjustments.some(a => Math.abs(Number(a.amount || 0)) >= 0.005);
+      if (hasGuestAdj) {
         entry.guestAdjustments.forEach(adj => {
           const amt = Number(adj.amount || 0);
           if (Math.abs(amt) < 0.005) return;
           let label = adj.label || 'Adjustment';
           const sign = amt < 0 ? '-' : '';
-          y = drawLeftRightText(ctx, `  ${label}`, `${sign}$${Math.abs(amt).toFixed(2)}`, y, {
-            fontSize: smFontSize, fontWeight: 'normal', fontStyle: 'normal'
-          });
+          y = drawLeftRightText(ctx, `  ${label}`, `${sign}$${Math.abs(amt).toFixed(2)}`, y, guestSumRegularOpts);
         });
+        // Net Sales (할인이 있을 때만)
+        const adjTotal = (entry.guestAdjustments || []).reduce((s, a) => s + Number(a.amount || 0), 0);
+        const netSales = Number((Number(entry.guestSubtotal || 0) + adjTotal).toFixed(2));
+        y = drawLeftRightText(ctx, `  Net Sales`, `$${netSales.toFixed(2)}`, y, guestSumRegularOpts);
       }
       // Guest tax lines
       if (Array.isArray(entry.guestTaxLines) && entry.guestTaxLines.length > 0) {
         entry.guestTaxLines.forEach(tax => {
           if (Number(tax.amount || 0) < 0.005) return;
-          y = drawLeftRightText(ctx, `  ${tax.name}`, `$${Number(tax.amount).toFixed(2)}`, y, {
-            fontSize: smFontSize, fontWeight: 'normal', fontStyle: 'normal'
-          });
+          y = drawLeftRightText(ctx, `  ${tax.name}`, `$${Number(tax.amount).toFixed(2)}`, y, guestSumRegularOpts);
         });
       }
       // Guest total
       if (entry.guestTotal != null) {
-        y = drawLeftRightText(ctx, `  Guest ${entry.guestNumber} Total`, `$${Number(entry.guestTotal).toFixed(2)}`, y, {
-          fontSize: smFontSize, fontWeight: 'bold', fontStyle: 'normal'
-        });
+        y = drawLeftRightText(ctx, `  Guest ${entry.guestNumber} Total`, `$${Number(entry.guestTotal).toFixed(2)}`, y, guestSumBoldOpts);
       }
       y += 2;
     } else {
@@ -1891,7 +1922,7 @@ function renderReceiptGraphic(receiptData) {
           fontStyle: stItems.fontStyle,
           inverse: stItems.inverse,
           lineHeight: stItems.lineHeight,
-          extraBold: stItems.extraBold
+          extraBold: true
         });
       }
 
@@ -1941,7 +1972,7 @@ function renderReceiptGraphic(receiptData) {
               fontStyle: stMods.fontStyle,
               inverse: stMods.inverse,
               lineHeight: stMods.lineHeight,
-              extraBold: stMods.extraBold
+              extraBold: true
             });
           }
         }
@@ -1968,11 +1999,11 @@ function renderReceiptGraphic(receiptData) {
             inverse: stNote.inverse,
             lineHeight: stNote.lineHeight,
             paddingY: 4,
-            extraBold: stNote.extraBold
+            extraBold: true
           });
         }
       }
-      
+
       // Item discount (if exists)
       const discount = entry.discount;
       if (discount && discount.amount > 0) {
@@ -2019,11 +2050,11 @@ function renderReceiptGraphic(receiptData) {
         fontStyle: stSubtotal.fontStyle,
         inverse: stSubtotal.inverse,
         lineHeight: stSubtotal.lineHeight,
-        extraBold: stSubtotal.extraBold
+        extraBold: true
       });
     }
   }
-  
+
   // 할인 (Subtotal 바로 아래에 표시)
   if (receiptData.adjustments && receiptData.adjustments.length > 0) {
     receiptData.adjustments.forEach(adj => {
@@ -2094,49 +2125,30 @@ function renderReceiptGraphic(receiptData) {
           fontStyle: stTax.fontStyle,
           inverse: stTax.inverse,
           lineHeight: stTax.lineHeight,
-          extraBold: stTax.extraBold
+          extraBold: true
         });
       }
     });
   }
   
-  y = drawSeparator(ctx, y, 'dashed');
-  
-  // === TOTAL (박스 스타일 — 좌우 정렬, 굵은 테두리 박스) ===
+  // === TOTAL ===
   if (receiptData.total != null) {
+    y = drawSeparator(ctx, y, 'solid');
     const totalLabel = (() => {
       if (!(splitCount > 1)) return 'TOTAL';
       const n = splitCount;
       if (RECEIPT_WIDTH === 384) return `TOTAL 1/${n}`;
       return `TOTAL (1/${n})`;
     })();
-    const totalAmountStr = `$${Number(receiptData.total).toFixed(2)}`;
-    const totalFontSize = ITEM_BASE_FONT_SIZE + 2;
-
-    y += 2;
-    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
-    const padX = Math.max(3, Math.round(PRINTER_CONFIG.padding));
-    const boxPadY = 6;
-    const lineH = totalFontSize + boxPadY * 2;
-
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(padX, y, width - padX * 2, lineH);
-
-    ctx.fillStyle = '#000000';
-    ctx.textBaseline = 'middle';
-    ctx.font = `normal bold ${totalFontSize}px "Arial", "Malgun Gothic", sans-serif`;
-    const textY = y + lineH / 2;
-    ctx.fillText(totalLabel, padX + 8, textY);
-    ctx.fillText(totalLabel, padX + 8 + 0.5, textY);
-    const amountW = ctx.measureText(totalAmountStr).width;
-    ctx.fillText(totalAmountStr, width - padX - 8 - amountW, textY);
-    ctx.fillText(totalAmountStr, width - padX - 8 - amountW + 0.5, textY);
-    y += lineH + 2;
+    y = drawLeftRightText(ctx, totalLabel, `$${Number(receiptData.total).toFixed(2)}`, y, {
+      fontSize: ITEM_BASE_FONT_SIZE + 2,
+      fontWeight: 'bold',
+      fontStyle: 'normal',
+      inverse: false,
+      extraBold: true
+    });
   }
-  
-  y = drawSeparator(ctx, y, 'solid');
-  
+
   // === 결제 정보 ===
   if (receiptData.payments && receiptData.payments.length > 0) {
     const prettyMethod = (m) => {
@@ -2163,18 +2175,16 @@ function renderReceiptGraphic(receiptData) {
       return 'Dine-in';
     })();
 
-    const foodByMethod = {};
     const tipByMethod = {};
+    const paidByMethod = {};
     let grossPaidTotal = 0;
     receiptData.payments.forEach(p => {
       const method = (p.method || 'OTHER').toUpperCase();
       const amount = Number(p.amount || 0);
       const tipField = Number(p.tip || 0);
       grossPaidTotal += amount;
-
-      const foodPortion = Math.max(0, Number((amount - tipField).toFixed(2)));
-      if (!foodByMethod[method]) foodByMethod[method] = 0;
-      foodByMethod[method] += foodPortion;
+      if (!paidByMethod[method]) paidByMethod[method] = 0;
+      paidByMethod[method] += amount;
 
       if (tipField > 0) {
         if (!tipByMethod[method]) tipByMethod[method] = 0;
@@ -2193,10 +2203,9 @@ function renderReceiptGraphic(receiptData) {
           inverse: false
         });
       });
-      y = drawSeparator(ctx, y, 'dashed');
     }
 
-    // PAID (박스 스타일 — 좌우 정렬, 굵은 테두리 박스)
+    // PAID (Reverse — 검은 배경 + 흰 글씨)
     {
       const paidLabel = 'PAID';
       const paidAmountStr = `$${Number(grossPaidTotal).toFixed(2)}`;
@@ -2206,11 +2215,10 @@ function renderReceiptGraphic(receiptData) {
       const boxPadY = 6;
       const lineH = paidFontSize + boxPadY * 2;
 
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(padX, y, width - padX * 2, lineH);
-
       ctx.fillStyle = '#000000';
+      ctx.fillRect(padX, y, width - padX * 2, lineH);
+
+      ctx.fillStyle = '#FFFFFF';
       ctx.textBaseline = 'middle';
       ctx.font = `normal bold ${paidFontSize}px "Arial", "Malgun Gothic", sans-serif`;
       const textY = y + lineH / 2;
@@ -2219,14 +2227,19 @@ function renderReceiptGraphic(receiptData) {
       const amountW = ctx.measureText(paidAmountStr).width;
       ctx.fillText(paidAmountStr, width - padX - 8 - amountW, textY);
       ctx.fillText(paidAmountStr, width - padX - 8 - amountW + 0.5, textY);
+      ctx.fillStyle = '#000000';
       y += lineH + 2;
     }
 
-    // 결제 수단별 (Cash, Visa 등)
-    y += 2;
-    Object.entries(foodByMethod).forEach(([method, totalAmount]) => {
-      if (Number(totalAmount || 0) <= 0) return;
-      y = drawLeftRightText(ctx, `${prettyMethod(method)}`, '', y, {
+    // 결제 수단별 — 카드 등은 청구에 적용된 금액 합계, 현금은 손님이 실제로 낸 금액(cashTendered) 우선 표시
+    y += 12;
+    const cashTenderedNum = Number(receiptData.cashTendered || 0);
+    Object.entries(paidByMethod).forEach(([method, totalPaid]) => {
+      if (Number(totalPaid || 0) <= 0) return;
+      const showCash =
+        String(method).toUpperCase() === 'CASH' && cashTenderedNum > 0.0001;
+      const rightAmt = showCash ? cashTenderedNum : Number(totalPaid);
+      y = drawLeftRightText(ctx, `${prettyMethod(method)}`, `$${rightAmt.toFixed(2)}`, y, {
         fontSize: ITEM_BASE_FONT_SIZE,
         fontWeight: 'bold',
         fontStyle: 'normal',
@@ -2234,22 +2247,51 @@ function renderReceiptGraphic(receiptData) {
       });
     });
 
-    y = drawSeparator(ctx, y, 'dashed');
-    
-    // CHANGE
-    if (receiptData.change && Number(receiptData.change) > 0) {
-      y = drawLeftRightText(ctx, 'CHANGE', `$${Number(receiptData.change).toFixed(2)}`, y, {
-        fontSize: ITEM_BASE_FONT_SIZE + 2,
-        fontWeight: 'bold',
-        fontStyle: 'normal',
-        inverse: false,
-        extraBold: true
-      });
+    y += 6;
+
+    // CHANGE — 현금 거래에만 표시 (거스름). dashed 구분선 직후 strokeRect는 setLineDash 미초기화 시 점선으로 나옴 → 실선 강제
+    const changeAmt = Number(receiptData.change || 0);
+    const hasCashContext =
+      (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) ||
+      (Array.isArray(receiptData.payments) &&
+        receiptData.payments.some(p => String((p && p.method) || '').toUpperCase() === 'CASH'));
+    const showChangeBox = changeAmt > 0.0001 && hasCashContext;
+    if (showChangeBox) {
+      const changeLabel = 'CHANGE';
+      const changeAmountStr = `$${changeAmt.toFixed(2)}`;
+      const changeFontSize = ITEM_BASE_FONT_SIZE + 2;
+      const widthC = ctx._receiptWidth || PRINTER_CONFIG.width;
+      const padXC = Math.max(3, Math.round(PRINTER_CONFIG.padding));
+      const boxPadYC = 6;
+      const lineHC = changeFontSize + boxPadYC * 2;
+
+      y += 2;
+      ctx.setLineDash([]);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(padXC, y, widthC - padXC * 2, lineHC);
+
+      ctx.fillStyle = '#000000';
+      ctx.textBaseline = 'middle';
+      ctx.font = `normal bold ${changeFontSize}px "Arial", "Malgun Gothic", sans-serif`;
+      const textYC = y + lineHC / 2;
+      ctx.fillText(changeLabel, padXC + 8, textYC);
+      ctx.fillText(changeLabel, padXC + 8 + 0.5, textYC);
+      const amountWC = ctx.measureText(changeAmountStr).width;
+      ctx.fillText(changeAmountStr, widthC - padXC - 8 - amountWC, textYC);
+      ctx.fillText(changeAmountStr, widthC - padXC - 8 - amountWC + 0.5, textYC);
+      y += lineHC + 2;
     }
 
+    if (!showChangeBox) {
+      y = drawSeparator(ctx, y, 'solid');
+    } else {
+      y += 8;
+    }
+  } else if (receiptData.total != null) {
     y = drawSeparator(ctx, y, 'solid');
   }
-  
+
   // === Footer ===
   y += 10;
   const footerMessage = receiptData.footer?.message || 'Thank you! Please come again!';
@@ -2666,32 +2708,38 @@ function buildGraphicVoidTicket(voidData, cut = true) {
  * @param {Object} cashBreakdown - 현금 단위별 수량
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
-function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) {
+function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, printerOpts = {}) {
   ensureFontsRegistered();
 
-  const WIDTH = PRINTER_CONFIG.width;
+  const paperWidthPx = getPrinterWidth(printerOpts.paperWidth || 80);
+  const WIDTH = paperWidthPx;
   const PADDING = PRINTER_CONFIG.padding;
+  const RIGHT_PADDING = (() => {
+    const v = Number(printerOpts.rightPaddingPx ?? printerOpts.rightPadding ?? null);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return paperWidthPx === 384 ? 30 : 10;
+  })();
   const formatMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
 
-  // 높이 추정 (섹션별)
-  let estH = 120; // 헤더
-  estH += 220; // Sales Summary
-  estH += 120; // Sales by Type
-  estH += 150; // Payment Breakdown
-  estH += 80;  // Tips
-  estH += 100; // Adjustments (refunds/voids)
-  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 45;
-  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 45;
-  estH += 150; // Cash Drawer
-  estH += 200; // Denominations
-  estH += 80;
-  estH = Math.max(estH, 1200);
+  // 높이 추정 (섹션별) - 넉넉하게 확보
+  let estH = 200; // 헤더
+  estH += 350; // Sales Summary (rows + separators)
+  estH += 200; // Sales by Type
+  estH += 300; // Payment Breakdown (multiple methods)
+  estH += 200; // Tips
+  estH += 200; // Adjustments header + base rows
+  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 50;
+  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 50;
+  estH += 250; // Cash Drawer
+  estH += 400; // Denominations (up to 11 rows)
+  estH += 150; // footer
+  estH = Math.max(estH, 2400);
 
   const canvas = createCanvas(WIDTH, estH);
   const ctx = canvas.getContext('2d');
   ctx._receiptWidth = WIDTH;
   ctx._receiptPadding = PADDING;
-  ctx._receiptRightPadding = 10;
+  ctx._receiptRightPadding = RIGHT_PADDING;
 
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, WIDTH, estH);
@@ -2700,39 +2748,82 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+  const ZR_BASE = 1.05;
+  const ZR_FONT = {
+    small: Math.round(PRINTER_CONFIG.fontSize.small * ZR_BASE),
+    normal: Math.round(PRINTER_CONFIG.fontSize.normal * ZR_BASE),
+    large: Math.round(PRINTER_CONFIG.fontSize.large * ZR_BASE),
+    xlarge: Math.round(PRINTER_CONFIG.fontSize.xlarge * ZR_BASE),
+    xxlarge: Math.round(PRINTER_CONFIG.fontSize.xxlarge * ZR_BASE),
+    dateTime: Math.round(PRINTER_CONFIG.fontSize.normal * ZR_BASE * 1.15),
+    sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * ZR_BASE * 1.10),
+  };
+
   // === 헤더 ===
-  y = drawTextBlock(ctx, { text: '*** Z-REPORT ***', fontSize: PRINTER_CONFIG.fontSize.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
+  y = drawTextBlock(ctx, { text: '*** Z-REPORT ***', fontSize: ZR_FONT.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
   y += 4;
-  y = drawTextBlock(ctx, { text: 'DAY CLOSING REPORT', fontSize: PRINTER_CONFIG.fontSize.large, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: 'DAY CLOSING REPORT', fontSize: ZR_FONT.large, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'double');
-  y = drawTextBlock(ctx, { text: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
-  y = drawTextBlock(ctx, { text: `Printed: ${timeStr}`, fontSize: PRINTER_CONFIG.fontSize.small, align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), fontSize: ZR_FONT.dateTime, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: `Printed: ${timeStr}`, fontSize: ZR_FONT.dateTime, align: 'center' }, y);
   y = drawSeparator(ctx, y, 'solid');
 
   const salesSubtotal = Number((Number(zReportData?.subtotal || 0) + Number(zReportData?.tax_total || 0)).toFixed(2));
   const tipsTotal = Number(zReportData?.tip_total || 0);
   const grandTotal = Number((salesSubtotal + tipsTotal).toFixed(2));
 
+  const QTY_OFFSET_PX = Math.round(17 * 8);
   const row = (l, c, r, bold = false) => {
-    const opts = { fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: bold ? 'bold' : 'normal', extraBold: bold };
-    y = drawLeftRightText(ctx, `${l}${c ? `  ${c}` : ''}`, r || '', y, opts);
+    const opts = { fontSize: ZR_FONT.normal, fontWeight: bold ? 'bold' : '500', extraBold: bold };
+    if (c) {
+      const paddingY = 4;
+      const lh = ZR_FONT.normal + paddingY * 2;
+      const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+      const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+      ctx.font = `${opts.fontWeight} ${ZR_FONT.normal}px "Arial", "Malgun Gothic", sans-serif`;
+      ctx.fillStyle = '#000000';
+      ctx.textBaseline = 'middle';
+      const textY = y + lh / 2;
+      ctx.fillText(l, padding, textY);
+      const cw = ctx.measureText(c).width;
+      const qtyX = WIDTH - rp - QTY_OFFSET_PX;
+      ctx.fillText(c, qtyX, textY);
+      if (r) {
+        const rw = ctx.measureText(r).width;
+        ctx.fillText(r, WIDTH - rw - rp, textY);
+      }
+      if (opts.extraBold) {
+        ctx.fillText(l, padding + 0.4, textY);
+        ctx.fillText(l, padding - 0.4, textY);
+        ctx.fillText(c, qtyX + 0.4, textY);
+        ctx.fillText(c, qtyX - 0.4, textY);
+        if (r) {
+          const rw = ctx.measureText(r).width;
+          ctx.fillText(r, WIDTH - rw - rp + 0.4, textY);
+          ctx.fillText(r, WIDTH - rw - rp - 0.4, textY);
+        }
+      }
+      y += lh;
+    } else {
+      y = drawLeftRightText(ctx, l, r || '', y, opts);
+    }
   };
 
   // Sales Summary
-  y = drawTextBlock(ctx, { text: '-- SALES SUMMARY --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- SALES SUMMARY --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
   row('Total Orders', `${zReportData?.order_count || 0}`, '', true);
   row('Subtotal', '', formatMoney(zReportData?.subtotal || 0));
   row('GST', '', formatMoney(zReportData?.gst_total || 0));
   row('PST', '', formatMoney(zReportData?.pst_total || 0));
   row('Tax Total', '', formatMoney(zReportData?.tax_total || 0));
-  row('Sales Total', '', formatMoney(salesSubtotal), true);
-  row('Tips', `${zReportData?.total_tip_order_count || 0}`, formatMoney(tipsTotal), true);
-  row('Total', '', formatMoney(grandTotal), true);
+  y = drawLeftRightText(ctx, 'Sales Total', formatMoney(salesSubtotal), y, { fontSize: Math.round(ZR_FONT.normal * 1.15), fontWeight: 'bold', extraBold: true });
+  row('Tips', `${zReportData?.total_tip_order_count || 0}`, formatMoney(tipsTotal));
+  row('Total', '', formatMoney(grandTotal));
 
   // Sales by Type
   y += 8;
-  y = drawTextBlock(ctx, { text: '-- SALES BY TYPE --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- SALES BY TYPE --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
   row('Dine-In', `${zReportData?.dine_in_order_count || 0}`, formatMoney(zReportData?.dine_in_sales || 0));
   row('Togo', `${zReportData?.togo_order_count || 0}`, formatMoney(zReportData?.togo_sales || 0));
@@ -2741,17 +2832,19 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
 
   // Payment Breakdown
   y += 8;
-  y = drawTextBlock(ctx, { text: '-- PAYMENT BREAKDOWN --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- PAYMENT BREAKDOWN --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  row('Cash', `${zReportData?.cash_order_count || 0}`, formatMoney(zReportData?.cash_sales || 0));
-  row('  Cash Tips', `${zReportData?.cash_tip_order_count || 0}`, formatMoney(zReportData?.cash_tips || 0));
-  row('Card', `${zReportData?.card_order_count || 0}`, formatMoney(zReportData?.card_sales || 0));
-  row('  Card Tips', `${zReportData?.card_tip_order_count || 0}`, formatMoney(zReportData?.card_tips || 0));
-  row('Other', `${zReportData?.other_order_count || 0}`, formatMoney(zReportData?.other_sales || 0));
+  row('Cash', `${zReportData?.cash_order_count || 0}`, formatMoney(zReportData?.cash_sales || 0), true);
+  row('Card', `${zReportData?.card_order_count || 0}`, formatMoney(zReportData?.card_sales || 0), true);
+  if ((zReportData?.other_sales || 0) > 0) {
+    row('Other', `${zReportData?.other_order_count || 0}`, formatMoney(zReportData?.other_sales || 0), true);
+  }
+  y = drawSeparator(ctx, y, 'dashed');
+  y = drawLeftRightText(ctx, 'Sales Total', formatMoney(salesSubtotal), y, { fontSize: ZR_FONT.normal, fontWeight: 'bold', extraBold: true });
 
   // Tips
   y += 8;
-  y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
   row('Total Tips', `${zReportData?.total_tip_order_count || 0}`, formatMoney(zReportData?.tip_total || 0), true);
   row('Cash Tips', `${zReportData?.cash_tip_order_count || 0}`, formatMoney(zReportData?.cash_tips || 0));
@@ -2759,23 +2852,23 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
 
   // Adjustments
   y += 8;
-  y = drawTextBlock(ctx, { text: '-- ADJUSTMENTS --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- ADJUSTMENTS --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
   row('Refunds', `${zReportData?.refund_count || 0}`, `-${formatMoney(zReportData?.refund_total || 0)}`);
   (zReportData?.refund_details || []).forEach(r => {
     const orderNum = r.order_number || `#${r.order_id}`;
-    y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(r.total)}`, y, { fontSize: PRINTER_CONFIG.fontSize.small });
+    y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(r.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
   });
   row('Voids', `${zReportData?.void_count || 0}`, `-${formatMoney(zReportData?.void_total || 0)}`);
   (zReportData?.void_details || []).forEach(v => {
     const orderNum = v.order_number || `#${v.order_id}`;
-    y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(v.total)}`, y, { fontSize: PRINTER_CONFIG.fontSize.small });
+    y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(v.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
   });
   row('Discounts', `${zReportData?.discount_order_count || 0}`, `-${formatMoney(zReportData?.discount_total || 0)}`);
 
   // Cash Drawer
   y += 8;
-  y = drawTextBlock(ctx, { text: '-- CASH DRAWER --', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: '-- CASH DRAWER --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
   row('Opening Cash', '', formatMoney(zReportData?.opening_cash || 0), true);
   row('Cash Sales', `${zReportData?.cash_order_count || 0}`, formatMoney(zReportData?.cash_sales || 0), true);
@@ -2783,7 +2876,7 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
   row('Expected Cash', '', formatMoney(zReportData?.expected_cash || 0), true);
   y = drawSeparator(ctx, y, 'dashed');
 
-  y = drawTextBlock(ctx, { text: 'ACTUAL CASH COUNT', fontSize: PRINTER_CONFIG.fontSize.normal, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: 'ACTUAL CASH COUNT', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   const denominations = [
     { key: 'cent1', label: '1 Cent', value: 0.01 }, { key: 'cent5', label: '5 Cents', value: 0.05 },
     { key: 'cent10', label: '10 Cents', value: 0.10 }, { key: 'cent25', label: '25 Cents', value: 0.25 },
@@ -2795,7 +2888,7 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
   denominations.forEach(d => {
     const count = cashBreakdown[d.key] || 0;
     if (count > 0) {
-      y = drawLeftRightText(ctx, `${d.label} x ${count}`, `$${(count * d.value).toFixed(2)}`, y, { fontWeight: 'bold' });
+      y = drawLeftRightText(ctx, `${d.label} x ${count}`, `$${(count * d.value).toFixed(2)}`, y, { fontWeight: '600' });
     }
   });
 
@@ -2808,15 +2901,641 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}) 
   y += 30;
 
   const imageData = ctx.getImageData(0, 0, WIDTH, y);
-  return imageToEscPosRaster(imageData.data, WIDTH, y, zReportData?.graphicScale);
+  return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale ?? zReportData?.graphicScale);
 }
 
 /**
  * Z-Report 그래픽 출력 버퍼 생성
  */
-function buildGraphicZReport(zReportData, closingCash = 0, cashBreakdown = {}) {
+function buildGraphicZReport(zReportData, closingCash = 0, cashBreakdown = {}, printerOpts = {}) {
   const buffers = [ESC_POS.INIT];
-  buffers.push(renderZReportGraphic(zReportData, closingCash, cashBreakdown));
+  buffers.push(renderZReportGraphic(zReportData, closingCash, cashBreakdown, printerOpts));
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.CUT);
+  return Buffer.concat(buffers);
+}
+
+/**
+ * Item Report 그래픽 렌더링 — Item Sales 테이블만 출력
+ */
+function renderItemReportGraphic(reportData, printerOpts = {}) {
+  ensureFontsRegistered();
+
+  const paperWidthPx = getPrinterWidth(printerOpts.paperWidth || 80);
+  const WIDTH = paperWidthPx;
+  const PADDING = PRINTER_CONFIG.padding;
+  const RIGHT_PADDING = (() => {
+    const v = Number(printerOpts.rightPaddingPx ?? printerOpts.rightPadding ?? null);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return paperWidthPx === 384 ? 30 : 10;
+  })();
+  const fmt = (amt) => `$${(amt || 0).toFixed(2)}`;
+
+  const IR_BASE = 1.22;
+  const IR_FONT = {
+    small: Math.round(PRINTER_CONFIG.fontSize.small * IR_BASE),
+    normal: Math.round(PRINTER_CONFIG.fontSize.normal * IR_BASE),
+    large: Math.round(PRINTER_CONFIG.fontSize.large * IR_BASE),
+    xxlarge: Math.round(PRINTER_CONFIG.fontSize.xxlarge * IR_BASE),
+    dateTime: Math.round(PRINTER_CONFIG.fontSize.normal * IR_BASE * 1.2),
+    sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * IR_BASE * 1.15),
+  };
+
+  const items = reportData.items || [];
+  const ITEM_BLOCK_GAP = Math.round(4 * 1.2);
+  const perItemH = Math.ceil(82 * 1.2);
+  let estH = 320 + items.length * perItemH + 220;
+  estH = Math.max(estH, 800);
+
+  const canvas = createCanvas(WIDTH, estH);
+  const ctx = canvas.getContext('2d');
+  ctx._receiptWidth = WIDTH;
+  ctx._receiptPadding = PADDING;
+  ctx._receiptRightPadding = RIGHT_PADDING;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, WIDTH, estH);
+
+  let y = 20;
+  const now = new Date();
+
+  // Header: Title + Period
+  y = drawTextBlock(ctx, { text: 'ITEM REPORT', fontSize: IR_FONT.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
+  y += 4;
+  const periodStr = `${reportData.period?.startDate || ''} ~ ${reportData.period?.endDate || ''}`;
+  y = drawTextBlock(ctx, { text: periodStr, fontSize: IR_FONT.dateTime, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: `Printed: ${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`, fontSize: IR_FONT.dateTime, align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'double');
+
+  // Item Sales
+  if (items.length > 0) {
+    y = drawTextBlock(ctx, { text: 'ITEM SALES', fontSize: IR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+    y += 2;
+    const totals = reportData.itemTotals || {};
+    const uniqueStr = `${totals.uniqueItems || items.length} items, ${totals.totalQuantity || 0} qty`;
+    const netTotalAmt = totals.netAmount ?? ((totals.totalRevenue || 0) - (totals.refundAmount || 0) - (totals.voidAmount || 0));
+    y = drawLeftRightText(ctx, uniqueStr, `Net: ${fmt(netTotalAmt)}`, y, { fontSize: IR_FONT.normal, fontWeight: '500' });
+    y = drawSeparator(ctx, y, 'dashed');
+
+    // Column header (Net aligns with item lines)
+    y = drawLeftRightText(ctx, '#  Item', 'Net', y, { fontSize: IR_FONT.normal, fontWeight: 'bold' });
+    y = drawTextBlock(ctx, { text: '  Sold / Refund / Void', fontSize: IR_FONT.normal, fontWeight: 'bold', align: 'left' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+
+    const itemLineOpts = { fontSize: IR_FONT.normal, fontWeight: '600', extraBold: true };
+    const srvLineOpts = { fontSize: IR_FONT.normal, fontWeight: 'normal' };
+
+    for (const item of items) {
+      const rank = item.rank ?? '';
+      const name = String(item.name || '');
+      const soldAmt = fmt(item.soldAmount ?? item.revenue ?? 0);
+      const soldQty = item.soldQty ?? item.quantity ?? 0;
+      const refAmt = fmt(item.refundAmount || 0);
+      const refQty = item.refundQty || 0;
+      const voidAmt = fmt(item.voidAmount || 0);
+      const voidQty = item.voidQty || 0;
+      const netAmt = fmt(item.netAmount ?? ((item.soldAmount ?? item.revenue ?? 0) - (item.refundAmount || 0) - (item.voidAmount || 0)));
+      const netQty = item.netQty ?? ((item.soldQty ?? item.quantity ?? 0) - (item.refundQty || 0) - (item.voidQty || 0));
+
+      const netRight = `N:${netAmt}/${netQty}`;
+      y = drawLeftRightText(ctx, `${rank}. ${name}`, netRight, y, itemLineOpts);
+      const srvLine = `  S:${soldAmt}/${soldQty}  R:${refAmt}/${refQty}  V:${voidAmt}/${voidQty}`;
+      y = drawTextBlock(ctx, { text: srvLine, ...srvLineOpts, align: 'left' }, y);
+      y += ITEM_BLOCK_GAP;
+    }
+
+    // TOTAL row
+    y = drawSeparator(ctx, y, 'double');
+    const tSoldAmt = fmt(totals.totalRevenue || 0);
+    const tSoldQty = totals.totalQuantity || 0;
+    const tRefAmt = fmt(totals.refundAmount || 0);
+    const tRefQty = totals.refundQuantity || 0;
+    const tVoidAmt = fmt(totals.voidAmount || 0);
+    const tVoidQty = totals.voidQuantity || 0;
+    const tNetAmt = fmt(netTotalAmt);
+    const tNetQty = totals.netQuantity ?? (tSoldQty - tRefQty - tVoidQty);
+
+    y = drawLeftRightText(ctx, 'TOTAL', `N:${tNetAmt}/${tNetQty}`, y, { fontSize: IR_FONT.normal, fontWeight: '600', extraBold: true });
+    y = drawTextBlock(ctx, { text: `  S:${tSoldAmt}/${tSoldQty}  R:${tRefAmt}/${tRefQty}  V:${tVoidAmt}/${tVoidQty}`, fontSize: IR_FONT.normal, fontWeight: 'normal', align: 'left' }, y);
+  } else {
+    y = drawTextBlock(ctx, { text: 'No item data available', fontSize: IR_FONT.normal, align: 'center' }, y);
+  }
+
+  y += 8;
+  y = drawSeparator(ctx, y, 'double');
+  y = drawTextBlock(ctx, { text: `Printed: ${now.toLocaleString('en-US')}`, fontSize: IR_FONT.normal, align: 'center' }, y);
+  y += 30;
+
+  const imageData = ctx.getImageData(0, 0, WIDTH, y);
+  return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale);
+}
+
+function buildGraphicItemReport(reportData, printerOpts = {}) {
+  const buffers = [ESC_POS.INIT];
+  buffers.push(renderItemReportGraphic(reportData, printerOpts));
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.CUT);
+  return Buffer.concat(buffers);
+}
+
+/**
+ * Report Dashboard (sales-report API shape) — text sections matching on-screen summary
+ */
+function renderSalesDashboardGraphic(reportData, printerOpts = {}) {
+  ensureFontsRegistered();
+
+  const paperWidthPx = getPrinterWidth(printerOpts.paperWidth || 80);
+  const WIDTH = paperWidthPx;
+  const PADDING = PRINTER_CONFIG.padding;
+  const RIGHT_PADDING = (() => {
+    const v = Number(printerOpts.rightPaddingPx ?? printerOpts.rightPadding ?? null);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return paperWidthPx === 384 ? 30 : 10;
+  })();
+  const fmt = (n) => `$${(n || 0).toFixed(2)}`;
+
+  const SDR_BASE = 1.08;
+  const SDR_FONT = {
+    small: Math.round(PRINTER_CONFIG.fontSize.small * SDR_BASE),
+    normal: Math.round(PRINTER_CONFIG.fontSize.normal * SDR_BASE),
+    large: Math.round(PRINTER_CONFIG.fontSize.large * SDR_BASE),
+    xxlarge: Math.round(PRINTER_CONFIG.fontSize.xxlarge * SDR_BASE),
+    section: Math.round(PRINTER_CONFIG.fontSize.normal * SDR_BASE * 1.08),
+  };
+
+  const payLen = (reportData.paymentBreakdown || []).length;
+  const hourLen = (reportData.hourlySales || []).length;
+  const tblLen = (reportData.tableTurnover || []).length;
+  const delKeys = Object.keys(reportData.deliveryPlatforms || []).length;
+  const taxRows = (reportData.taxDetails || []).length;
+  const chMap = reportData.channels || {};
+  const chWithData = ['DINE-IN', 'TOGO', 'ONLINE', 'DELIVERY', 'OTHER'].filter((k) => {
+    const c = chMap[k];
+    return c && ((c.count || 0) > 0 || (c.sales || 0) > 0);
+  }).length;
+  const tbPre = reportData.tipBreakdown;
+  const tipDetailRows = tbPre
+    ? (tbPre.byPaymentMethod || []).length + (tbPre.byChannel || []).length + Math.min(25, (tbPre.byServer || []).length)
+    : 0;
+  let rawEst =
+    1400 +
+    taxRows * 44 +
+    chWithData * 110 +
+    delKeys * 42 +
+    payLen * 105 +
+    tipDetailRows * 42 +
+    hourLen * 52 +
+    tblLen * 38 +
+    3500;
+  let estH = Math.min(32767, Math.max(rawEst + 8000, 16000));
+
+  const canvas = createCanvas(WIDTH, estH);
+  const ctx = canvas.getContext('2d');
+  ctx._receiptWidth = WIDTH;
+  ctx._receiptPadding = PADDING;
+  ctx._receiptRightPadding = RIGHT_PADDING;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, WIDTH, estH);
+
+  let y = 18;
+  const now = new Date();
+  const row = (l, r, bold = false) => {
+    y = drawLeftRightText(ctx, l, r || '', y, {
+      fontSize: SDR_FONT.normal,
+      fontWeight: bold ? 'bold' : '500',
+      extraBold: bold,
+    });
+  };
+
+  {
+    const mainSize = SDR_FONT.xxlarge;
+    const subSize = Math.round(mainSize * 0.5);
+    const paddingY = 4;
+    const mainPart = 'REPORT';
+    const subPart = ' (Dashboard)';
+    ctx.font = `bold ${mainSize}px "Arial", "Malgun Gothic", sans-serif`;
+    const wMain = ctx.measureText(mainPart).width;
+    ctx.font = `600 ${subSize}px "Arial", "Malgun Gothic", sans-serif`;
+    const wSub = ctx.measureText(subPart).width;
+    const totalW = wMain + wSub;
+    const usableTitleW = WIDTH - PADDING - RIGHT_PADDING;
+    const startX = PADDING + Math.max(0, (usableTitleW - totalW) / 2);
+    const titleLineH = mainSize + paddingY * 2;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, y, WIDTH, titleLineH);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textBaseline = 'middle';
+    const textY = y + titleLineH / 2;
+    ctx.font = `bold ${mainSize}px "Arial", "Malgun Gothic", sans-serif`;
+    ctx.fillText(mainPart, startX, textY);
+    ctx.font = `600 ${subSize}px "Arial", "Malgun Gothic", sans-serif`;
+    ctx.fillText(subPart, startX + wMain, textY);
+    y += titleLineH;
+  }
+  y += 2;
+  const p = reportData.period || {};
+  y = drawTextBlock(ctx, { text: `${p.startDate || ''} ~ ${p.endDate || ''}`, fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+  y = drawTextBlock(ctx, { text: `Printed: ${now.toLocaleString('en-US')}`, fontSize: SDR_FONT.small, align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'double');
+
+  const ov = reportData.overall || {};
+  y = drawTextBlock(ctx, { text: '-- ALL ORDERS (Paid) --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  row('Orders:', `${ov.orderCount ?? 0}`, true);
+  row('Subtotal:', fmt(ov.subtotal), false);
+  const taxList = reportData.taxDetails || [];
+  if (taxList.length > 0) {
+    taxList.forEach((t) => {
+      const lab = t.rate > 0 ? `${t.name} ${t.rate}%` : t.name;
+      row(lab, fmt(t.amount), false);
+    });
+  } else if ((ov.taxTotal || 0) > 0) {
+    row('Tax Total:', fmt(ov.taxTotal), false);
+  }
+  if ((ov.serviceCharge || 0) > 0) row('Service Charge:', fmt(ov.serviceCharge), false);
+  row('Total Sales:', fmt(ov.totalSales), true);
+  if ((ov.totalTip || 0) > 0) row('Tips (total):', fmt(ov.totalTip), false);
+
+  const up = reportData.unpaid;
+  if (up && (up.orderCount || 0) > 0) {
+    y += 6;
+    y = drawTextBlock(ctx, { text: `Unpaid: ${fmt(up.totalAmount || 0)} (${up.orderCount} orders)`, fontSize: SDR_FONT.small, fontWeight: 'bold', align: 'left' }, y);
+  }
+
+  y += 8;
+  y = drawTextBlock(ctx, { text: '-- CHANNEL BREAKDOWN --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  const chOrder = ['DINE-IN', 'TOGO', 'ONLINE', 'DELIVERY', 'OTHER'];
+  const chLabel = { 'DINE-IN': 'Dine-In', TOGO: 'Togo', ONLINE: 'Online', DELIVERY: 'Delivery', OTHER: 'Other' };
+  const channels = reportData.channels || {};
+  chOrder.forEach((k) => {
+    const c = channels[k];
+    if (!c || ((c.count || 0) === 0 && (c.sales || 0) === 0)) return;
+    row(`${chLabel[k] || k}:`, `${fmt(c.sales)}  (${c.count} ord)`, true);
+    row('  Sub / Tax / Tip', `${fmt(c.subtotal)} / ${fmt(c.tax)} / ${fmt(c.tips || 0)}`, false);
+  });
+
+  const dts = reportData.dineInTableStats;
+  if (dts && (dts.tableOrderCount || 0) > 0) {
+    y += 4;
+    row('Dine-In tables / Avg:', `${dts.tableOrderCount} / ${fmt(dts.avgPerTable)}`, false);
+  }
+
+  const dplat = reportData.deliveryPlatforms || {};
+  const dplatEntries = Object.entries(dplat).filter(([, v]) => v && (v.sales > 0 || v.count > 0));
+  if (dplatEntries.length > 0) {
+    y += 6;
+    y = drawTextBlock(ctx, { text: 'Delivery by Platform', fontSize: SDR_FONT.small, fontWeight: 'bold', align: 'left' }, y);
+    dplatEntries.forEach(([name, v]) => {
+      row(`  ${name}`, `${fmt(v.sales)} (${v.count})`, false);
+    });
+  }
+
+  const pbreak = reportData.paymentBreakdown || [];
+  if (pbreak.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- PAYMENTS BY METHOD --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    let paySum = 0;
+    let tipSum = 0;
+    let cntSum = 0;
+    pbreak.forEach((p) => {
+      paySum += p.net_amount || 0;
+      tipSum += p.tips || 0;
+      cntSum += p.count || 0;
+      row(p.payment_method || '—', `${fmt(p.net_amount)} / ${p.count} txn`, true);
+      if ((p.tips || 0) > 0) row('  Tips', fmt(p.tips), false);
+    });
+    y = drawSeparator(ctx, y, 'dashed');
+    row('TOTAL', `${fmt(paySum)} / ${cntSum}`, true);
+    if (tipSum > 0) row('Tips total', fmt(tipSum), false);
+  }
+
+  const tb = reportData.tipBreakdown;
+  if (tb && (tb.total || 0) > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    row('Total Tips:', fmt(tb.total), true);
+    (tb.byPaymentMethod || []).forEach((m) => {
+      if ((m.tips || 0) > 0) row(`  ${m.method}`, fmt(m.tips), false);
+    });
+    (tb.byChannel || []).forEach((c) => {
+      if ((c.tips || 0) > 0) row(`  ${c.channel}`, fmt(c.tips), false);
+    });
+    (tb.byServer || []).slice(0, 25).forEach((s) => {
+      if ((s.tips || 0) > 0) row(`  ${s.server}`, fmt(s.tips), false);
+    });
+  }
+
+  const hourly = reportData.hourlySales || [];
+  if (hourly.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- HOURLY SALES --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    hourly.forEach((h) => {
+      const hr = h.hour != null ? String(h.hour).padStart(2, '0') : '';
+      row(`${hr}:00`, `${fmt(h.revenue)} (${h.order_count || 0} ord)`, false);
+    });
+  }
+
+  const tt = reportData.tableTurnover || [];
+  if (tt.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- TABLE TURNOVER --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    tt.slice(0, 40).forEach((t) => {
+      row(String(t.table_name || '').slice(0, 22), `${t.order_count} ord / ${Math.round(t.avg_duration_min || 0)}m`, false);
+    });
+  }
+
+  const rv = reportData.refundsVoids || [];
+  if (rv.length > 0) {
+    const refund = rv.find((r) => r.type === 'refund');
+    const voidD = rv.find((r) => r.type === 'void');
+    if ((refund?.count || 0) > 0 || (voidD?.count || 0) > 0) {
+      y += 8;
+      y = drawTextBlock(ctx, { text: '-- CANCELLATIONS & REFUNDS --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
+      y = drawSeparator(ctx, y, 'dashed');
+      if (refund && (refund.count || 0) > 0) row('Refunds', `${refund.count} (${fmt(refund.total)})`, true);
+      if (voidD && (voidD.count || 0) > 0) row('Voids', `${voidD.count} (${fmt(voidD.total)})`, true);
+    }
+  }
+
+  y += 10;
+  y = drawSeparator(ctx, y, 'double');
+  y = drawTextBlock(ctx, { text: 'End of Report', fontSize: SDR_FONT.small, align: 'center' }, y);
+  y += 28;
+
+  const imageData = ctx.getImageData(0, 0, WIDTH, y);
+  return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale);
+}
+
+function buildGraphicSalesReport(reportData, printerOpts = {}) {
+  const buffers = [ESC_POS.INIT];
+  buffers.push(renderSalesDashboardGraphic(reportData, printerOpts));
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.CUT);
+  return Buffer.concat(buffers);
+}
+
+// ============================================================
+// Shift Report — 고해상도 그래픽 출력
+// ============================================================
+function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
+  ensureFontsRegistered();
+
+  const paperWidthPx = getPrinterWidth(printerOpts.paperWidth || 80);
+  const WIDTH = paperWidthPx;
+  const PADDING = PRINTER_CONFIG.padding;
+  const RIGHT_PADDING = (() => {
+    const v = Number(printerOpts.rightPaddingPx ?? printerOpts.rightPadding ?? null);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return paperWidthPx === 384 ? 30 : 10;
+  })();
+  const formatMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
+  const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
+
+  const SR_BASE = 1.05;
+  const SR_FONT = {
+    small: Math.round(PRINTER_CONFIG.fontSize.small * SR_BASE),
+    normal: Math.round(PRINTER_CONFIG.fontSize.normal * SR_BASE),
+    large: Math.round(PRINTER_CONFIG.fontSize.large * SR_BASE),
+    xlarge: Math.round(PRINTER_CONFIG.fontSize.xlarge * SR_BASE),
+    xxlarge: Math.round(PRINTER_CONFIG.fontSize.xxlarge * SR_BASE),
+    dateTime: Math.round(PRINTER_CONFIG.fontSize.normal * SR_BASE * 1.15),
+    sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * SR_BASE * 1.10),
+  };
+
+  let estH = 200 + 350 + 250 + 200 + 200 + 350 + 500 + 150;
+  estH = Math.max(estH, 2100);
+
+  const canvas = createCanvas(WIDTH, estH);
+  const ctx = canvas.getContext('2d');
+  ctx._receiptWidth = WIDTH;
+  ctx._receiptPadding = PADDING;
+  ctx._receiptRightPadding = RIGHT_PADDING;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, WIDTH, estH);
+
+  let y = 20;
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  const row = (l, r, bold = false) => {
+    const opts = { fontSize: SR_FONT.normal, fontWeight: bold ? 'bold' : '500', extraBold: bold };
+    y = drawLeftRightText(ctx, l, r || '', y, opts);
+  };
+
+  // Header
+  y = drawTextBlock(ctx, { text: 'SHIFT REPORT', fontSize: SR_FONT.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
+  y += 4;
+  y = drawTextBlock(ctx, {
+    text: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+    fontSize: SR_FONT.dateTime, fontWeight: 'bold', align: 'center'
+  }, y);
+  y = drawTextBlock(ctx, {
+    text: `Shift #${shiftData.shift_number || 1}  (${fmtTime(shiftData.shift_start)} ~ ${fmtTime(shiftData.shift_end)})`,
+    fontSize: SR_FONT.dateTime, align: 'center'
+  }, y);
+  if (shiftData.closed_by) {
+    y = drawTextBlock(ctx, { text: `Closed by: ${shiftData.closed_by}`, fontSize: SR_FONT.small, align: 'center' }, y);
+  }
+  y = drawTextBlock(ctx, { text: `Printed: ${timeStr}`, fontSize: SR_FONT.small, align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'double');
+
+  // Sales Summary
+  y = drawTextBlock(ctx, { text: '-- SALES SUMMARY --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  row('Total Sales', formatMoney(shiftData.total_sales), true);
+  row('Order Count', `${shiftData.order_count || 0}`, true);
+  y = drawSeparator(ctx, y, 'dashed');
+
+  // Sales by Type
+  y += 4;
+  y = drawTextBlock(ctx, { text: '-- SALES BY TYPE --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  const chRow = (label, count, sales) => {
+    const opts = { fontSize: SR_FONT.normal, fontWeight: '500' };
+    y = drawLeftRightText(ctx, `${label}  ${count || 0}`, formatMoney(sales), y, opts);
+  };
+  chRow('Dine-In', shiftData.dine_in_count, shiftData.dine_in_sales);
+  chRow('Togo', shiftData.togo_count, shiftData.togo_sales);
+  chRow('Online', shiftData.online_count, shiftData.online_sales);
+  chRow('Delivery', shiftData.delivery_count, shiftData.delivery_sales);
+  y = drawSeparator(ctx, y, 'dashed');
+
+  // Payments
+  y += 4;
+  y = drawTextBlock(ctx, { text: '-- PAYMENTS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  row('Cash', formatMoney(shiftData.cash_sales));
+  row('Card', formatMoney(shiftData.card_sales));
+  if ((shiftData.other_sales || 0) > 0) {
+    row('Other', formatMoney(shiftData.other_sales));
+  }
+  y = drawSeparator(ctx, y, 'dashed');
+
+  // Tips
+  y += 4;
+  y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  if (shiftData.closed_by && shiftData.server_tip_total != null) {
+    row(`${shiftData.closed_by} Tips`, formatMoney(shiftData.server_tip_total), true);
+  } else {
+    row('Total Tips', formatMoney(shiftData.tip_total), true);
+  }
+  y = drawSeparator(ctx, y, 'dashed');
+
+  // Cash Drawer
+  y += 4;
+  y = drawTextBlock(ctx, { text: '-- CASH DRAWER --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+  row('Opening Cash', formatMoney(shiftData.opening_cash), true);
+  row('Cash Sales', formatMoney(shiftData.cash_sales), true);
+  row('Expected Cash', formatMoney(shiftData.expected_cash), true);
+  y = drawSeparator(ctx, y, 'dashed');
+
+  // Cash Count Breakdown
+  let cashBreakdown = {};
+  try {
+    if (shiftData.cash_details) {
+      cashBreakdown = typeof shiftData.cash_details === 'string' ? JSON.parse(shiftData.cash_details) : shiftData.cash_details;
+    }
+  } catch (e) { /* ignore */ }
+
+  const denominations = [
+    { key: 'cent1', label: '1 Cent', value: 0.01 }, { key: 'cent5', label: '5 Cents', value: 0.05 },
+    { key: 'cent10', label: '10 Cents', value: 0.10 }, { key: 'cent25', label: '25 Cents', value: 0.25 },
+    { key: 'dollar1', label: '$1 Bills', value: 1 }, { key: 'dollar2', label: '$2 Bills', value: 2 },
+    { key: 'dollar5', label: '$5 Bills', value: 5 }, { key: 'dollar10', label: '$10 Bills', value: 10 },
+    { key: 'dollar20', label: '$20 Bills', value: 20 }, { key: 'dollar50', label: '$50 Bills', value: 50 },
+    { key: 'dollar100', label: '$100 Bills', value: 100 },
+  ];
+  const hasBreakdown = denominations.some(d => (cashBreakdown[d.key] || 0) > 0);
+  if (hasBreakdown) {
+    y = drawTextBlock(ctx, { text: 'CASH COUNT BREAKDOWN', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+    denominations.forEach(d => {
+      const count = cashBreakdown[d.key] || 0;
+      if (count > 0) {
+        y = drawLeftRightText(ctx, `${d.label} x ${count}`, `$${(count * d.value).toFixed(2)}`, y, { fontWeight: '600' });
+      }
+    });
+    y = drawSeparator(ctx, y, 'dashed');
+  }
+
+  row('Counted Cash', formatMoney(shiftData.counted_cash), true);
+  const diff = (shiftData.counted_cash || 0) - (shiftData.expected_cash || 0);
+  const diffStr = diff >= 0 ? `+${formatMoney(diff)}` : formatMoney(diff);
+  y = drawLeftRightText(ctx, 'OVER/SHORT', diffStr, y, { fontSize: SR_FONT.normal, fontWeight: 'bold', extraBold: true });
+  y = drawSeparator(ctx, y, 'double');
+  y += 30;
+
+  const imageData = ctx.getImageData(0, 0, WIDTH, y);
+  return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale ?? shiftData?.graphicScale);
+}
+
+function buildGraphicShiftReport(shiftData = {}, printerOpts = {}) {
+  const buffers = [ESC_POS.INIT];
+  buffers.push(renderShiftReportGraphic(shiftData, printerOpts));
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.LINE_FEED);
+  buffers.push(ESC_POS.CUT);
+  return Buffer.concat(buffers);
+}
+
+// ============================================================
+// Day Opening Report — 고해상도 그래픽 출력
+// ============================================================
+function renderOpeningReportGraphic(openingCash = 0, cashBreakdown = {}, printerOpts = {}) {
+  ensureFontsRegistered();
+
+  const paperWidthPx = getPrinterWidth(printerOpts.paperWidth || 80);
+  const WIDTH = paperWidthPx;
+  const PADDING = PRINTER_CONFIG.padding;
+  const RIGHT_PADDING = (() => {
+    const v = Number(printerOpts.rightPaddingPx ?? printerOpts.rightPadding ?? null);
+    if (Number.isFinite(v) && v >= 0) return v;
+    return paperWidthPx === 384 ? 30 : 10;
+  })();
+  const formatMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
+
+  const OR_BASE = 1.05;
+  const OR_FONT = {
+    small: Math.round(PRINTER_CONFIG.fontSize.small * OR_BASE),
+    normal: Math.round(PRINTER_CONFIG.fontSize.normal * OR_BASE),
+    large: Math.round(PRINTER_CONFIG.fontSize.large * OR_BASE),
+    xxlarge: Math.round(PRINTER_CONFIG.fontSize.xxlarge * OR_BASE),
+    dateTime: Math.round(PRINTER_CONFIG.fontSize.normal * OR_BASE * 1.15),
+    sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * OR_BASE * 1.10),
+  };
+
+  let estH = 200 + 500 + 150;
+  estH = Math.max(estH, 1000);
+
+  const canvas = createCanvas(WIDTH, estH);
+  const ctx = canvas.getContext('2d');
+  ctx._receiptWidth = WIDTH;
+  ctx._receiptPadding = PADDING;
+  ctx._receiptRightPadding = RIGHT_PADDING;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, WIDTH, estH);
+
+  let y = 20;
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  // Header
+  y = drawTextBlock(ctx, { text: '*** DAY OPENING ***', fontSize: OR_FONT.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
+  y += 4;
+  y = drawTextBlock(ctx, {
+    text: now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+    fontSize: OR_FONT.dateTime, fontWeight: 'bold', align: 'center'
+  }, y);
+  y = drawTextBlock(ctx, { text: `Time: ${timeStr}`, fontSize: OR_FONT.dateTime, align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'double');
+
+  // Starting Cash Count
+  y = drawTextBlock(ctx, { text: 'STARTING CASH COUNT', fontSize: OR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
+  y = drawSeparator(ctx, y, 'dashed');
+
+  const denominations = [
+    { key: 'cent1', label: '1 Cent', value: 0.01 }, { key: 'cent5', label: '5 Cents', value: 0.05 },
+    { key: 'cent10', label: '10 Cents', value: 0.10 }, { key: 'cent25', label: '25 Cents', value: 0.25 },
+    { key: 'dollar1', label: '$1 Bills', value: 1 }, { key: 'dollar2', label: '$2 Bills', value: 2 },
+    { key: 'dollar5', label: '$5 Bills', value: 5 }, { key: 'dollar10', label: '$10 Bills', value: 10 },
+    { key: 'dollar20', label: '$20 Bills', value: 20 }, { key: 'dollar50', label: '$50 Bills', value: 50 },
+    { key: 'dollar100', label: '$100 Bills', value: 100 },
+  ];
+  denominations.forEach(d => {
+    const count = cashBreakdown[d.key] || 0;
+    if (count > 0) {
+      y = drawLeftRightText(ctx, `${d.label} x ${count}`, formatMoney(count * d.value), y, { fontSize: OR_FONT.normal, fontWeight: '600' });
+    }
+  });
+
+  y = drawSeparator(ctx, y, 'dashed');
+  y = drawLeftRightText(ctx, 'TOTAL STARTING CASH', formatMoney(openingCash), y, { fontSize: Math.round(OR_FONT.normal * 1.15), fontWeight: 'bold', extraBold: true });
+  y = drawSeparator(ctx, y, 'double');
+  y += 30;
+
+  const imageData = ctx.getImageData(0, 0, WIDTH, y);
+  return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale);
+}
+
+function buildGraphicOpeningReport(openingCash = 0, cashBreakdown = {}, printerOpts = {}) {
+  const buffers = [ESC_POS.INIT];
+  buffers.push(renderOpeningReportGraphic(openingCash, cashBreakdown, printerOpts));
   buffers.push(ESC_POS.LINE_FEED);
   buffers.push(ESC_POS.LINE_FEED);
   buffers.push(ESC_POS.LINE_FEED);
@@ -2833,9 +3552,17 @@ module.exports = {
   renderBillGraphic,
   renderVoidTicketGraphic,
   renderZReportGraphic,
+  renderItemReportGraphic,
+  renderSalesDashboardGraphic,
+  renderShiftReportGraphic,
+  renderOpeningReportGraphic,
   buildGraphicKitchenTicket,
   buildGraphicReceipt,
   buildGraphicBill,
   buildGraphicVoidTicket,
-  buildGraphicZReport
+  buildGraphicZReport,
+  buildGraphicItemReport,
+  buildGraphicSalesReport,
+  buildGraphicShiftReport,
+  buildGraphicOpeningReport
 };

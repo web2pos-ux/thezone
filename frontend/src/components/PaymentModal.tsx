@@ -377,6 +377,12 @@ useEffect(() => {
       setLastChange(null);
       setProceedArmed(false);
       setOptimisticPayments([]);
+      // 게스트 전환 시 고정된 금액 ref를 리셋하여 새 게스트 금액으로 갱신
+      initialSubtotalRef.current = null;
+      initialTaxTotalRef.current = null;
+      initialTaxLinesRef.current = null;
+      initialGrandRef.current = null;
+      wasOpenRef.current = false;
     }
   }, [effectiveGuestMode]);
 
@@ -684,8 +690,8 @@ useEffect(() => {
         const isCashLikeMethod = (effectiveMethod === 'CASH') || isCardPayment;
         const isCashMethod = effectiveMethod === 'CASH';
 
-        // Cash: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip/Change Due 입력 기회 제공)
-        if (isCashMethod && rawAmt >= scopeDueNow && scopeDueNow > 0) {
+        // Cash/Card: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip 입력 기회 제공 — OK 누르기 전까지 Payment Complete로 가지 않음)
+        if (isCashLikeMethod && rawAmt >= scopeDueNow && scopeDueNow > 0) {
           const cashChange = Math.max(0, Number((rawAmt - scopeDueNow).toFixed(2)));
           setLastChange(cashChange > 0 ? cashChange : null);
           committedChangeRef.current = cashChange;
@@ -1518,8 +1524,8 @@ const addQuick = async (q: number) => {
         const isCashLikeMethodDraft = (String(effectiveMethod || '').toUpperCase() === 'CASH') || isCardPaymentDraft;
         const isCashMethodDraft = String(effectiveMethod || '').toUpperCase() === 'CASH';
 
-        // Cash: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip/Change Due 입력 기회 제공)
-        if (isCashMethodDraft && currentAmt >= scopeDueNow && scopeDueNow > 0) {
+        // Cash/Card: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip 입력 기회 제공 — OK 누르기 전까지 Payment Complete로 가지 않음)
+        if (isCashLikeMethodDraft && currentAmt >= scopeDueNow && scopeDueNow > 0) {
           const cashChange = Math.max(0, Number((currentAmt - scopeDueNow).toFixed(2)));
           setLastChange(cashChange > 0 ? cashChange : null);
           committedChangeRef.current = cashChange;

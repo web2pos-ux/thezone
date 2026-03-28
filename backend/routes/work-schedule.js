@@ -1031,7 +1031,6 @@ router.post('/clock-out', (req, res) => {
 // GET currently clocked in employees
 router.get('/clocked-in', (req, res) => {
   const db = getDb();
-  const today = new Date().toISOString().split('T')[0];
   
   db.all(
     `SELECT 
@@ -1043,10 +1042,9 @@ router.get('/clocked-in', (req, res) => {
        e.department
      FROM clock_records cr
      JOIN employees e ON cr.employee_id = e.id
-     WHERE date(cr.clock_in_time) = ? 
-     AND cr.clock_out_time IS NULL
+     WHERE cr.clock_out_time IS NULL
      ORDER BY cr.clock_in_time`,
-    [today],
+    [],
     (err, rows) => {
       // db.close(); // Shared DB 연결은 닫으면 안 됨
       if (err) {

@@ -415,8 +415,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			
 			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
 			
-			if (type) { clauses.push('UPPER(o.order_type) = ?'); params.push(String(type).toUpperCase()); }
-			if (status) { clauses.push('o.status = ?'); params.push(String(status).toUpperCase()); }
+			if (type) {
+				const types = String(type).split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+				if (types.length === 1) {
+					clauses.push('UPPER(o.order_type) = ?');
+					params.push(types[0]);
+				} else if (types.length > 1) {
+					clauses.push(`UPPER(o.order_type) IN (${types.map(() => '?').join(',')})`);
+					params.push(...types);
+				}
+			}
+			if (status) {
+				const statuses = String(status).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+				if (statuses.length === 1) {
+					clauses.push('o.status = ?');
+					params.push(statuses[0]);
+				} else if (statuses.length > 1) {
+					clauses.push(`o.status IN (${statuses.map(() => '?').join(',')})`);
+					params.push(...statuses);
+				}
+			}
 			// 날짜 필터 추가 (created_at이 해당 날짜에 해당하는 주문만 조회)
 			// ISO 형식 (2025-12-10T14:30:00.000Z) 지원을 위해 LIKE 사용
 			if (date) {
@@ -614,7 +632,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source, togo_label, tax_group_id, printer_group_id FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
@@ -1190,12 +1208,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource } = req.body || {};
+			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid } = req.body || {};
 			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
+			const isPrepaidOnline = !!isPrepaid;
 			const orderTypeToSave = isDelivery ? 'DELIVERY' : (orderType ? String(orderType).toUpperCase() : null);
-			const statusToSave = isDelivery ? 'PAID' : 'PENDING';
-			const closedAtToSave = isDelivery ? createdAt : null;
+			const statusToSave = (isDelivery || isPrepaidOnline) ? 'PAID' : 'PENDING';
+			const closedAtToSave = (isDelivery || isPrepaidOnline) ? createdAt : null;
 			
 			// Ensure every line has orderLineId, then merge identical (memo-aware) lines.
 			const itemsWithLineId = (Array.isArray(items) ? items : []).map((it, idx) => ({
@@ -1314,8 +1333,30 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 						);
 					}
 				} catch (payErr) {
-					// Non-blocking: order is still saved; payment can be backfilled on next start.
 					console.warn('[Orders] Delivery payment auto-create failed:', payErr?.message || payErr);
+				}
+			}
+
+			// Online prepaid orders: auto-create an APPROVED OTHER_CARD payment record.
+			if (isPrepaidOnline && !isDelivery) {
+				try {
+					const oRow = await dbGet(`SELECT order_number, total, created_at FROM orders WHERE id = ?`, [orderId]);
+					await dbRun(
+						`INSERT INTO payments(order_id, payment_method, amount, tip, ref, status, guest_number, created_at)
+						 VALUES(?,?,?,?,?,?,?,?)`,
+						[
+							orderId,
+							'OTHER_CARD',
+							Number(oRow?.total || total || 0),
+							0,
+							oRow?.order_number || null,
+							'APPROVED',
+							null,
+							oRow?.created_at || createdAt,
+						],
+					);
+				} catch (payErr) {
+					console.warn('[Orders] Online prepaid payment auto-create failed:', payErr?.message || payErr);
 				}
 			}
 

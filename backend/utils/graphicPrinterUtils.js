@@ -752,12 +752,23 @@ function renderKitchenTicketGraphic(orderData) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
     rightBoxChannelPart = 'ONLINE';
-    if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+    const onlineModalNum = String(
+      orderInfo.onlineOrderNumber ?? orderData.onlineOrderNumber ?? header.onlineOrderNumber ?? ''
+    )
+      .trim()
+      .replace(/"/g, '');
+    let quoteBody = '';
+    if (onlineModalNum) {
+      quoteBody = onlineModalNum;
+    } else if (phoneDigits.length >= 4) {
+      quoteBody = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      quoteBody = phoneDigits.slice(0, Math.min(4, phoneDigits.length));
     } else if (cleanPosSeq) {
-      rightBoxInfoPart = `#${cleanPosSeq}`;
+      quoteBody = String(cleanPosSeq);
+    }
+    if (quoteBody) {
+      rightBoxInfoPart = `"${quoteBody.toUpperCase()}"`;
     }
     rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isDeliveryLike) {
@@ -788,7 +799,8 @@ function renderKitchenTicketGraphic(orderData) {
   const headerStartY = y;
   const headerFontSize = 55;
   const orderNumberFontSize = Math.max(8, Math.round(headerFontSize * 0.772));
-  const channelFontSize = Math.max(8, Math.round(headerFontSize * 1.105));
+  // Channel + info (right box): 5% + 5% smaller than original 1.105× header base
+  const channelFontSize = Math.max(8, Math.round(headerFontSize * 1.105 * 0.95 * 0.95));
   const headerPaddingY = 4;
   const headerLineHeight = channelFontSize + Math.max(1, Math.round(headerPaddingY)) * 2;
 
@@ -1129,7 +1141,7 @@ function renderKitchenTicketGraphic(orderData) {
     });
 
     modOrder.forEach(name => {
-      const count = modCounts.get(name) || 0;
+      const count = (modCounts.get(name) || 0) * quantity;
       if (!count) return;
       y = drawTextBlock(ctx, {
         text: `  >> ${count}x ${name}`,
@@ -2758,7 +2770,7 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   const tipsTotal = Number(zReportData?.tip_total || 0);
   const grandTotal = Number((salesSubtotal + tipsTotal).toFixed(2));
 
-  const QTY_OFFSET_PX = Math.round(15 * 8);
+  const QTY_OFFSET_PX = Math.round(17 * 8);
   const row = (l, c, r, bold = false) => {
     const opts = { fontSize: ZR_FONT.normal, fontWeight: bold ? 'bold' : '500', extraBold: bold };
     if (c) {
@@ -3374,7 +3386,11 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
   y += 4;
   y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  row('Total Tips', formatMoney(shiftData.tip_total), true);
+  if (shiftData.closed_by && shiftData.server_tip_total != null) {
+    row(`${shiftData.closed_by} Tips`, formatMoney(shiftData.server_tip_total), true);
+  } else {
+    row('Total Tips', formatMoney(shiftData.tip_total), true);
+  }
   y = drawSeparator(ctx, y, 'dashed');
 
   // Cash Drawer

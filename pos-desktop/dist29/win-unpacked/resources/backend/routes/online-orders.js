@@ -772,27 +772,27 @@ router.post('/order/:orderId/accept', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const { prepTime, pickupTime } = req.body;
+    const { prepTime, pickupTime, readyTime, restaurantId } = req.body;
     
-    console.log(`[ACCEPT] orderId: ${orderId}, prepTime: ${prepTime}, pickupTime: ${pickupTime}`);
+    console.log(`[ACCEPT] orderId: ${orderId}, prepTime: ${prepTime}, pickupTime: ${pickupTime}, readyTime: ${readyTime}`);
 
-    // Firebase 상태 업데이트 (confirmed + pickupTime)
-    const result = await firebaseService.acceptOrder(orderId, prepTime, pickupTime);
+    const result = await firebaseService.acceptOrder(orderId, prepTime, pickupTime, restaurantId || null, readyTime || null);
 
     res.json({
       success: true,
-      message: '주문이 수락되었습니다',
+      message: 'Order accepted',
       prepTime,
       pickupTime,
+      readyTime,
       ...result
     });
   } catch (error) {
-    console.error('주문 수락 실패:', error);
+    console.error('Order accept failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 주문 거절 (pending → cancelled)
+// 주문 거절 (pending → cancelled + reason)
 router.post('/order/:orderId/reject', async (req, res) => {
   try {
     if (!ensureFirebaseInit()) {
@@ -800,15 +800,16 @@ router.post('/order/:orderId/reject', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const result = await firebaseService.updateOrderStatus(orderId, 'cancelled');
+    const { reason, restaurantId } = req.body;
+    const result = await firebaseService.rejectOrder(orderId, reason || '', restaurantId || null);
 
     res.json({
       success: true,
-      message: '주문이 거절되었습니다',
+      message: 'Order rejected',
       ...result
     });
   } catch (error) {
-    console.error('주문 거절 실패:', error);
+    console.error('Order reject failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -147,12 +147,13 @@ async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
   return { success: true, orderId, status: newStatus };
 }
 
-// 주문 수락 (pending → confirmed + prepTime/pickupTime 설정)
-async function acceptOrder(orderId, prepTime, pickupTime, restaurantId = null) {
+// 주문 수락 (pending → confirmed + prepTime/pickupTime/readyTime 설정)
+async function acceptOrder(orderId, prepTime, pickupTime, restaurantId = null, readyTime = null) {
   const firestore = getFirestore();
   
   const updateData = {
     status: 'confirmed',
+    confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
   
@@ -164,17 +165,41 @@ async function acceptOrder(orderId, prepTime, pickupTime, restaurantId = null) {
     updateData.pickupTime = pickupTime;
   }
 
-  // 서브컬렉션 우선 시도
+  if (readyTime) {
+    updateData.readyTime = readyTime;
+  }
+
   if (restaurantId) {
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
     await restaurantRef.collection('orders').doc(orderId).update(updateData);
   } else {
-    // fallback: 글로벌 컬렉션
     await firestore.collection('orders').doc(orderId).update(updateData);
   }
 
-  console.log(`✅ 주문 수락: ${orderId} - Prep Time: ${prepTime}분, Pickup Time: ${pickupTime}`);
-  return { success: true, orderId, status: 'confirmed', prepTime, pickupTime };
+  console.log(`✅ 주문 수락: ${orderId} - Prep Time: ${prepTime}분, Pickup Time: ${pickupTime}, Ready Time: ${readyTime}`);
+  return { success: true, orderId, status: 'confirmed', prepTime, pickupTime, readyTime };
+}
+
+// 주문 거절 (pending → cancelled + rejectionReason)
+async function rejectOrder(orderId, reason = '', restaurantId = null) {
+  const firestore = getFirestore();
+  
+  const updateData = {
+    status: 'cancelled',
+    rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+    rejectionReason: reason || 'Rejected by restaurant',
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+
+  if (restaurantId) {
+    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    await restaurantRef.collection('orders').doc(orderId).update(updateData);
+  } else {
+    await firestore.collection('orders').doc(orderId).update(updateData);
+  }
+
+  console.log(`❌ 주문 거절: ${orderId} - Reason: ${reason}`);
+  return { success: true, orderId, status: 'cancelled', reason };
 }
 
 // 주문 목록 조회 (특정 레스토랑) - 전체
@@ -1304,6 +1329,7 @@ module.exports = {
   updateOrderStatus,
   updateOrderAsPaid,
   acceptOrder,
+  rejectOrder,
   getOnlineOrders,
   getOrderById,
   getRestaurantById,

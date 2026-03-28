@@ -1,6 +1,6 @@
 ---
 description: CRITICAL - Payment Modal/Split Payment/Payments API is HARD-LOCKED. Absolutely no edits without explicit user approval.
-globs: frontend/src/components/PaymentModal.tsx,frontend/src/components/PaymentCompleteModal.tsx,frontend/src/components/SplitBillModal.tsx,frontend/src/pages/order/modules/PaymentSplitModals.tsx,frontend/src/pages/DebugPaymentPage.tsx,backend/routes/payments.js,pos-desktop/backend/routes/payments.js
+globs: frontend/src/components/PaymentModal.tsx,frontend/src/components/PaymentCompleteModal.tsx,frontend/src/components/SplitBillModal.tsx,frontend/src/pages/order/modules/PaymentSplitModals.tsx,backend/routes/payments.js,pos-desktop/backend/routes/payments.js
 alwaysApply: true
 ---
 

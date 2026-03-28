@@ -253,19 +253,68 @@ function buildKitchenTicketText(orderData) {
   const isAdditionalOrder = orderData.isAdditionalOrder || false;
   
   // === 헤더 영역 (반전 + 큰 글씨) ===
+  // 두 박스 레이아웃: [#주문번호 | 채널+정보]
   output += CENTER;
   output += REVERSE_ON + BOLD_ON + DOUBLE_SIZE;
   
-  // 채널 + 주문번호 (예: "TOGO 1027", "EAT IN 1027" 또는 "Table 5")
   let headerText = '';
-  if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP' || channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
-    const displayChannel = (channel === 'FORHERE' || channel === 'FOR HERE') ? 'EAT IN' : channel;
-    headerText = `${displayChannel} ${String(orderNumber).replace('#', '')}`;
+  const cleanNum = String(orderNumber).replace('#', '');
+  if (channel === 'PICKUP') {
+    const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
+    if (phoneDigits.length >= 4) {
+      headerText = cleanNum ? `#${cleanNum} PICKUP "${phoneDigits.slice(-4)}"` : `PICKUP "${phoneDigits.slice(-4)}"`;
+    } else if (phoneDigits.length > 0) {
+      headerText = cleanNum ? `#${cleanNum} PICKUP "${phoneDigits}"` : `PICKUP "${phoneDigits}"`;
+    } else {
+      headerText = cleanNum ? `#${cleanNum} PICKUP` : 'PICKUP';
+    }
+  } else if (channel === 'TOGO' || channel === 'TAKEOUT') {
+    const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
+    if (phoneDigits.length >= 4) {
+      headerText = cleanNum ? `#${cleanNum} TOGO "${phoneDigits.slice(-4)}"` : `TOGO "${phoneDigits.slice(-4)}"`;
+    } else if (phoneDigits.length > 0) {
+      headerText = cleanNum ? `#${cleanNum} TOGO "${phoneDigits}"` : `TOGO "${phoneDigits}"`;
+    } else {
+      headerText = cleanNum ? `#${cleanNum} TOGO` : 'TOGO';
+    }
+  } else if (channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE') {
+    headerText = cleanNum ? `#${cleanNum} EAT IN` : 'EAT IN';
+  } else if (channel === 'ONLINE' || channel === 'THEZONE') {
+    const onlineOrderTrim = String(orderInfo.onlineOrderNumber || orderData.onlineOrderNumber || header.onlineOrderNumber || '').trim().replace(/"/g, '');
+    const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
+    let quoteBody = '';
+    if (onlineOrderTrim) {
+      quoteBody = onlineOrderTrim;
+    } else if (phoneDigits.length >= 4) {
+      quoteBody = phoneDigits.slice(-4);
+    } else if (phoneDigits.length > 0) {
+      quoteBody = phoneDigits.slice(0, Math.min(4, phoneDigits.length));
+    } else if (cleanNum) {
+      quoteBody = String(cleanNum);
+    }
+    if (quoteBody) {
+      headerText = cleanNum ? `#${cleanNum} ONLINE "${quoteBody}"` : `ONLINE "${quoteBody}"`;
+    } else {
+      headerText = cleanNum ? `#${cleanNum} ONLINE` : 'ONLINE';
+    }
+  } else if (channel === 'DELIVERY' || orderInfo.deliveryCompany || orderData.deliveryCompany) {
+    const deliveryCompany = orderInfo.deliveryCompany || orderInfo.deliveryChannel || orderData.deliveryCompany || orderData.deliveryChannel || '';
+    const deliveryOrderNumber = orderInfo.deliveryOrderNumber || orderInfo.externalOrderNumber || orderData.deliveryOrderNumber || orderData.externalOrderNumber || '';
+    const platformMap = { UBEREATS: 'UBER', DOORDASH: 'DDASH', SKIPTHEDISHES: 'SKIP', FANTUAN: 'FANTUAN' };
+    const normKey = String(deliveryCompany).toUpperCase().replace(/\s+/g, '');
+    const platform = platformMap[normKey] || deliveryCompany || 'DELIVERY';
+    const ext = String(deliveryOrderNumber || '').replace(/^#\s*/, '').replace(/[^a-zA-Z0-9-]/g, '').toUpperCase();
+    const channelPart = ext ? `${platform} "${ext}"` : platform;
+    headerText = cleanNum ? `#${cleanNum} ${channelPart}` : channelPart;
   } else if (tableName) {
     const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
-    headerText = isDineInLike ? `DINE-IN / ${tableName}` : tableName;
+    if (cleanNum) {
+      headerText = isDineInLike ? `#${cleanNum} ${tableName}` : `#${cleanNum} ${tableName}`;
+    } else {
+      headerText = isDineInLike ? `DINE-IN / ${tableName}` : tableName;
+    }
   } else {
-    headerText = `#${String(orderNumber).replace('#', '')}`;
+    headerText = cleanNum ? `#${cleanNum}` : '';
   }
   output += ' ' + headerText + ' ' + LF;
   
@@ -350,12 +399,19 @@ function buildKitchenTicketText(orderData) {
   
   output += NORMAL_SIZE + BOLD_OFF;
   
-  // === 시간 표시 ===
+  // === 시간 표시 (서버이름 + 시간) ===
   output += LF;
-  output += CENTER;
+  const serverName = orderInfo.server || orderInfo.serverName || orderData.server || orderData.serverName || '';
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-  output += `---------- ${timeStr} ----------` + LF;
+  if (serverName) {
+    output += LEFT + BOLD_ON + serverName + BOLD_OFF;
+    output += '                    '.slice(0, Math.max(1, 20 - serverName.length));
+    output += timeStr + LF;
+  } else {
+    output += CENTER;
+    output += `---------- ${timeStr} ----------` + LF;
+  }
   output += LEFT;
   
   // === 여백 및 컷 ===
@@ -562,7 +618,7 @@ function buildReceiptText(receiptData) {
   output += thinDivider + LF;
   
   // 아이템 목록
-  output += DOUBLE_HEIGHT;
+  output += DOUBLE_HEIGHT + BOLD_ON;
   if (receiptData.guestSections && receiptData.guestSections.length > 0) {
     receiptData.guestSections.forEach((section, idx) => {
       if (receiptData.guestSections.length > 1) {
@@ -570,20 +626,21 @@ function buildReceiptText(receiptData) {
       }
       if (section.items && section.items.length > 0) {
         section.items.forEach(item => {
-          output += formatReceiptItem(item, width, LF, NORMAL_SIZE, DOUBLE_HEIGHT);
+          output += formatReceiptItem(item, width, LF, NORMAL_SIZE + BOLD_ON, DOUBLE_HEIGHT + BOLD_ON);
         });
       }
     });
   } else if (receiptData.items && receiptData.items.length > 0) {
     receiptData.items.forEach(item => {
-      output += formatReceiptItem(item, width, LF, NORMAL_SIZE, DOUBLE_HEIGHT);
+      output += formatReceiptItem(item, width, LF, NORMAL_SIZE + BOLD_ON, DOUBLE_HEIGHT + BOLD_ON);
     });
   }
-  output += NORMAL_SIZE;
+  output += NORMAL_SIZE + BOLD_OFF;
   
   output += thinDivider + LF;
   
   // 소계
+  output += BOLD_ON;
   if (receiptData.subtotal != null) {
     output += rightAlignText('Subtotal:', `$${Number(receiptData.subtotal).toFixed(2)}`, width) + LF;
   }
@@ -604,6 +661,7 @@ function buildReceiptText(receiptData) {
       output += rightAlignText(`${tax.name}:`, `$${Number(tax.amount).toFixed(2)}`, width) + LF;
     });
   }
+  output += BOLD_OFF;
   
   output += divider + LF;
   
@@ -620,18 +678,26 @@ function buildReceiptText(receiptData) {
   
   // 결제 정보 (굵게)
   if (receiptData.payments && receiptData.payments.length > 0) {
-    output += BOLD_ON;
-    output += 'Payment:' + LF;
-    output += BOLD_OFF;
+    const paidTotal = receiptData.payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    output += REVERSE_ON + BOLD_ON + DOUBLE_HEIGHT;
+    output += rightAlignText(' PAID', `$${Number(paidTotal).toFixed(2)} `, width) + LF;
+    output += REVERSE_OFF + NORMAL_SIZE + BOLD_OFF;
     output += DOUBLE_HEIGHT;
     receiptData.payments.forEach(p => {
       output += rightAlignText(`  ${p.method}:`, `$${Number(p.amount).toFixed(2)}`, width) + LF;
     });
     output += NORMAL_SIZE;
     
+    // Cash Tendered
+    if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) {
+      output += thinDivider + LF;
+      output += BOLD_ON + DOUBLE_HEIGHT;
+      output += rightAlignText(' CASH TENDERED:', `$${Number(receiptData.cashTendered).toFixed(2)} `, width) + LF;
+      output += NORMAL_SIZE + BOLD_OFF;
+    }
     // 거스름돈 (Change) - 반전 강조
     if (receiptData.change && Number(receiptData.change) > 0) {
-      output += thinDivider + LF;
+      if (!receiptData.cashTendered || Number(receiptData.cashTendered) <= 0) output += thinDivider + LF;
       output += REVERSE_ON + BOLD_ON + DOUBLE_HEIGHT;
       output += rightAlignText(' CHANGE:', `$${Number(receiptData.change).toFixed(2)} `, width) + LF;
       output += REVERSE_OFF + NORMAL_SIZE + BOLD_OFF;
@@ -1062,8 +1128,11 @@ function getElementValue(key, data) {
     case 'tableNumber':
       return table;
     case 'posOrderNumber':
-      // 테이블 주문은 주문번호 대신 테이블을 우선 표시(레이아웃 merged header에서 DINE-IN/주문번호 방지)
-      if (isDineInLike && table) return table;
+      if (isDineInLike && table) {
+        const num = h.orderNumber || oi.orderNumber || oi.orderId || '';
+        const clean = String(num).replace('#', '').trim();
+        return clean ? `#${clean} ${table}` : table;
+      }
       return h.orderNumber || oi.orderNumber || oi.orderId || '';
     case 'externalOrderNumber':
       return oi.deliveryOrderNumber || oi.externalOrderNumber || '';
@@ -1532,9 +1601,9 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   }
   
   // === Items 영역 ===
-  const itemsStyle = layout?.items || { fontSize: 12, visible: true };
-  const modifiersStyle = layout?.modifiers || { fontSize: 10, prefix: '>>', visible: true };
-  const itemNoteStyle = layout?.itemNote || { fontSize: 10, prefix: '->', visible: true };
+  const itemsStyle = { fontWeight: 'bold', ...(layout?.items || { fontSize: 12, visible: true }) };
+  const modifiersStyle = { fontWeight: 'bold', ...(layout?.modifiers || { fontSize: 10, prefix: '>>', visible: true }) };
+  const itemNoteStyle = { fontWeight: 'bold', ...(layout?.itemNote || { fontSize: 10, prefix: '->', visible: true }) };
   const itemDiscountStyle = layout?.itemDiscount || { fontSize: 10, visible: true };
   
   if (receiptData.guestSections && receiptData.guestSections.length > 0) {
@@ -1561,7 +1630,7 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   }
   
   // === Totals 영역 ===
-  const subtotalStyle = layout?.subtotal || { fontSize: 12, visible: true };
+  const subtotalStyle = { fontWeight: 'bold', ...(layout?.subtotal || { fontSize: 12, visible: true }) };
   const discountStyle = layout?.discount || { fontSize: 12, visible: true };
   const totalStyle = layout?.total || { fontSize: 16, fontWeight: 'bold', visible: true };
   
@@ -1586,11 +1655,13 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
   
   // Taxes
   if (receiptData.taxLines && receiptData.taxLines.length > 0) {
+    output += getStyleCommand({ fontWeight: 'bold' });
     receiptData.taxLines.forEach(tax => {
       const taxName = tax.name || 'Tax';
       const rateStr = tax.rate ? ` (${tax.rate}%)` : '';
       output += rightAlignText(`${taxName}${rateStr}:`, `$${Number(tax.amount).toFixed(2)}`, width) + LF;
     });
+    output += getStyleResetCommand();
   }
   
   // Separator 4 (before Total)
@@ -1618,6 +1689,12 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
       output += getStyleResetCommand();
     }
     
+    // Cash Tendered
+    if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) {
+      output += getStyleCommand({ fontSize: 12, fontWeight: 'bold' });
+      output += rightAlignText('Cash Tendered:', `$${Number(receiptData.cashTendered).toFixed(2)}`, width) + LF;
+      output += getStyleResetCommand();
+    }
     // Change
     const changeStyle = layout?.changeAmount || { fontSize: 12, visible: true, inverse: false };
     if (changeStyle.visible !== false && receiptData.change && Number(receiptData.change) > 0) {
