@@ -30,6 +30,7 @@ import OrderDetailModal, { OrderData, OrderChannelType } from '../components/Ord
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
 import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
+import { PickupChannelGlassButton } from '../components/PickupChannelGlassButton';
 // SoldOutModal removed - Sold Out is handled in OrderPage
 
 interface TableElement {
@@ -84,6 +85,8 @@ interface OnlineQueueCard {
   total?: number; // ì´ì•¡
   sequenceNumber?: number; // ìˆœì„œë²ˆí˜¸
   status?: string; // ì£¼ë¬¸ ìƒíƒœ (pending, confirmed, preparing, ready, completed, cancelled)
+  /** Firebase / manual online order id shown in Togo panel (priority over phone / POS) */
+  onlineOrderNumber?: string;
 }
 
 const VIRTUAL_TABLE_POOL: Record<VirtualOrderChannel, { prefix: string; limit: number }> = {
@@ -1439,6 +1442,55 @@ const SalesPage: React.FC = () => {
     return Number.isNaN(date.getTime()) ? fallback : date.getTime();
   }, []);
 
+  const abbreviateDeliveryChannel = (company?: string | null): string => {
+    if (!company) return 'DLV';
+    const lower = company.trim().toLowerCase();
+    if (lower.includes('ubereats') || lower === 'uber' || lower.includes('uber eats')) return 'UBER';
+    if (lower.includes('doordash') || lower === 'ddash') return 'DDASH';
+    if (lower.includes('skip') || lower.includes('skipthedishes')) return 'SKIP';
+    if (lower.includes('grubhub')) return 'GRUB';
+    return company.length > 6 ? company.slice(0, 6).toUpperCase() : company.toUpperCase();
+  };
+
+  const formatChannelOrderNumber = (orderNum?: string | number | null, phone?: string | null): string => {
+    const raw = String(orderNum || '').trim();
+    if (raw && raw !== '0' && raw !== 'undefined' && raw !== 'null') {
+      return raw.length > 8 ? raw.slice(-8) : raw;
+    }
+    const digits = (phone || '').replace(/\D/g, '');
+    if (digits.length >= 4) {
+      return digits.length > 8 ? digits.slice(-8) : digits;
+    }
+    return '—';
+  };
+
+  /** Online row (Togo panel): 1) Firebase/manual online order # 2) phone last 4 3) POS order # */
+  const formatOnlinePanelDisplayId = (
+    onlineOrderNum?: string | number | null,
+    phone?: string | null,
+    posOrderNum?: string | number | null
+  ): string => {
+    const raw = String(onlineOrderNum ?? '').trim();
+    if (raw && raw !== '0' && raw !== 'undefined' && raw !== 'null') {
+      return raw.length > 8 ? raw.slice(-8) : raw;
+    }
+    const digits = (phone || '').replace(/\D/g, '');
+    if (digits.length >= 4) {
+      return digits.slice(-4);
+    }
+    const num = Number(posOrderNum);
+    if (Number.isFinite(num) && num > 0) {
+      return String(num).padStart(3, '0');
+    }
+    return '—';
+  };
+
+  const formatPosNumber = (orderNumber?: string | number | null): string => {
+    const num = Number(orderNumber);
+    if (!Number.isFinite(num) || num <= 0) return '—';
+    return `#${String(num).padStart(3, '0')}`;
+  };
+
   const formatOrderPhoneDisplay = (input?: string | null) => {
     const digits = (input || '').replace(/\D/g, '');
     if (!digits) return input || '';
@@ -1460,7 +1512,7 @@ const SalesPage: React.FC = () => {
       order?.order_date ||
       order?.order_time ||
       order?.time;
-    if (!source) return 'â€”';
+    if (!source) return '—';
     const date = new Date(source);
     if (Number.isNaN(date.getTime())) return source;
     return date.toLocaleString('en-US', {
@@ -1478,9 +1530,9 @@ const SalesPage: React.FC = () => {
       order?.order_date ||
       order?.order_time ||
       order?.time;
-    if (!source) return 'â€”';
+    if (!source) return '—';
     const date = new Date(source);
-    if (Number.isNaN(date.getTime())) return 'â€”';
+    if (Number.isNaN(date.getTime())) return '—';
     return date.toLocaleDateString('en-US', {
       month: '2-digit',
       day: '2-digit',
@@ -1962,7 +2014,17 @@ const SalesPage: React.FC = () => {
         })(),
         total: o.total || 0,
         sequenceNumber: idx + 1,
-        status: o.status || 'pending' // Firebaseì—ì„œ ê°€ì ¸ì˜¨ ìƒíƒœ
+        status: o.status || 'pending', // Firebaseì—ì„œ ê°€ì ¸ì˜¨ ìƒíƒœ
+        onlineOrderNumber:
+          String(
+            o.orderNumber ||
+              o.order_number ||
+              o.externalOrderNumber ||
+              o.displayOrderNumber ||
+              o.firebaseOrderNumber ||
+              o.onlineOrderNumber ||
+              ''
+          ).trim() || undefined,
       }));
       
       // ë””ë²„ê¹…: pickupTime í™•ì¸
@@ -2496,12 +2558,11 @@ const SalesPage: React.FC = () => {
       
       const EXCLUDE_STATUSES = ['PICKED_UP', 'CANCELLED', 'MERGED', 'CLOSED', 'VOIDED', 'VOID', 'REFUNDED'];
       const togoAllOrders = (Array.isArray(togoJson.orders) ? togoJson.orders : []).filter((o: any) => !EXCLUDE_STATUSES.includes((o.status || '').toUpperCase()));
-      const DELIVERY_EXCLUDE = [...EXCLUDE_STATUSES, 'PAID', 'COMPLETED'];
       const deliveryAllRaw = (Array.isArray(deliveryJson.orders) ? deliveryJson.orders : []);
-      const deliveryAllOrders = deliveryAllRaw.filter((o: any) => !DELIVERY_EXCLUDE.includes((o.status || '').toUpperCase()));
+      const deliveryAllOrders = deliveryAllRaw.filter((o: any) => !EXCLUDE_STATUSES.includes((o.status || '').toUpperCase()));
       const deliveryDoneIds = new Set(deliveryAllRaw.filter((o: any) => {
         const st = (o.status || '').toUpperCase();
-        return DELIVERY_EXCLUDE.includes(st);
+        return EXCLUDE_STATUSES.includes(st);
       }).map((o: any) => {
         if (o.table_id && String(o.table_id).startsWith('DL')) return String(o.table_id).substring(2);
         return null;
@@ -2671,6 +2732,7 @@ const SalesPage: React.FC = () => {
               ? String((o as any).table_id).substring(2)
               : null),
           prepTime: o.prepTime || o.prep_time || 0,
+          onlineOrderNumber: o.onlineOrderNumber || o.online_order_number || '',
         };
       });
       setTogoOrderMeta((prevMeta) => {
@@ -4406,6 +4468,59 @@ const SalesPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [tableElements]);
 
+  /**
+   * Neumorphic table surface — matching DLV/Online/Togo buttons in the right panel.
+   * Light neumorphic: bg #e0e5ec, dual shadow, status-specific background tint.
+   */
+  const NEUMORPHIC_SHADOW_RAISED = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff';
+  const NEUMORPHIC_SHADOW_HOVER  = '8px 8px 16px #b8bec7, -8px -8px 16px #ffffff';
+  const NEUMORPHIC_SHADOW_PRESSED = 'inset 4px 4px 8px #b8bec7, inset -4px -4px 8px #ffffff';
+
+  const getGlassTableSurfaceStyle = (rawStatus: string, _tableText?: string): React.CSSProperties => {
+    const status = rawStatus || 'Available';
+
+    const STATUS_BG: Record<string, string> = {
+      Available:        '#c8e6c9',
+      Occupied:         '#fff9c4',
+      'Payment Pending':'#e0e0e0',
+      Cleaning:         '#e0e0e0',
+      Hold:             '#ffcdd2',
+      Reserved:         '#ffe0b2',
+    };
+    const STATUS_TEXT: Record<string, string> = {
+      Available:        '#2e7d32',
+      Occupied:         '#f57f17',
+      'Payment Pending':'#616161',
+      Cleaning:         '#616161',
+      Hold:             '#c62828',
+      Reserved:         '#e65100',
+    };
+
+    const bg = STATUS_BG[status] || '#e0e5ec';
+    const textColor = STATUS_TEXT[status] || '#4B5563';
+
+    const STATUS_NEON: Record<string, string> = {
+      Available:        '#00e676',
+      Occupied:         '#ffea00',
+      'Payment Pending':'#90a4ae',
+      Cleaning:         '#90a4ae',
+      Hold:             '#ff1744',
+      Reserved:         '#ff9100',
+    };
+    const neon = STATUS_NEON[status] || '#00e676';
+
+    return {
+      background: bg,
+      border: 'none',
+      boxShadow: [
+        NEUMORPHIC_SHADOW_RAISED,
+      ].join(', '),
+      color: textColor,
+      textShadow: 'none',
+      overflow: 'hidden',
+    };
+  };
+
   // ìš”ì†Œ ìŠ¤íƒ€ì¼ ìƒì„±
   const getElementStyle = (element: TableElement) => {
     const isPressed = pressedTableId && String(pressedTableId) === String(element.id);
@@ -4468,10 +4583,7 @@ const SalesPage: React.FC = () => {
       if (!(isClickable && isPressed)) return style;
       return {
         ...style,
-        background: '#ef4444',
-        color: '#FFFFFF',
-        filter: 'brightness(1.08)',
-        boxShadow: 'inset 0 0 16px rgba(0,0,0,0.25)',
+        boxShadow: NEUMORPHIC_SHADOW_PRESSED,
       };
     };
 
@@ -4480,62 +4592,30 @@ const SalesPage: React.FC = () => {
       case 'rounded-rectangle':
       case 'bar':
       case 'room': {
-        // ìƒíƒœë³„ í…Œì´ë¸” ìƒ‰ìƒ ê³ ì •
         const status = element.status || 'Available';
-        let backgroundStyle = '#3B82F6'; // Available: Blue (Restored)
-        let borderColor: string | undefined = undefined;
-        let borderWidth: string | undefined = undefined;
-
-        if (status === 'Occupied') {
-          backgroundStyle = '#fb923c'; // Occupied: Bright Orange
-        } else if (status === 'Payment Pending') {
-          backgroundStyle = '#9ca3af'; // Payment Pending (Bill printed): Medium Gray
-        } else if (status === 'Preparing') {
-          backgroundStyle = '#e5e7eb'; // Legacy Preparing → treat as Available
-        } else if (status === 'Hold') {
-          backgroundStyle = '#f87171'; // Hold: Soft Red
-          borderColor = '#dc2626';
-          borderWidth = '6px';
-        } else if (status === 'Reserved') {
-          backgroundStyle = '#f87171'; // Reserved: Soft Red
-        }
-
+        const glass = getGlassTableSurfaceStyle(status, element.text);
+        const holdBorder = status === 'Hold';
         return applyPressedHighlight({
           ...baseStyle,
-          background: backgroundStyle,
-          borderRadius: '8px',
-          borderColor,
-          borderWidth,
-          color: getContrastColor(backgroundStyle),
+          ...glass,
+          borderRadius: '26px',
+          ...(holdBorder
+            ? { border: '6px solid rgba(185, 28, 28, 0.55)' }
+            : {}),
           fontWeight: 'bold',
         });
       }
       case 'circle': {
         const status = element.status || 'Available';
-        let backgroundStyle = '#3B82F6'; // Available: Blue (Restored)
-        let borderColor: string | undefined = undefined;
-        let borderWidth: string | undefined = undefined;
-        if (status === 'Occupied') {
-          backgroundStyle = '#ef4444'; // Occupied: Red (Restored)
-        } else if (status === 'Payment Pending') {
-          backgroundStyle = '#fb923c'; // Payment Pending: Bright Orange (Orange-400)
-        } else if (status === 'Preparing') {
-          backgroundStyle = '#e5e7eb'; // Legacy Preparing → treat as Available
-        } else if (status === 'Hold') {
-          backgroundStyle = '#9ca3af';
-          borderColor = '#c2410c';
-          borderWidth = '6px';
-        } else if (status === 'Reserved') {
-          backgroundStyle = '#c2410c'; // Reserved: Darker Orange
-        }
-
+        const glass = getGlassTableSurfaceStyle(status, element.text);
+        const holdBorder = status === 'Hold';
         return applyPressedHighlight({
           ...baseStyle,
-          background: backgroundStyle,
+          ...glass,
           borderRadius: '50%',
-          borderColor,
-          borderWidth,
-          color: getContrastColor(backgroundStyle),
+          ...(holdBorder
+            ? { border: '6px solid rgba(185, 28, 28, 0.55)' }
+            : {}),
           fontWeight: 'bold',
         });
       }
@@ -4599,16 +4679,19 @@ const SalesPage: React.FC = () => {
 
   // BOì™€ ë™ì¼í•œ ìž…ì²´íš¨ê³¼ ë° ëª¨ì–‘ í´ëž˜ìŠ¤ ì ìš©
   const getElementClass = (element: TableElement) => {
+    const glassTableTypes: TableElement['type'][] = ['rounded-rectangle', 'bar', 'room', 'circle'];
     const baseStyle = ['restroom', 'counter'].includes(element.type)
       ? ''
-      : 'shadow-[inset_3px_3px_8px_rgba(255,255,255,0.3),inset_-3px_-3px_8px_rgba(0,0,0,0.3),0_2px_4px_rgba(0,0,0,0.2)] hover:shadow-[inset_-3px_-3px_8px_rgba(255,255,255,0.3),inset_3px_3px_8px_rgba(0,0,0,0.3),0_2px_4px_rgba(0,0,0,0.2)] hover:scale-105 active:scale-95 active:shadow-[inset_4px_4px_10px_rgba(255,255,255,0.2),inset_-4px_-4px_10px_rgba(0,0,0,0.4),0_1px_2px_rgba(0,0,0,0.3)] transition-all duration-300';
+      : glassTableTypes.includes(element.type)
+        ? 'hover:-translate-y-px transition-all duration-[250ms]'
+        : 'shadow-[inset_3px_3px_8px_rgba(255,255,255,0.3),inset_-3px_-3px_8px_rgba(0,0,0,0.3),0_2px_4px_rgba(0,0,0,0.2)] hover:shadow-[inset_-3px_-3px_8px_rgba(255,255,255,0.3),inset_3px_3px_8px_rgba(0,0,0,0.3),0_2px_4px_rgba(0,0,0,0.2)] hover:scale-105 active:scale-95 active:shadow-[inset_4px_4px_10px_rgba(255,255,255,0.2),inset_-4px_-4px_10px_rgba(0,0,0,0.4),0_1px_2px_rgba(0,0,0,0.3)] transition-all duration-300';
 
     let shapeClass = '';
     switch (element.type) {
       case 'rounded-rectangle':
       case 'bar':
       case 'room':
-        shapeClass = 'rounded-2xl';
+        shapeClass = 'rounded-[26px]';
         break;
       case 'circle':
         shapeClass = 'rounded-full';
@@ -7937,7 +8020,6 @@ const SalesPage: React.FC = () => {
                             </span>
                           </div>
                         </button>
-                        <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                         </div>
                       );
                     })}
@@ -8862,9 +8944,7 @@ const SalesPage: React.FC = () => {
             </div>
             {/* 현재 시간 (중앙) */}
             <div className="flex justify-center items-center">
-              <span className="text-lg font-bold text-gray-700 tracking-wide">
-                {currentTime}
-              </span>
+              <span className="text-lg font-bold text-gray-700 tracking-wide">{currentTime}</span>
             </div>
             {/* Delivery + TOGO + Online Alert + EXIT 버튼 (오른쪽) */}
             <div className="flex justify-end items-center gap-1.5">
@@ -8913,7 +8993,7 @@ const SalesPage: React.FC = () => {
               {fsrTogoButtonVisible && (
                 <button
                   className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
-                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#4B5563', cursor: 'pointer' }}
+                  style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#dc2626', cursor: 'pointer' }}
                   onClick={() => { setOrderListOpenMode('pickup'); setOrderListChannelFilter('all'); setOrderListTab('history'); setShowOrderListModal(true); fetchOrderList(orderListDate, 'pickup'); }}
                   title="Pickup List"
                   onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
@@ -8935,7 +9015,7 @@ const SalesPage: React.FC = () => {
               />}
               <button
                 className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
-                style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#dc2626', cursor: 'pointer' }}
+                style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#6B7280', cursor: 'pointer' }}
                 onClick={() => setShowExitModal(true)}
                 title="Exit Menu"
                 onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff'; }}
@@ -8987,12 +9067,36 @@ const SalesPage: React.FC = () => {
                     <div
                       key={element.id}
                       style={getElementStyle(element)}
-                      className={`${getElementClass(element)} hover:border-blue-400`}
-                      onMouseDown={() => setPressedTableId(String(element.id))}
-                      onMouseUp={() => handleTableClick(element)}
+                      className={getElementClass(element)}
+                      onMouseEnter={(e) => {
+                        const isGlass = ['rounded-rectangle','bar','room','circle'].includes(element.type);
+                        if (isGlass) {
+                          e.currentTarget.style.boxShadow = NEUMORPHIC_SHADOW_HOVER;
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        const isGlass = ['rounded-rectangle','bar','room','circle'].includes(element.type);
+                        if (isGlass) {
+                          e.currentTarget.style.boxShadow = NEUMORPHIC_SHADOW_RAISED;
+                        }
+                        setPressedTableId(prev => (prev === String(element.id) ? null : prev));
+                      }}
+                      onMouseDown={(e) => {
+                        const isGlass = ['rounded-rectangle','bar','room','circle'].includes(element.type);
+                        if (isGlass) {
+                          e.currentTarget.style.boxShadow = NEUMORPHIC_SHADOW_PRESSED;
+                        }
+                        setPressedTableId(String(element.id));
+                      }}
+                      onMouseUp={(e) => {
+                        const isGlass = ['rounded-rectangle','bar','room','circle'].includes(element.type);
+                        if (isGlass) {
+                          e.currentTarget.style.boxShadow = NEUMORPHIC_SHADOW_HOVER;
+                        }
+                        handleTableClick(element);
+                      }}
                       onTouchStart={() => setPressedTableId(String(element.id))}
                       onTouchEnd={() => handleTableClick(element)}
-                      onMouseLeave={() => setPressedTableId(prev => (prev === String(element.id) ? null : prev))}
                       title={`${element.type} - ${element.status || 'Available'}`}
                     >
                       {element.type === 'restroom' ? (
@@ -9041,25 +9145,59 @@ const SalesPage: React.FC = () => {
           {/* 4. ìš°ì¸¡ 34% - Togo/Delivery Order í˜„í™©íŒ */}
           {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
             {/* ìƒë‹¨ ê³ ì • ë²„íŠ¼ ì˜ì—­ */}
-            <div className="flex gap-2 p-2 pb-1 flex-shrink-0">
-              <button
-                onClick={handleNewDeliveryClick}
-                className="flex-1 py-2 min-h-[51px] bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
-              >
-                DLV
-              </button>
-              <button
-                onClick={handleNewOnlineClick}
-                className="flex-1 py-2 min-h-[51px] bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-lg shadow-md transition-all"
-              >
-                Online
-              </button>
-              <button
-                onClick={handleNewTogoClick}
-                className="flex-1 py-2 min-h-[51px] bg-green-700 hover:bg-green-800 text-white text-sm font-bold rounded-lg shadow-md transition-all"
-              >
-                Togo
-              </button>
+            <div className="flex gap-3 p-3 pb-2 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
+              {([
+                { label: 'DLV', onClick: handleNewDeliveryClick },
+                { label: 'Online', onClick: handleNewOnlineClick },
+                { label: 'Togo', onClick: handleNewTogoClick },
+              ] as const).map(({ label, onClick }) => {
+                const shadowNormal = [
+                  '-8px -8px 20px rgba(255,255,255,0.95)',
+                  '8px 8px 20px rgba(163,177,198,0.6)',
+                  '2px 4px 8px rgba(163,177,198,0.25)',
+                  'inset 0 3px 4px rgba(255,255,255,0.95)',
+                  'inset 0 -3px 6px rgba(163,177,198,0.25)',
+                ].join(', ');
+                const shadowHover = [
+                  '-10px -10px 24px rgba(255,255,255,1)',
+                  '10px 10px 24px rgba(163,177,198,0.7)',
+                  '3px 6px 10px rgba(163,177,198,0.3)',
+                  'inset 0 3px 4px rgba(255,255,255,1)',
+                  'inset 0 -3px 6px rgba(163,177,198,0.3)',
+                ].join(', ');
+                const shadowPressed = [
+                  'inset 4px 4px 12px rgba(163,177,198,0.3)',
+                  'inset -4px -4px 12px rgba(255,255,255,0.7)',
+                ].join(', ');
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={onClick}
+                    className="relative flex-1 min-h-[56px] flex items-center justify-center"
+                    style={{
+                      borderRadius: '40px',
+                      border: 'none',
+                      fontSize: `var(--bottom-bar-btn-font, ${footerButtonFontPx}px)`,
+                      fontWeight: 500,
+                      letterSpacing: '-0.02em',
+                      cursor: 'pointer',
+                      background: 'linear-gradient(145deg, #f7f7f9, #e8e8ec)',
+                      boxShadow: shadowNormal,
+                      color: '#2C2C2E',
+                      textShadow: '0 1px 1px rgba(255,255,255,0.8)',
+                      transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                      userSelect: 'none',
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.boxShadow = shadowHover; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.boxShadow = shadowNormal; e.currentTarget.style.transform = 'translateY(0)'; }}
+                    onMouseDown={(e) => { e.currentTarget.style.boxShadow = shadowPressed; e.currentTarget.style.transform = 'translateY(1px)'; e.currentTarget.style.color = '#3C3C3E'; }}
+                    onMouseUp={(e) => { e.currentTarget.style.boxShadow = shadowHover; e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.color = '#2C2C2E'; }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
             {/* ìŠ¤í¬ë¡¤ ê°€ëŠ¥í•œ ì£¼ë¬¸ ëª©ë¡ ì˜ì—­ */}
             <div className="flex-1 overflow-auto px-2 pb-[85px]">
@@ -9107,6 +9245,7 @@ const SalesPage: React.FC = () => {
                       const dStatus = String(order.status || '').toUpperCase();
                       const dIsPaid = dStatus === 'PAID' || dStatus === 'COMPLETED' || dStatus === 'CLOSED';
                       const dIsPickedUp = dStatus === 'PICKED_UP';
+                      if (dIsPickedUp) return null;
                       let backgroundColor = dIsPickedUp ? '#E9D5FF' : dIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                       let borderColor = '#C084FC';
                       let borderWidth = 1;
@@ -9130,9 +9269,13 @@ const SalesPage: React.FC = () => {
                             </div>
                           )}
                           <button 
-                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
-                              backgroundColor, borderColor, borderWidth,
+                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#3d4f63',
+                              border: 'none',
+                              boxShadow: isSourceTogo || isTargetSelectable
+                                ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
+                                : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
                               transform: swipeDragState?.id === String(order.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
                               transition: swipeDragState?.id === String(order.id) ? 'none' : 'transform 0.2s ease',
                             }}
@@ -9149,18 +9292,18 @@ const SalesPage: React.FC = () => {
                             onMouseUp={handleSwipeEnd}
                             onMouseLeave={() => { if (swipeDragRef.current?.id === String(order.id)) { swipeDragRef.current = null; setSwipeDragState(null); } }}
                           >
-                          {/* ìœ—ì¤„: ë”œë¦¬ë²„ë¦¬ì±„ë„(ë³¼ë“œ) / ë”œë¦¬ë²„ë¦¬ì£¼ë¬¸ë²ˆí˜¸(ë³¼ë“œ) */}
-                          <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
-                            <span className="text-purple-700 font-bold">{order.deliveryCompany || 'Delivery'}</span>
-                            <span className="mx-1 text-gray-400">/</span>
-                            <span className="font-bold text-gray-900">#{order.deliveryOrderNumber || order.id}</span>
-                          </div>
-                          {/* ì•„ëž«ì¤„: í”½ì—…íƒ€ìž„ */}
-                          <div className="text-[12px] text-gray-600">
-                            Ready: {order.readyTimeLabel || '--:--'}
-                          </div>
+                            <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{abbreviateDeliveryChannel(order.deliveryCompany)}</span>
+                              <span className="font-bold text-right">{formatChannelOrderNumber(order.deliveryOrderNumber, order.phone)}</span>
+                            </div>
+                            <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
+                              <span>{order.readyTimeLabel || '--:--'}</span>
+                              <span className="font-bold">{formatPosNumber(order.number)}</span>
+                            </div>
+                            <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: dIsPaid ? '#6ee7b7' : '#fca5a5' }}>
+                              {dIsPaid ? 'Ready' : 'UNPAID'}
+                            </div>
                         </button>
-                        <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                         </div>
                       );
                     })}
@@ -9234,6 +9377,7 @@ const SalesPage: React.FC = () => {
                         const tStatus = String(order.status || '').toUpperCase();
                         const tIsPaid = tStatus === 'PAID' || tStatus === 'COMPLETED' || tStatus === 'CLOSED';
                         const tIsPickedUp = tStatus === 'PICKED_UP';
+                        if (tIsPickedUp) return null;
                         let backgroundColor = tIsPickedUp ? '#A8D5A8' : tIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                         let borderColor = '#95C295';
                         let borderWidth = 1;
@@ -9249,37 +9393,54 @@ const SalesPage: React.FC = () => {
                         return (
                           <div key={`togo-${order.id}`}>
                           <button 
-                            className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
-                            style={{ backgroundColor, borderColor, borderWidth }}
+                            className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            style={{
+                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : tIsPickedUp ? '#A8D5A8' : '#3d4f63',
+                              border: 'none',
+                              boxShadow: isSourceTogo || isTargetSelectable
+                                ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
+                                : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
+                            }}
                             onClick={(e) => {
                               e.stopPropagation();
                               handleVirtualOrderCardClick('togo', order);
                             }}
                           >
-                            {/* ìœ—ì¤„: Togo(ë³¼ë“œ), ì£¼ë¬¸ë²ˆí˜¸(ë³¼ë“œ), í”½ì—…ì‹œê°„ */}
-                            <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
-                              <span className="w-[40px] text-left text-green-700 font-bold">Togo</span>
-                              <span className="flex-1 text-center font-bold">#{order.id ?? 'â€”'}</span>
-                              <span className="text-gray-900 text-right">{order.readyTimeLabel || '--:--'}</span>
-                            </div>
-                            {/* ì•„ëž«ì¤„: ì „í™”ë²ˆí˜¸(ë³¼ë“œ), ê³ ê°ì´ë¦„ */}
-                            <div className="text-[12px] text-gray-700 flex justify-between">
-                              <span className="font-bold text-gray-900 truncate pr-1">{formatOrderPhoneDisplay(order.phone) || 'â€”'}</span>
-                              <span className="text-gray-800 truncate text-right">{order.name || ''}</span>
-                            </div>
+                              <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                                <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>Togo</span>
+                                <span className="font-bold text-right">{formatPosNumber(order.number)}</span>
+                              </div>
+                              <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
+                                <span>{order.readyTimeLabel || '--:--'}</span>
+                                <span className="font-bold">{formatPosNumber(order.number)}</span>
+                              </div>
+                              <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: tIsPaid ? '#6ee7b7' : '#fca5a5' }}>
+                                {tIsPaid ? 'Ready' : 'UNPAID'}
+                              </div>
                           </button>
-                          <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                           </div>
                         );
                       } else {
                         // Online ì¹´ë“œ ë Œë”ë§
                         const card = order;
+                        const onlinePanelDisplayId = formatOnlinePanelDisplayId(
+                          (card as any).onlineOrderNumber ||
+                            (card as any).fullOrder?.orderNumber ||
+                            (card as any).fullOrder?.order_number ||
+                            (card as any).fullOrder?.onlineOrderNumber ||
+                            (card as any).fullOrder?.externalOrderNumber ||
+                            (card as any).fullOrder?.displayOrderNumber ||
+                            (card as any).fullOrder?.firebaseOrderNumber,
+                          card.phone || (card as any).fullOrder?.customerPhone,
+                          (card as any).localOrderId ?? (card as any).number
+                        );
                         const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
                         const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
                         const canSwipe = isOnlineCardPaymentLinked(card as OnlineQueueCard);
                         const oStatus = String(card.status || '').toUpperCase();
                         const oIsPaid = oStatus === 'PAID' || oStatus === 'COMPLETED' || oStatus === 'CLOSED';
                         const oIsPickedUp = oStatus === 'PICKED_UP';
+                        if (oIsPickedUp) return null;
                         let backgroundColor = oIsPickedUp ? '#B1C4DD' : oIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                         let borderColor = '#9BB3D1';
                         let borderWidth = 1;
@@ -9303,9 +9464,13 @@ const SalesPage: React.FC = () => {
                               </div>
                             )}
                             <button
-                              className={`w-full rounded-lg p-1 shadow-inner border transition-all duration-200 text-left hover:shadow-lg relative z-10 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                              className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
                               style={{
-                                backgroundColor, borderColor, borderWidth,
+                                background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : oIsPickedUp ? '#B1C4DD' : '#3d4f63',
+                                border: 'none',
+                                boxShadow: isSourceOnline || isTargetSelectable
+                                  ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceOnline ? '3px #7C3AED' : '2px #8B5CF6'}`
+                                  : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
                                 transform: canSwipe && swipeDragState?.id === String(card.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
                                 transition: canSwipe && swipeDragState?.id === String(card.id) ? 'none' : 'transform 0.2s ease',
                               }}
@@ -9320,19 +9485,18 @@ const SalesPage: React.FC = () => {
                                 onMouseLeave: () => { if (swipeDragRef.current?.id === String(card.id)) { swipeDragRef.current = null; setSwipeDragState(null); } },
                               } : {})}
                             >
-                            {/* ìœ—ì¤„: Online(ë³¼ë“œ), ì£¼ë¬¸ë²ˆí˜¸(ë³¼ë“œ), í”½ì—…ì‹œê°„ */}
-                            <div className="text-[13px] text-gray-800 mb-0.5 flex items-center">
-                              <span className="w-[45px] text-left text-blue-700 font-bold">Online</span>
-                              <span className="flex-1 text-center font-bold">#{card.number}</span>
-                              <span className="text-gray-900 text-right">{card.time}</span>
-                            </div>
-                            {/* ì•„ëž«ì¤„: ì „í™”ë²ˆí˜¸(ë³¼ë“œ), ê³ ê°ì´ë¦„ */}
-                            <div className="text-[12px] text-gray-700 flex justify-between">
-                              <span className="font-bold text-gray-900">{card.phone}</span>
-                              <span className="text-right">{card.name}</span>
-                            </div>
+                              <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                                <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>Online</span>
+                                <span className="font-bold text-right">{onlinePanelDisplayId}</span>
+                              </div>
+                              <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
+                                <span>{card.time || '--:--'}</span>
+                                <span className="font-bold">{onlinePanelDisplayId}</span>
+                              </div>
+                              <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: oIsPaid ? '#6ee7b7' : '#fca5a5' }}>
+                                {oIsPaid ? 'Ready' : 'UNPAID'}
+                              </div>
                           </button>
-                          <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)', borderRadius: '0 0 8px 8px', marginTop: '1px' }} />
                           </div>
                         );
                       }
@@ -9356,7 +9520,7 @@ const SalesPage: React.FC = () => {
                   {todayReservations.map((res: any, idx: number) => (
                     <div key={res.id || idx} className="flex-shrink-0 flex items-center gap-2 bg-white/80 px-2.5 py-1 rounded-lg border border-amber-200 shadow-sm min-w-[140px]">
                       <span className="font-extrabold text-amber-900 text-xs">{res.reservation_time || res.time || '--:--'}</span>
-                      <span className="text-gray-800 text-xs font-bold truncate max-w-[70px]">{res.customer_name || res.name || 'â€”'}</span>
+                      <span className="text-gray-800 text-xs font-bold truncate max-w-[70px]">{res.customer_name || res.name || '—'}</span>
                       <span className="bg-amber-100 text-amber-800 text-[9px] font-black px-1 py-0.5 rounded">p{res.party_size || res.guests || 0}</span>
                     </div>
                   ))}
@@ -10751,23 +10915,25 @@ const SalesPage: React.FC = () => {
                   {/* íƒ­ ë²„íŠ¼: Order History / Live Order */}
                   {orderListOpenMode === 'pickup' ? (
                     <div className="flex items-center gap-1.5">
-                      {([
-                        { key: 'all' as const, label: 'All', activeBg: 'bg-white', activeText: 'text-slate-700' },
-                        { key: 'delivery' as const, label: 'Delivery', activeBg: 'bg-red-500', activeText: 'text-white' },
-                        { key: 'online' as const, label: 'Online', activeBg: 'bg-blue-500', activeText: 'text-white' },
-                        { key: 'togo' as const, label: 'Togo', activeBg: 'bg-green-500', activeText: 'text-white' },
-                      ]).map((ch) => (
-                        <button
-                          key={ch.key}
-                          onClick={() => setOrderListChannelFilter(ch.key)}
-                          className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                            orderListChannelFilter === ch.key
-                              ? `${ch.activeBg} ${ch.activeText}`
-                              : 'bg-slate-600 text-white hover:bg-slate-500'
-                          }`}
-                        >
-                          {ch.label}
-                        </button>
+                      <button
+                        type="button"
+                        onClick={() => setOrderListChannelFilter('all')}
+                        className={
+                          orderListChannelFilter === 'all'
+                            ? 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/55 bg-white/88 text-slate-800 shadow-[0_4px_18px_rgba(0,0,0,0.12)] backdrop-blur-md'
+                            : 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/25 bg-white/10 text-white/90 hover:bg-white/18 hover:border-white/40 backdrop-blur-md'
+                        }
+                        style={{ WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)' }}
+                      >
+                        All
+                      </button>
+                      {(['togo', 'online', 'delivery'] as const).map((ch) => (
+                        <PickupChannelGlassButton
+                          key={ch}
+                          channel={ch}
+                          active={orderListChannelFilter === ch}
+                          onClick={() => setOrderListChannelFilter(ch)}
+                        />
                       ))}
                     </div>
                   ) : (
@@ -13515,10 +13681,7 @@ const SalesPage: React.FC = () => {
 
           try {
             const { employee } = await clockInOutApi.verifyPin(pin);
-            const response = await clockInOutApi.clockIn(employee.id, employee.name, pin);
-            
-            alert(`${employee.name}, you have clocked in!\nTime: ${new Date(response.clockInTime).toLocaleTimeString('en-US')}`);
-            
+            await clockInOutApi.clockIn(employee.id, employee.name, pin);
             setShowClockInModal(false);
           } catch (error: any) {
             setClockError(error.message || 'Clock in failed');
