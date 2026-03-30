@@ -126,6 +126,7 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN subtotal REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_source TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN online_order_number TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -377,9 +378,12 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			
 			if (type) { clauses.push('UPPER(o.order_type) = ?'); params.push(String(type).toUpperCase()); }
 			if (status) { clauses.push('o.status = ?'); params.push(String(status).toUpperCase()); }
-			// 날짜 필터 추가 (created_at이 해당 날짜에 해당하는 주문만 조회)
-			// ISO 형식 (2025-12-10T14:30:00.000Z) 지원을 위해 LIKE 사용
-			if (date) {
+			const pickupPending = q.pickup_pending === '1';
+			if (pickupPending) {
+				clauses.push(`UPPER(o.status) NOT IN ('PICKED_UP','VOIDED','VOID','REFUNDED')`);
+				clauses.push(`UPPER(o.order_type) NOT IN ('DINE_IN','DINE-IN','POS','FORHERE','FOR_HERE','EAT_IN','EATIN')`);
+				console.log('[GET /orders] pickup_pending filter applied (no date restriction)');
+			} else if (date) {
 				clauses.push(`o.created_at LIKE ?`);
 				params.push(`${date}%`);
 				console.log('[GET /orders] Date filter applied:', date);
@@ -415,7 +419,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				console.log('[GET /orders] Order mode filter applied:', orderMode);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, t.name AS table_name FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, t.name AS table_name FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -502,10 +506,25 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		}
 	});
 
-	// GET /api/orders/delivery-orders - Get all delivery orders
+	// GET /api/orders/delivery-orders - Get active delivery orders (today only)
 	router.get('/delivery-orders', async (req, res) => {
 		try {
-			const rows = await dbAll('SELECT * FROM delivery_orders ORDER BY created_at DESC');
+			const now = new Date();
+			const cutoff = new Date(now);
+			cutoff.setHours(now.getHours() < 5 ? -19 : 5, 0, 0, 0);
+			const pad = (n) => String(n).padStart(2, '0');
+			const cutoffLocal = `${cutoff.getFullYear()}-${pad(cutoff.getMonth() + 1)}-${pad(cutoff.getDate())} ${pad(cutoff.getHours())}:${pad(cutoff.getMinutes())}:${pad(cutoff.getSeconds())}`;
+
+			const rows = await dbAll(`
+				SELECT d.*,
+					COALESCE(
+						(SELECT o.order_number FROM orders o WHERE o.id = d.order_id LIMIT 1),
+						(SELECT o.order_number FROM orders o WHERE o.table_id = ('DL' || CAST(d.id AS TEXT)) LIMIT 1)
+					) AS pos_order_number
+				FROM delivery_orders d
+				WHERE d.created_at >= ?
+				ORDER BY d.created_at DESC
+			`, [cutoffLocal]);
 			res.json({ success: true, orders: rows });
 		} catch (e) {
 			console.error('Failed to get delivery orders:', e);
@@ -976,7 +995,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	// Create order & items (+optional adjustments)
 	router.post('/', async (req, res) => {
 		try {
-			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid } = req.body || {};
+			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid, onlineOrderNumber } = req.body || {};
 			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const isPrepaidOnline = !!isPrepaid;
@@ -991,8 +1010,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const mergedItems = mergeIdenticalItems(itemsWithLineId);
 			
 			const result = await dbRun(
-				`INSERT INTO orders(order_number, order_type, total, subtotal, tax, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode, order_source)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO orders(order_number, order_type, total, subtotal, tax, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode, order_source, online_order_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					orderNumber || null,
 					orderTypeToSave,
@@ -1013,6 +1032,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					kitchenNote || null,
 					orderMode || null,
 					orderSource || null,
+					onlineOrderNumber ? String(onlineOrderNumber).trim() : null,
 				]
 			);
 			const orderId = result.lastID;

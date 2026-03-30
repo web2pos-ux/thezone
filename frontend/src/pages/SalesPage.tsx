@@ -1464,6 +1464,13 @@ const SalesPage: React.FC = () => {
     return '—';
   };
 
+  /** 딜리버리 패널: 플랫폼/수동 Delivery Order Number, 뒤에서 최대 8자리 */
+  const formatDeliveryOrderNumberForPanel = (orderNum?: string | number | null): string => {
+    const raw = String(orderNum ?? '').trim();
+    if (!raw || raw === '0' || raw === 'undefined' || raw === 'null') return '—';
+    return raw.length > 8 ? raw.slice(-8) : raw;
+  };
+
   /** Online row (Togo panel): 1) Firebase/manual online order # 2) phone last 4 3) POS order # */
   const formatOnlinePanelDisplayId = (
     onlineOrderNum?: string | number | null,
@@ -1480,13 +1487,55 @@ const SalesPage: React.FC = () => {
     }
     const num = Number(posOrderNum);
     if (Number.isFinite(num) && num > 0) {
-      return String(num).padStart(3, '0');
+      return `#${String(num).padStart(3, '0')}`;
     }
     return '—';
   };
 
+  const formatTogoPanelDisplayId = (
+    phone?: string | null,
+    name?: string | null,
+    posOrderNum?: string | number | null
+  ): string => {
+    const digits = (phone || '').replace(/\D/g, '');
+    if (digits.length > 0) {
+      return digits.length > 4 ? digits.slice(-4) : digits;
+    }
+    const trimmedName = (name || '').trim();
+    if (trimmedName) {
+      return trimmedName.length > 8 ? trimmedName.slice(0, 8) : trimmedName;
+    }
+    const num = Number(posOrderNum);
+    if (Number.isFinite(num) && num > 0) {
+      return `#${String(num).padStart(3, '0')}`;
+    }
+    return '—';
+  };
+
+  const formatTimeAmPm = (t?: string | null): string => {
+    const raw = (t || '--:--').trim();
+    if (raw.includes('오전') || raw.includes('오후')) {
+      const isPM = raw.includes('오후');
+      const timeOnly = raw.replace(/오전|오후/g, '').trim();
+      return `${timeOnly} ${isPM ? 'PM' : 'AM'}`;
+    }
+    const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if (m24) {
+      let h = parseInt(m24[1], 10);
+      const min = m24[2];
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      if (h > 12) h -= 12;
+      if (h === 0) h = 12;
+      return `${h}:${min} ${ampm}`;
+    }
+    return raw;
+  };
+
   const formatPosNumber = (orderNumber?: string | number | null): string => {
-    const num = Number(orderNumber);
+    if (orderNumber == null || orderNumber === '') return '—';
+    const raw = String(orderNumber).trim();
+    const digits = raw.replace(/\D/g, '');
+    const num = digits ? Number(digits) : Number(raw);
     if (!Number.isFinite(num) || num <= 0) return '—';
     return `#${String(num).padStart(3, '0')}`;
   };
@@ -2542,13 +2591,13 @@ const SalesPage: React.FC = () => {
 
   const loadTogoOrders = useCallback(async () => {
     try {
-      // PENDINGê³¼ PAID ìƒíƒœ ëª¨ë‘ ë¶ˆëŸ¬ì˜¤ê¸° (PICKED_UPì€ ì œì™¸) - TOGO + DELIVERY
-      const today = getLocalDateString();
+
+
       const [togoRes, deliveryRes, onlineRes, deliveryOrdersRes] = await Promise.all([
-        fetch(`${API_URL}/orders?type=TOGO&date=${today}&limit=200`),
-        fetch(`${API_URL}/orders?type=DELIVERY&date=${today}&limit=200`),
-        fetch(`${API_URL}/orders?type=ONLINE&date=${today}&limit=200`),
-        fetch(`${API_URL}/orders/delivery-orders`), // delivery_orders í…Œì´ë¸”ì—ì„œë„ ë¶ˆëŸ¬ì˜¤ê¸°
+        fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&limit=200`),
+        fetch(`${API_URL}/orders?type=DELIVERY&limit=200`),
+        fetch(`${API_URL}/orders?type=ONLINE&limit=200`),
+        fetch(`${API_URL}/orders/delivery-orders`),
       ]);
       
       const togoJson = togoRes.ok ? await togoRes.json() : { orders: [] };
@@ -2572,8 +2621,6 @@ const SalesPage: React.FC = () => {
       const deliveryMetaOrders = allDeliveryMeta.filter((m: any) => {
         const st = (m.status || '').toUpperCase();
         if (EXCLUDE_STATUSES.includes(st)) return false;
-        const created = m.created_at || m.createdAt || '';
-        if (created && today && !String(created).startsWith(today)) return false;
         if (deliveryDoneIds.has(String(m.id))) return false;
         return true;
       });
@@ -2599,6 +2646,19 @@ const SalesPage: React.FC = () => {
       });
       
       // delivery_orders í…Œì´ë¸”ì˜ ë©”íƒ€ë°ì´í„° ë³‘í•© (deliveryCompany, deliveryOrderNumber ë“±)
+      const getOrderRowByAnyId = (raw: any): any | undefined => {
+        if (raw == null || raw === '') return undefined;
+        if (orderMap.has(raw)) return orderMap.get(raw);
+        const n = Number(raw);
+        if (Number.isFinite(n) && orderMap.has(n)) return orderMap.get(n);
+        const s = String(raw);
+        if (orderMap.has(s)) return orderMap.get(s);
+        return undefined;
+      };
+      const parseDeliveryNumFromLabel = (label?: string | null): string => {
+        const m = String(label || '').match(/#\s*([^\s#]+)/);
+        return m ? String(m[1]).trim() : '';
+      };
       deliveryMetaOrders.forEach((meta: any) => {
         // 1ìˆœìœ„: order_idë¡œ ë§¤ì¹­
         // 2ìˆœìœ„: table_idì—ì„œ ì¶”ì¶œí•œ ë§¤í•‘ìœ¼ë¡œ ë§¤ì¹­
@@ -2606,22 +2666,46 @@ const SalesPage: React.FC = () => {
         const metaIdStr = String(meta.id);
         const mappedOrderId = tableIdToOrderId.get(metaIdStr);
         const matchId = meta.order_id || mappedOrderId || meta.id;
-        const existing = orderMap.get(matchId);
-        
+        let existing =
+          getOrderRowByAnyId(matchId) ||
+          (mappedOrderId != null && mappedOrderId !== '' ? getOrderRowByAnyId(mappedOrderId) : undefined);
+        if (!existing) {
+          const dl = `DL${metaIdStr}`;
+          orderMap.forEach((o: any) => {
+            if (existing) return;
+            if (o && String(o.table_id || '').toUpperCase() === dl.toUpperCase()) {
+              existing = o;
+            }
+          });
+        }
+
         console.log('ðŸš— [loadTogoOrders] Matching meta:', meta.id, 'order_id:', meta.order_id, 'mappedOrderId:', mappedOrderId, 'matchId:', matchId, 'found:', !!existing);
         
         if (existing) {
           // ê¸°ì¡´ ì£¼ë¬¸ì— delivery ë©”íƒ€ë°ì´í„° ì¶”ê°€
           existing.deliveryCompany = meta.delivery_company || meta.deliveryCompany;
-          existing.deliveryOrderNumber = meta.delivery_order_number || meta.deliveryOrderNumber;
+          {
+            const dn = String(meta.delivery_order_number || meta.deliveryOrderNumber || '').trim();
+            existing.deliveryOrderNumber =
+              dn ||
+              parseDeliveryNumFromLabel(meta.name) ||
+              parseDeliveryNumFromLabel((existing as any).customer_name) ||
+              parseDeliveryNumFromLabel((existing as any).customerName);
+          }
           existing.readyTimeLabel = meta.ready_time_label || meta.readyTimeLabel || existing.readyTimeLabel;
           existing.prepTime = meta.prep_time || meta.prepTime;
           existing.fulfillment_mode = 'delivery';
           existing.fulfillment = 'delivery';
           existing.order_id = existing.id; // orders í…Œì´ë¸”ì˜ id ì €ìž¥
           existing.deliveryMetaId = meta.id; // delivery_orders í…Œì´ë¸”ì˜ id ì €ìž¥
+          const posFromMeta = meta.pos_order_number ?? meta.posOrderNumber;
+          if (posFromMeta != null && String(posFromMeta).trim() !== '') {
+            existing.order_number = existing.order_number || posFromMeta;
+            existing.pos_order_number = existing.pos_order_number || posFromMeta;
+          }
         } else {
           // delivery_ordersì—ë§Œ ìžˆëŠ” ì£¼ë¬¸ (ì•„ì§ OK ì•ˆ ëˆ„ë¥¸ ì£¼ë¬¸)
+          const posFromMeta = meta.pos_order_number ?? meta.posOrderNumber;
           orderMap.set(meta.id, {
             id: meta.id,
             order_id: meta.order_id || null, // orders í…Œì´ë¸”ê³¼ ì—°ê²°ëœ id
@@ -2637,6 +2721,8 @@ const SalesPage: React.FC = () => {
             fulfillment_mode: 'delivery',
             fulfillment: 'delivery',  // í•„í„°ë§ìš© ì¶”ê°€
             prepTime: meta.prep_time || meta.prepTime,
+            order_number: posFromMeta != null && String(posFromMeta).trim() !== '' ? posFromMeta : null,
+            pos_order_number: posFromMeta != null && String(posFromMeta).trim() !== '' ? posFromMeta : null,
           });
         }
       });
@@ -2648,7 +2734,37 @@ const SalesPage: React.FC = () => {
         const status = (o.status || '').toUpperCase();
         return !EXCLUDE_STATUSES.includes(status);
       });
+
+      const getOrderRowFromMap = (oid: any): any | null => {
+        if (oid == null || oid === '') return null;
+        return orderMap.get(oid) ?? orderMap.get(Number(oid)) ?? orderMap.get(String(oid)) ?? null;
+      };
+
+      /** delivery_orders 전용 행 등 order_number가 비어 있을 때, order_id 또는 DL↔orders 매핑으로 POS 일일 번호 보강 */
+      const resolveLinkedPosOrderNumber = (o: any): string | number | null => {
+        const direct = o.order_number ?? o.pos_order_number ?? o.posOrderNumber;
+        if (direct != null && direct !== '') return direct;
+        const fromRow = (row: any) => {
+          const v = row?.order_number ?? row?.pos_order_number ?? row?.posOrderNumber;
+          return v != null && v !== '' ? v : null;
+        };
+        const byOid = fromRow(getOrderRowFromMap(o.order_id ?? o.orderId));
+        if (byOid != null) return byOid;
+        const dMeta =
+          (o as any).deliveryMetaId ??
+          (typeof o.table_id === 'string' && String(o.table_id).toUpperCase().startsWith('DL')
+            ? String(o.table_id).substring(2)
+            : null);
+        if (dMeta != null && dMeta !== '') {
+          const ordersTableId = tableIdToOrderId.get(String(dMeta));
+          const byDl = fromRow(getOrderRowFromMap(ordersTableId));
+          if (byDl != null) return byDl;
+        }
+        return null;
+      };
+
       const mapped = orders.map((o: any, idx: number) => {
+        const resolvedPosNumber = resolveLinkedPosOrderNumber(o);
         const parsedId = Number(o.id);
         const fallbackId = Number(o.order_number || o.orderId);
         const safeId = Number.isFinite(parsedId)
@@ -2706,7 +2822,9 @@ const SalesPage: React.FC = () => {
           id: safeId,
           order_id: o.order_id || null, // orders í…Œì´ë¸”ì˜ ì‹¤ì œ id (delivery ì£¼ë¬¸ì—ì„œ items ì¡°íšŒìš©)
           type: fulfillment === 'delivery' ? 'Delivery' : fulfillment === 'online' ? 'Online' : 'Togo',
-          number: o.order_number || o.id,
+          order_number:
+            resolvedPosNumber != null && resolvedPosNumber !== '' ? resolvedPosNumber : null,
+          number: resolvedPosNumber || o.id,
           time: new Date(createdRaw || Date.now()).toLocaleTimeString('ko-KR', {
             hour: '2-digit',
             minute: '2-digit',
@@ -2725,7 +2843,18 @@ const SalesPage: React.FC = () => {
           virtualChannel,
           // Delivery ì „ìš© í•„ë“œ
           deliveryCompany: o.deliveryCompany || o.delivery_company || '',
-          deliveryOrderNumber: o.deliveryOrderNumber || o.delivery_order_number || '',
+          deliveryOrderNumber: (() => {
+            const raw = String(o.deliveryOrderNumber || o.delivery_order_number || '').trim();
+            if (raw) return raw;
+            if (fulfillment === 'delivery') {
+              return (
+                parseDeliveryNumFromLabel(o.name) ||
+                parseDeliveryNumFromLabel(o.customer_name) ||
+                parseDeliveryNumFromLabel(o.customerName)
+              );
+            }
+            return '';
+          })(),
           deliveryMetaId:
             (o as any).deliveryMetaId ||
             ((typeof (o as any).table_id === 'string' && String((o as any).table_id).toUpperCase().startsWith('DL'))
@@ -4025,6 +4154,7 @@ const SalesPage: React.FC = () => {
           serverName: server?.employee_name || '',
           togoFulfillment: 'togo',
           pickup: newOrder.pickup,
+          togoInfoTiming: 'after',
         },
       });
       return;
@@ -4480,40 +4610,43 @@ const SalesPage: React.FC = () => {
     const status = rawStatus || 'Available';
 
     const STATUS_BG: Record<string, string> = {
-      Available:        '#c8e6c9',
-      Occupied:         '#fff9c4',
-      'Payment Pending':'#e0e0e0',
-      Cleaning:         '#e0e0e0',
-      Hold:             '#ffcdd2',
-      Reserved:         '#ffe0b2',
+      Available:        '#1abc9c',
+      Occupied:         '#ffa726',
+      'Payment Pending':'#78909c',
+      Cleaning:         '#90a4ae',
+      Hold:             '#ef5350',
+      Reserved:         '#ce93d8',
     };
     const STATUS_TEXT: Record<string, string> = {
-      Available:        '#2e7d32',
-      Occupied:         '#f57f17',
-      'Payment Pending':'#616161',
-      Cleaning:         '#616161',
-      Hold:             '#c62828',
-      Reserved:         '#e65100',
+      Available:        '#003d2e',
+      Occupied:         '#bf360c',
+      'Payment Pending':'#ffffff',
+      Cleaning:         '#263238',
+      Hold:             '#ffffff',
+      Reserved:         '#4a148c',
     };
 
     const bg = STATUS_BG[status] || '#e0e5ec';
     const textColor = STATUS_TEXT[status] || '#4B5563';
 
     const STATUS_NEON: Record<string, string> = {
-      Available:        '#00e676',
-      Occupied:         '#ffea00',
-      'Payment Pending':'#90a4ae',
-      Cleaning:         '#90a4ae',
-      Hold:             '#ff1744',
-      Reserved:         '#ff9100',
+      Available:        '#0fa882',
+      Occupied:         '#ff9100',
+      'Payment Pending':'#546e7a',
+      Cleaning:         '#607d8b',
+      Hold:             '#d50000',
+      Reserved:         '#aa00ff',
     };
     const neon = STATUS_NEON[status] || '#00e676';
 
     return {
-      background: bg,
-      border: 'none',
+      background: `linear-gradient(160deg, ${bg}ee 0%, ${bg} 50%, ${bg}dd 100%)`,
+      border: '1px solid rgba(255,255,255,0.3)',
       boxShadow: [
         NEUMORPHIC_SHADOW_RAISED,
+        `inset 0 3px 6px rgba(255,255,255,0.45)`,
+        `inset 0 -2px 5px rgba(0,0,0,0.15)`,
+        `0 0 12px ${neon}55`,
       ].join(', '),
       color: textColor,
       textShadow: 'none',
@@ -5129,7 +5262,7 @@ const SalesPage: React.FC = () => {
       }
 
       const ordersUrl = effectiveMode === 'pickup'
-        ? `${API_URL}/orders?date=${date}`
+        ? `${API_URL}/orders?pickup_pending=1`
         : `${API_URL}/orders?date=${date}&order_mode=FSR`;
       const [ordersRes, deliveryMetaRes] = await Promise.all([
         fetch(ordersUrl),
@@ -5248,6 +5381,8 @@ const SalesPage: React.FC = () => {
         setOrderListSelectedOrder({
           ...data.order,
           table_name: tableName,
+          deliveryCompany: listOrder?.deliveryCompany || data.order.deliveryCompany,
+          deliveryOrderNumber: listOrder?.deliveryOrderNumber || data.order.deliveryOrderNumber,
           adjustments: data.adjustments || [],
           __togoTotals: computedTotals,
         } as any);
@@ -5445,7 +5580,7 @@ const SalesPage: React.FC = () => {
           address: store.address, 
           phone: store.phone, 
           dateTime: getLocalDatetimeString(now), 
-          orderNumber: orderListSelectedOrder.order_number || orderListSelectedOrder.id 
+          orderNumber: orderListSelectedOrder.order_number || String(orderListSelectedOrder.id).padStart(3, '0') 
         },
         orderInfo: { 
           channel: billChannel,
@@ -5594,15 +5729,16 @@ const SalesPage: React.FC = () => {
         guestSectionsForReceipt[g].push(mapItem(item));
       });
 
+      const displayOrderNumber = orderListSelectedOrder.order_number || String(orderId).padStart(3, '0');
       const receiptPayload = {
         header: {
-          orderNumber: orderListSelectedOrder.order_number || orderId,
+          orderNumber: displayOrderNumber,
           channel,
           tableName,
           serverName: (orderListSelectedOrder as any)?.server_name || '',
         },
         orderInfo: {
-          orderNumber: orderListSelectedOrder.order_number || orderId,
+          orderNumber: displayOrderNumber,
           orderType: channel,
           channel,
           tableName,
@@ -5611,7 +5747,7 @@ const SalesPage: React.FC = () => {
           serverName: (orderListSelectedOrder as any)?.server_name || '',
         },
         storeName: store.name,
-        orderNumber: orderListSelectedOrder.order_number || orderId,
+        orderNumber: displayOrderNumber,
         orderType: channel,
         channel,
         tableName,
@@ -5812,7 +5948,7 @@ const SalesPage: React.FC = () => {
         body: JSON.stringify({ 
           items: printItems,
           orderInfo: {
-            orderNumber: orderListSelectedOrder.order_number ? `#${orderListSelectedOrder.order_number}` : `#${orderListSelectedOrder.id}`,
+            orderNumber: `#${orderListSelectedOrder.order_number || String(orderListSelectedOrder.id).padStart(3, '0')}`,
             table: tableNameForPrint || '',
             tableName: tableNameForPrint || '',
             tableId: tableIdForPrint || '',
@@ -5941,6 +6077,34 @@ const SalesPage: React.FC = () => {
       return s;
     };
 
+  /** delivery_orders.name / customer_name 예: "UberEats #A1B2" — 컬럼이 비었을 때 보조 */
+  const orderListParseChannelOrderFromLabel = (label?: string | null): string => {
+    const m = String(label || '').match(/#\s*([^\s#]+)/);
+    return m ? String(m[1]).trim() : '';
+  };
+  /** DL{id} 접미사가 JS 타임스탬프(내부 메타 id)인 경우 — 채널 주문번호로 쓰지 않음 */
+  const orderListIsInternalDeliveryMetaId = (suffix: string): boolean => {
+    const s = String(suffix || '').trim();
+    if (!/^\d+$/.test(s)) return false;
+    const n = Number(s);
+    return s.length >= 12 && s.length <= 14 && n >= 1e12 && n < 1e14;
+  };
+
+  /** 우측 패널 딜리버리 카드: 온라인 카드와 동일 — 채널 주문번호 → 전화 뒤 4자리 → POS # (내부 DL 메타 id는 제외) */
+  const formatDeliveryPanelDisplayId = (order: any): string => {
+    let ext = String(order?.deliveryOrderNumber ?? order?.delivery_order_number ?? '').trim();
+    if (ext && orderListIsInternalDeliveryMetaId(ext)) ext = '';
+    if (!ext) {
+      const fromLabel =
+        orderListParseChannelOrderFromLabel(order?.name) ||
+        orderListParseChannelOrderFromLabel(order?.customer_name);
+      if (fromLabel && !orderListIsInternalDeliveryMetaId(fromLabel)) ext = fromLabel;
+    }
+    const phone = order?.phone ?? order?.customer_phone ?? '';
+    const posNum = order?.order_number ?? order?.number;
+    return formatOnlinePanelDisplayId(ext || undefined, phone, posNum);
+  };
+
   const orderListGetDeliveryMeta = (order: any) => {
       const company =
         order?.deliveryCompany ||
@@ -5949,12 +6113,18 @@ const SalesPage: React.FC = () => {
         order?.delivery_channel ||
         order?.order_source ||
         '';
-      const orderNumber =
+      let orderNumber =
         order?.deliveryOrderNumber ||
         order?.delivery_order_number ||
         order?.externalOrderNumber ||
         order?.external_order_number ||
         '';
+      if (!orderNumber) {
+        orderNumber =
+          orderListParseChannelOrderFromLabel(order?.customer_name) ||
+          orderListParseChannelOrderFromLabel(order?.name) ||
+          '';
+      }
       return { company, orderNumber };
     };
 
@@ -9110,13 +9280,37 @@ const SalesPage: React.FC = () => {
                           const firstLine = parts[0] || '';
                           const secondLine = parts[1] || '';
                           const baseFont = (element as any).fontSize ? Number((element as any).fontSize) : 14;
-                          const timeFont = Math.max(8, Math.round((baseFont / 2) * 1.3225));
+                          const nameFontSize = Math.round(baseFont * 1.25);
+                          const timeFont = Math.max(10, Math.round((baseFont / 2) * 1.6));
+                          const isGlassTable =
+                            element.type === 'rounded-rectangle' ||
+                            element.type === 'bar' ||
+                            element.type === 'room' ||
+                            element.type === 'circle';
+                          const glossRadius = element.type === 'circle' ? '50%' : '26px';
                           return (
                             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                              {isGlassTable ? (
+                                <div
+                                  aria-hidden
+                                  style={{
+                                    position: 'absolute',
+                                    inset: 0,
+                                    zIndex: 0,
+                                    pointerEvents: 'none',
+                                    borderRadius: glossRadius,
+                                    background:
+                                      'linear-gradient(155deg, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.12) 18%, transparent 42%), linear-gradient(210deg, transparent 55%, rgba(255,255,255,0.08) 78%, rgba(255,255,255,0.18) 100%)',
+                                    boxShadow:
+                                      'inset 0 4px 10px rgba(255,255,255,0.35), inset 0 -3px 8px rgba(0,0,0,0.06)',
+                                  }}
+                                />
+                              ) : null}
                               <div
                                 style={{
                                   position: 'absolute',
                                   inset: 0,
+                                  zIndex: 1,
                                   display: 'flex',
                                   flexDirection: 'column',
                                   alignItems: 'center',
@@ -9127,9 +9321,9 @@ const SalesPage: React.FC = () => {
                                   transformOrigin: 'center'
                                 }}
                               >
-                                <div style={{ fontSize: baseFont, fontWeight: 'bold' }}>{firstLine}</div>
+                                <div style={{ fontSize: nameFontSize, fontWeight: 800 }}>{firstLine}</div>
                                 {secondLine ? (
-                                  <div style={{ fontSize: timeFont, marginTop: 2 }}>{secondLine}</div>
+                                  <div style={{ fontSize: timeFont, fontWeight: 700, marginTop: 2, opacity: 0.85 }}>{secondLine}</div>
                                 ) : null}
                               </div>
                             </div>
@@ -9145,11 +9339,11 @@ const SalesPage: React.FC = () => {
           {/* 4. ìš°ì¸¡ 34% - Togo/Delivery Order í˜„í™©íŒ */}
           {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
             {/* ìƒë‹¨ ê³ ì • ë²„íŠ¼ ì˜ì—­ */}
-            <div className="flex gap-3 p-3 pb-2 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
+            <div className="flex gap-3 pt-1 px-3 pb-2 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
               {([
                 { label: 'DLV', onClick: handleNewDeliveryClick },
-                { label: 'Online', onClick: handleNewOnlineClick },
-                { label: 'Togo', onClick: handleNewTogoClick },
+                { label: 'ONLINE', onClick: handleNewOnlineClick },
+                { label: 'TOGO', onClick: handleNewTogoClick },
               ] as const).map(({ label, onClick }) => {
                 const shadowNormal = [
                   '-8px -8px 20px rgba(255,255,255,0.95)',
@@ -9174,12 +9368,12 @@ const SalesPage: React.FC = () => {
                     key={label}
                     type="button"
                     onClick={onClick}
-                    className="relative flex-1 min-h-[56px] flex items-center justify-center"
+                    className="relative flex-1 min-h-[48px] flex items-center justify-center"
                     style={{
                       borderRadius: '40px',
                       border: 'none',
                       fontSize: `var(--bottom-bar-btn-font, ${footerButtonFontPx}px)`,
-                      fontWeight: 500,
+                      fontWeight: 700,
                       letterSpacing: '-0.02em',
                       cursor: 'pointer',
                       background: 'linear-gradient(145deg, #f7f7f9, #e8e8ec)',
@@ -9269,9 +9463,9 @@ const SalesPage: React.FC = () => {
                             </div>
                           )}
                           <button 
-                            className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
-                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#3d4f63',
+                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#5c4a3d',
                               border: 'none',
                               boxShadow: isSourceTogo || isTargetSelectable
                                 ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
@@ -9293,15 +9487,13 @@ const SalesPage: React.FC = () => {
                             onMouseLeave={() => { if (swipeDragRef.current?.id === String(order.id)) { swipeDragRef.current = null; setSwipeDragState(null); } }}
                           >
                             <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{abbreviateDeliveryChannel(order.deliveryCompany)}</span>
-                              <span className="font-bold text-right">{formatChannelOrderNumber(order.deliveryOrderNumber, order.phone)}</span>
+                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{order.deliveryCompany ? abbreviateDeliveryChannel(order.deliveryCompany) : 'Delivery'}</span>
+                              <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${dIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dIsPaid ? 'READY' : 'UNPAID'}</span>
+                              <span className="font-bold text-right">{formatPosNumber(order.order_number)}</span>
                             </div>
                             <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
-                              <span>{order.readyTimeLabel || '--:--'}</span>
-                              <span className="font-bold">{formatPosNumber(order.number)}</span>
-                            </div>
-                            <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: dIsPaid ? '#6ee7b7' : '#fca5a5' }}>
-                              {dIsPaid ? 'Ready' : 'UNPAID'}
+                              <span>{formatTimeAmPm(order.readyTimeLabel)}</span>
+                              <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{formatDeliveryOrderNumberForPanel(order.deliveryOrderNumber)}</span>
                             </div>
                         </button>
                         </div>
@@ -9393,9 +9585,9 @@ const SalesPage: React.FC = () => {
                         return (
                           <div key={`togo-${order.id}`}>
                           <button 
-                            className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
-                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : tIsPickedUp ? '#A8D5A8' : '#3d4f63',
+                              background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : tIsPickedUp ? '#A8D5A8' : '#3d5c48',
                               border: 'none',
                               boxShadow: isSourceTogo || isTargetSelectable
                                 ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
@@ -9407,15 +9599,13 @@ const SalesPage: React.FC = () => {
                             }}
                           >
                               <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                                <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>Togo</span>
+                                <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
+                                <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{tIsPaid ? 'READY' : 'UNPAID'}</span>
                                 <span className="font-bold text-right">{formatPosNumber(order.number)}</span>
                               </div>
                               <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
-                                <span>{order.readyTimeLabel || '--:--'}</span>
-                                <span className="font-bold">{formatPosNumber(order.number)}</span>
-                              </div>
-                              <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: tIsPaid ? '#6ee7b7' : '#fca5a5' }}>
-                                {tIsPaid ? 'Ready' : 'UNPAID'}
+                                <span>{formatTimeAmPm(order.readyTimeLabel)}</span>
+                                <span className="font-bold">{formatTogoPanelDisplayId(order.phone, order.name, order.number)}</span>
                               </div>
                           </button>
                           </div>
@@ -9440,6 +9630,7 @@ const SalesPage: React.FC = () => {
                         const oStatus = String(card.status || '').toUpperCase();
                         const oIsPaid = oStatus === 'PAID' || oStatus === 'COMPLETED' || oStatus === 'CLOSED';
                         const oIsPickedUp = oStatus === 'PICKED_UP';
+                        const displayTime = formatTimeAmPm(card.time);
                         if (oIsPickedUp) return null;
                         let backgroundColor = oIsPickedUp ? '#B1C4DD' : oIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                         let borderColor = '#9BB3D1';
@@ -9464,9 +9655,9 @@ const SalesPage: React.FC = () => {
                               </div>
                             )}
                             <button
-                              className={`w-full rounded-2xl px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                              className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
                               style={{
-                                background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : oIsPickedUp ? '#B1C4DD' : '#3d4f63',
+                                background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : oIsPickedUp ? '#B1C4DD' : '#3d4a6b',
                                 border: 'none',
                                 boxShadow: isSourceOnline || isTargetSelectable
                                   ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceOnline ? '3px #7C3AED' : '2px #8B5CF6'}`
@@ -9486,15 +9677,13 @@ const SalesPage: React.FC = () => {
                               } : {})}
                             >
                               <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                                <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>Online</span>
+                                <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>ONLINE</span>
+                                <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{oIsPaid ? 'READY' : 'UNPAID'}</span>
                                 <span className="font-bold text-right">{onlinePanelDisplayId}</span>
                               </div>
                               <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
-                                <span>{card.time || '--:--'}</span>
-                                <span className="font-bold">{onlinePanelDisplayId}</span>
-                              </div>
-                              <div className="text-[11px] text-center font-bold mt-0.5" style={{ color: oIsPaid ? '#6ee7b7' : '#fca5a5' }}>
-                                {oIsPaid ? 'Ready' : 'UNPAID'}
+                                <span>{displayTime}</span>
+                                <span className="truncate text-right ml-1" style={{ maxWidth: '60%' }}>{(card as any).name || (card as any).fullOrder?.customerName || ''}</span>
                               </div>
                           </button>
                           </div>
@@ -10802,13 +10991,13 @@ const SalesPage: React.FC = () => {
                     {(newOrderAlertData.items || []).map((item: any, idx: number) => (
                       <div key={idx} className="flex justify-between text-sm">
                         <span>{item.quantity || 1}x {item.name}</span>
-                        <span className="font-medium">${(item.price * (item.quantity || 1)).toFixed(2)}</span>
+                        <span className="font-medium">{`$${((item.price || 0) * (item.quantity || 1)).toFixed(2)}`}</span>
                       </div>
                     ))}
                   </div>
                   <div className="border-t mt-3 pt-3 flex justify-between font-bold text-lg">
                     <span>Total</span>
-                    <span className="text-green-600">${(newOrderAlertData.total || 0).toFixed(2)}</span>
+                    <span className="text-green-600">{`$${(newOrderAlertData.total || 0).toFixed(2)}`}</span>
                   </div>
                 </div>
                 
@@ -10920,7 +11109,7 @@ const SalesPage: React.FC = () => {
                         onClick={() => setOrderListChannelFilter('all')}
                         className={
                           orderListChannelFilter === 'all'
-                            ? 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/55 bg-white/88 text-slate-800 shadow-[0_4px_18px_rgba(0,0,0,0.12)] backdrop-blur-md'
+                            ? 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border-2 border-white/80 bg-white text-slate-800 shadow-[0_4px_18px_rgba(0,0,0,0.12)] backdrop-blur-md'
                             : 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/25 bg-white/10 text-white/90 hover:bg-white/18 hover:border-white/40 backdrop-blur-md'
                         }
                         style={{ WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)' }}
@@ -11124,7 +11313,7 @@ const SalesPage: React.FC = () => {
                                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
                                 )}
                               </span>
-                              <span className="w-18 text-right font-bold">${Number(displayAmount || 0).toFixed(2)}</span>
+                              <span className="w-18 text-right font-bold">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
                             </div>
                             <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)' }} />
                             </React.Fragment>
@@ -11191,57 +11380,108 @@ const SalesPage: React.FC = () => {
                               >
                                 Void
                               </button>
-                              <button
-                                onClick={async () => {
-                                  const orderId = orderListSelectedOrder?.id;
-                                  if (!orderId) return;
-                                  try {
-                                    const _oType = (orderListSelectedOrder.order_type || '').toUpperCase();
-                                    const _oTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
-                                    const _firebaseId = orderListSelectedOrder.firebase_id;
-                                    const isOnlineOrder = _oType === 'ONLINE' || _oType === 'WEB' || _oType === 'QR' || _oTableId.startsWith('OL') || !!_firebaseId;
-                                    const isDeliveryOrder = _oType === 'DELIVERY' || _oType === 'UBEREATS' || _oType === 'UBER' || _oType === 'DOORDASH' || _oType === 'SKIP' || _oType === 'SKIPTHEDISHES' || _oType === 'FANTUAN' || _oTableId.startsWith('DL');
+                              {(() => {
+                                const _pkType = (orderListSelectedOrder.order_type || '').toUpperCase();
+                                const _pkTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
+                                const _pkFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                const _pkStatus = String(orderListSelectedOrder.status || '').toUpperCase();
+                                const _pkIsDelivery = _pkType === 'DELIVERY' || _pkFulfillment === 'delivery' || _pkType === 'UBEREATS' || _pkType === 'UBER' || _pkType === 'DOORDASH' || _pkType === 'SKIP' || _pkType === 'SKIPTHEDISHES' || _pkType === 'FANTUAN' || _pkTableId.startsWith('DL');
+                                const _pkIsPaid = _pkStatus === 'PAID' || _pkStatus === 'COMPLETED' || _pkStatus === 'CLOSED' || _pkIsDelivery;
 
-                                    await fetch(`${API_URL}/orders/${orderId}/status`, {
-                                      method: 'PATCH',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ status: 'PICKED_UP' }),
-                                    });
-
-                                    if (isOnlineOrder && _firebaseId) {
-                                      try {
-                                        await fetch(`${API_URL}/online-orders/order/${_firebaseId}/pickup`, {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                        });
-                                      } catch (e) { console.error('[Pickup] Firebase pickup failed:', e); }
-                                    }
-
-                                    if (isDeliveryOrder && _oTableId.startsWith('DL')) {
-                                      const deliveryMetaId = _oTableId.substring(2);
-                                      if (deliveryMetaId) {
+                                if (_pkIsPaid) {
+                                  return (
+                                    <button
+                                      onClick={async () => {
+                                        const orderId = orderListSelectedOrder?.id;
+                                        if (!orderId) return;
                                         try {
-                                          await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(deliveryMetaId)}/status`, {
+                                          const _firebaseId = orderListSelectedOrder.firebase_id;
+                                          const isOnlineOrder = _pkType === 'ONLINE' || _pkType === 'WEB' || _pkType === 'QR' || _pkTableId.startsWith('OL') || !!_firebaseId;
+
+                                          await fetch(`${API_URL}/orders/${orderId}/status`, {
                                             method: 'PATCH',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ status: 'PICKED_UP' }),
                                           });
-                                        } catch (e) { console.error('[Pickup] Delivery meta pickup failed:', e); }
-                                      }
-                                    }
 
-                                    setOrderListSelectedOrder(null);
-                                    setOrderListSelectedItems([]);
-                                    fetchOrderList(orderListDate, orderListOpenMode);
-                                    loadTogoOrders();
-                                    loadOnlineOrders();
-                                  } catch (e) { console.error('[Pickup Complete] Error:', e); }
-                                }}
-                                style={{ flex: 1 }}
-                                className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
-                              >
-                                Pickup
-                              </button>
+                                          if (isOnlineOrder && _firebaseId) {
+                                            try {
+                                              await fetch(`${API_URL}/online-orders/order/${_firebaseId}/pickup`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                              });
+                                            } catch (e) { console.error('[Pickup] Firebase pickup failed:', e); }
+                                          }
+
+                                          if (_pkIsDelivery && _pkTableId.startsWith('DL')) {
+                                            const deliveryMetaId = _pkTableId.substring(2);
+                                            if (deliveryMetaId) {
+                                              try {
+                                                await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(deliveryMetaId)}/status`, {
+                                                  method: 'PATCH',
+                                                  headers: { 'Content-Type': 'application/json' },
+                                                  body: JSON.stringify({ status: 'PICKED_UP' }),
+                                                });
+                                              } catch (e) { console.error('[Pickup] Delivery meta pickup failed:', e); }
+                                            }
+                                          }
+
+                                          setOrderListSelectedOrder(null);
+                                          setOrderListSelectedItems([]);
+                                          fetchOrderList(orderListDate, orderListOpenMode);
+                                          loadTogoOrders();
+                                          loadOnlineOrders();
+                                        } catch (e) { console.error('[Pickup Complete] Error:', e); }
+                                      }}
+                                      style={{ flex: 1 }}
+                                      className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                    >
+                                      Pickup
+                                    </button>
+                                  );
+                                }
+
+                                return (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        const orderId = Number(orderListSelectedOrder.id);
+                                        if (!Number.isFinite(orderId)) return;
+                                        const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                        const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                        const nextOrderType =
+                                          rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                            ? 'togo'
+                                            : rawType.includes('online')
+                                            ? 'online'
+                                            : 'pos';
+                                        navigate('/sales/order', {
+                                          state: {
+                                            orderType: nextOrderType,
+                                            menuId: defaultMenu.menuId,
+                                            menuName: defaultMenu.menuName,
+                                            orderId,
+                                            customerName: orderListSelectedOrder.customer_name || '',
+                                            customerPhone: orderListSelectedOrder.customer_phone || '',
+                                            readyTimeLabel: orderListSelectedOrder.ready_time || '',
+                                            fulfillmentMode: orderListSelectedOrder.fulfillment_mode || null,
+                                            openPayment: true,
+                                            fromOrderHistory: true,
+                                          },
+                                        });
+                                        setShowOrderListModal(false);
+                                      } catch (e) {
+                                        console.error('[Pickup Pay] Failed to open payment:', e);
+                                        alert('Failed to open payment.');
+                                      }
+                                    }}
+                                    style={{ flex: 1 }}
+                                    className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                  >
+                                    Pay
+                                  </button>
+                                );
+                              })()}
                             </>
                           ) : (
                           <>
@@ -11448,7 +11688,7 @@ const SalesPage: React.FC = () => {
                         </div>
 
                         {/* Channel Header - ë²„íŠ¼ ì•„ëž˜ë¡œ ì´ë™ (ë†’ì´ 10% ê°ì†Œ) */}
-                        <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 text-center flex-shrink-0">
+                        <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 flex-shrink-0">
                           {(() => {
                             const badge = orderListGetChannelBadge(orderListSelectedOrder);
                             const oType = (orderListSelectedOrder.order_type || '').toUpperCase();
@@ -11456,53 +11696,78 @@ const SalesPage: React.FC = () => {
                             const dCompanyStr = String(dCompany || '').toUpperCase().replace(/\s+/g, '');
                             const dNum = String(dOrderNum || '').replace(/^#/, '').trim();
 
-                            let detailLabel = badge.label;
+                            let channelName = badge.label;
+                            let channelOrderNum = '';
 
                             if (badge.label === 'Online' || badge.label === 'Delivery') {
                               if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
-                                detailLabel = dNum ? `UberEATS #${dNum}` : 'UberEATS';
+                                channelName = 'UberEATS';
                               } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
-                                detailLabel = dNum ? `Doordash #${dNum}` : 'Doordash';
+                                channelName = 'Doordash';
                               } else if (dCompanyStr === 'SKIPTHEDISHES' || dCompanyStr === 'SKIP' || oType === 'SKIP' || oType === 'SKIPTHEDISHES') {
-                                detailLabel = dNum ? `Skipthedishes #${dNum}` : 'Skipthedishes';
+                                channelName = 'SkipTheDishes';
                               } else if (dCompanyStr === 'FANTUAN' || oType === 'FANTUAN') {
-                                detailLabel = dNum ? `Fantuan #${dNum}` : 'Fantuan';
+                                channelName = 'Fantuan';
                               } else if (oType === 'DELIVERY') {
-                                detailLabel = dNum ? `Delivery #${dNum}` : 'Delivery';
+                                channelName = 'Delivery';
                               } else {
-                                detailLabel = dNum ? `Online #${dNum}` : 'Online';
+                                channelName = 'Online';
+                              }
+                              channelOrderNum =
+                                dNum ||
+                                orderListSelectedOrder.online_order_number ||
+                                orderListSelectedOrder.deliveryOrderNumber ||
+                                orderListParseChannelOrderFromLabel(orderListSelectedOrder.customer_name) ||
+                                orderListParseChannelOrderFromLabel(orderListSelectedOrder.name) ||
+                                '';
+                              if (!channelOrderNum) {
+                                const tid = String(orderListSelectedOrder.table_id || '').toUpperCase();
+                                if (tid.startsWith('OL') || tid.startsWith('DL')) {
+                                  const suffix = tid.substring(2).trim();
+                                  // DL 뒤 숫자는 보통 delivery_orders.id(Date.now) — 내부용이면 채널 주문번호로 표시하지 않음
+                                  if (suffix && !orderListIsInternalDeliveryMetaId(suffix)) channelOrderNum = suffix;
+                                }
+                              }
+                              if (!channelOrderNum && channelName === 'Online' && orderListSelectedOrder.customer_name) {
+                                channelOrderNum = orderListSelectedOrder.customer_name;
+                              }
+                            } else if (badge.label === 'Togo' || badge.label === 'Pickup') {
+                              channelName = 'TOGO';
+                              const rawPhone = String(orderListSelectedOrder.customer_phone || '').replace(/\D/g, '');
+                              if (rawPhone.length >= 4) {
+                                channelOrderNum = rawPhone.slice(-4);
+                              } else if (orderListSelectedOrder.customer_name) {
+                                channelOrderNum = String(orderListSelectedOrder.customer_name).slice(0, 10);
                               }
                             } else if (badge.label === 'Dine-in') {
                               const tbl = orderListSelectedOrder.table_name || '';
-                              if (tbl) detailLabel = `Dine-in  ${tbl}`;
+                              if (tbl) channelName = `Dine-in  ${tbl}`;
                             }
 
+                            const posNumber = orderListSelectedOrder.order_number || String(orderListSelectedOrder.id).padStart(3, '0');
+
                             return (
-                              <span className={`inline-block px-4 py-1.5 rounded-lg text-lg font-bold ${badge.bgColor} ${badge.textColor}`}>
-                                {detailLabel}
-                              </span>
+                              <div className="flex items-center justify-center gap-3">
+                                <span className={`inline-block px-4 py-1.5 rounded-lg text-base font-bold ${badge.bgColor} ${badge.textColor}`}>
+                                  {channelName}{channelOrderNum ? ` / ${channelOrderNum}` : ''}
+                                </span>
+                                <span className="text-sm font-bold text-gray-500">#{posNumber}</span>
+                              </div>
                             );
                           })()}
                         </div>
 
                         {/* Order Info Header (ë†’ì´ 15% ê°ì†Œ) */}
                         <div className="px-4 py-1 bg-white border-b border-gray-200 text-sm flex-shrink-0">
-                          <div className="flex justify-between items-center">
-                            <span className="font-bold text-gray-800">
-                              Server: {orderListSelectedOrder.server_name || '-'}
-                            </span>
-                            <span className="font-bold text-gray-800">
-                              #{orderListSelectedOrder.id}
-                            </span>
+                          <div className="flex justify-between items-center text-xs text-gray-600">
+                            <span className="font-bold">Server: {orderListSelectedOrder.server_name || '-'}</span>
+                            <span>{orderListFormatDate(orderListSelectedOrder.created_at)} {orderListFormatTime(orderListSelectedOrder.created_at)}</span>
                           </div>
                           {(orderListSelectedOrder.customer_name || orderListSelectedOrder.customer_phone) && (
-                            <div className="text-xs text-gray-700 font-bold truncate">
+                            <div className="text-xs text-gray-700 font-bold truncate mt-0.5">
                               Customer: {[orderListSelectedOrder.customer_name, orderListSelectedOrder.customer_phone].filter(Boolean).join(' · ')}
                             </div>
                           )}
-                          <div className="text-gray-600 text-xs">
-                            {orderListFormatDate(orderListSelectedOrder.created_at)} {orderListFormatTime(orderListSelectedOrder.created_at)}
-                          </div>
                         </div>
 
                         {/* Items List + Totals - í•¨ê»˜ ìŠ¤í¬ë¡¤ */}
@@ -11598,8 +11863,8 @@ const SalesPage: React.FC = () => {
                                       <td className="text-right font-medium text-sm" style={{ paddingTop: 2, paddingBottom: 2, verticalAlign: 'top' }}>
                                         {item.discountAmount > 0 ? (
                                           <div style={{ lineHeight: 1.1 }}>
-                                            <span className="line-through text-gray-400 text-xs">${((item.price || 0) * (item.quantity || 1)).toFixed(2)}</span>
-                                            <div className="text-green-600">${(((item.price || 0) * (item.quantity || 1)) - item.discountAmount).toFixed(2)}</div>
+                                            <span className="line-through text-gray-400 text-xs">{`$${((item.price || 0) * (item.quantity || 1)).toFixed(2)}`}</span>
+                                            <div className="text-green-600">{`$${(((item.price || 0) * (item.quantity || 1)) - item.discountAmount).toFixed(2)}`}</div>
                                           </div>
                                         ) : (
                                           `$${((item.price || 0) * (item.quantity || 1)).toFixed(2)}`
@@ -11624,7 +11889,7 @@ const SalesPage: React.FC = () => {
                                           )}
                                         </td>
                                         <td className="text-right font-medium text-sm text-red-400" style={{ paddingTop: 2, paddingBottom: 2, textDecoration: 'line-through' }}>
-                                          -${(Number(vl.amount || 0)).toFixed(2)}
+                                          {`-$${(Number(vl.amount || 0)).toFixed(2)}`}
                                         </td>
                                       </tr>
                                     ))}
@@ -11639,17 +11904,17 @@ const SalesPage: React.FC = () => {
                             <div className="px-4 py-1 bg-slate-100 border-t-2 border-gray-300 text-sm">
                               <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                 <span className="font-medium text-xs">Sub Total:</span>
-                                <span className="font-medium text-xs">${totals.subtotal.toFixed(2)}</span>
+                                <span className="font-medium text-xs">{`$${totals.subtotal.toFixed(2)}`}</span>
                               </div>
                               {totals.discountTotal > 0 && (
                                 <>
                                   <div className="flex justify-between text-green-600" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                     <span className="font-medium text-xs">{totals.promotionName === 'Item Discount' ? 'ðŸ·ï¸' : '🎁'} {(totals.promotionName || 'Discount').replace(/^Discount\b/, 'D/C')}:</span>
-                                    <span className="font-medium text-xs">-${totals.discountTotal.toFixed(2)}</span>
+                                    <span className="font-medium text-xs">{`-$${totals.discountTotal.toFixed(2)}`}</span>
                                   </div>
                                   <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                     <span className="font-medium text-xs">Net Sales:</span>
-                                    <span className="font-medium text-xs">${totals.subtotalAfterDiscount.toFixed(2)}</span>
+                                    <span className="font-medium text-xs">{`$${totals.subtotalAfterDiscount.toFixed(2)}`}</span>
                                   </div>
                                 </>
                               )}
@@ -11657,18 +11922,18 @@ const SalesPage: React.FC = () => {
                                 totals.taxLines.map((tl: any, ti: number) => (
                                   <div key={ti} className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                     <span className="font-medium text-xs">{tl.name}:</span>
-                                    <span className="font-medium text-xs">${tl.amount.toFixed(2)}</span>
+                                    <span className="font-medium text-xs">{`$${tl.amount.toFixed(2)}`}</span>
                                   </div>
                                 ))
                               ) : (
                                 <div className="flex justify-between" style={{ paddingTop: 1, paddingBottom: 1 }}>
                                   <span className="font-medium text-xs">Tax:</span>
-                                  <span className="font-medium text-xs">${totals.tax.toFixed(2)}</span>
+                                  <span className="font-medium text-xs">{`$${totals.tax.toFixed(2)}`}</span>
                                 </div>
                               )}
                               <div className="flex justify-between py-0.5 font-bold text-base border-t-2 border-gray-400 mt-0.5">
                                 <span>Total:</span>
-                                <span>${totals.total.toFixed(2)}</span>
+                                <span>{`$${totals.total.toFixed(2)}`}</span>
                               </div>
                               <div className="flex justify-center py-1">
                                 <span className={`px-5 py-1.5 rounded-lg text-sm font-bold ${
@@ -12036,6 +12301,7 @@ const SalesPage: React.FC = () => {
                         tableName: newOrder.name,
                         channel: 'delivery',
                         orderType: 'delivery',
+                        fulfillmentMode: 'delivery',
                         priceType: 'price2',
                         menuId: defaultMenu.menuId,
                         menuName: defaultMenu.menuName,
@@ -13388,6 +13654,11 @@ const SalesPage: React.FC = () => {
             setSelectedOrderType(null);
             loadOnlineOrders();
             loadTogoOrders();
+            if (showOrderListModal) {
+              setOrderListSelectedOrder(null);
+              setOrderListSelectedItems([]);
+              fetchOrderList(orderListDate, orderListOpenMode);
+            }
           } catch (e) {
             console.error('Void error:', e);
             setTogoVoidPinError('An error occurred.');
@@ -13995,7 +14266,7 @@ const SalesPage: React.FC = () => {
                 <div className="bg-green-50 border-2 border-green-200 rounded-lg p-2 h-[112px] flex flex-col justify-center text-center">
                   <div className="text-xs text-green-600 mb-1">Available Balance</div>
                   {giftCardBalance !== null ? (
-                    <div className="text-4xl font-bold text-green-600">${giftCardBalance.toFixed(2)}</div>
+                    <div className="text-4xl font-bold text-green-600">{`$${giftCardBalance.toFixed(2)}`}</div>
                   ) : (
                     <div className="text-base font-medium text-gray-400">Enter card number and check</div>
                   )}
@@ -14473,7 +14744,7 @@ const SalesPage: React.FC = () => {
                             {/* Line 3: Amount & Payment Method */}
                             <div className="text-sm mt-1">
                               <span>
-                                Paid: <span className="font-bold text-green-600">${(refundSelectedOrder.totalPaid || 0).toFixed(2)}</span>
+                                Paid: <span className="font-bold text-green-600">{`$${(refundSelectedOrder.totalPaid || 0).toFixed(2)}`}</span>
                                 <span className="ml-2 text-gray-600">via {paymentMethods}</span>
                               </span>
                             </div>
@@ -14543,9 +14814,9 @@ const SalesPage: React.FC = () => {
                                   <span className="pl-2">{maxQty > 0 ? maxQty : '-'}</span>
                                 )}
                               </div>
-                              <div className="w-14 text-right text-sm">${unitPrice.toFixed(2)}</div>
+                              <div className="w-14 text-right text-sm">{`$${unitPrice.toFixed(2)}`}</div>
                               <div className="w-14 text-right font-semibold text-sm">
-                                ${(unitPrice * (isSelected ? selectedQty : maxQty)).toFixed(2)}
+                                {`$${(unitPrice * (isSelected ? selectedQty : maxQty)).toFixed(2)}`}
                               </div>
                             </div>
                           );
@@ -14560,15 +14831,15 @@ const SalesPage: React.FC = () => {
                         <div className="bg-red-50 border-2 border-red-200 rounded-lg p-2 mb-2">
                           <div className="flex justify-between text-sm">
                             <span>Subtotal:</span>
-                            <span>${subtotal.toFixed(2)}</span>
+                            <span>{`$${subtotal.toFixed(2)}`}</span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span>Tax Refund:</span>
-                            <span>${tax.toFixed(2)}</span>
+                            <span>{`$${tax.toFixed(2)}`}</span>
                           </div>
                           <div className="flex justify-between text-lg font-bold text-red-600 border-t pt-1 mt-1">
                             <span>Total Refund:</span>
-                            <span>${total.toFixed(2)}</span>
+                            <span>{`$${total.toFixed(2)}`}</span>
                           </div>
                         </div>
                       );
@@ -14669,7 +14940,7 @@ const SalesPage: React.FC = () => {
                     <div className={`${isGiftCard ? 'bg-purple-50' : 'bg-blue-50'} p-4 rounded-xl mb-3`}>
                       <div className="flex justify-between items-center mb-2">
                         <span className="text-sm text-gray-600">{isGiftCard ? 'Reload Amount:' : 'Refund Amount:'}</span>
-                        <span className={`text-2xl font-bold ${isGiftCard ? 'text-purple-600' : 'text-red-600'}`}>${refundPendingData.total.toFixed(2)}</span>
+                        <span className={`text-2xl font-bold ${isGiftCard ? 'text-purple-600' : 'text-red-600'}`}>{`$${refundPendingData.total.toFixed(2)}`}</span>
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-gray-600">Payment Method:</span>
@@ -14816,7 +15087,7 @@ const SalesPage: React.FC = () => {
                     <div className="bg-purple-50 p-4 rounded-xl mb-3">
                       <div className="flex justify-between items-center mb-2">
                         <span className="text-sm text-gray-600">Reload Amount:</span>
-                        <span className="text-2xl font-bold text-purple-600">${refundPendingData.total.toFixed(2)}</span>
+                        <span className="text-2xl font-bold text-purple-600">{`$${refundPendingData.total.toFixed(2)}`}</span>
                       </div>
                       <p className="text-sm text-gray-600">
                         The refund amount will be reloaded to the gift card.
@@ -14905,7 +15176,7 @@ const SalesPage: React.FC = () => {
                     </div>
                     <div className="flex justify-between mb-1">
                       <span>Refund Amount:</span>
-                      <span className="font-bold text-red-600">${(refundResult.total || 0).toFixed(2)}</span>
+                      <span className="font-bold text-red-600">{`$${(refundResult.total || 0).toFixed(2)}`}</span>
                     </div>
                     <div className="flex justify-between mb-1">
                       <span>Processed by:</span>
@@ -15037,7 +15308,7 @@ const SalesPage: React.FC = () => {
               {pendingOnlineReservation.deposit_amount > 0 && (
                 <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 mb-5 flex justify-between items-center">
                   <div className="text-sm text-purple-700 font-semibold">💳 Deposit</div>
-                  <div className="text-xl font-extrabold text-purple-700">${pendingOnlineReservation.deposit_amount?.toFixed(2)}</div>
+                  <div className="text-xl font-extrabold text-purple-700">{`$${pendingOnlineReservation.deposit_amount?.toFixed(2)}`}</div>
                 </div>
               )}
 
