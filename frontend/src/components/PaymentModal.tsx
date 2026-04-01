@@ -428,11 +428,9 @@ useEffect(() => {
         const paidFood = scopedPayments.reduce((s, p: any) => s + ((p.amount || 0) - ((p as any).tip || 0)), 0);
         return Math.max(0, Number((myShare - paidFood).toFixed(2)));
       }
-      const baseByProp = (typeof outstandingDue === 'number') ? Number(outstandingDue.toFixed(2)) : Number(grand.toFixed(2));
-      if (onCreateAdhocGuests && guestCount && guestCount > 1 && baseByProp <= Number(grand.toFixed(2))) {
-         return Math.max(0, baseByProp);
-      }
-      return Math.max(0, baseByProp);
+      const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
+      const dueFull = Math.max(0, Number((grand - confirmedTotal).toFixed(2)));
+      return Math.max(0, dueFull);
     } catch {
       return Math.max(0, Number(grand.toFixed(2)));
     }
@@ -681,8 +679,6 @@ useEffect(() => {
           const grandCents = Math.round(grand * 100);
           const guestIdx = typeof effectiveGuestMode === 'number' ? effectiveGuestMode : 1;
           scopeDueNow = Math.max(0, Number((calcFairShare(grandCents, splitNActive, guestIdx) - confirmedTotalNow).toFixed(2)));
-        } else if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
-          scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
         } else {
           scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
         }
@@ -1013,8 +1009,6 @@ useEffect(() => {
           const grandCents = Math.round(grand * 100);
           const guestIdx = typeof effectiveGuestMode === 'number' ? effectiveGuestMode : 1;
           scopeDueNow = Math.max(0, Number((calcFairShare(grandCents, splitNActive, guestIdx) - confirmedTotalNow).toFixed(2)));
-        } else if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
-          scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
         } else {
           scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
         }
@@ -1087,14 +1081,10 @@ useEffect(() => {
         const myPaid = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
         return Math.max(0, Number((myShare - myPaid - parsedAmount).toFixed(2)));
     }
-    if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
-        return Math.max(0, Number((outstandingDue - parsedAmount).toFixed(2)));
-    }
-
     const confirmedTotal = Number(((cashPaidConfirmed + nonCashPaidConfirmed)).toFixed(2));
     const dueFull = Math.max(0, Number((grand - confirmedTotal).toFixed(2)));
     return Math.max(0, Number((dueFull - parsedAmount).toFixed(2)));
-  }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, parsedAmount, outstandingDue, onCreateAdhocGuests, isSplitActive, splitNActive, effectiveGuestMode]);
+  }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, parsedAmount, onCreateAdhocGuests, isSplitActive, splitNActive, effectiveGuestMode]);
 
 
   // Next는 사용자 조작으로만 진행 (자동 완료 제거)
@@ -1107,11 +1097,8 @@ useEffect(() => {
       const myShare = calcFairShare(grandCents, splitNActive, guestIdx);
       return Math.max(0, Number((myShare - confirmedTotal).toFixed(2)));
     }
-    if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
-      return Math.max(0, Number(outstandingDue.toFixed(2)));
-    }
     return Math.max(0, Number((grand - confirmedTotal).toFixed(2)));
-  }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, outstandingDue, onCreateAdhocGuests, isSplitActive, splitNActive, effectiveGuestMode]);
+  }, [grand, cashPaidConfirmed, nonCashPaidConfirmed, onCreateAdhocGuests, isSplitActive, splitNActive, effectiveGuestMode]);
 
   const change = useMemo(() => {
     // Change 표시 규칙:
@@ -1514,8 +1501,6 @@ const addQuick = async (q: number) => {
 					const grandCents = Math.round(grand * 100);
 					const guestIdx = typeof effectiveGuestMode === 'number' ? effectiveGuestMode : 1;
 					scopeDueNow = Math.max(0, Number((calcFairShare(grandCents, splitNActive, guestIdx) - confirmedTotalNow).toFixed(2)));
-				} else if (onCreateAdhocGuests && isSplitActive && typeof outstandingDue === 'number') {
-					scopeDueNow = Math.max(0, Number(outstandingDue.toFixed(2)));
 				} else {
 					scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
 				}
@@ -2111,6 +2096,7 @@ const addQuick = async (q: number) => {
                     setSplitNActive(0); setSplitNCustomMode(false); setSplitNCustomDigits('');
                     setInputTarget('AMOUNT'); setLastChange(null);
                     setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod('');
+                    if (onCreateAdhocGuests) onCreateAdhocGuests(0);
                   }}>Clear</button>
                 )}
               </div>
