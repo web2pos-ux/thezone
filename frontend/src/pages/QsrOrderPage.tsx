@@ -41,8 +41,13 @@ import TipEntryModal from '../components/TipEntryModal';
 import OrderDetailModal, { OrderData } from '../components/OrderDetailModal';
 import PickupListPanel from '../components/PickupListPanel';
 import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
+import { PickupChannelGlassButton } from '../components/PickupChannelGlassButton';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
+import {
+  classifyPickupChannel,
+  shouldShowInPickupList,
+} from '../utils/pickupListRules';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
@@ -197,6 +202,10 @@ const QsrOrderPage = () => {
   const [showQsrTogoModal, setShowQsrTogoModal] = useState(false);
   const [showPickupListPanel, setShowPickupListPanel] = useState(false);
   const [pickupListChannelFilter, setPickupListChannelFilter] = useState<'ALL' | 'PICKUP' | 'ONLINE' | 'DELIVERY'>('ALL');
+  const [showQsrOrderDetailModal, setShowQsrOrderDetailModal] = useState(false);
+  const [qsrPickupOnlineOrders, setQsrPickupOnlineOrders] = useState<OrderData[]>([]);
+  const [qsrPickupTogoOrders, setQsrPickupTogoOrders] = useState<OrderData[]>([]);
+  const [qsrPickupDeliveryOrders, setQsrPickupDeliveryOrders] = useState<OrderData[]>([]);
   const [qsrPickupModalTab, setQsrPickupModalTab] = useState<'pickup' | 'complete'>('pickup');
   const [qsrPickupTime, setQsrPickupTime] = useState(15);
   const [qsrCustomerNameInput, setQsrCustomerNameInput] = useState('');
@@ -2370,7 +2379,7 @@ const handleVoidPinClear = useCallback(() => {
     const calcSubtotal = Number((applied.subtotal || 0).toFixed(2));
     const calcTax = Number((applied.taxesTotal || 0).toFixed(2));
     const calcTotal = Number((applied.total || 0).toFixed(2));
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0) })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: isQsrMode ? 'QSR' : 'FSR' }) });
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: effectiveOrderType, total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0) })), customerName: getPersistableCustomerName(), customerPhone: orderCustomerInfo.phone || null, fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: isQsrMode ? 'QSR' : 'FSR', onlineOrderNumber: (qsrOrderType || '').toLowerCase() === 'online' ? String((location.state as any)?.onlineOrderNumber || '').trim() || null : null }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
@@ -2386,12 +2395,12 @@ const handleVoidPinClear = useCallback(() => {
   /**
    * Order History 관련 함수들
    */
-  const fetchOrderList = async (date: string, mode?: 'history' | 'pickup') => {
+  const fetchOrderList = async (date: string, mode?: 'history' | 'pickup', autoSelectFirst?: boolean) => {
     const effectiveMode = mode ?? orderListOpenMode;
     setOrderListLoading(true);
     try {
       const ordersUrl = effectiveMode === 'pickup'
-        ? `${API_URL}/orders?date=${date}`
+        ? `${API_URL}/orders?pickup_pending=1`
         : `${API_URL}/orders?date=${date}&order_mode=QSR`;
       const [ordersRes, deliveryMetaRes] = await Promise.all([
         fetch(ordersUrl),
@@ -2402,6 +2411,7 @@ const handleVoidPinClear = useCallback(() => {
       const deliveryMetaOrders = Array.isArray(deliveryMetaJson?.orders)
         ? deliveryMetaJson.orders
         : (Array.isArray(deliveryMetaJson) ? deliveryMetaJson : []);
+      let finalOrders: any[] = [];
       if (data.success && Array.isArray(data.orders)) {
         const baseOrders = data.orders;
         if (deliveryMetaOrders.length > 0) {
@@ -2424,14 +2434,64 @@ const handleVoidPinClear = useCallback(() => {
               existing.fulfillment_mode = existing.fulfillment_mode || 'delivery';
             }
           });
-          setOrderListOrders(Array.from(orderMap.values()));
+          finalOrders = Array.from(orderMap.values());
         } else {
-          setOrderListOrders(baseOrders);
+          finalOrders = baseOrders;
         }
       } else if (Array.isArray(data)) {
-        setOrderListOrders(data);
-      } else {
-        setOrderListOrders([]);
+        finalOrders = data;
+      }
+      setOrderListOrders(finalOrders);
+
+      if (autoSelectFirst && effectiveMode === 'pickup' && finalOrders.length > 0) {
+        const pickupFiltered = finalOrders.filter((order: any) => {
+          const _t = (order.order_type || '').toUpperCase();
+          const _f = String(order.fulfillment_mode || '').toLowerCase();
+          const _s = String(order.status || '').toUpperCase();
+          const isEatIn = _t === 'FORHERE' || _t === 'FOR_HERE' || _t === 'POS' || _t === 'DINE_IN' || _t === 'DINE-IN';
+          if (isEatIn) return false;
+          const isTogoOrder = _t === 'TOGO' || ((_f === 'togo') && _t !== 'PICKUP');
+          if (isTogoOrder) return false;
+          if (_s === 'PICKED_UP' || _s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
+          return true;
+        }).sort((a: any, b: any) => {
+          const getReadyTs = (o: any): number => {
+            if (o.ready_time) {
+              const rt = String(o.ready_time).trim();
+              const ampm = rt.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+              if (ampm) {
+                let h = parseInt(ampm[1], 10);
+                const m = parseInt(ampm[2], 10);
+                if (ampm[3].toUpperCase() === 'PM' && h < 12) h += 12;
+                if (ampm[3].toUpperCase() === 'AM' && h === 12) h = 0;
+                const now = new Date();
+                return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0).getTime();
+              }
+              const hm = rt.match(/^(\d{1,2}):(\d{2})$/);
+              if (hm) {
+                const now = new Date();
+                return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(hm[1], 10), parseInt(hm[2], 10), 0).getTime();
+              }
+              const parsed = new Date(rt).getTime();
+              if (!isNaN(parsed)) return parsed;
+            }
+            if (o.pickup_minutes && o.created_at) {
+              const c = new Date(o.created_at).getTime();
+              if (!isNaN(c)) return c + Number(o.pickup_minutes) * 60000;
+            }
+            if (o.created_at) {
+              const c = new Date(o.created_at).getTime();
+              if (!isNaN(c)) return c;
+            }
+            return Infinity;
+          };
+          return getReadyTs(a) - getReadyTs(b);
+        });
+        if (pickupFiltered.length > 0) {
+          const firstOrder = pickupFiltered[0];
+          setOrderListSelectedOrder(firstOrder);
+          fetchOrderDetails(firstOrder.id);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch order list:', error);
@@ -2574,10 +2634,27 @@ const handleVoidPinClear = useCallback(() => {
       order?.deliveryCompany || order?.delivery_company ||
       order?.deliveryChannel || order?.delivery_channel ||
       order?.order_source || '';
-    const orderNumber =
+    let orderNumber =
       order?.deliveryOrderNumber || order?.delivery_order_number ||
       order?.externalOrderNumber || order?.external_order_number || '';
+    if (!orderNumber) {
+      orderNumber =
+        orderListParseChannelOrderFromLabel(order?.customer_name) ||
+        orderListParseChannelOrderFromLabel(order?.name) || '';
+    }
     return { company, orderNumber };
+  };
+
+  const orderListParseChannelOrderFromLabel = (label?: string | null): string => {
+    const m = String(label || '').match(/#\s*([^\s#]+)/);
+    return m ? String(m[1]).trim() : '';
+  };
+
+  const orderListIsInternalDeliveryMetaId = (suffix: string): boolean => {
+    const s = String(suffix || '').trim();
+    if (!/^\d+$/.test(s)) return false;
+    const n = Number(s);
+    return s.length >= 12 && s.length <= 14 && n >= 1e12 && n < 1e14;
   };
 
   const orderListGetTableOrCustomer = (order: any) => {
@@ -2864,6 +2941,37 @@ const handleVoidPinClear = useCallback(() => {
     setOrderListRefundPinLoading(false);
     setOrderListRefundPinError('');
   };
+
+  const loadQsrPickupListOrders = useCallback(async () => {
+    try {
+      const today = getLocalDateString();
+      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO,ONLINE,DELIVERY&date=${today}&limit=200`);
+      const data = await res.json();
+      const raw: any[] = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : Array.isArray(data?.data) ? data.data : [];
+      const filtered = raw.filter((o: any) => shouldShowInPickupList(o));
+      const mapped = filtered.map((o: any) => ({
+        ...o,
+        customerName: o.customer_name || o.customerName || '',
+        name: o.customer_name || o.customerName || o.name || '',
+        customerPhone: o.customer_phone || o.customerPhone || '',
+        phone: o.customer_phone || o.customerPhone || o.phone || '',
+        createdAt: o.created_at || o.createdAt || '',
+        placedTime: o.created_at || o.createdAt || o.placedTime || '',
+        readyTime: o.ready_time || o.readyTime || '',
+        readyTimeLabel: o.ready_time || o.readyTimeLabel || '',
+        number: o.order_number || o.number || '',
+        channel: classifyPickupChannel(o),
+      }));
+      const online = mapped.filter((o: any) => o.channel === 'ONLINE') as OrderData[];
+      const togo = mapped.filter((o: any) => o.channel === 'TOGO' || o.channel === 'PICKUP') as OrderData[];
+      const delivery = mapped.filter((o: any) => o.channel === 'DELIVERY') as OrderData[];
+      setQsrPickupOnlineOrders(online);
+      setQsrPickupTogoOrders(togo);
+      setQsrPickupDeliveryOrders(delivery);
+    } catch (e) {
+      console.error('[QSR PickupList] load error:', e);
+    }
+  }, [API_URL]);
 
   const payingExistingOrderRef = useRef(false);
 
@@ -3915,7 +4023,7 @@ const handleVoidPinClear = useCallback(() => {
     });
   };
 
-  const handleAddPayment = async ({ method, amount, tip, change: changeVal = 0 }:{ method:string; amount:number; tip:number; change?: number }) => {
+  const handleAddPayment = async ({ method, amount, tip, change: changeVal = 0, discountedGrand: _discountedGrand }:{ method:string; amount:number; tip:number; change?: number; discountedGrand?: number }) => {
     try {
       // 저장된 주문 id가 없으므로, 우선 OK에서 저장되는 흐름과 달리 Payment에서는 주문 저장 선행 필요할 수 있음
       // 간단히 임시 order 저장 후 id 회수
@@ -3988,8 +4096,19 @@ const handleVoidPinClear = useCallback(() => {
         try {
           const guestNum = Number(guestPaymentMode);
           const guestTotals = computeGuestTotals(guestNum);
-          const guestSubtotal = Number((guestTotals.subtotal || 0).toFixed(2));
-          const guestTaxLines = guestTotals.taxLines || [];
+          const guestSubtotalOrig = Number((guestTotals.subtotal || 0).toFixed(2));
+          const guestTaxLinesOrig = guestTotals.taxLines || [];
+          const guestTaxTotalOrig = guestTaxLinesOrig.reduce((s: number, t: any) => s + (t.amount || 0), 0);
+          const guestTotalOrig = Number((guestSubtotalOrig + guestTaxTotalOrig).toFixed(2));
+
+          const allTotals = computeGuestTotals('ALL');
+          const allGrand = Number(((allTotals.subtotal || 0) + (allTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+          const hasDisc = typeof _discountedGrand === 'number' && _discountedGrand > 0 && _discountedGrand < allGrand - 0.01;
+          const discRatio = hasDisc ? _discountedGrand / allGrand : 1;
+          const discPercent = hasDisc ? Math.round((1 - discRatio) * 100) : 0;
+
+          const guestSubtotal = hasDisc ? Number((guestSubtotalOrig * discRatio).toFixed(2)) : guestSubtotalOrig;
+          const guestTaxLines = hasDisc ? guestTaxLinesOrig.map((t: any) => ({ ...t, amount: Number((Number(t.amount || 0) * discRatio).toFixed(2)) })) : guestTaxLinesOrig;
           const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
           const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
           
@@ -3997,7 +4116,7 @@ const handleVoidPinClear = useCallback(() => {
           const previousPaid = Number((paymentsByGuest[String(guestNum)] || 0).toFixed(2));
           const currentPayment = Number((amount + tip).toFixed(2));
           const totalPaidNow = Number((previousPaid + currentPayment).toFixed(2));
-          const outstanding = Number((guestTotal - totalPaidNow).toFixed(2));
+          const outstanding = Number((guestTotalOrig - totalPaidNow).toFixed(2));
           
           const EPS = 0.05; // 미세한 오차 허용
           const isGuestFullyPaid = outstanding <= EPS;
@@ -4042,12 +4161,12 @@ const handleVoidPinClear = useCallback(() => {
                     memo: item.memo
                   }))
                 }],
-                subtotal: guestSubtotal,
-                adjustments: [],
+                subtotal: hasDisc ? guestSubtotalOrig : guestSubtotal,
+                adjustments: hasDisc ? [{ label: `Discount (${discPercent}%)`, amount: -Number((guestSubtotalOrig - guestSubtotal).toFixed(2)) }] : [],
                 taxLines: guestTaxLines,
                 taxesTotal: guestTaxTotal,
                 total: guestTotal,
-                payments: guestPayments,  // ✅ payments를 receiptData 안에 포함!
+                payments: guestPayments,
                 change: 0,
                 footer: { message: 'Thank you for dining with us!' }
               };
@@ -4319,20 +4438,28 @@ const handleVoidPinClear = useCallback(() => {
             };
           }),
           guestSections,
-          subtotal: baseSubtotal,
+          subtotal: subtotalAfterItemDiscount,
           adjustments: receiptAdjustments,
           taxLines: qsrFinalTaxLines,
           taxesTotal: qsrFinalTaxTotal,
           total: qsrFinalTotal,
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
-            amount: p.amount || 0
+            amount: p.amount || 0,
+            tip: p.tip || 0
           })),
           change: paymentCompleteData?.change || 0,
+          cashTendered: (() => {
+            const ch = Number(paymentCompleteData?.change || 0);
+            if (ch <= 0) return 0;
+            const cashPaid = sessionPayments.filter(p => (p.method || '').toUpperCase() === 'CASH').reduce((s, p) => s + (p.amount || 0), 0);
+            return cashPaid + ch;
+          })(),
           footer: {}
         };
 
         // 스플릿빌(guestCount > 1)에서는 개별 게스트 결제 완료 시 이미 Receipt가 출력되었으므로 스킵
+        console.log('🧾 [DEBUG] handleCompletePayment receiptAdjustments:', JSON.stringify(receiptAdjustments));
         const isSplitBill = guestCount > 1;
         if (!isSplitBill && receiptCount > 0) {
           await fetch(`${API_URL}/printers/print-receipt`, {
@@ -4444,6 +4571,51 @@ const handleVoidPinClear = useCallback(() => {
           let qsr2TaxTotal = taxTotal;
           let qsr2Total = grandTotal;
 
+          // Togo discount / Bag Fee
+          if ((orderType || '').toLowerCase() === 'togo') {
+            const discActive2 = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
+            const bagActive2 = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
+            const discVal2 = Number(togoSettings.discountValue || 0);
+            const bagVal2 = Number(togoSettings.bagFeeValue || 0);
+            if (discActive2 && discVal2 > 0) {
+              const discAmtBase2 = togoSettings.discountMode === 'percent'
+                ? (baseSubtotal * discVal2) / 100
+                : discVal2;
+              const discAmt2 = Number(discAmtBase2.toFixed(2));
+              if (discAmt2 > 0) {
+                const discLbl2 = togoSettings.discountMode === 'percent'
+                  ? `Discount (${discVal2}%)`
+                  : 'Discount';
+                qsr2Adjustments.push({ label: discLbl2, amount: -discAmt2 });
+              }
+            }
+            if (bagActive2 && bagVal2 > 0) {
+              qsr2Adjustments.push({ label: 'Bag Fee', amount: Number(bagVal2.toFixed(2)) });
+            }
+          }
+
+          // Order D/C (전체 할인)
+          const orderDiscItem2 = (orderItems || []).find(it => it.id === 'DISCOUNT_ITEM' && it.type === 'discount');
+          if (orderDiscItem2) {
+            const dd2 = (orderDiscItem2 as any).discount || {};
+            if (dd2.value > 0 || Math.abs(Number(orderDiscItem2.totalPrice || orderDiscItem2.price || 0)) > 0) {
+              const dm2 = (dd2.mode || 'percent').toLowerCase();
+              const dv2 = Number(dd2.value || 0);
+              const dt2 = dd2.type || 'Order D/C';
+              let dAmt2 = 0;
+              if (dm2 === 'percent' && dv2 > 0) {
+                dAmt2 = baseSubtotal * (dv2 / 100);
+              } else {
+                dAmt2 = Math.abs(Number(orderDiscItem2.totalPrice || orderDiscItem2.price || 0));
+              }
+              if (dAmt2 > 0) {
+                const dLabel2 = dm2 === 'percent' && dv2 > 0 ? `${dt2} (${dv2}%)` : dt2;
+                qsr2Adjustments.push({ label: dLabel2, amount: -Number(dAmt2.toFixed(2)) });
+              }
+            }
+          }
+
+          // PaymentModal discount (결제 시 적용된 할인)
           if (pmDiscQsr2 && pmDiscQsr2.percent > 0) {
             qsr2Adjustments.push({
               label: `Discount (${pmDiscQsr2.percent}%)`,
@@ -4464,27 +4636,56 @@ const handleVoidPinClear = useCallback(() => {
             customerPhone: orderCustomerInfo?.phone || '',
             pickupTime: orderPickupInfo?.readyTimeLabel || '',
             serverName: selectedServer?.name || '',
-            items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
-              name: item.name,
-              quantity: item.quantity || 1,
-              price: item.price || 0,
-              totalPrice: item.totalPrice || item.price || 0,
-              modifiers: item.modifiers || [],
-              memo: item.memo
-            })),
-            guestSections: [{
-              guestNumber: 1,
-              items: (orderItems || []).filter(it => it.type !== 'separator').map(item => ({
+            items: (orderItems || []).filter(it => it.type !== 'separator').map(item => {
+              const memoPrice = item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+              const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
+              const gross = perUnit * (item.quantity || 1);
+              const discountAmount = computeItemDiscountAmount(item as any);
+              const lineTotal = Math.max(0, gross - discountAmount);
+              return {
                 name: item.name,
                 quantity: item.quantity || 1,
                 price: item.price || 0,
                 totalPrice: item.totalPrice || item.price || 0,
+                lineTotal,
+                originalTotal: discountAmount > 0 ? gross : undefined,
+                discount: discountAmount > 0 ? {
+                  type: (item as any).discount?.type || 'Item Discount',
+                  value: (item as any).discount?.value || 0,
+                  amount: discountAmount
+                } : undefined,
                 modifiers: item.modifiers || [],
                 memo: item.memo
-              }))
+              };
+            }),
+            guestSections: [{
+              guestNumber: 1,
+              items: (orderItems || []).filter(it => it.type !== 'separator').map(item => {
+                const memoPrice = item.memo && typeof item.memo.price === 'number' ? Number(item.memo.price) : 0;
+                const perUnit = Number((item.totalPrice != null ? item.totalPrice : item.price) || 0) + memoPrice;
+                const gross = perUnit * (item.quantity || 1);
+                const discountAmount = computeItemDiscountAmount(item as any);
+                const lineTotal = Math.max(0, gross - discountAmount);
+                return {
+                  name: item.name,
+                  quantity: item.quantity || 1,
+                  price: item.price || 0,
+                  totalPrice: item.totalPrice || item.price || 0,
+                  lineTotal,
+                  originalTotal: discountAmount > 0 ? gross : undefined,
+                  discount: discountAmount > 0 ? {
+                    type: (item as any).discount?.type || 'Item Discount',
+                    value: (item as any).discount?.value || 0,
+                    amount: discountAmount
+                  } : undefined,
+                  modifiers: item.modifiers || [],
+                  memo: item.memo
+                };
+              })
             }],
-            subtotal: baseSubtotal,
+            subtotal: subtotalAfterItemDiscount,
             taxLines: qsr2TaxLines,
+            taxesTotal: qsr2TaxTotal,
             total: qsr2Total,
             adjustments: qsr2Adjustments,
             payments: (() => {
@@ -4496,9 +4697,17 @@ const handleVoidPinClear = useCallback(() => {
             })(),
             tip: (typeof tipOverride === 'number' && tipOverride > 0) ? tipOverride : sessionPayments.reduce((sum, p) => sum + (p.tip || 0), 0),
             change: paymentCompleteData?.change || 0,
+            cashTendered: (() => {
+              const ch = Number(paymentCompleteData?.change || 0);
+              if (ch <= 0) return 0;
+              const cashPaid = sessionPayments.filter(p => (p.method || '').toUpperCase() === 'CASH').reduce((s, p) => s + (p.amount || 0), 0);
+              return cashPaid + ch;
+            })(),
             footer: { message: 'Thank you!' }
           };
           
+          console.log('🧾 [DEBUG] handlePaymentCompleteClose receiptData.adjustments:', JSON.stringify(qsr2Adjustments));
+          console.log('🧾 [DEBUG] handlePaymentCompleteClose subtotal:', subtotalAfterItemDiscount, 'total:', qsr2Total);
           await fetch(`${API_URL}/printers/print-receipt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -6509,6 +6718,39 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     });
   };
 
+  const [showScrollButtons, setShowScrollButtons] = useState(false);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
+
+  useEffect(() => {
+    const el = orderListRef.current;
+    if (!el) return;
+    const check = () => {
+      const overflows = el.scrollHeight > el.clientHeight + 2;
+      setShowScrollButtons(overflows);
+      setCanScrollUp(el.scrollTop > 2);
+      setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 2);
+    };
+    check();
+    el.addEventListener('scroll', check);
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    const mo = new MutationObserver(check);
+    mo.observe(el, { childList: true, subtree: true });
+    return () => {
+      el.removeEventListener('scroll', check);
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [orderItems]);
+
+  const handleScrollOrder = (dir: 'up' | 'down') => {
+    const el = orderListRef.current;
+    if (!el) return;
+    const step = el.clientHeight * 0.6;
+    el.scrollBy({ top: dir === 'up' ? -step : step, behavior: 'smooth' });
+  };
+
   // Item Memo 관련 함수들
   const handleItemMemoClick = () => {
     if (!selectedOrderItemId) {
@@ -6580,6 +6822,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // 주문 총액 계산 (단일 계산 모듈 결과를 그대로 사용)
   const baseSubtotal = Number((pricingAll.totals?.subtotalAfterAllDiscounts || 0).toFixed(2));
   const grossSubtotal = Number((pricingAll.totals?.grossSubtotal || 0).toFixed(2));
+  const subtotalAfterItemDiscount = Number((pricingAll.totals?.subtotalAfterItemDiscount || 0).toFixed(2));
+  const itemDiscountTotalFromPricing = Number((pricingAll.totals?.itemDiscountTotal || 0).toFixed(2));
+  const orderDiscountTotalFromPricing = Number((pricingAll.totals?.orderDiscountTotal || 0).toFixed(2));
   const baseTaxLines: { name: string; amount: number }[] = (pricingAll.totals?.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
   const baseTaxesTotal = Number((pricingAll.totals?.taxesTotal || 0).toFixed(2));
   const baseTotal = Number((pricingAll.totals?.total || 0).toFixed(2));
@@ -8247,8 +8492,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               table: printTableName,
               server: printServerName,
               orderType: orderTypeDisplay,
-              channel: deliveryCompany || orderTypeDisplay,  // Delivery: use company name
-              orderSource: deliveryCompany || orderTypeDisplay,
+              channel: isDeliveryOrder ? (deliveryCompany || orderTypeDisplay) : orderTypeDisplay,
+              orderSource: isDeliveryOrder ? (deliveryCompany || orderTypeDisplay) : orderTypeDisplay,
               pickupTime: orderPickupInfo.readyTimeLabel || '',
               pickupMinutes: orderPickupInfo.pickupMinutes,
               kitchenNote: savedKitchenMemo || '',
@@ -11103,7 +11348,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               {isQsrMode && (
                 <div className="bg-gradient-to-r from-slate-700 to-slate-800 px-3 py-2 flex items-center gap-2 flex-shrink-0">
                   <button
-                    onClick={() => { setQsrOrderType('forhere'); setShowPickupListPanel(false); }}
+                    onClick={() => { setQsrOrderType('forhere'); setShowPickupListPanel(false); setShowQsrOrderDetailModal(false); }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
                       qsrOrderType === 'forhere' && !showPickupListPanel
                         ? 'bg-amber-500 text-white shadow-lg'
@@ -11114,7 +11359,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     Eat In
                   </button>
                   <button
-                    onClick={() => { setQsrOrderType('togo'); setShowPickupListPanel(false); }}
+                    onClick={() => { setQsrOrderType('togo'); setShowPickupListPanel(false); setShowQsrOrderDetailModal(false); }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
                       qsrOrderType === 'togo' && !showPickupListPanel
                         ? 'bg-green-500 text-white shadow-lg'
@@ -11125,12 +11370,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     Togo
                   </button>
                   <button
-                    onClick={() => {
-                      setQsrOrderType('pickup');
-                      setShowPickupListPanel(false);
-                      setQsrPickupModalTab('pickup');
-                      setShowQsrTogoModal(true);
-                    }}
+                    onClick={() => { setQsrOrderType('pickup'); setShowPickupListPanel(false); setShowQsrOrderDetailModal(false); setShowQsrTogoModal(true); }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
                       qsrOrderType === 'pickup' && !showPickupListPanel
                         ? 'bg-blue-500 text-white shadow-lg'
@@ -11144,6 +11384,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onClick={() => {
                       setQsrOrderType('online');
                       setShowPickupListPanel(false);
+                      setShowQsrOrderDetailModal(false);
                       setShowQsrOnlineModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
@@ -11159,6 +11400,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onClick={() => {
                       setQsrOrderType('delivery');
                       setShowPickupListPanel(false);
+                      setShowQsrOrderDetailModal(false);
                       setShowQsrDeliveryModal(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-base transition ${
@@ -11171,17 +11413,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     Delivery
                   </button>
 
-                  {/* Pickup List toggle button */}
+                  {/* Pickup List toggle — opens inline Order List Modal in pickup mode */}
                   <button
+                    type="button"
                     onClick={() => {
-                      setPickupListChannelFilter('ALL');
-                      setShowPickupListPanel(prev => !prev);
+                      setOrderListOpenMode('pickup');
+                      setOrderListChannelFilter('all');
+                      setShowOrderListModal(true);
+                      fetchOrderList(orderListDate, 'pickup', true);
                     }}
-                    className={`flex items-center justify-center gap-1 py-3 px-3 rounded-lg font-bold text-sm transition ${
-                      showPickupListPanel
-                        ? 'bg-cyan-500 text-white shadow-lg ring-2 ring-cyan-300'
-                        : 'bg-white/10 text-white/80 hover:bg-white/20'
+                    className={`flex items-center justify-center gap-1.5 py-3 px-4 rounded-xl font-bold text-sm transition-all duration-300 border shadow-lg ${
+                      showOrderListModal && orderListOpenMode === 'pickup'
+                        ? 'text-white border-cyan-200/90 bg-gradient-to-br from-cyan-500/95 via-sky-500/90 to-cyan-600/95 ring-2 ring-white/50 shadow-cyan-500/30'
+                        : 'text-white border-white/40 bg-gradient-to-br from-white/25 via-cyan-400/15 to-white/10 hover:from-white/35 hover:via-cyan-300/25 hover:to-white/15 hover:border-white/55'
                     }`}
+                    style={
+                      showOrderListModal && orderListOpenMode === 'pickup'
+                        ? undefined
+                        : { WebkitBackdropFilter: 'blur(10px)', backdropFilter: 'blur(10px)' }
+                    }
                   >
                     Pickup List
                   </button>
@@ -11213,31 +11463,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               )}
 
-              {/* Pickup List Panel (full screen overlay within QSR layout) */}
-              {isQsrMode && showPickupListPanel ? (
-                <div className="flex-1 min-h-0">
-                  <PickupListPanel
-                    initialChannelFilter={pickupListChannelFilter}
-                    onPayment={async (orderId) => {
-                      setQsrOrderType('pickup');
-                      await openPaymentModalForOrderId(orderId, () => {
-                        setShowPickupListPanel(true);
-                      });
-                    }}
-                    onPickupComplete={async (orderId) => {
-                      try {
-                        await fetch(`${API_URL}/orders/${orderId}/status`, {
-                          method: 'PATCH',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ status: 'PICKED_UP' }),
-                        });
-                      } catch (e) {
-                        console.error('[PickupList] Pickup complete error:', e);
-                      }
-                    }}
-                  />
-                </div>
-              ) : (
+              {/* PickupListPanel removed — replaced by OrderDetailModal (modal popup) */}
+              {(
               <div className="flex flex-1 min-h-0">
                 {/* Left Panel - Order List and Summary */}
                 <div className="bg-white flex flex-col h-full" style={{ width: `${layoutSettings.leftPanelWidth}%` }}>
@@ -11795,6 +12022,26 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div className="bg-gray-100 h-2"></div>
                 </div>
                 
+                {/* Scroll Up/Down Buttons */}
+                {showScrollButtons && (
+                  <div className="flex-shrink-0 flex items-stretch border-t-2 border-blue-400">
+                    <button
+                      onClick={() => handleScrollOrder('up')}
+                      disabled={!canScrollUp}
+                      className={`flex-1 flex items-center justify-center py-2 font-extrabold text-2xl transition-colors border-r-2 border-blue-400 ${canScrollUp ? 'bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                    >
+                      ▲
+                    </button>
+                    <button
+                      onClick={() => handleScrollOrder('down')}
+                      disabled={!canScrollDown}
+                      className={`flex-1 flex items-center justify-center py-2 font-extrabold text-2xl transition-colors ${canScrollDown ? 'bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                    >
+                      ▼
+                    </button>
+                  </div>
+                )}
+
                 {/* Summary Section */}
                 <div className="p-2 bg-blue-200 border-t border-blue-300 flex-shrink-0" data-pos-lock="order-summary" style={{ fontSize: 'var(--order-summary-font)' }}>
                     <div className="space-y-1">
@@ -12048,7 +12295,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   activeCategoryId={activeCategoryId}
                   setActiveCategoryId={setActiveCategoryId}
                   handleCategoryDragEnd={handleCategoryDragEnd}
-                  layoutLockReady={isSalesOrder}
+                  layoutLockReady={isSalesOrder || isQsrMode}
                   showBackgroundMenuLoading={showBackgroundMenuLoading}
                   filteredMenuItems={filteredMenuItems}
                   itemColors={itemColors}
@@ -12157,7 +12404,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   extraButton2={{ enabled: modExtra2Enabled, name: modExtra2Name, price: modExtra2Amount, colorClass: modExtra2Color }}
                   showEmptySlots={true}
                   emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
-                  lockLayout={isSalesOrder}
+                  lockLayout={isSalesOrder || isQsrMode}
                 />
 
                 {/* QSR Function Buttons */}
@@ -15467,23 +15714,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </button>
                 {orderListOpenMode === 'pickup' ? (
                   <div className="flex items-center gap-1.5">
-                    {([
-                      { key: 'all' as const, label: 'All', activeBg: 'bg-white', activeText: 'text-slate-700' },
-                      { key: 'delivery' as const, label: 'Delivery', activeBg: 'bg-red-500', activeText: 'text-white' },
-                      { key: 'online' as const, label: 'Online', activeBg: 'bg-blue-500', activeText: 'text-white' },
-                      { key: 'togo' as const, label: 'Togo', activeBg: 'bg-green-500', activeText: 'text-white' },
-                    ]).map((ch) => (
-                      <button
-                        key={ch.key}
-                        onClick={() => setOrderListChannelFilter(ch.key)}
-                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                          orderListChannelFilter === ch.key
-                            ? `${ch.activeBg} ${ch.activeText}`
-                            : 'bg-slate-600 text-white hover:bg-slate-500'
-                        }`}
-                      >
-                        {ch.label}
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => setOrderListChannelFilter('all')}
+                      className={
+                        orderListChannelFilter === 'all'
+                          ? 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border-2 border-white/80 bg-white text-slate-800 shadow-[0_4px_18px_rgba(0,0,0,0.12)] backdrop-blur-md'
+                          : 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/25 bg-white/10 text-white/90 hover:bg-white/18 hover:border-white/40 backdrop-blur-md'
+                      }
+                      style={{ WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)' }}
+                    >
+                      All
+                    </button>
+                    {(['online', 'delivery'] as const).map((ch) => (
+                      <PickupChannelGlassButton
+                        key={ch}
+                        channel={ch}
+                        active={orderListChannelFilter === ch}
+                        onClick={() => setOrderListChannelFilter(ch)}
+                      />
                     ))}
                   </div>
                 ) : (
@@ -15561,15 +15810,51 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const _s = String(order.status || '').toUpperCase();
                         const isEatIn = _t === 'FORHERE' || _t === 'FOR_HERE' || _t === 'POS' || _t === 'DINE_IN' || _t === 'DINE-IN';
                         if (isEatIn) return false;
+                        const isTogoOrder = _t === 'TOGO' || ((_f === 'togo') && _t !== 'PICKUP');
+                        if (isTogoOrder) return false;
                         if (_s === 'PICKED_UP') return false;
                         if (_s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
                         const isDeliveryOrder = _t === 'DELIVERY' || _f === 'delivery' || _t === 'UBEREATS' || _t === 'UBER' || _t === 'DOORDASH' || _t === 'SKIP' || _t === 'SKIPTHEDISHES' || _t === 'FANTUAN';
                         const isOnlineOrder = _t === 'ONLINE' || _t === 'WEB' || _t === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL');
-                        const isTogoOrder = _t === 'TOGO' || _f === 'togo' || _f === 'pickup' || _t === 'PICKUP';
+                        const isPickupOrder = _t === 'PICKUP' || _f === 'pickup';
                         if (orderListChannelFilter === 'delivery') return isDeliveryOrder;
                         if (orderListChannelFilter === 'online') return isOnlineOrder;
-                        if (orderListChannelFilter === 'togo') return isTogoOrder;
+                        if (orderListChannelFilter === 'togo') return isPickupOrder;
                         return true;
+                      }).sort((a, b) => {
+                        if (orderListOpenMode !== 'pickup') return 0;
+                        const getReadyTimestamp = (o: any): number => {
+                          if (o.ready_time) {
+                            const rt = String(o.ready_time).trim();
+                            const ampmMatch = rt.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+                            if (ampmMatch) {
+                              let h = parseInt(ampmMatch[1], 10);
+                              const m = parseInt(ampmMatch[2], 10);
+                              const isPM = ampmMatch[3].toUpperCase() === 'PM';
+                              if (isPM && h < 12) h += 12;
+                              if (!isPM && h === 12) h = 0;
+                              const now = new Date();
+                              return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0).getTime();
+                            }
+                            const hmMatch = rt.match(/^(\d{1,2}):(\d{2})$/);
+                            if (hmMatch) {
+                              const now = new Date();
+                              return new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(hmMatch[1], 10), parseInt(hmMatch[2], 10), 0).getTime();
+                            }
+                            const parsed = new Date(rt).getTime();
+                            if (!isNaN(parsed)) return parsed;
+                          }
+                          if (o.pickup_minutes && o.created_at) {
+                            const created = new Date(o.created_at).getTime();
+                            if (!isNaN(created)) return created + Number(o.pickup_minutes) * 60000;
+                          }
+                          if (o.created_at) {
+                            const created = new Date(o.created_at).getTime();
+                            if (!isNaN(created)) return created;
+                          }
+                          return Infinity;
+                        };
+                        return getReadyTimestamp(a) - getReadyTimestamp(b);
                       }).map((order) => {
                         const badge = orderListGetChannelBadge(order);
                         const type = (order.order_type || '').toUpperCase();
@@ -15635,23 +15920,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             const _pkTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
                             const _pkIsDelivery = _pkType === 'DELIVERY' || _pkFulfillment === 'delivery' || _pkType === 'UBEREATS' || _pkType === 'UBER' || _pkType === 'DOORDASH' || _pkType === 'SKIP' || _pkType === 'SKIPTHEDISHES' || _pkType === 'FANTUAN' || _pkTableId.startsWith('DL');
                             const _pkIsPaid = _pkStatus === 'PAID' || _pkStatus === 'COMPLETED' || _pkStatus === 'CLOSED' || _pkPayStatus === 'PAID' || _pkPayStatus === 'COMPLETED' || orderListSelectedOrder.paid === true || _pkIsDelivery;
-                            const _pkShowPickup = _pkIsPaid && _pkStatus !== 'PICKED_UP';
                             return <>
-                              {!_pkIsPaid && (
-                                <button
-                                  onClick={async () => {
-                                    const orderId = orderListSelectedOrder.id;
-                                    await openPaymentModalForOrderId(orderId, () => {
-                                      fetchOrderList(orderListDate, orderListOpenMode);
-                                    });
-                                  }}
-                                  style={{ flex: 1 }}
-                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
-                                >Pay</button>
-                              )}
                               <button onClick={handleOrderListPrintBill} style={{ flex: 1 }} className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold">Print Bill</button>
                               <button onClick={handleOrderListPrintKitchen} style={{ flex: 1 }} className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold">Reprint</button>
-                              {_pkShowPickup && (
+                              {_pkIsPaid ? (
                                 <button
                                   onClick={async () => {
                                     const orderId = orderListSelectedOrder?.id;
@@ -15679,8 +15951,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     } catch (e) { console.error('[Pickup Complete] Error:', e); }
                                   }}
                                   style={{ flex: 1 }}
-                                  className="py-4 bg-cyan-600 hover:bg-cyan-700 active:bg-cyan-800 text-white rounded-lg text-sm font-bold"
+                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
                                 >Pickup</button>
+                              ) : (
+                                <button
+                                  onClick={async () => {
+                                    const orderId = orderListSelectedOrder.id;
+                                    setShowOrderListModal(false);
+                                    await openPaymentModalForOrderId(orderId, () => {});
+                                  }}
+                                  style={{ flex: 1 }}
+                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                >Pay</button>
                               )}
                             </>;
                           })()
@@ -15725,24 +16007,71 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         )}
                       </div>
 
-                      {/* Channel Header */}
-                      <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 text-center flex-shrink-0">
+                      {/* Channel Header — FSR과 동일 형식: [채널명 / 채널주문번호] #POS번호 */}
+                      <div className="px-4 py-2 bg-slate-100 border-b border-gray-300 flex-shrink-0">
                         {(() => {
                           const badge = orderListGetChannelBadge(orderListSelectedOrder);
                           const oType = (orderListSelectedOrder.order_type || '').toUpperCase();
                           const { company: dCompany, orderNumber: dOrderNum } = orderListGetDeliveryMeta(orderListSelectedOrder);
                           const dCompanyStr = String(dCompany || '').toUpperCase().replace(/\s+/g, '');
                           const dNum = String(dOrderNum || '').replace(/^#/, '').trim();
-                          let detailLabel = badge.label;
+
+                          let channelName = badge.label;
+                          let channelOrderNum = '';
+
                           if (badge.label === 'Online' || badge.label === 'Delivery') {
-                            if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') detailLabel = dNum ? `UberEATS #${dNum}` : 'UberEATS';
-                            else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') detailLabel = dNum ? `Doordash #${dNum}` : 'Doordash';
-                            else if (dCompanyStr === 'SKIPTHEDISHES' || dCompanyStr === 'SKIP' || oType === 'SKIP' || oType === 'SKIPTHEDISHES') detailLabel = dNum ? `Skipthedishes #${dNum}` : 'Skipthedishes';
-                            else if (dCompanyStr === 'FANTUAN' || oType === 'FANTUAN') detailLabel = dNum ? `Fantuan #${dNum}` : 'Fantuan';
-                            else if (oType === 'DELIVERY') detailLabel = dNum ? `Delivery #${dNum}` : 'Delivery';
-                            else detailLabel = dNum ? `Online #${dNum}` : 'Online';
+                            if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
+                              channelName = 'UberEATS';
+                            } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
+                              channelName = 'Doordash';
+                            } else if (dCompanyStr === 'SKIPTHEDISHES' || dCompanyStr === 'SKIP' || oType === 'SKIP' || oType === 'SKIPTHEDISHES') {
+                              channelName = 'SkipTheDishes';
+                            } else if (dCompanyStr === 'FANTUAN' || oType === 'FANTUAN') {
+                              channelName = 'Fantuan';
+                            } else if (oType === 'DELIVERY') {
+                              channelName = 'Delivery';
+                            } else {
+                              channelName = 'Online';
+                            }
+                            channelOrderNum =
+                              dNum ||
+                              orderListSelectedOrder.online_order_number ||
+                              orderListSelectedOrder.deliveryOrderNumber ||
+                              orderListParseChannelOrderFromLabel(orderListSelectedOrder.customer_name) ||
+                              orderListParseChannelOrderFromLabel(orderListSelectedOrder.name) ||
+                              '';
+                            if (!channelOrderNum) {
+                              const tid = String(orderListSelectedOrder.table_id || '').toUpperCase();
+                              if (tid.startsWith('OL') || tid.startsWith('DL')) {
+                                const suffix = tid.substring(2).trim();
+                                if (suffix && !orderListIsInternalDeliveryMetaId(suffix)) channelOrderNum = suffix;
+                              }
+                            }
+                            if (!channelOrderNum && channelName === 'Online' && orderListSelectedOrder.customer_name) {
+                              channelOrderNum = orderListSelectedOrder.customer_name;
+                            }
+                          } else if (badge.label === 'Togo' || badge.label === 'Pickup') {
+                            channelName = 'TOGO';
+                            const rawPhone = String(orderListSelectedOrder.customer_phone || '').replace(/\D/g, '');
+                            if (rawPhone.length >= 4) {
+                              channelOrderNum = rawPhone.slice(-4);
+                            } else if (orderListSelectedOrder.customer_name) {
+                              channelOrderNum = String(orderListSelectedOrder.customer_name).slice(0, 10);
+                            }
+                          } else if (badge.label === 'Eat In') {
+                            channelName = 'Eat In';
                           }
-                          return (<span className={`inline-block px-4 py-1.5 rounded-lg text-lg font-bold ${badge.bgColor} ${badge.textColor}`}>{detailLabel}</span>);
+
+                          const posNumber = orderListSelectedOrder.order_number || String(orderListSelectedOrder.id).padStart(3, '0');
+
+                          return (
+                            <div className="flex items-center justify-center gap-3">
+                              <span className={`inline-block px-4 py-1.5 rounded-lg text-base font-bold ${badge.bgColor} ${badge.textColor}`}>
+                                {channelName}{channelOrderNum ? ` / ${channelOrderNum}` : ''}
+                              </span>
+                              <span className="text-sm font-bold text-gray-500">#{posNumber}</span>
+                            </div>
+                          );
                         })()}
                       </div>
 
@@ -17459,6 +17788,41 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       />
         </>
       )}
+
+      {/* QSR Pickup List — OrderDetailModal (FSR과 동일 컴포넌트) */}
+      <OrderDetailModal
+        isOpen={showQsrOrderDetailModal}
+        onClose={() => { setShowQsrOrderDetailModal(false); }}
+        onlineOrders={qsrPickupOnlineOrders}
+        togoOrders={qsrPickupTogoOrders}
+        deliveryOrders={qsrPickupDeliveryOrders}
+        initialOrderType="togo"
+        onPayment={async (order) => {
+          const orderId = Number(order.order_id ?? order.id);
+          if (!Number.isFinite(orderId) || orderId <= 0) return;
+          setShowQsrOrderDetailModal(false);
+          setQsrOrderType('pickup');
+          await openPaymentModalForOrderId(orderId, () => {
+            loadQsrPickupListOrders();
+            setShowQsrOrderDetailModal(true);
+          });
+        }}
+        onPickupComplete={async (order, orderType) => {
+          const orderId = Number(order.order_id ?? order.id);
+          if (!Number.isFinite(orderId) || orderId <= 0) return;
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          } catch (e) {
+            console.error('[QSR OrderDetail] Pickup complete error:', e);
+          }
+          loadQsrPickupListOrders();
+        }}
+        onOrdersRefresh={() => { loadQsrPickupListOrders(); }}
+      />
 
     </div>
   );

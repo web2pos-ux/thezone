@@ -1466,7 +1466,7 @@ const handleVoidPinClear = useCallback(() => {
     const calcSubtotal = Number((applied.subtotal || 0).toFixed(2));
     const calcTax = Number((applied.taxesTotal || 0).toFixed(2));
     const calcTotal = Number((applied.total || 0).toFixed(2));
-    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR', isPrepaid: !!(location.state as any)?.isPrepaid }) });
+    const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: calcTotal, subtotal: calcSubtotal, tax: calcTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, orderMode: 'FSR', isPrepaid: !!(location.state as any)?.isPrepaid, onlineOrderNumber: onlineOrderNumberForKitchenRef.current || null }) });
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
@@ -2099,8 +2099,13 @@ const handleVoidPinClear = useCallback(() => {
             amount: p.amount || 0,
             tip: p.tip || 0
           })),
-          change: 0,
-          cashTendered: 0,
+          change: paymentCompleteData?.change || 0,
+          cashTendered: (() => {
+            const ch = Number(paymentCompleteData?.change || 0);
+            if (ch <= 0) return 0;
+            const cashPaid = sessionPayments.filter(p => (p.method || '').toUpperCase() === 'CASH').reduce((s, p) => s + (p.amount || 0), 0);
+            return Number((cashPaid + ch).toFixed(2));
+          })(),
           footer: {}
         };
 
@@ -2199,7 +2204,8 @@ const handleVoidPinClear = useCallback(() => {
         ...(typeof currentGuest === 'number' ? [currentGuest] : []),
       ]);
       const unpaid = splitAllGuests.filter(g => !paidSet.has(g));
-      const isLastGuest = unpaid.length === 0 && typeof currentGuest === 'number';
+      const isPayInFull = guestPaymentMode === 'ALL';
+      const isLastGuest = isPayInFull || (unpaid.length === 0 && typeof currentGuest === 'number');
       const hasSplitContext = (adhocSplitCount > 0) || splitAllGuests.length > 1;
 
       if (hasSplitContext && isLastGuest) {
@@ -2243,11 +2249,54 @@ const handleVoidPinClear = useCallback(() => {
           const floor = (location.state && (location.state as any).floor) || null;
 
           // Receipt count was chosen in PaymentCompleteModal; ensure we print BEFORE leaving to TableMap.
-          // In split/adhoc mode, the per-guest receipt is the expected output.
-          try {
-            await handlePartialPrintReceipt(receiptCount);
-          } catch (e) {
-            try { console.warn('Guest receipt print failed (ignored):', e); } catch {}
+          // Pay In Full (ALL mode): print full order receipt instead of per-guest partial.
+          // Per-guest partial uses paymentCompleteData which is already null at this point.
+          if (receiptCount > 0) {
+            try {
+              if (guestPaymentMode === 'ALL') {
+                const totalsForReceipt = computeGuestTotals('ALL');
+                const rSubtotal = Number((totalsForReceipt.subtotal || 0).toFixed(2));
+                const rTaxLines = (totalsForReceipt.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+                const rTaxTotal = Number(rTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0).toFixed(2));
+                let rGrand = Number((rSubtotal + rTaxTotal).toFixed(2));
+                if (pmDiscount && pmDiscount.percent > 0) {
+                  rGrand = Number(((pmDiscount.discountedSubtotal || 0) + (pmDiscount.taxesTotal || 0)).toFixed(2));
+                }
+                const rPayments = sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+                const receiptData = {
+                  header: {
+                    title: '*** RECEIPT ***',
+                    orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : ''),
+                    channel: orderType?.toUpperCase() === 'POS' ? 'Dine-In' : (orderType || 'POS').toUpperCase(),
+                    tableName: (location.state as any)?.tableName || resolvedTableName || '',
+                    server: (selectedServer as any)?.employee_name || selectedServer?.name || '',
+                    dateTime: new Date().toLocaleString(),
+                  },
+                  items: (orderItems || []).filter(it => it.type !== 'separator').map(it => ({
+                    name: it.name || (it as any).itemName,
+                    qty: it.quantity || 1,
+                    price: Number(it.price || 0),
+                    modifiers: it.modifiers,
+                  })),
+                  subtotal: rSubtotal,
+                  taxLines: rTaxLines,
+                  total: rGrand,
+                  payments: rPayments,
+                  change: savedPaymentData?.change || 0,
+                  cashTendered: (savedPaymentData as any)?.cashTendered || 0,
+                  footer: {},
+                };
+                await fetch(`${API_URL}/printers/print-receipt`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ receiptData, copies: receiptCount }),
+                });
+              } else {
+                await handlePartialPrintReceipt(receiptCount);
+              }
+            } catch (e) {
+              try { console.warn('Receipt print failed (ignored):', e); } catch {}
+            }
           }
 
           // Immediate UI cleanup + navigate first
@@ -2618,21 +2667,25 @@ const handleVoidPinClear = useCallback(() => {
         togoDisplayMode: 'per_item',
         showTogoSeparator: false,
         subtotal: (() => {
-          if (!hasPaymentDiscount || !isEvenSplit) return guestSubtotal;
-          // 할인 전 원래 subtotal의 1/N (fair penny)
-          const origSubCents = Math.round(Number(pmDiscount.originalSubtotal || 0) * 100);
-          const bSub = Math.floor(origSubCents / splitCount);
-          const rSub = origSubCents % splitCount;
-          return (bSub + (splitIndex <= rSub ? 1 : 0)) / 100;
+          if (!hasPaymentDiscount) return guestSubtotal;
+          if (isEvenSplit && splitCount > 1) {
+            const origSubCents = Math.round(Number(pmDiscount.originalSubtotal || 0) * 100);
+            const bSub = Math.floor(origSubCents / splitCount);
+            const rSub = origSubCents % splitCount;
+            return (bSub + (splitIndex <= rSub ? 1 : 0)) / 100;
+          }
+          return Number(pmDiscount.originalSubtotal || guestSubtotal);
         })(),
         adjustments: (() => {
-          if (!hasPaymentDiscount || !isEvenSplit) return [] as any[];
-          // 할인 금액의 1/N (fair penny)
-          const discCents = Math.round(Number(pmDiscount.amount || 0) * 100);
-          const bDisc = Math.floor(discCents / splitCount);
-          const rDisc = discCents % splitCount;
-          const myDisc = (bDisc + (splitIndex <= rDisc ? 1 : 0)) / 100;
-          return [{ label: `Discount (${pmDiscount.percent}%)`, amount: -myDisc }];
+          if (!hasPaymentDiscount) return [] as any[];
+          if (isEvenSplit && splitCount > 1) {
+            const discCents = Math.round(Number(pmDiscount.amount || 0) * 100);
+            const bDisc = Math.floor(discCents / splitCount);
+            const rDisc = discCents % splitCount;
+            const myDisc = (bDisc + (splitIndex <= rDisc ? 1 : 0)) / 100;
+            return [{ label: `Discount (${pmDiscount.percent}%)`, amount: -myDisc }];
+          }
+          return [{ label: `Discount (${pmDiscount.percent}%)`, amount: -Number(pmDiscount.amount || 0) }];
         })(),
         taxLines: guestTaxLines,
         taxesTotal: guestTaxTotal,
@@ -8185,31 +8238,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     )}
                 </div>
 
-                <div className="pt-1 border-t border-gray-600">
-                  <div className="p-2 bg-gray-600 rounded-lg space-y-1.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <label className="text-sm font-medium text-gray-300">Select Server</label>
-                      <button
-                        onClick={async () => {
-                          const newValue = !selectServerPromptEnabled;
-                          updateLayoutSetting('selectServerOnEntry', newValue);
-                          // 즉시 서버에 저장하여 SalesPage에서도 반영되도록 함
-                          try {
-                            await saveLayoutSettings({ selectServerOnEntry: newValue });
-                          } catch (e) {
-                            console.error('Failed to save selectServerOnEntry:', e);
-                          }
-                        }}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${selectServerPromptEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${selectServerPromptEnabled ? 'translate-x-6' : 'translate-x-1'}`}
-                        />
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-400">Show server selection modal when entering Table/ToGo orders</p>
-                  </div>
-                </div>
               </div>
             )}
           </div>
@@ -10313,63 +10341,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       setGuestPaymentMode(1); // Guest 1 자동 선택
                       setActiveGuestNumber(1);
                     },
-                    subtotal: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        
-                        // Calculate My Total Share First (Fair Penny Distribution)
-                        const grandCents = Math.round(payGrandAll * 100);
-                        const baseGrand = Math.floor(grandCents / n);
-                        const remGrand = grandCents % n;
-                        const myGrand = (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
-
-                        // Calculate My Tax Share Sum
-                        const myTaxSum = payTaxLinesAll.reduce((sum: number, t: any) => {
-                           const tCents = Math.round(t.amount * 100);
-                           const tBase = Math.floor(tCents / n);
-                           const tRem = tCents % n;
-                           const myT = (tBase + (idx <= tRem ? 1 : 0)) / 100;
-                           return sum + myT;
-                        }, 0);
-
-                        // Subtotal = Total - Tax (ensures Sub + Tax = Total)
-                        return Number((myGrand - myTaxSum).toFixed(2));
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.subtotal : paySubtotalAll)
-                        : paySubtotal;
-                    })(),
-                    taxLines: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const totalLines = payTaxLinesAll;
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        return totalLines.map((t: any) => {
-                           const tCents = Math.round(t.amount * 100);
-                           const tBase = Math.floor(tCents / n);
-                           const tRem = tCents % n;
-                           const amt = (tBase + (idx <= tRem ? 1 : 0)) / 100;
-                           return { ...t, amount: amt };
-                        });
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.taxLines : payTaxLinesAll)
-                        : payTaxLines;
-                    })(),
-                    total: (() => {
-                      if (adhocSplitCount > 0 && typeof guestPaymentMode === 'number') {
-                        const n = adhocSplitCount;
-                        const idx = guestPaymentMode;
-                        const grandCents = Math.round(payGrandAll * 100);
-                        const baseGrand = Math.floor(grandCents / n);
-                        const remGrand = grandCents % n;
-                        return (baseGrand + (idx <= remGrand ? 1 : 0)) / 100;
-                      }
-                      return guestPaymentMode === 'ALL'
-                        ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.grand : payGrandAll)
-                        : payGrand;
-                    })(),
+                    subtotal: guestPaymentMode === 'ALL'
+                      ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.subtotal : paySubtotalAll)
+                      : (adhocSplitCount > 0 ? paySubtotalAll : paySubtotal),
+                    taxLines: guestPaymentMode === 'ALL'
+                      ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.taxLines : payTaxLinesAll)
+                      : (adhocSplitCount > 0 ? payTaxLinesAll : payTaxLines),
+                    total: guestPaymentMode === 'ALL'
+                      ? ((hasSomeGuestsPaid && balanceTotalsAll) ? balanceTotalsAll.grand : payGrandAll)
+                      : (adhocSplitCount > 0 ? payGrandAll : payGrand),
                     offsetTopPx: 80,
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
