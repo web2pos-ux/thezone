@@ -243,7 +243,7 @@ const OperationalReportsPanel: React.FC = () => {
               const hasUnpaid = up && up.orderCount > 0;
               const taxList = data.taxDetails && data.taxDetails.length > 0 ? data.taxDetails : [];
               const unpaidTaxList = (up as any)?.taxDetails || [];
-              const items: Array<{ label: string; paid: string; unpaid: string; combined: string }> = [
+              const items: Array<{ label: string; paid: string; unpaid: string; combined: string; isBold?: boolean }> = [
                 { label: 'Orders', paid: data.overall.orderCount.toString(), unpaid: hasUnpaid ? `+${up!.orderCount}` : '', combined: hasUnpaid ? (data.overall.orderCount + up!.orderCount).toString() : '' },
                 { label: 'Subtotal', paid: fmt(data.overall.subtotal), unpaid: hasUnpaid ? `+${fmt(up!.subtotal || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.subtotal + (up!.subtotal || 0)) : '' },
               ];
@@ -276,23 +276,34 @@ const OperationalReportsPanel: React.FC = () => {
                   combined: hasUnpaid ? fmt(data.overall.taxTotal + (up!.taxTotal || 0)) : ''
                 });
               }
-              items.push({ label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '' });
+              items.push({ label: 'Total', paid: fmt(data.overall.totalSales), unpaid: hasUnpaid ? `+${fmt(up!.totalAmount || 0)}` : '', combined: hasUnpaid ? fmt(data.overall.totalSales + (up!.totalAmount || 0)) : '', isBold: true });
               const paidTip = Number(data.overall.totalTip || 0);
               items.push({ label: 'Tips', paid: paidTip > 0 ? fmt(paidTip) : '-', unpaid: '', combined: '' });
               const grandTotal = data.overall.totalSales + paidTip;
               const unpaidGrand = hasUnpaid ? (up!.totalAmount || 0) : 0;
-              items.push({ label: 'Grand Total', paid: fmt(grandTotal), unpaid: hasUnpaid && unpaidGrand > 0 ? `+${fmt(unpaidGrand)}` : '', combined: hasUnpaid && unpaidGrand > 0 ? fmt(grandTotal + unpaidGrand) : '' });
-              const cols = Math.min(items.length, 8);
+              items.push({ label: 'Grand Total', paid: fmt(grandTotal), unpaid: hasUnpaid && unpaidGrand > 0 ? `+${fmt(unpaidGrand)}` : '', combined: hasUnpaid && unpaidGrand > 0 ? fmt(grandTotal + unpaidGrand) : '', isBold: true });
               return (
-                <div className={`grid gap-3`} style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                  {items.map(s => (
-                    <div key={s.label} className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-3 border border-slate-200 text-center">
-                      <div className="text-xs text-gray-500 font-medium">{s.label}</div>
-                      <div className="text-lg font-extrabold text-slate-800 mt-0.5">{s.paid}</div>
-                      {s.unpaid && <div className="text-xs text-amber-600 mt-0.5">{s.unpaid}</div>}
-                      {s.combined && <div className="text-xs text-gray-400 mt-0.5">{s.combined}</div>}
-                    </div>
-                  ))}
+                <div className="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-100/80">
+                        <th className="text-left py-2 px-4 text-xs text-slate-500 font-semibold">Item</th>
+                        <th className="text-right py-2 px-4 text-xs text-slate-500 font-semibold">Paid</th>
+                        {hasUnpaid && <th className="text-right py-2 px-4 text-xs text-amber-500 font-semibold">Unpaid</th>}
+                        {hasUnpaid && <th className="text-right py-2 px-4 text-xs text-slate-400 font-semibold">Combined</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((s, i) => (
+                        <tr key={s.label} className={`${s.isBold ? 'border-t border-slate-300 bg-slate-100/50' : ''} ${i > 0 && !s.isBold ? 'border-t border-slate-100' : ''}`}>
+                          <td className={`py-1.5 px-4 text-slate-600 ${s.isBold ? 'font-bold text-slate-800' : 'font-medium'}`}>{s.label}</td>
+                          <td className={`py-1.5 px-4 text-right ${s.isBold ? 'font-extrabold text-slate-900 text-base' : 'font-bold text-slate-800'}`}>{s.paid}</td>
+                          {hasUnpaid && <td className="py-1.5 px-4 text-right text-amber-600 font-medium">{s.unpaid || ''}</td>}
+                          {hasUnpaid && <td className="py-1.5 px-4 text-right text-slate-400">{s.combined || ''}</td>}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               );
             })()}

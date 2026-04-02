@@ -1645,8 +1645,8 @@ function renderReceiptGraphic(receiptData) {
   let orderTypeText;
   if (!channel || channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE') {
     orderTypeText = 'DINE-IN';
-  } else if (channel === 'FORHERE' || channel === 'FOR HERE') {
-    orderTypeText = 'FOR HERE';
+  } else if (channel === 'FORHERE' || channel === 'FOR HERE' || channel === 'EAT IN' || channel === 'EATIN') {
+    orderTypeText = 'EAT IN';
   } else {
     orderTypeText = channel;
   }
@@ -1894,11 +1894,41 @@ function renderReceiptGraphic(receiptData) {
           y = drawLeftRightText(ctx, `  ${tax.name}`, `$${Number(tax.amount).toFixed(2)}`, y, guestSumRegularOpts);
         });
       }
-      // Guest total
+      // Guest total (amount-only box)
       if (entry.guestTotal != null) {
-        y = drawLeftRightText(ctx, `  Guest ${entry.guestNumber} Total`, `$${Number(entry.guestTotal).toFixed(2)}`, y, guestSumBoldOpts);
+        const gtLabel = `  Guest ${entry.guestNumber} Total`;
+        const gtAmount = `$${Number(entry.guestTotal).toFixed(2)}`;
+        const gtFontSize = guestSumBoldOpts.fontSize || PRINTER_CONFIG.fontSize.normal;
+        const gtWidth = ctx._receiptWidth || PRINTER_CONFIG.width;
+        const gtPadX = ctx._receiptPadding || PRINTER_CONFIG.padding;
+        const gtRightPad = Math.max(gtPadX, Number(ctx._receiptRightPadding || 0));
+        const gtBoxPadY = 4;
+        const gtLineH = gtFontSize + gtBoxPadY * 2;
+        const gtBoxInnerPadX = 6;
+
+        ctx.font = `bold ${gtFontSize}px "Arial", "Malgun Gothic", sans-serif`;
+        const gtAmountWidth = ctx.measureText(gtAmount).width;
+
+        ctx.fillStyle = '#000000';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(gtLabel, gtPadX + 4, y + gtLineH / 2);
+
+        const gtBoxW = gtAmountWidth + gtBoxInnerPadX * 2;
+        const gtBoxX = gtWidth - gtRightPad - gtBoxW;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(gtBoxX, y, gtBoxW, gtLineH);
+        ctx.setLineDash([]);
+
+        ctx.textAlign = 'right';
+        ctx.fillText(gtAmount, gtWidth - gtRightPad - gtBoxInnerPadX, y + gtLineH / 2);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+
+        y += gtLineH + 2;
       }
-      y += 2;
     } else {
       const itemName = entry.name || entry.itemName || '';
       const quantity = entry.quantity || entry.qty || 1;
@@ -2067,17 +2097,15 @@ function renderReceiptGraphic(receiptData) {
         align: 'left',
         inverse: false
       });
-      if (stAdj.visible) {
-        y += stAdj.lineSpacing;
-        y = drawLeftRightText(ctx, `${label}`, `${sign}$${Math.abs(amount).toFixed(2)}`, y, {
-          fontSize: ITEM_BASE_FONT_SIZE,
-          fontWeight: stAdj.fontWeight,
-          fontStyle: stAdj.fontStyle,
-          inverse: stAdj.inverse,
-          lineHeight: stAdj.lineHeight,
-          extraBold: stAdj.extraBold
-        });
-      }
+      y += stAdj.lineSpacing;
+      y = drawLeftRightText(ctx, `${label}`, `${sign}$${Math.abs(amount).toFixed(2)}`, y, {
+        fontSize: ITEM_BASE_FONT_SIZE,
+        fontWeight: stAdj.fontWeight,
+        fontStyle: stAdj.fontStyle,
+        inverse: stAdj.inverse,
+        lineHeight: stAdj.lineHeight,
+        extraBold: stAdj.extraBold
+      });
     });
     // Net Sales (할인 적용 후 순매출)
     const hasDiscount = receiptData.adjustments.some(adj => Number(adj.amount || 0) < 0);
@@ -2724,7 +2752,10 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   estH += 350; // Sales Summary (rows + separators)
   estH += 200; // Sales by Type
   estH += 300; // Payment Breakdown (multiple methods)
-  estH += 200; // Tips
+  const tipsByServerRows = (zReportData?.select_server_on_entry && Array.isArray(zReportData?.tips_by_server))
+    ? zReportData.tips_by_server.length
+    : 0;
+  estH += 200 + tipsByServerRows * 44; // Tips (+ optional per-server lines)
   estH += 200; // Adjustments header + base rows
   if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 50;
   if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 50;
@@ -2844,6 +2875,13 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   y += 8;
   y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
+  if (zReportData?.select_server_on_entry && Array.isArray(zReportData?.tips_by_server) && zReportData.tips_by_server.length > 0) {
+    zReportData.tips_by_server.forEach((s) => {
+      const label = `  ${String(s.server_name || 'Unknown').slice(0, 28)}`;
+      y = drawLeftRightText(ctx, label, formatMoney(s.tips || 0), y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    });
+    y = drawSeparator(ctx, y, 'dashed');
+  }
   row('Total Tips', `${zReportData?.total_tip_order_count || 0}`, formatMoney(zReportData?.tip_total || 0), true);
   row('Cash Tips', `${zReportData?.cash_tip_order_count || 0}`, formatMoney(zReportData?.cash_tips || 0));
   row('Card Tips', `${zReportData?.card_tip_order_count || 0}`, formatMoney(zReportData?.card_tips || 0));
@@ -3019,6 +3057,27 @@ function renderItemReportGraphic(reportData, printerOpts = {}) {
     y = drawTextBlock(ctx, { text: `  S:${tSoldAmt}/${tSoldQty}  R:${tRefAmt}/${tRefQty}  V:${tVoidAmt}/${tVoidQty}`, fontSize: IR_FONT.normal, fontWeight: 'normal', align: 'left' }, y);
   } else {
     y = drawTextBlock(ctx, { text: 'No item data available', fontSize: IR_FONT.normal, align: 'center' }, y);
+  }
+
+  const hourly = reportData.hourlySales || [];
+  if (hourly.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- HOURLY SALES --', fontSize: IR_FONT.normal, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    hourly.forEach((h) => {
+      const hr = h.hour != null ? String(h.hour).padStart(2, '0') : '';
+      y = drawLeftRightText(ctx, `${hr}:00`, `${fmt(h.revenue)} (${h.order_count || 0} ord)`, y, { fontSize: IR_FONT.normal, fontWeight: 'normal' });
+    });
+  }
+
+  const tt = reportData.tableTurnover || [];
+  if (tt.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- TABLE TURNOVER --', fontSize: IR_FONT.normal, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    tt.slice(0, 40).forEach((t) => {
+      y = drawLeftRightText(ctx, String(t.table_name || '').slice(0, 22), `${t.order_count} ord / ${Math.round(t.avg_duration_min || 0)}m`, y, { fontSize: IR_FONT.normal, fontWeight: 'normal' });
+    });
   }
 
   y += 8;
@@ -3231,27 +3290,6 @@ function renderSalesDashboardGraphic(reportData, printerOpts = {}) {
     });
   }
 
-  const hourly = reportData.hourlySales || [];
-  if (hourly.length > 0) {
-    y += 8;
-    y = drawTextBlock(ctx, { text: '-- HOURLY SALES --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
-    y = drawSeparator(ctx, y, 'dashed');
-    hourly.forEach((h) => {
-      const hr = h.hour != null ? String(h.hour).padStart(2, '0') : '';
-      row(`${hr}:00`, `${fmt(h.revenue)} (${h.order_count || 0} ord)`, false);
-    });
-  }
-
-  const tt = reportData.tableTurnover || [];
-  if (tt.length > 0) {
-    y += 8;
-    y = drawTextBlock(ctx, { text: '-- TABLE TURNOVER --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
-    y = drawSeparator(ctx, y, 'dashed');
-    tt.slice(0, 40).forEach((t) => {
-      row(String(t.table_name || '').slice(0, 22), `${t.order_count} ord / ${Math.round(t.avg_duration_min || 0)}m`, false);
-    });
-  }
-
   const rv = reportData.refundsVoids || [];
   if (rv.length > 0) {
     const refund = rv.find((r) => r.type === 'refund');
@@ -3312,8 +3350,8 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
     sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * SR_BASE * 1.10),
   };
 
-  let estH = 200 + 350 + 250 + 200 + 200 + 350 + 500 + 150;
-  estH = Math.max(estH, 2100);
+  let estH = 200 + 450 + 400 + 350 + 250 + 350 + 500 + 200;
+  estH = Math.max(estH, 2800);
 
   const canvas = createCanvas(WIDTH, estH);
   const ctx = canvas.getContext('2d');
@@ -3345,7 +3383,7 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
     fontSize: SR_FONT.dateTime, align: 'center'
   }, y);
   if (shiftData.closed_by) {
-    y = drawTextBlock(ctx, { text: `Closed by: ${shiftData.closed_by}`, fontSize: SR_FONT.small, align: 'center' }, y);
+    y = drawTextBlock(ctx, { text: `Closed by: ${shiftData.closed_by}`, fontSize: SR_FONT.large, fontWeight: 'bold', align: 'center' }, y);
   }
   y = drawTextBlock(ctx, { text: `Printed: ${timeStr}`, fontSize: SR_FONT.small, align: 'center' }, y);
   y = drawSeparator(ctx, y, 'double');
@@ -3357,36 +3395,147 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
   row('Order Count', `${shiftData.order_count || 0}`, true);
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Sales by Type
+  // Sales by Type — with Tips
   y += 4;
   y = drawTextBlock(ctx, { text: '-- SALES BY TYPE --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  const chRow = (label, count, sales) => {
-    const opts = { fontSize: SR_FONT.normal, fontWeight: '500' };
-    y = drawLeftRightText(ctx, `${label}  ${count || 0}`, formatMoney(sales), y, opts);
+
+  const drawHeaderRow = () => {
+    const hOpts = { fontSize: SR_FONT.small, fontWeight: 'bold', extraBold: true, paddingY: 2 };
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.22);
+    ctx.font = `bold ${SR_FONT.small}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = SR_FONT.small + 4;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText('Type', padding, ty);
+    const cntText = '#';
+    ctx.fillText(cntText, width - rp - colW * 3 - ctx.measureText(cntText).width / 2, ty);
+    const amtText = 'Amount';
+    ctx.fillText(amtText, width - rp - colW * 2 - ctx.measureText(amtText).width, ty);
+    const tipText = 'Tips';
+    ctx.fillText(tipText, width - rp - colW - ctx.measureText(tipText).width, ty);
+    const totText = 'Total';
+    ctx.fillText(totText, width - rp - ctx.measureText(totText).width, ty);
+    y += lh;
   };
-  chRow('Dine-In', shiftData.dine_in_count, shiftData.dine_in_sales);
-  chRow('Togo', shiftData.togo_count, shiftData.togo_sales);
-  chRow('Online', shiftData.online_count, shiftData.online_sales);
-  chRow('Delivery', shiftData.delivery_count, shiftData.delivery_sales);
+
+  const drawTypeRow = (label, count, sales, tips) => {
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.22);
+    const fs = SR_FONT.normal;
+    ctx.font = `500 ${fs}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = fs + 8;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText(label, padding, ty);
+    const total = (sales || 0) + (tips || 0);
+    const cntStr = `${count || 0}`;
+    ctx.fillText(cntStr, width - rp - colW * 3 - ctx.measureText(cntStr).width / 2, ty);
+    const amtStr = formatMoney(sales);
+    ctx.fillText(amtStr, width - rp - colW * 2 - ctx.measureText(amtStr).width, ty);
+    const tipStr = formatMoney(tips);
+    ctx.fillText(tipStr, width - rp - colW - ctx.measureText(tipStr).width, ty);
+    const totStr = formatMoney(total);
+    ctx.fillText(totStr, width - rp - ctx.measureText(totStr).width, ty);
+    y += lh;
+  };
+
+  drawHeaderRow();
+  drawTypeRow('Dine-In', shiftData.dine_in_count, shiftData.dine_in_sales, shiftData.dine_in_tips);
+  drawTypeRow('Togo', shiftData.togo_count, shiftData.togo_sales, shiftData.togo_tips);
+  drawTypeRow('Online', shiftData.online_count, shiftData.online_sales, shiftData.online_tips);
+  drawTypeRow('Delivery', shiftData.delivery_count, shiftData.delivery_sales, shiftData.delivery_tips);
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Payments
+  // Payments — with Tips per method
   y += 4;
   y = drawTextBlock(ctx, { text: '-- PAYMENTS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  row('Cash', formatMoney(shiftData.cash_sales));
-  row('Card', formatMoney(shiftData.card_sales));
-  if ((shiftData.other_sales || 0) > 0) {
-    row('Other', formatMoney(shiftData.other_sales));
+
+  const drawPayHeaderRow = () => {
+    const hOpts = { fontSize: SR_FONT.small, fontWeight: 'bold', paddingY: 2 };
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.28);
+    ctx.font = `bold ${SR_FONT.small}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = SR_FONT.small + 4;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText('Method', padding, ty);
+    const amtText = 'Amount';
+    ctx.fillText(amtText, width - rp - colW * 2 - ctx.measureText(amtText).width, ty);
+    const tipText = 'Tips';
+    ctx.fillText(tipText, width - rp - colW - ctx.measureText(tipText).width, ty);
+    const totText = 'Total';
+    ctx.fillText(totText, width - rp - ctx.measureText(totText).width, ty);
+    y += lh;
+  };
+
+  const drawPayRow = (label, amount, tips, bold = false) => {
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.28);
+    const fs = SR_FONT.normal;
+    const fw = bold ? 'bold' : '500';
+    ctx.font = `${fw} ${fs}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = fs + 8;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText(label, padding, ty);
+    const total = (amount || 0) + (tips || 0);
+    const amtStr = formatMoney(amount);
+    ctx.fillText(amtStr, width - rp - colW * 2 - ctx.measureText(amtStr).width, ty);
+    const tipStr = formatMoney(tips);
+    ctx.fillText(tipStr, width - rp - colW - ctx.measureText(tipStr).width, ty);
+    const totStr = formatMoney(total);
+    ctx.fillText(totStr, width - rp - ctx.measureText(totStr).width, ty);
+    y += lh;
+  };
+
+  const payBreakdown = shiftData.payment_breakdown || [];
+  if (payBreakdown.length > 0) {
+    drawPayHeaderRow();
+    let payAmtTotal = 0, payTipTotal = 0;
+    payBreakdown.forEach(p => {
+      const label = (p.method || 'OTHER').charAt(0) + (p.method || 'OTHER').slice(1).toLowerCase();
+      drawPayRow(label, p.amount, p.tips);
+      payAmtTotal += (p.amount || 0);
+      payTipTotal += (p.tips || 0);
+    });
+    drawPayRow('TOTAL', payAmtTotal, payTipTotal, true);
+  } else {
+    row('Cash', formatMoney(shiftData.cash_sales));
+    row('Card', formatMoney(shiftData.card_sales));
+    if ((shiftData.other_sales || 0) > 0) {
+      row('Other', formatMoney(shiftData.other_sales));
+    }
   }
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Tips
+  // Tips — breakdown by payment method
   y += 4;
   y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  if (shiftData.closed_by && shiftData.server_tip_total != null) {
+  const tipBk = shiftData.tip_breakdown || [];
+  if (tipBk.length > 0) {
+    tipBk.forEach(t => {
+      const label = (t.method || 'OTHER').charAt(0) + (t.method || 'OTHER').slice(1).toLowerCase();
+      row(label, formatMoney(t.tips));
+    });
+    const tipSum = tipBk.reduce((s, t) => s + (t.tips || 0), 0);
+    row('Total', formatMoney(tipSum), true);
+  } else if (shiftData.closed_by && shiftData.server_tip_total != null) {
     row(`${shiftData.closed_by} Tips`, formatMoney(shiftData.server_tip_total), true);
   } else {
     row('Total Tips', formatMoney(shiftData.tip_total), true);
