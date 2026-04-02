@@ -1096,6 +1096,7 @@ const handleVoidPinClear = useCallback(() => {
   const allModeStickyRef = useRef<boolean>(false);
   // Track whether receipt has been printed for this payment session (prevent duplicate prints)
   const receiptPrintedRef = useRef<boolean>(false);
+  const splitDiscountRef = useRef<any>(null);
   // Track whether kitchen ticket has been printed for this order (prevent duplicate prints on Payment path)
   const kitchenTicketPrintedRef = useRef<boolean>(false);
   // Prevent accidental duplicate guest-receipt prints (double-click / re-render edge cases)
@@ -1776,6 +1777,16 @@ const handleVoidPinClear = useCallback(() => {
             guestTaxLines = guestTotals.taxLines || [];
             guestTaxTotal = Number((guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
             guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
+
+            // D/C 할인이 적용된 경우: 할인 비율을 게스트 총액에도 반영
+            if (typeof discountedGrand === 'number' && discountedGrand > 0) {
+              const allTotals = computeGuestTotals('ALL');
+              const allGrand = Number(((allTotals.subtotal || 0) + (allTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
+              if (allGrand > 0.01 && discountedGrand < allGrand - 0.01) {
+                const discRatio = discountedGrand / allGrand;
+                guestTotal = Number((guestTotal * discRatio).toFixed(2));
+              }
+            }
           }
           
           // 이전 결제 + 현재 결제 합계
@@ -1908,12 +1919,16 @@ const handleVoidPinClear = useCallback(() => {
       const taxLinesForReceipt: { name: string; amount: number }[] =
         (appliedTotals.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
       const taxTotal = Number((appliedTotals.taxesTotal || 0).toFixed(2));
-      const expectedGrand = Number((appliedTotals.total || 0).toFixed(2));
+      let expectedGrand = Number((appliedTotals.total || 0).toFixed(2));
+      const pmDiscountForComplete = paymentCompleteData?.discount || splitDiscountRef.current;
+      if (pmDiscountForComplete && pmDiscountForComplete.percent > 0) {
+        expectedGrand = Number(((pmDiscountForComplete.discountedSubtotal || 0) + (pmDiscountForComplete.taxesTotal || 0)).toFixed(2));
+      }
       const paidByGuests = Object.values(paymentsByGuest).reduce((s, v) => s + (v || 0), 0);
       const paidBySession = (Array.isArray(sessionPayments) ? sessionPayments.reduce((s, p) => s + (p.amount || 0), 0) : 0);
       const paidTotal = Math.max(Number((paidByGuests).toFixed(2)), Number((paidBySession).toFixed(2)));
       const outstanding = Math.max(0, Number((expectedGrand - paidTotal).toFixed(2)));
-      const EPS = 0.05; // treat tiny residuals/rounding as fully paid
+      const EPS = 0.05;
       
       const orderId = savedOrderIdRef.current;
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
@@ -1922,19 +1937,44 @@ const handleVoidPinClear = useCallback(() => {
       // 단, Pay in Full(ALL) 플로우 중에는 상태 반영 레이스를 피하기 위해 결제창을 유지하고 대기 (자동완료 useEffect가 처리)
       // 또한 잔액이 미세한 오차(EPS) 이하면 전액 결제로 간주하고 테이블맵으로 이동
       if (outstanding > EPS) {
-        // 스플릿이 아닌 경우엔 스플릿 모달로 보내지 않고 결제 계속 진행
+        // 스플릿 결제에서 D/C 적용 시: 모든 게스트가 이미 PAID 상태이면 outstanding 불일치를 무시하고 완료 처리
         const hasSplit = ((guestIds || []).length > 1) || (orderItems || []).some(it => it.type === 'separator');
-        if (!hasSplit) {
+        if (hasSplit && guestStatusMap) {
+          const splitAllGuests = (adhocSplitCount > 0)
+            ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
+            : Array.from(guestIds || []);
+          const guestsWithItems = splitAllGuests.filter((g: number) =>
+            (orderItems || []).some(it => it.type !== 'separator' && (it.guestNumber || 1) === g)
+          );
+          const allGuestsPaidByStatus = guestsWithItems.length > 0 && guestsWithItems.every((g: number) =>
+            guestStatusMap[g] === 'PAID' || (Array.isArray(persistedPaidGuests) && persistedPaidGuests.includes(g))
+          );
+          if (allGuestsPaidByStatus) {
+            console.log(`✅ All guests PAID by status despite outstanding=${outstanding}, proceeding to close`);
+            // fall through to close order
+          } else {
+            if (!hasSplit) {
+              setShowPaymentModal(true);
+              return;
+            }
+            if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
+              return;
+            }
+            setShowPaymentModal(false);
+            setShowSplitBillModal(true);
+            return;
+          }
+        } else if (!hasSplit) {
           setShowPaymentModal(true);
           return;
-        }
-        if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
-          // Keep PaymentModal open; wait for auto-complete trigger
+        } else {
+          if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
+            return;
+          }
+          setShowPaymentModal(false);
+          setShowSplitBillModal(true);
           return;
         }
-        setShowPaymentModal(false);
-        setShowSplitBillModal(true);
-        return;
       }
 
       // 모든 게스트 결제가 완료된 경우: 테이블 상태를 Available로 변경 (Preparing 제거)
@@ -2203,47 +2243,23 @@ const handleVoidPinClear = useCallback(() => {
         ...(Array.isArray(latestPaid) ? latestPaid : []),
         ...(typeof currentGuest === 'number' ? [currentGuest] : []),
       ]);
+      // guestStatusMap에서 PAID인 게스트도 paidSet에 추가 (D/C 적용 시 persistedPaidGuests 타이밍 이슈 보완)
+      if (guestStatusMap) {
+        Object.entries(guestStatusMap).forEach(([g, st]) => {
+          if (st === 'PAID') paidSet.add(Number(g));
+        });
+      }
       const unpaid = splitAllGuests.filter(g => !paidSet.has(g));
       const isPayInFull = guestPaymentMode === 'ALL';
-      const isLastGuest = isPayInFull || (unpaid.length === 0 && typeof currentGuest === 'number');
+      // isPartialPayment이 false이면 PaymentModal이 이미 "전액 결제 완료"로 판정한 것이므로 마지막 게스트로 간주
+      const isLastGuest = isPayInFull
+        || (unpaid.length === 0 && typeof currentGuest === 'number')
+        || (savedPaymentData?.isPartialPayment === false && typeof currentGuest === 'number');
       const hasSplitContext = (adhocSplitCount > 0) || splitAllGuests.length > 1;
 
       if (hasSplitContext && isLastGuest) {
-        // Double-check paid-in-full to avoid navigating away prematurely
-        const totals = computeGuestTotals('ALL');
-        const baseSubtotal = Number((totals.subtotal || 0).toFixed(2));
-        const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
-        let expectedGrand = Number((baseSubtotal + taxTotal).toFixed(2));
-
-        // PaymentModal에서 적용된 할인 반영
-        const pmDiscount = savedPaymentData?.discount;
-        if (pmDiscount && pmDiscount.percent > 0) {
-          const discountedSub = Number((pmDiscount.discountedSubtotal || 0).toFixed(2));
-          const discountedTax = Number((pmDiscount.taxesTotal || 0).toFixed(2));
-          expectedGrand = Number((discountedSub + discountedTax).toFixed(2));
-        } else if ((orderType || '').toLowerCase() === 'togo' || (orderType || '').toLowerCase() === 'online') {
-          const otLower = (orderType || '').toLowerCase();
-          const discountActive = otLower === 'togo' && togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
-          const bagActive = effectiveBagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
-          const discountValue = Number(togoSettings.discountValue || 0);
-          const bagFeeValue = Number(togoSettings.bagFeeValue || 0);
-          const discountAmtBase = discountActive
-            ? (togoSettings.discountMode === 'percent'
-                ? (baseSubtotal * discountValue) / 100
-                : discountValue)
-            : 0;
-          const discountAmt = Number(discountAmtBase.toFixed(2));
-          const subtotalAfterDiscount = Math.max(0, Number((baseSubtotal - discountAmt).toFixed(2)));
-          const bagFeeAmt = bagActive ? Number(bagFeeValue.toFixed(2)) : 0;
-          expectedGrand = Number((subtotalAfterDiscount + bagFeeAmt + taxTotal).toFixed(2));
-        }
-        const paidByGuests = Object.values(paymentsByGuest).reduce((s, v) => s + (v || 0), 0);
-        const paidBySession = (Array.isArray(sessionPayments) ? sessionPayments.reduce((s, p) => s + (p.amount || 0), 0) : 0);
-        const paidTotal = Math.max(Number((paidByGuests).toFixed(2)), Number((paidBySession).toFixed(2)));
-        const outstanding = Math.max(0, Number((expectedGrand - paidTotal).toFixed(2)));
-        const EPS = 0.05;
-
-        if (outstanding <= EPS) {
+          setShowPaymentModal(false);
+          const pmDiscount = savedPaymentData?.discount || splitDiscountRef.current;
           const orderId = savedOrderIdRef.current;
           const tableIdForMap = (location.state && (location.state as any).tableId) || null;
           const floor = (location.state && (location.state as any).floor) || null;
@@ -2251,7 +2267,9 @@ const handleVoidPinClear = useCallback(() => {
           // Receipt count was chosen in PaymentCompleteModal; ensure we print BEFORE leaving to TableMap.
           // Pay In Full (ALL mode): print full order receipt instead of per-guest partial.
           // Per-guest partial uses paymentCompleteData which is already null at this point.
-          if (receiptCount > 0) {
+          // receiptOnly 모드(isPartialPayment===false)에서는 PaymentCompleteModal이 이미 onPrintReceipt로 출력했으므로 스킵
+          const alreadyPrintedByModal = savedPaymentData?.isPartialPayment === false;
+          if (receiptCount > 0 && !alreadyPrintedByModal) {
             try {
               if (guestPaymentMode === 'ALL') {
                 const totalsForReceipt = computeGuestTotals('ALL');
@@ -2302,6 +2320,7 @@ const handleVoidPinClear = useCallback(() => {
           // Immediate UI cleanup + navigate first
           clearServerAssignmentForContext();
           setSelectedServer(null);
+          splitDiscountRef.current = null;
           navigate('/sales', { replace: true });
 
           // Background finalization (no UI state updates)
@@ -2347,10 +2366,10 @@ const handleVoidPinClear = useCallback(() => {
             } catch {}
           })();
           return;
-        }
       }
-    } catch {}
-
+    } catch (splitErr) {
+      console.error('[handlePaymentCompleteClose] split path error:', splitErr);
+    }
     // Split 결제인 경우: 위의 split 경로에서 이미 처리됨 (outstanding 불일치로 여기까지 온 경우에도 전체 영수증 출력 방지)
     const hasSplitContextFallback = (adhocSplitCount > 0) || (guestIds || []).length > 1;
 
@@ -10361,7 +10380,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       let isActuallyPartial = false;
                       if (hasSplitBill && currentGuest) {
                         const latestPaid = persistedPaidGuestsRef.current;
-                        const newPaidGuests = Array.from(new Set([...latestPaid, currentGuest]));
+                        const paidFromStatus = guestStatusMap
+                          ? Object.entries(guestStatusMap).filter(([, st]) => st === 'PAID').map(([g]) => Number(g))
+                          : [];
+                        const newPaidGuests = Array.from(new Set([...latestPaid, ...paidFromStatus, currentGuest]));
                         const allGuestsForSplit = (adhocSplitCount > 0)
                           ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
                           : guestIds;
@@ -10376,6 +10398,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         try { fetch(`${API_URL}/payments/order/${savedOrderIdRef.current}/change`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeAmount: data.change }) }); } catch {}
                       }
                       
+                      if (data.discount && data.discount.percent > 0) {
+                        splitDiscountRef.current = data.discount;
+                      }
                       setPaymentCompleteData({
                         ...data,
                         isPartialPayment: isActuallyPartial,

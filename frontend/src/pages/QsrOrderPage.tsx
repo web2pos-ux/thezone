@@ -2078,6 +2078,7 @@ const handleVoidPinClear = useCallback(() => {
   const allModeStickyRef = useRef<boolean>(false);
   // Track whether receipt has been printed for this payment session (prevent duplicate prints)
   const receiptPrintedRef = useRef<boolean>(false);
+  const splitDiscountRef = useRef<any>(null);
   // Persisted PAID locks from DB (order_guest_status) to ensure UI remains locked across navigation
   const [persistedPaidGuests, setPersistedPaidGuests] = useState<number[]>([]);
 
@@ -4112,11 +4113,12 @@ const handleVoidPinClear = useCallback(() => {
           const guestTaxTotal = guestTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0);
           const guestTotal = Number((guestSubtotal + guestTaxTotal).toFixed(2));
           
-          // 이전 결제 + 현재 결제 합계
+          // 이전 결제 + 현재 결제 합계 (D/C 적용 시 할인된 guestTotal 사용)
           const previousPaid = Number((paymentsByGuest[String(guestNum)] || 0).toFixed(2));
           const currentPayment = Number((amount + tip).toFixed(2));
           const totalPaidNow = Number((previousPaid + currentPayment).toFixed(2));
-          const outstanding = Number((guestTotalOrig - totalPaidNow).toFixed(2));
+          const effectiveGuestTotal = hasDisc ? guestTotal : guestTotalOrig;
+          const outstanding = Number((effectiveGuestTotal - totalPaidNow).toFixed(2));
           
           const EPS = 0.05; // 미세한 오차 허용
           const isGuestFullyPaid = outstanding <= EPS;
@@ -4234,7 +4236,12 @@ const handleVoidPinClear = useCallback(() => {
       const baseSubtotal = Number((totals.subtotal || 0).toFixed(2));
       const taxTotal = Number(((totals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
       let expectedGrand = Number((baseSubtotal + taxTotal).toFixed(2));
-      if ((orderType || '').toLowerCase() === 'togo') {
+      const pmDiscountComplete = paymentCompleteData?.discount || splitDiscountRef.current;
+      if (pmDiscountComplete && pmDiscountComplete.percent > 0) {
+        const discountedSub = Number((pmDiscountComplete.discountedSubtotal || 0).toFixed(2));
+        const discountedTax = Number((pmDiscountComplete.taxesTotal || 0).toFixed(2));
+        expectedGrand = Number((discountedSub + discountedTax).toFixed(2));
+      } else if ((orderType || '').toLowerCase() === 'togo') {
         const discountActive = togoSettings.discountEnabled && Number(togoSettings.discountValue || 0) > 0;
         const bagActive = togoSettings.bagFeeEnabled && Number(togoSettings.bagFeeValue || 0) > 0;
         const discountValue = Number(togoSettings.discountValue || 0);
@@ -4262,19 +4269,44 @@ const handleVoidPinClear = useCallback(() => {
       // 단, Pay in Full(ALL) 플로우 중에는 상태 반영 레이스를 피하기 위해 결제창을 유지하고 대기 (자동완료 useEffect가 처리)
       // 또한 잔액이 미세한 오차(EPS) 이하면 전액 결제로 간주하고 테이블맵으로 이동
       if (outstanding > EPS) {
-        // 스플릿이 아닌 경우엔 스플릿 모달로 보내지 않고 결제 계속 진행
+        // 스플릿 결제에서 D/C 적용 시: 모든 게스트가 이미 PAID 상태이면 outstanding 불일치를 무시하고 완료 처리
         const hasSplit = ((guestIds || []).length > 1) || (orderItems || []).some(it => it.type === 'separator');
-        if (!hasSplit) {
+        if (hasSplit && guestStatusMap) {
+          const splitAllGuests = (adhocSplitCount > 0)
+            ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
+            : Array.from(guestIds || []);
+          const guestsWithItems = splitAllGuests.filter((g: number) =>
+            (orderItems || []).some(it => it.type !== 'separator' && (it.guestNumber || 1) === g)
+          );
+          const allGuestsPaidByStatus = guestsWithItems.length > 0 && guestsWithItems.every((g: number) =>
+            guestStatusMap[g] === 'PAID' || (Array.isArray(persistedPaidGuests) && persistedPaidGuests.includes(g))
+          );
+          if (allGuestsPaidByStatus) {
+            console.log(`✅ All guests PAID by status despite outstanding=${outstanding}, proceeding to close`);
+            // fall through to close order
+          } else {
+            if (!hasSplit) {
+              setShowPaymentModal(true);
+              return;
+            }
+            if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
+              return;
+            }
+            setShowPaymentModal(false);
+            setShowSplitBillModal(true);
+            return;
+          }
+        } else if (!hasSplit) {
           setShowPaymentModal(true);
           return;
-        }
-        if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
-          // Keep PaymentModal open; wait for auto-complete trigger
+        } else {
+          if (payInFullFromSplitRef.current && guestPaymentMode === 'ALL') {
+            return;
+          }
+          setShowPaymentModal(false);
+          setShowSplitBillModal(true);
           return;
         }
-        setShowPaymentModal(false);
-        setShowSplitBillModal(true);
-        return;
       }
 
       // 모든 게스트 결제가 완료된 경우: 테이블 상태를 Available로 변경 (Preparing 제거)
@@ -4286,7 +4318,7 @@ const handleVoidPinClear = useCallback(() => {
       } catch {}
 
       if (orderId) {
-        const pmDiscountForClose = paymentCompleteData?.discount;
+        const pmDiscountForClose = paymentCompleteData?.discount || splitDiscountRef.current;
         try {
           await fetch(`${API_URL}/orders/${orderId}/close`, {
             method: 'POST',
@@ -4735,7 +4767,7 @@ const handleVoidPinClear = useCallback(() => {
       
       // 5. 주문 닫기
       if (orderId) {
-        const pmDiscountForClose = paymentCompleteData?.discount;
+        const pmDiscountForClose = paymentCompleteData?.discount || splitDiscountRef.current;
         try {
           await fetch(`${API_URL}/orders/${orderId}/close`, {
             method: 'POST',
@@ -4768,6 +4800,7 @@ const handleVoidPinClear = useCallback(() => {
       setPaymentCompleteData(null);
       clearServerAssignmentForContext();
       setSelectedServer(null);
+      splitDiscountRef.current = null;
       
       // 9. QSR vs FSR 분기 처리
       // 테이블이 연결된 주문이면(테이블 주문) 항상 테이블맵으로 이동
@@ -12625,13 +12658,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               (adhocSplitCount > 1);
             let isActuallyPartial = false;
             if (hasSplitBill && currentGuest) {
-              const newPaidGuests = Array.from(new Set([...(persistedPaidGuests || []), currentGuest]));
-              const unpaidGuests = (guestIds || []).filter(g => !newPaidGuests.includes(g));
+              const paidFromStatus = guestStatusMap
+                ? Object.entries(guestStatusMap).filter(([, st]) => st === 'PAID').map(([g]) => Number(g))
+                : [];
+              const newPaidGuests = Array.from(new Set([...(persistedPaidGuests || []), ...paidFromStatus, currentGuest]));
+              const allGuestsForSplit = (adhocSplitCount > 0)
+                ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
+                : (guestIds || []);
+              const unpaidGuests = allGuestsForSplit.filter(g => !newPaidGuests.includes(g));
               isActuallyPartial = unpaidGuests.length > 0;
             }
             try { fetch(`${API_URL}/printers/open-drawer`, { method: 'POST' }); } catch {}
             if (data.change > 0 && data.hasCashPayment && savedOrderIdRef.current) {
               try { fetch(`${API_URL}/payments/order/${savedOrderIdRef.current}/change`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ changeAmount: data.change }) }); } catch {}
+            }
+            if (data.discount && data.discount.percent > 0) {
+              splitDiscountRef.current = data.discount;
             }
             setPaymentCompleteData({
               ...data,
