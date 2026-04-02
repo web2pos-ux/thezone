@@ -1471,7 +1471,7 @@ const SalesPage: React.FC = () => {
     return raw.length > 8 ? raw.slice(-8) : raw;
   };
 
-  /** Online row (Togo panel): 1) Firebase/manual online order # 2) phone last 4 3) POS order # */
+  /** Online row (Togo panel): TZO-MMDDYY-XXXX → TZO-XXXX, fallback: phone last 4, POS order # */
   const formatOnlinePanelDisplayId = (
     onlineOrderNum?: string | number | null,
     phone?: string | null,
@@ -1479,11 +1479,13 @@ const SalesPage: React.FC = () => {
   ): string => {
     const raw = String(onlineOrderNum ?? '').trim();
     if (raw && raw !== '0' && raw !== 'undefined' && raw !== 'null') {
+      const tzoMatch = raw.match(/^(TZO)-?\d{6}-?(\d{4})$/i);
+      if (tzoMatch) return `TZ-${tzoMatch[2]}`;
       return raw.length > 8 ? raw.slice(-8) : raw;
     }
     const digits = (phone || '').replace(/\D/g, '');
     if (digits.length >= 4) {
-      return digits.slice(-4);
+      return `TZ-${digits.slice(-4)}`;
     }
     const num = Number(posOrderNum);
     if (Number.isFinite(num) && num > 0) {
@@ -2484,6 +2486,30 @@ const SalesPage: React.FC = () => {
     menuHideRefreshRef.current = { tab: onlineModalTab, modalOpen: showPrepTimeModal, category: menuHideSelectedCategory };
   }, [onlineModalTab, showPrepTimeModal, menuHideSelectedCategory]);
 
+  // Auto-sync: DB에서 restaurantId를 가져와 localStorage에 저장 (SSE 연결 전 보장)
+  const [restaurantIdReady, setRestaurantIdReady] = useState(false);
+  useEffect(() => {
+    const existing = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    if (existing) {
+      if (!localStorage.getItem('firebaseRestaurantId')) {
+        localStorage.setItem('firebaseRestaurantId', existing);
+      }
+      setRestaurantIdReady(true);
+      return;
+    }
+    fetch(`${API_URL}/admin-settings/initial-setup-status`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.restaurantId) {
+          localStorage.setItem('firebaseRestaurantId', data.restaurantId);
+          localStorage.setItem('firebase_restaurant_id', data.restaurantId);
+          setOnlineOrderRestaurantId(data.restaurantId);
+          setRestaurantIdReady(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // SSE
   useEffect(() => {
     const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
@@ -2587,7 +2613,7 @@ const SalesPage: React.FC = () => {
       eventSource?.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [API_URL, prepTimeSettings.thezoneorder.mode, showNewOrderAlert, loadOnlineOrders]);
+  }, [API_URL, prepTimeSettings.thezoneorder.mode, showNewOrderAlert, loadOnlineOrders, restaurantIdReady]);
 
   const loadTogoOrders = useCallback(async () => {
     try {
@@ -15253,10 +15279,23 @@ const SalesPage: React.FC = () => {
             <div className="px-6 py-4 border-b border-gray-200" style={{ background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)' }}>
               <div className="flex items-center gap-3">
                 <span className="text-3xl">🪑</span>
-                <div>
+                <div className="flex-1">
                   <h2 className="text-xl font-bold text-white">New Online Reservation</h2>
                   <p className="text-blue-200 text-sm">A customer has requested a table</p>
                 </div>
+                <button
+                  onClick={() => {
+                    if (pendingOnlineReservation?.firebase_doc_id) {
+                      processedOnlineReservationIds.current.add(pendingOnlineReservation.firebase_doc_id);
+                    }
+                    setShowOnlineReservationPopup(false);
+                    setPendingOnlineReservation(null);
+                  }}
+                  className="text-white/70 hover:text-white hover:bg-white/20 rounded-lg p-1 transition-colors"
+                  title="Close"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               </div>
             </div>
 

@@ -3748,6 +3748,28 @@ const handleVoidPinClear = useCallback(() => {
     menuHideRefreshRef.current = { tab: onlineModalTab, modalOpen: showPrepTimeModal, category: menuHideSelectedCategory };
   }, [onlineModalTab, showPrepTimeModal, menuHideSelectedCategory]);
 
+  // Auto-sync: DB에서 restaurantId를 가져와 localStorage에 저장 (SSE 연결 전 보장)
+  useEffect(() => {
+    const existing = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    if (existing) {
+      if (!localStorage.getItem('firebaseRestaurantId')) {
+        localStorage.setItem('firebaseRestaurantId', existing);
+      }
+      if (!onlineOrderRestaurantId) setOnlineOrderRestaurantId(existing);
+      return;
+    }
+    fetch(`${API_URL}/admin-settings/initial-setup-status`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.restaurantId) {
+          localStorage.setItem('firebaseRestaurantId', data.restaurantId);
+          localStorage.setItem('firebase_restaurant_id', data.restaurantId);
+          setOnlineOrderRestaurantId(data.restaurantId);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // SSE: Firebase에서 Online Settings 변경 시 실시간 반영
   useEffect(() => {
     const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
@@ -3790,7 +3812,7 @@ const handleVoidPinClear = useCallback(() => {
       } catch (_) {}
     };
     return () => es.close();
-  }, [API_URL]);
+  }, [API_URL, onlineOrderRestaurantId]);
 
   // 카테고리 선택 시 아이템 로드
   useEffect(() => {
