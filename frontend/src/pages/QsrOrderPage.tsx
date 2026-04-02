@@ -720,7 +720,7 @@ const QsrOrderPage = () => {
   const [orderListRefundPinError, setOrderListRefundPinError] = useState('');
   const [orderListRefundResult, setOrderListRefundResult] = useState<any | null>(null);
   const [onlineOrderRestaurantId, setOnlineOrderRestaurantId] = useState<string | null>(
-    localStorage.getItem('firebaseRestaurantId')
+    localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id') || localStorage.getItem('firebase_restaurant_id')
   );
   
   const location = useLocation();
@@ -1252,6 +1252,8 @@ const QsrOrderPage = () => {
   const [renderSize, setRenderSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [orderPageScale, setOrderPageScale] = useState<number>(1);
   const [actualScreenSize, setActualScreenSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const boCanvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [boCanvasScale, setBoCanvasScale] = useState<number>(1);
   const floorFromState = (location.state as any)?.floor;
   
   useEffect(() => {
@@ -1312,6 +1314,27 @@ const QsrOrderPage = () => {
     setOrderPageScale(calculatedScale);
     console.log(`[OrderPage] Screen scaling: BO=${boWidth}x${boHeight}, Actual=${actualWidth}x${actualHeight}, Scale=${calculatedScale.toFixed(2)}`);
   }, [boScreenSize, actualScreenSize, isSalesOrder]);
+
+  // Back Office 모드: 캔버스가 컨테이너보다 크면 자동 축소
+  useEffect(() => {
+    if (isSalesOrder) { setBoCanvasScale(1); return; }
+    const wrapper = boCanvasWrapperRef.current;
+    if (!wrapper) return;
+    const ro = new ResizeObserver(() => {
+      const ww = wrapper.clientWidth;
+      const wh = wrapper.clientHeight;
+      if (ww <= 0 || wh <= 0) return;
+      const p = layoutSettings.screenResolution.split('x').map(Number);
+      const cw = p[0] || 1024;
+      const ch = p[1] || 768;
+      const sx = ww / cw;
+      const sy = wh / ch;
+      const s = Math.min(sx, sy, 1);
+      setBoCanvasScale(s);
+    });
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+  }, [isSalesOrder, layoutSettings.screenResolution]);
 
   // Measure actual rendered size of the canvas (to verify no scaling)
   useEffect(() => {
@@ -3520,7 +3543,7 @@ const handleVoidPinClear = useCallback(() => {
 
   const saveDayOffs = async () => {
     if (dayOffSelectedDates.length === 0 || dayOffSaveStatus === 'saving') return;
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     setDayOffSaveStatus('saving');
     const channelsStr = dayOffSelectedChannels.length === 0 || dayOffSelectedChannels.includes('all') ? 'all' : dayOffSelectedChannels.join(',');
     try {
@@ -3547,7 +3570,7 @@ const handleVoidPinClear = useCallback(() => {
 
   const removeDayOff = async (dateStr: string) => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const url = restaurantId ? `${API_URL}/online-orders/day-off/${dateStr}?restaurantId=${restaurantId}` : `${API_URL}/online-orders/day-off/${dateStr}`;
       const res = await fetch(url, { method: 'DELETE' });
       if (res.ok) {
@@ -3618,7 +3641,7 @@ const handleVoidPinClear = useCallback(() => {
   // Online Settings 모달 열릴 때 Firebase에서 전체 설정 로드 (Prep Time, Pause, Day Off, Utility)
   const loadAllOnlineSettings = useCallback(async () => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       if (!restaurantId) return;
       const url = `${API_URL}/online-orders/online-settings?restaurantId=${restaurantId}`;
       const res = await fetch(url);
@@ -3670,7 +3693,7 @@ const handleVoidPinClear = useCallback(() => {
   // Utility 탭 열릴 때 Firebase에서 로드 (loadAllOnlineSettings에서 이미 로드되지만 탭 전환 시 재로드)
   const loadUtilitySettings = useCallback(async () => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
       const res = await fetch(url);
       if (res.ok) {
@@ -3695,7 +3718,7 @@ const handleVoidPinClear = useCallback(() => {
   const saveUtilitySettings = async () => {
     setSavingUtility(true);
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3727,7 +3750,7 @@ const handleVoidPinClear = useCallback(() => {
 
   // SSE: Firebase에서 Online Settings 변경 시 실시간 반영
   useEffect(() => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     if (!restaurantId) return;
     const es = new EventSource(`${API_URL}/online-orders/stream/${restaurantId}`);
     es.onmessage = (ev) => {
@@ -5306,6 +5329,7 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
 
   // 레이아웃 매니저 탭 접기/펼침 상태
   const [panelWidthExpanded, setPanelWidthExpanded] = useState(true);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [categoryTabExpanded, setCategoryTabExpanded] = useState(false);
   const [menuTabExpanded, setMenuTabExpanded] = useState(false);
   const [modifierTabExpanded, setModifierTabExpanded] = useState(false);
@@ -11337,6 +11361,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       )}
       {/* Right Area - Canvas with Order Interface */}
       <div 
+        ref={boCanvasWrapperRef}
         className="flex-1 flex flex-col items-center justify-start relative z-50"
         onClick={(e) => {
           // FloatingActionBar 또는 order-item 외부 클릭 시 선택 해제
@@ -11351,18 +11376,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         {/* Canvas Container */}
          <div 
            ref={canvasRef}
-           className={`flex-none flex flex-col bg-white shadow-lg ${isQsrMode ? '' : 'my-4'} rounded-lg overflow-hidden`}
+           className={`flex flex-col bg-white shadow-lg rounded-lg ${isQsrMode ? 'flex-none overflow-hidden' : (isSalesOrder ? 'flex-none my-4 overflow-hidden' : 'flex-1 m-0 overflow-auto')}`}
           style={{ 
-            width: isQsrMode ? '1024px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[0] ? `${p[0]}px` : '800px'; })()),
-            height: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[1] ? `${p[1]}px` : '600px'; })()),
+            width: isQsrMode ? '1024px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : '100%'),
+            height: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : '100%'),
             minWidth: isQsrMode ? '1024px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : undefined),
             minHeight: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined),
             maxWidth: isQsrMode ? '1024px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : undefined),
             maxHeight: isQsrMode ? '768px' : (isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined),
-            overflow: 'hidden',
             position: 'relative',
-            transform: isQsrMode ? `scale(${Math.min(actualScreenSize.width / 1024, actualScreenSize.height / 768)})` : (isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)'),
-            transformOrigin: 'top left',
+            transform: isQsrMode ? `scale(${Math.min(actualScreenSize.width / 1024, actualScreenSize.height / 768)})` : (isSalesOrder ? `scale(${orderPageScale})` : undefined),
+            transformOrigin: isQsrMode ? 'top left' : (isSalesOrder ? 'top left' : undefined),
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'
           }}
@@ -17528,7 +17552,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <div className="text-2xl text-gray-400">→</div>
                       <div className="text-center"><div className="text-xs text-gray-500">Resume at</div><div className="text-xl font-bold text-orange-600">{selectedPauseDuration ? (() => { const durationMap: { [key: string]: number } = { '15m': 15, '30m': 30, '1h': 60, '2h': 120, '3h': 180, '4h': 240, '5h': 300, 'Today': -1 }; const min = durationMap[selectedPauseDuration]; const previewTime = min === -1 ? new Date(new Date().setHours(23, 59, 59, 999)) : new Date(Date.now() + min * 60000); return previewTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); })() : '--:--'}</div></div>
                     </div>
-                    <button onClick={async () => { const restaurantId = localStorage.getItem('firebaseRestaurantId'); if (!restaurantId) { alert('Restaurant ID not found'); return; } try { await fetch(`${API_URL}/online-orders/resume/${restaurantId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); setPauseSettings({ thezoneorder: { paused: false, pauseUntil: null }, ubereats: { paused: false, pauseUntil: null }, doordash: { paused: false, pauseUntil: null }, skipthedishes: { paused: false, pauseUntil: null } }); setSelectedPauseDuration(null); } catch (error) { alert('Resume failed'); } }} className="px-5 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg text-base font-bold shadow-md">Resume All</button>
+                    <button onClick={async () => { const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id'); if (!restaurantId) { alert('Restaurant ID not found'); return; } try { await fetch(`${API_URL}/online-orders/resume/${restaurantId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); setPauseSettings({ thezoneorder: { paused: false, pauseUntil: null }, ubereats: { paused: false, pauseUntil: null }, doordash: { paused: false, pauseUntil: null }, skipthedishes: { paused: false, pauseUntil: null } }); setSelectedPauseDuration(null); } catch (error) { alert('Resume failed'); } }} className="px-5 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg text-base font-bold shadow-md">Resume All</button>
                   </div>
                   <div className="p-3 bg-gray-50 rounded-lg border">
                     <div className="grid grid-cols-5 gap-3">

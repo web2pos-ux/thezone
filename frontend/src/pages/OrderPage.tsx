@@ -461,6 +461,8 @@ const OrderPage = () => {
   const [renderSize, setRenderSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [orderPageScale, setOrderPageScale] = useState<number>(1);
   const [actualScreenSize, setActualScreenSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const boCanvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [boCanvasScale, setBoCanvasScale] = useState<number>(1);
   const floorFromState = (location.state as any)?.floor;
   
   useEffect(() => {
@@ -521,6 +523,27 @@ const OrderPage = () => {
     setOrderPageScale(calculatedScale);
     console.log(`[OrderPage] Screen scaling: BO=${boWidth}x${boHeight}, Actual=${actualWidth}x${actualHeight}, Scale=${calculatedScale.toFixed(2)}`);
   }, [boScreenSize, actualScreenSize, isSalesOrder]);
+
+  // Back Office 모드: 캔버스가 컨테이너보다 크면 자동 축소
+  useEffect(() => {
+    if (isSalesOrder) { setBoCanvasScale(1); return; }
+    const wrapper = boCanvasWrapperRef.current;
+    if (!wrapper) return;
+    const ro = new ResizeObserver(() => {
+      const ww = wrapper.clientWidth;
+      const wh = wrapper.clientHeight;
+      if (ww <= 0 || wh <= 0) return;
+      const p = layoutSettings.screenResolution.split('x').map(Number);
+      const cw = p[0] || 1024;
+      const ch = p[1] || 768;
+      const sx = ww / cw;
+      const sy = wh / ch;
+      const s = Math.min(sx, sy, 1);
+      setBoCanvasScale(s);
+    });
+    ro.observe(wrapper);
+    return () => ro.disconnect();
+  }, [isSalesOrder, layoutSettings.screenResolution]);
 
   // Measure actual rendered size of the canvas (to verify no scaling)
   useEffect(() => {
@@ -3251,6 +3274,7 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
 
   // 레이아웃 매니저 탭 접기/펼침 상태
   const [panelWidthExpanded, setPanelWidthExpanded] = useState(true);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [categoryTabExpanded, setCategoryTabExpanded] = useState(false);
   const [menuTabExpanded, setMenuTabExpanded] = useState(false);
   const [modifierTabExpanded, setModifierTabExpanded] = useState(false);
@@ -8043,7 +8067,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       )}
 
       {/* Left Panel - Layout Management (Back Office: 30% 고정) */}
-      <div className="bg-gray-800 text-white p-2 overflow-y-auto" style={{ display: isSalesOrder ? 'none' : undefined, width: '30%' }}>
+      {!isSalesOrder && leftPanelCollapsed && (
+        <button
+          onClick={() => setLeftPanelCollapsed(false)}
+          className="bg-gray-800 text-white flex items-center justify-center hover:bg-gray-700 transition-colors"
+          style={{ width: 28, minWidth: 28, cursor: 'pointer' }}
+          title="Expand Settings Panel"
+        >
+          <span style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', fontSize: 11, fontWeight: 600, letterSpacing: 2, whiteSpace: 'nowrap' }}>▶ SETTINGS</span>
+        </button>
+      )}
+      <div className="bg-gray-800 text-white p-2 overflow-y-auto" style={{ display: isSalesOrder || leftPanelCollapsed ? 'none' : undefined, width: '30%' }}>
         { !isTogo && (
           <>
             <div className="bg-gray-800 rounded-lg p-3 mb-3">
@@ -9329,12 +9363,21 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               Save
             </button>
           </div>
+          <button
+            onClick={() => setLeftPanelCollapsed(true)}
+            className="w-full mt-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+            title="Collapse Settings Panel"
+          >
+            <span>◀</span>
+            <span>Hide Panel</span>
+          </button>
         </div>
       </div>
-      {/* Right Area - Canvas with Order Interface (Back Office: 70% 고정) */}
+      {/* Right Area - Canvas with Order Interface (Back Office: 70% 고정, 왼쪽 접힘 시 확장) */}
       <div 
+        ref={boCanvasWrapperRef}
         className="flex flex-col items-center justify-start relative z-50"
-        style={{ width: !isSalesOrder ? '70%' : undefined, flex: !isSalesOrder ? undefined : 1 }}
+        style={{ width: !isSalesOrder && !leftPanelCollapsed ? '70%' : undefined, flex: (!isSalesOrder && !leftPanelCollapsed) ? undefined : 1 }}
         onClick={(e) => {
           // FloatingActionBar 또는 order-item 외부 클릭 시 선택 해제
           const target = e.target as HTMLElement;
@@ -9348,28 +9391,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         {/* Canvas Container */}
          <div 
            ref={canvasRef}
-           className="flex-none flex flex-col bg-white shadow-lg my-4 rounded-lg overflow-hidden"
+           className={`flex flex-col bg-white shadow-lg rounded-lg ${isSalesOrder ? 'flex-none my-4 overflow-hidden' : 'flex-1 m-0 overflow-auto'}`}
           style={{ 
-            width: isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[0] ? `${p[0]}px` : '800px'; })(),
-            height: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : (() => { const p = layoutSettings.screenResolution.split('x').map(Number); return p[1] ? `${p[1]}px` : '600px'; })(),
+            width: isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : '100%',
+            height: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : '100%',
             minWidth: isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : undefined,
             minHeight: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined,
             maxWidth: isSalesOrder ? `${(boScreenSize ? boScreenSize.width : 1024)}px` : undefined,
             maxHeight: isSalesOrder ? `${(boScreenSize ? boScreenSize.height : 768)}px` : undefined,
-            overflow: 'hidden',
             position: 'relative',
-            transform: isSalesOrder ? `scale(${orderPageScale})` : 'scale(1)',
-            transformOrigin: 'top left',
+            transform: isSalesOrder ? `scale(${orderPageScale})` : undefined,
+            transformOrigin: isSalesOrder ? 'top left' : undefined,
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'
           }}
            id="pos-canvas-anchor"
          >
-            {/* Content wrapper - 스케일링 없이 꽉 차게 (하단 버튼 잘림 방지 위해 20px 여유) */}
+            {/* Content wrapper */}
             <div
               style={{
                 width: '100%',
-                height: 'calc(100% - 20px)',
+                height: isSalesOrder ? 'calc(100% - 20px)' : '100%',
                 display: 'flex',
                 flexDirection: 'column'
               }}
@@ -9467,11 +9509,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         channelInfo = tableName ? `Table ${tableName}` : '';
                       }
 
-                      const displayOrderId = savedOrderIdRef.current || ((location.state as any)?.orderId) || '';
+                      const displayOrderNumber = savedOrderNumberRef.current || '';
 
                       return (
                         <div data-pos-lock="order-channel-block" className="flex items-center gap-2">
-                          {displayOrderId && <span className="font-medium" data-pos-lock="order-number-value" style={{ fontSize: 'var(--order-value-font)' }}>#{displayOrderId}</span>}
+                          {displayOrderNumber && <span className="font-medium" data-pos-lock="order-number-value" style={{ fontSize: 'var(--order-value-font)' }}>#{displayOrderNumber}</span>}
                           {channelInfo && <span className="font-medium" data-pos-lock="order-channel-value" style={{ fontSize: 'var(--order-value-font)' }}>{channelInfo}</span>}
                         </div>
                       );

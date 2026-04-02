@@ -330,7 +330,7 @@ const SalesPage: React.FC = () => {
   // Sold Out state (badge count only)
   const [soldOutItems, setSoldOutItems] = useState<Set<string>>(new Set());
   const [onlineOrderRestaurantId, setOnlineOrderRestaurantId] = useState<string | null>(
-    localStorage.getItem('firebaseRestaurantId')
+    localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id') || localStorage.getItem('firebase_restaurant_id')
   );
 
   // Online/Togo Order Detail Modal state (ê°œë³„ ì¹´ë“œ í´ë¦­ ì‹œ)
@@ -1206,7 +1206,7 @@ const SalesPage: React.FC = () => {
 
   // Firebase 실시간 리스너: 새 온라인 예약 pending 감지
   useEffect(() => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     if (!restaurantId) return;
 
     const q = query(
@@ -1975,7 +1975,7 @@ const SalesPage: React.FC = () => {
 
   const loadOnlineOrders = useCallback(async () => {
     // ë¡œì»¬ ìŠ¤í† ë¦¬ì§€ì—ì„œ ìµœì‹  restaurantIdë¥¼ ê°€ì ¸ì˜´
-    const currentRestaurantId = localStorage.getItem('firebaseRestaurantId');
+    const currentRestaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     if (!currentRestaurantId) {
       if (onlineOrderRestaurantId) setOnlineOrderRestaurantId(null);
       return;
@@ -2220,7 +2220,7 @@ const SalesPage: React.FC = () => {
       return;
     }
 
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     console.log('[Day Off] Saving...', dayOffSelectedDates, dayOffSelectedChannels, dayOffType, 'restaurantId:', restaurantId);
     setDayOffSaveStatus('saving');
     
@@ -2264,7 +2264,7 @@ const SalesPage: React.FC = () => {
   // Day Off ì‚­ì œ - Firebase ë™ê¸°í™” í¬í•¨
   const removeDayOff = async (dateStr: string) => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const url = restaurantId 
         ? `${API_URL}/online-orders/day-off/${dateStr}?restaurantId=${restaurantId}`
         : `${API_URL}/online-orders/day-off/${dateStr}`;
@@ -2391,7 +2391,7 @@ const SalesPage: React.FC = () => {
   // Online Settings 모달 열릴 때 Firebase에서 전체 설정 로드
   const loadAllOnlineSettings = useCallback(async () => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       if (!restaurantId) return;
       const res = await fetch(`${API_URL}/online-orders/online-settings?restaurantId=${restaurantId}`);
       if (!res.ok) return;
@@ -2432,7 +2432,7 @@ const SalesPage: React.FC = () => {
 
   const loadUtilitySettings = useCallback(async () => {
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
       const res = await fetch(url);
       if (res.ok) {
@@ -2452,7 +2452,7 @@ const SalesPage: React.FC = () => {
   const saveUtilitySettings = async () => {
     setSavingUtility(true);
     try {
-      const restaurantId = localStorage.getItem('firebaseRestaurantId');
+      const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
       const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2486,7 +2486,7 @@ const SalesPage: React.FC = () => {
 
   // SSE
   useEffect(() => {
-    const restaurantId = localStorage.getItem('firebaseRestaurantId');
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     if (!restaurantId) return;
 
     let eventSource: EventSource | null = null;
@@ -10096,7 +10096,7 @@ const SalesPage: React.FC = () => {
                       </div>
                       <button
                         onClick={async () => {
-                          const restaurantId = localStorage.getItem('firebaseRestaurantId');
+                          const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
                           if (!restaurantId) { alert('Restaurant ID not found'); return; }
                           try {
                             await fetch(`${API_URL}/online-orders/resume/${restaurantId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });

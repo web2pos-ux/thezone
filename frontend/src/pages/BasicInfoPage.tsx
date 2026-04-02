@@ -292,6 +292,7 @@ const BasicInfoPage: React.FC = () => {
     setRestaurantId(id);
     localStorage.setItem('firebase_admin_url', url);
     localStorage.setItem('firebase_restaurant_id', id);
+    localStorage.setItem('firebaseRestaurantId', id);
   };
 
   const uploadOrderScreenToFirebase = async () => {

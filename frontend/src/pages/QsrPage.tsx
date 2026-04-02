@@ -383,7 +383,7 @@ const QsrPage: React.FC = () => {
   
   // Get restaurant ID from localStorage
   const getRestaurantId = useCallback(() => {
-    return localStorage.getItem('firebaseRestaurantId');
+    return localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
   }, []);
   
   // Load online orders
