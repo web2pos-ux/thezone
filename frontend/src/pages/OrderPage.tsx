@@ -2267,17 +2267,25 @@ const handleVoidPinClear = useCallback(() => {
           // Receipt count was chosen in PaymentCompleteModal; ensure we print BEFORE leaving to TableMap.
           // Pay In Full (ALL mode): print full order receipt instead of per-guest partial.
           // Per-guest partial uses paymentCompleteData which is already null at this point.
-          // receiptOnly 모드(isPartialPayment===false)에서는 PaymentCompleteModal이 이미 onPrintReceipt로 출력했으므로 스킵
-          const alreadyPrintedByModal = savedPaymentData?.isPartialPayment === false;
+          // receiptOnly 모드에서 개별 게스트 결제(currentGuestNumber 존재)는 PaymentCompleteModal이 이미 onPrintReceipt로 출력했으므로 스킵
+          // Pay in Full(currentGuestNumber 없음)은 handlePartialPrintReceipt가 early return하므로 여기서 출력해야 함
+          const alreadyPrintedByModal = savedPaymentData?.isPartialPayment === false && typeof savedPaymentData?.currentGuestNumber === 'number';
           if (receiptCount > 0 && !alreadyPrintedByModal) {
             try {
               if (guestPaymentMode === 'ALL') {
                 const totalsForReceipt = computeGuestTotals('ALL');
                 const rSubtotal = Number((totalsForReceipt.subtotal || 0).toFixed(2));
-                const rTaxLines = (totalsForReceipt.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
-                const rTaxTotal = Number(rTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0).toFixed(2));
+                let rTaxLines = (totalsForReceipt.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+                let rTaxTotal = Number(rTaxLines.reduce((s: number, t: any) => s + (t.amount || 0), 0).toFixed(2));
                 let rGrand = Number((rSubtotal + rTaxTotal).toFixed(2));
+                const rAdjustments: Array<{ label: string; amount: number }> = [];
                 if (pmDiscount && pmDiscount.percent > 0) {
+                  rAdjustments.push({
+                    label: `Discount (${pmDiscount.percent}%)`,
+                    amount: -Number(pmDiscount.amount.toFixed(2))
+                  });
+                  rTaxLines = pmDiscount.taxLines.map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+                  rTaxTotal = Number(pmDiscount.taxesTotal.toFixed(2));
                   rGrand = Number(((pmDiscount.discountedSubtotal || 0) + (pmDiscount.taxesTotal || 0)).toFixed(2));
                 }
                 const rPayments = sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
@@ -2297,7 +2305,9 @@ const handleVoidPinClear = useCallback(() => {
                     modifiers: it.modifiers,
                   })),
                   subtotal: rSubtotal,
+                  adjustments: rAdjustments,
                   taxLines: rTaxLines,
+                  taxesTotal: rTaxTotal,
                   total: rGrand,
                   payments: rPayments,
                   change: savedPaymentData?.change || 0,
