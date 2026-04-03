@@ -109,33 +109,52 @@ function startOrderListener(restaurantId) {
 
   const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
-      // [DISABLED] 3rd party delivery 연동이 완료되기 전까지 Firebase 리스너에서 orders 테이블에 자동 INSERT하지 않음.
-      // 수동으로 POS에서 입력한 주문만 orders 테이블에 저장됨.
-      // 연동 완료 시 이 블록의 주석을 해제하면 됨.
-      /*
-      // SQLite에 저장하고 localOrderId 생성
       const firebaseOrderId = order.id;
       let localOrder = null;
       
       try {
-        // 이미 저장된 주문인지 확인
         localOrder = await dbGet(
           'SELECT id FROM orders WHERE firebase_order_id = ?',
           [firebaseOrderId]
         );
         
-        // 없으면 새로 생성
         if (!localOrder) {
-          ... (auto-insert logic disabled) ...
+          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+          const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
+          
+          const result = await dbRun(
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              orderNumber,
+              'ONLINE',
+              order.total || 0,
+              'PENDING',
+              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              order.customerPhone || null,
+              order.customerName || null,
+              firebaseOrderId
+            ]
+          );
+          localOrder = { id: result.lastID };
+          
+          if (Array.isArray(order.items)) {
+            for (const item of order.items) {
+              await dbRun(
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
+              );
+            }
+          }
+          console.log(`✅ 온라인 주문 SQLite 저장: #${localOrder.id}`);
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
       }
-      */
       
-      // SSE 브로드캐스트는 유지 (OnlineOrderPanel에서 실시간 표시용)
       const formatted = formatOrderForFrontend(order);
-      formatted.localOrderId = null;
+      formatted.localOrderId = localOrder?.id || null;
       
       broadcastToClients(restaurantId, {
         type: 'new_order',
@@ -167,6 +186,12 @@ function stopOrderListener(restaurantId) {
     activeListeners.delete(restaurantId);
     console.log(`🛑 주문 리스너 중지: ${restaurantId}`);
   }
+}
+
+/** SIGINT 종료 시 모든 온라인 주문/설정 Firebase 리스너 해제 */
+function stopAllFirebaseOrderListeners() {
+  [...activeListeners.keys()].forEach((id) => stopOrderListener(id));
+  [...activeSettingsListeners.keys()].forEach((id) => stopSettingsListener(id));
 }
 
 // Firebase Online Settings 리스너 시작 (Prep Time, Pause, Day Off, Utility)
@@ -258,9 +283,17 @@ function formatOrderForFrontend(order) {
     priceAfterDiscount: item.priceAfterDiscount || item.subtotal || item.price
   }));
 
+  const resolvedOrderNumber =
+    order.orderNumber ||
+    order.order_number ||
+    order.externalOrderNumber ||
+    order.displayOrderNumber ||
+    order.firebaseOrderNumber ||
+    null;
+
   return {
     id: order.id,
-    orderNumber: order.orderNumber,
+    orderNumber: resolvedOrderNumber,
     customerName: order.customerName,
     customerPhone: order.customerPhone,
     orderType: order.orderType, // pickup, delivery, dine_in
@@ -492,13 +525,40 @@ router.get('/:restaurantId', async (req, res) => {
         return null; // 테이블로 이동된 주문은 온라인 목록에서 제외
       }
       
-      // [DISABLED] 3rd party delivery 연동이 완료되기 전까지 orders 테이블에 자동 INSERT하지 않음.
-      // 연동 완료 시 이 블록의 주석을 해제하면 됨.
-      /*
       if (!localOrder) {
-        ... (auto-insert logic disabled) ...
+        const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+        const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
+        
+        try {
+          const result = await dbRun(
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              orderNumber,
+              'ONLINE',
+              order.total || 0,
+              'PENDING',
+              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              order.customerPhone || null,
+              order.customerName || null,
+              firebaseOrderId
+            ]
+          );
+          localOrder = { id: result.lastID };
+          
+          if (Array.isArray(order.items)) {
+            for (const item of order.items) {
+              await dbRun(
+                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
+              );
+            }
+          }
+        } catch (insertError) {
+          console.error('온라인 주문 SQLite 저장 실패:', insertError.message);
+        }
       }
-      */
       
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
@@ -826,9 +886,9 @@ router.post('/order/:orderId/print', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const { printerType = 'both' } = req.body; // 'kitchen', 'front', 'both'
+    const { printerType = 'both', restaurantId: reqRestaurantId } = req.body;
 
-    const order = await firebaseService.getOrderById(orderId);
+    const order = await firebaseService.getOrderById(orderId, reqRestaurantId || null);
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
     }
@@ -1227,6 +1287,17 @@ const initializePrepTimeTable = async () => {
       }
       console.log('[PREP TIME] Table created');
     } else {
+      const indexes = await dbAll("PRAGMA index_list('online_prep_time_settings')");
+      const hasChannelUnique = indexes.some(idx => idx.unique === 1 && idx.name !== 'sqlite_autoindex_online_prep_time_settings_1');
+      const hasAutoIndex = indexes.some(idx => idx.name === 'sqlite_autoindex_online_prep_time_settings_1');
+      if (!hasChannelUnique && !hasAutoIndex) {
+        try {
+          await dbRun('CREATE UNIQUE INDEX IF NOT EXISTS idx_prep_time_channel ON online_prep_time_settings(channel)');
+          console.log('[PREP TIME] Added UNIQUE index on channel');
+        } catch (idxErr) {
+          console.error('[PREP TIME] Failed to add UNIQUE index:', idxErr.message);
+        }
+      }
       console.log('[PREP TIME] Table ready');
     }
   } catch (error) {
@@ -1616,6 +1687,7 @@ function broadcastToRestaurant(restaurantId, data) {
 module.exports = {
   router,
   startOrderListener,
-  broadcastToRestaurant
+  broadcastToRestaurant,
+  stopAllFirebaseOrderListeners,
 };
 

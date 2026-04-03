@@ -652,6 +652,8 @@ const SalesPage: React.FC = () => {
       skipthedishes: { mode: 'auto', time: '15m' },
     };
   });
+  const prepTimeSettingsRef = useRef(prepTimeSettings);
+  useEffect(() => { prepTimeSettingsRef.current = prepTimeSettings; }, [prepTimeSettings]);
 
   // Day Off ì„¤ì • state
   const [dayOffDates, setDayOffDates] = useState<{ date: string; channels: string; type: string }[]>([]);
@@ -1448,6 +1450,7 @@ const SalesPage: React.FC = () => {
     if (lower.includes('ubereats') || lower === 'uber' || lower.includes('uber eats')) return 'UBER';
     if (lower.includes('doordash') || lower === 'ddash') return 'DDASH';
     if (lower.includes('skip') || lower.includes('skipthedishes')) return 'SKIP';
+    if (lower.includes('fantuan')) return 'FTUAN';
     if (lower.includes('grubhub')) return 'GRUB';
     return company.length > 6 ? company.slice(0, 6).toUpperCase() : company.toUpperCase();
   };
@@ -2110,9 +2113,9 @@ const SalesPage: React.FC = () => {
         
         playOnlineOrderSound();
         console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
-        if (prepTimeSettings.thezoneorder.mode === 'auto') {
+        if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
           // Auto ëª¨ë“œ: ìžë™ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
-          const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
+          const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
           const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
           const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
           
@@ -2121,13 +2124,22 @@ const SalesPage: React.FC = () => {
           fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prepTime: prepMinutes, pickupTime })
+            body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId })
           }).then(() => {
             console.log('[loadOnlineOrders] Order auto-accepted:', newOrder.id);
+            fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId })
+            }).then(() => {
+              console.log('[loadOnlineOrders] Kitchen ticket printed:', newOrder.id);
+            }).catch(printErr => {
+              console.error('[loadOnlineOrders] Kitchen ticket print failed:', printErr);
+            });
           }).catch(err => {
             console.error('[loadOnlineOrders] Auto accept failed:', err);
           });
-        } else if (prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+        } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
           // Manual ëª¨ë“œ: ì•Œë¦¼ ëª¨ë‹¬ í‘œì‹œ
           setNewOrderAlertData(newOrder);
           setSelectedPrepTime(20);
@@ -2531,9 +2543,9 @@ const SalesPage: React.FC = () => {
             const newOrder = data.order;
             console.log('[SSE] New order received:', newOrder.id);
 
-            if (prepTimeSettings.thezoneorder.mode === 'auto') {
+            if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
               // Auto ëª¨ë“œ: ìžë™ìœ¼ë¡œ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
-              const prepTimeStr = prepTimeSettings.thezoneorder.time || '20m';
+              const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
               const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
               const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
               
@@ -2542,14 +2554,23 @@ const SalesPage: React.FC = () => {
               fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prepTime: prepMinutes, pickupTime })
+                body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId })
               }).then(() => {
                 console.log('[SSE] Order auto-accepted:', newOrder.id);
+                fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId })
+                }).then(() => {
+                  console.log('[SSE] Kitchen ticket printed:', newOrder.id);
+                }).catch(printErr => {
+                  console.error('[SSE] Kitchen ticket print failed:', printErr);
+                });
                 loadOnlineOrders();
               }).catch(err => {
                 console.error('[SSE] Auto accept failed:', err);
               });
-            } else if (prepTimeSettings.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+            } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
               // Manual ëª¨ë“œ: ì•Œë¦¼ ëª¨ë‹¬ í‘œì‹œ
               setNewOrderAlertData(newOrder);
               setSelectedPrepTime(20);
@@ -2613,7 +2634,7 @@ const SalesPage: React.FC = () => {
       eventSource?.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [API_URL, prepTimeSettings.thezoneorder.mode, showNewOrderAlert, loadOnlineOrders, restaurantIdReady]);
+  }, [API_URL, showNewOrderAlert, loadOnlineOrders, restaurantIdReady]);
 
   const loadTogoOrders = useCallback(async () => {
     try {
@@ -5205,7 +5226,7 @@ const SalesPage: React.FC = () => {
    */
   const mergeOnlineCardsForPickup = useCallback((dbOrders: any[], mode?: 'history' | 'pickup') => {
     const effectiveMode = mode ?? orderListOpenMode;
-    if (effectiveMode !== 'pickup' || onlineQueueCards.length === 0) return dbOrders;
+    if (effectiveMode !== 'pickup') return dbOrders;
     const dbIds = new Set(dbOrders.map((o: any) => String(o.id)));
     const dbLocalIds = new Set(
       dbOrders.filter((o: any) => o.order_number).map((o: any) => String(o.order_number))
@@ -5241,9 +5262,49 @@ const SalesPage: React.FC = () => {
           _fromOnlineQueue: true,
         };
       });
-    if (onlineAsOrderRows.length === 0) return dbOrders;
-    return [...dbOrders, ...onlineAsOrderRows];
-  }, [orderListOpenMode, onlineQueueCards]);
+    const togoAsOrderRows = togoOrders
+      .filter((order: any) => {
+        const rawId = order?.order_id ?? order?.id;
+        const rawNumber = order?.order_number ?? order?.number;
+        if (rawId != null && dbIds.has(String(rawId))) return false;
+        if (rawNumber != null && rawNumber !== '' && dbLocalIds.has(String(rawNumber))) return false;
+        return true;
+      })
+      .map((order: any) => {
+        const pickupChannel = orderListGetPickupChannel(order);
+        const orderType =
+          pickupChannel === 'delivery'
+            ? 'DELIVERY'
+            : pickupChannel === 'online'
+            ? 'ONLINE'
+            : 'TOGO';
+        const fulfillmentMode =
+          pickupChannel === 'delivery'
+            ? 'delivery'
+            : pickupChannel === 'online'
+            ? 'online'
+            : 'pickup';
+        return {
+          id: order?.order_id ?? order?.id,
+          order_number: order?.order_number ?? order?.number ?? null,
+          order_type: orderType,
+          fulfillment_mode: fulfillmentMode,
+          status: String(order?.status || 'PENDING').toUpperCase(),
+          payment_status: pickupChannel === 'delivery' ? 'PAID' : String(order?.payment_status || '').toUpperCase(),
+          customer_name: order?.name || order?.customer_name || '',
+          customer_phone: order?.phone || order?.customer_phone || '',
+          table_id: order?.virtualTableId || order?.table_id || '',
+          created_at: order?.createdAt || order?.created_at || new Date().toISOString(),
+          total: Number(order?.total || 0),
+          deliveryCompany: order?.deliveryCompany || order?.delivery_company || '',
+          deliveryOrderNumber: order?.deliveryOrderNumber || order?.delivery_order_number || '',
+          online_order_number: order?.onlineOrderNumber || order?.online_order_number || '',
+          _fromTogoPanel: true,
+        };
+      });
+    if (onlineAsOrderRows.length === 0 && togoAsOrderRows.length === 0) return dbOrders;
+    return [...dbOrders, ...togoAsOrderRows, ...onlineAsOrderRows];
+  }, [orderListOpenMode, onlineQueueCards, togoOrders]);
 
   const fetchOrderList = async (date: string, mode?: 'history' | 'pickup') => {
     const effectiveMode = mode ?? orderListOpenMode;
@@ -5544,6 +5605,14 @@ const SalesPage: React.FC = () => {
       window.removeEventListener('orderUpdated', handleOrderChange);
     };
   }, [orderListTab, showOrderListModal, fetchLiveOrders]);
+
+  useEffect(() => {
+    if (!showOrderListModal || orderListOpenMode !== 'pickup') return;
+    setOrderListOrders((prev) => {
+      const baseOrders = prev.filter((o: any) => !o?._fromOnlineQueue && !o?._fromTogoPanel);
+      return mergeOnlineCardsForPickup(baseOrders, 'pickup');
+    });
+  }, [showOrderListModal, orderListOpenMode, togoOrders, onlineQueueCards, mergeOnlineCardsForPickup]);
 
   const handleOrderListDateChange = (days: number) => {
     const current = new Date(orderListDate + 'T00:00:00');
@@ -6096,11 +6165,11 @@ const SalesPage: React.FC = () => {
       const s = String(raw || '').trim();
       if (!s) return '';
       const key = s.toUpperCase().replace(/\s+/g, '');
-      if (key === 'UBEREATS' || key === 'UBER') return 'Uber';
-      if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'Ddash';
+      if (key === 'UBEREATS' || key === 'UBER') return 'UBER';
+      if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'DDASH';
       if (key === 'SKIPTHEDISHES' || key === 'SKIP') return 'SKIP';
-      if (key === 'FANTUAN') return 'Fantuan';
-      return s;
+      if (key === 'FANTUAN') return 'FTUAN';
+      return s.toUpperCase();
     };
 
   /** delivery_orders.name / customer_name 예: "UberEats #A1B2" — 컬럼이 비었을 때 보조 */
@@ -6132,12 +6201,26 @@ const SalesPage: React.FC = () => {
   };
 
   const orderListGetDeliveryMeta = (order: any) => {
+      const labelSource = String(
+        order?.name ||
+        order?.customer_name ||
+        order?.customerName ||
+        ''
+      ).trim();
+      const inferredCompany =
+        /ubereats|uber eats|^uber\b/i.test(labelSource) ? 'UBEREATS' :
+        /doordash|door dash|^ddash\b/i.test(labelSource) ? 'DOORDASH' :
+        /skipthedishes|^skip\b/i.test(labelSource) ? 'SKIPTHEDISHES' :
+        /fantuan/i.test(labelSource) ? 'FANTUAN' :
+        /grubhub/i.test(labelSource) ? 'GRUBHUB' :
+        '';
       const company =
         order?.deliveryCompany ||
         order?.delivery_company ||
         order?.deliveryChannel ||
         order?.delivery_channel ||
         order?.order_source ||
+        inferredCompany ||
         '';
       let orderNumber =
         order?.deliveryOrderNumber ||
@@ -6152,6 +6235,87 @@ const SalesPage: React.FC = () => {
           '';
       }
       return { company, orderNumber };
+    };
+
+  const orderListNormalizeChannelToken = (value: any) =>
+    String(value || '').toUpperCase().replace(/[\s_-]+/g, '');
+
+  const orderListGetPickupChannel = (order: any): 'delivery' | 'online' | 'togo' | 'other' => {
+      const base = order?.fullOrder || order || {};
+      const typeToken = orderListNormalizeChannelToken(
+        base?.type || base?.order_type || base?.orderType || order?.type || order?.order_type || order?.orderType
+      );
+      const sourceToken = orderListNormalizeChannelToken(
+        base?.order_source ||
+        base?.orderSource ||
+        base?.delivery_company ||
+        base?.deliveryCompany ||
+        order?.order_source ||
+        order?.orderSource ||
+        order?.delivery_company ||
+        order?.deliveryCompany
+      );
+      const fulfillmentToken = orderListNormalizeChannelToken(
+        base?.fulfillment || base?.fulfillment_mode || order?.fulfillment || order?.fulfillment_mode
+      );
+      const tableId = String(
+        base?.tableId || base?.table_id || order?.tableId || order?.table_id || ''
+      ).toUpperCase();
+      const { company } = orderListGetDeliveryMeta(base);
+      const companyToken = orderListNormalizeChannelToken(company);
+      const displayName = String(
+        base?.name ||
+        base?.customer_name ||
+        base?.customerName ||
+        order?.name ||
+        order?.customer_name ||
+        order?.customerName ||
+        ''
+      ).toLowerCase().trim();
+      const deliveryTokens = ['DELIVERY', 'UBEREATS', 'UBER', 'DOORDASH', 'SKIP', 'SKIPTHEDISHES', 'FANTUAN', 'GRUBHUB'];
+      const onlineTokens = ['ONLINE', 'WEB', 'QR'];
+      const togoTokens = ['TOGO', 'TAKEOUT', 'PICKUP'];
+
+      if (
+        fulfillmentToken === 'DELIVERY' ||
+        tableId.startsWith('DL') ||
+        deliveryTokens.includes(typeToken) ||
+        deliveryTokens.includes(sourceToken) ||
+        deliveryTokens.includes(companyToken) ||
+        !!(base?.deliveryCompany || base?.delivery_company || order?.deliveryCompany || order?.delivery_company) ||
+        displayName.startsWith('ubereats #') ||
+        displayName.startsWith('doordash #') ||
+        displayName.startsWith('skip') ||
+        displayName.startsWith('fantuan #') ||
+        displayName.startsWith('grubhub #')
+      ) {
+        return 'delivery';
+      }
+
+      if (
+        fulfillmentToken === 'ONLINE' ||
+        tableId.startsWith('OL') ||
+        onlineTokens.includes(typeToken) ||
+        onlineTokens.includes(sourceToken)
+      ) {
+        return 'online';
+      }
+
+      if (
+        fulfillmentToken === 'TOGO' ||
+        fulfillmentToken === 'PICKUP' ||
+        tableId.startsWith('TG') ||
+        togoTokens.includes(typeToken) ||
+        togoTokens.includes(sourceToken)
+      ) {
+        return 'togo';
+      }
+
+      return 'other';
+    };
+
+  const isRightPanelDeliveryOrder = (order: any): boolean => {
+      return orderListGetPickupChannel(order) === 'delivery';
     };
 
   const orderListGetTableOrCustomer = (order: any) => {
@@ -6181,26 +6345,22 @@ const SalesPage: React.FC = () => {
 
   // ì±„ë„ ë ì§€ (badge) ì •ë³´ ë°˜í™˜
   const orderListGetChannelBadge = (order: any): { label: string; bgColor: string; textColor: string } => {
-    const type = (order.order_type || '').toUpperCase();
-    const tableId = (order.table_id || '').toString().toUpperCase();
-    
-    // Online channel (UberEats, DoorDash, Skip, Online, Web, QR) - or table_id starts with 'OL'
-    if (type === 'UBEREATS' || type === 'UBER' || type === 'DOORDASH' || type === 'SKIP' || type === 'SKIPTHEDISHES' || type === 'ONLINE' || type === 'WEB' || type === 'QR' || tableId.startsWith('OL')) {
+    const channel = orderListGetPickupChannel(order);
+
+    if (channel === 'online') {
       return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
     }
-    
-    // Delivery channel
-    if (type === 'DELIVERY') {
+
+    if (channel === 'delivery') {
       return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
     }
-    
-    // Pickup channel
-    if (type === 'PICKUP') {
-      return { label: 'Pickup', bgColor: 'bg-blue-500', textColor: 'text-white' };
+
+    if (channel === 'togo') {
+      return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
-    
-    // Togo channel - order_type or table_id starts with 'TG'
-    if (type === 'TOGO' || type === 'TAKEOUT' || type === 'TO GO' || type === 'TO-GO' || tableId.startsWith('TG')) {
+
+    const normalizedType = orderListNormalizeChannelToken(order?.order_type);
+    if (normalizedType && normalizedType !== 'DINEIN' && normalizedType !== 'POS') {
       return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
     
@@ -9421,15 +9581,14 @@ const SalesPage: React.FC = () => {
             </div>
             {/* ìŠ¤í¬ë¡¤ ê°€ëŠ¥í•œ ì£¼ë¬¸ ëª©ë¡ ì˜ì—­ */}
             <div className="flex-1 overflow-auto px-2 pb-[85px]">
-              <div className="grid grid-cols-2 gap-1">
+              <div className="grid grid-cols-2 gap-2">
                 {/* ì™¼ìª½: Delivery ì£¼ë¬¸ ëª©ë¡ */}
                 <div className="space-y-1">
                   {(() => {
-                    const deliveryFiltered = togoOrders.filter(order => 
-                      String(order.fulfillment || '').toLowerCase() === 'delivery' ||
-                      String(order.type || '').toLowerCase() === 'delivery' ||
-                      order.deliveryCompany
-                    );
+                    const deliveryFiltered = [
+                      ...togoOrders.filter(order => isRightPanelDeliveryOrder(order)),
+                      ...onlineQueueCards.filter(order => isRightPanelDeliveryOrder(order)),
+                    ];
                     console.log('ðŸš— [UI] togoOrders total:', togoOrders.length);
                     console.log('ðŸš— [UI] deliveryFiltered:', deliveryFiltered.length, deliveryFiltered);
                     return deliveryFiltered;
@@ -9463,7 +9622,7 @@ const SalesPage: React.FC = () => {
                         (sourceOnlineOrder)
                       );
                       const dStatus = String(order.status || '').toUpperCase();
-                      const dIsPaid = dStatus === 'PAID' || dStatus === 'COMPLETED' || dStatus === 'CLOSED';
+                      const dIsPaid = true;
                       const dIsPickedUp = dStatus === 'PICKED_UP';
                       if (dIsPickedUp) return null;
                       let backgroundColor = dIsPickedUp ? '#E9D5FF' : dIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
@@ -9478,6 +9637,17 @@ const SalesPage: React.FC = () => {
                         borderColor = '#8B5CF6';
                         borderWidth = 3;
                       }
+                      const deliveryMeta = orderListGetDeliveryMeta((order as any).fullOrder || order);
+                      const deliveryCardType = (order as any).virtualChannel === 'online' ? 'online' : 'delivery';
+                      const deliveryDisplayTime = formatTimeAmPm(String((order as any).readyTimeLabel || (order as any).time || ''));
+                      const deliveryDisplayCompany = orderListNormalizeDeliveryAbbr(deliveryMeta.company) || 'DLV';
+                      const deliveryDisplayNumber = formatPosNumber((order as any).order_number || (order as any).localOrderId || (order as any).number);
+                      const deliveryExternalNumber = formatDeliveryOrderNumberForPanel(
+                        (order as any).deliveryOrderNumber ||
+                        (order as any).fullOrder?.deliveryOrderNumber ||
+                        (order as any).fullOrder?.externalOrderNumber ||
+                        deliveryMeta.orderNumber
+                      );
                       return (
                         <div
                           key={`delivery-${order.id}`}
@@ -9502,34 +9672,30 @@ const SalesPage: React.FC = () => {
                             onClick={(e) => {
                               if (swipeDragRef.current) return;
                               e.stopPropagation();
-                              handleVirtualOrderCardClick('delivery', order);
+                              handleVirtualOrderCardClick(deliveryCardType as 'delivery' | 'online', order);
                             }}
-                            onTouchStart={(e) => handleSwipeStart(e, String(order.id), 'delivery')}
+                            onTouchStart={(e) => handleSwipeStart(e, String(order.id), deliveryCardType as 'delivery' | 'online')}
                             onTouchMove={handleSwipeMove}
                             onTouchEnd={handleSwipeEnd}
-                            onMouseDown={(e) => handleSwipeStart(e, String(order.id), 'delivery')}
+                            onMouseDown={(e) => handleSwipeStart(e, String(order.id), deliveryCardType as 'delivery' | 'online')}
                             onMouseMove={handleSwipeMove}
                             onMouseUp={handleSwipeEnd}
                             onMouseLeave={() => { if (swipeDragRef.current?.id === String(order.id)) { swipeDragRef.current = null; setSwipeDragState(null); } }}
                           >
                             <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{order.deliveryCompany ? abbreviateDeliveryChannel(order.deliveryCompany) : 'Delivery'}</span>
+                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
                               <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${dIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dIsPaid ? 'READY' : 'UNPAID'}</span>
-                              <span className="font-bold text-right">{formatPosNumber(order.order_number)}</span>
+                              <span className="font-bold text-right">{deliveryDisplayNumber}</span>
                             </div>
                             <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
-                              <span>{formatTimeAmPm(order.readyTimeLabel)}</span>
-                              <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{formatDeliveryOrderNumberForPanel(order.deliveryOrderNumber)}</span>
+                              <span>{deliveryDisplayTime}</span>
+                              <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{deliveryExternalNumber}</span>
                             </div>
                         </button>
                         </div>
                       );
                     })}
-                  {togoOrders.filter(order => 
-                    String(order.fulfillment || '').toLowerCase() === 'delivery' ||
-                    String(order.type || '').toLowerCase() === 'delivery' ||
-                    order.deliveryCompany
-                  ).length === 0 && (
+                  {[...togoOrders, ...onlineQueueCards].filter(order => isRightPanelDeliveryOrder(order)).length === 0 && (
                     <div className="text-center text-gray-400 text-xs py-4">No Delivery Orders</div>
                   )}
                 </div>
@@ -9564,16 +9730,17 @@ const SalesPage: React.FC = () => {
                     };
                     const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
                       ...togoOrders
-                        .filter(o => 
-                          String(o.fulfillment || '').toLowerCase() !== 'delivery' &&
-                          String(o.type || '').toLowerCase() !== 'delivery' &&
-                          !o.deliveryCompany
-                        )
+                        .filter(o => {
+                          return !isRightPanelDeliveryOrder(o);
+                        })
                         .map(o => {
-                          const isOnline = String(o.fulfillment || '').toLowerCase() === 'online' || String(o.type || '').toLowerCase() === 'online';
-                          return { order: o, type: (isOnline ? 'online' : 'togo') as 'togo' | 'online', pickupMs: getPickupTimeMs(o, isOnline ? 'online' : 'togo') };
+                          const pickupChannel = orderListGetPickupChannel(o);
+                          const type: 'togo' | 'online' = pickupChannel === 'online' ? 'online' : 'togo';
+                          return { order: o, type, pickupMs: getPickupTimeMs(o, type) };
                         }),
-                      ...onlineQueueCards.map(o => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
+                      ...onlineQueueCards
+                        .filter(o => !isRightPanelDeliveryOrder(o))
+                        .map(o => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
                     ];
                     combinedOrders.sort((a, b) => {
                       const nowMs = Date.now();
@@ -9650,6 +9817,7 @@ const SalesPage: React.FC = () => {
                           card.phone || (card as any).fullOrder?.customerPhone,
                           (card as any).localOrderId ?? (card as any).number
                         );
+                        const onlinePosDisplayNumber = formatPosNumber((card as any).localOrderId ?? (card as any).number);
                         const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
                         const isTargetSelectable = isMoveMergeMode && sourceTableId && selectionChoice;
                         const canSwipe = isOnlineCardPaymentLinked(card as OnlineQueueCard);
@@ -9705,11 +9873,11 @@ const SalesPage: React.FC = () => {
                               <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
                                 <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>ONLINE</span>
                                 <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{oIsPaid ? 'READY' : 'UNPAID'}</span>
-                                <span className="font-bold text-right">{onlinePanelDisplayId}</span>
+                                <span className="font-bold text-right">{onlinePosDisplayNumber}</span>
                               </div>
                               <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
                                 <span>{displayTime}</span>
-                                <span className="truncate text-right ml-1" style={{ maxWidth: '60%' }}>{(card as any).name || (card as any).fullOrder?.customerName || ''}</span>
+                                <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{onlinePanelDisplayId}</span>
                               </div>
                           </button>
                           </div>
@@ -10071,7 +10239,7 @@ const SalesPage: React.FC = () => {
                         });
                         const data = await response.json();
                         if (data.success) {
-                          alert('Prep Time settings saved successfully!');
+                          localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
                         } else {
                           alert('Failed to save: ' + (data.error || 'Unknown error'));
                         }
@@ -11064,6 +11232,7 @@ const SalesPage: React.FC = () => {
                       await fetch(`${API_URL}/online-orders/order/${newOrderAlertData.id}/reject`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ restaurantId: onlineOrderRestaurantId }),
                       });
                       console.log('Order rejected:', newOrderAlertData.id);
                     } catch (error) {
@@ -11087,10 +11256,21 @@ const SalesPage: React.FC = () => {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ 
                           prepTime: selectedPrepTime,
-                          pickupTime: pickupTime
+                          pickupTime: pickupTime,
+                          restaurantId: onlineOrderRestaurantId
                         }),
                       });
                       console.log('Order accepted:', newOrderAlertData.id, 'Prep time:', selectedPrepTime);
+                      try {
+                        await fetch(`${API_URL}/online-orders/order/${newOrderAlertData.id}/print`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId })
+                        });
+                        console.log('[Manual] Kitchen ticket printed:', newOrderAlertData.id);
+                      } catch (printErr) {
+                        console.error('[Manual] Kitchen ticket print failed:', printErr);
+                      }
                     } catch (error) {
                       console.error('Failed to accept order:', error);
                     }
@@ -11280,20 +11460,21 @@ const SalesPage: React.FC = () => {
                       ) : (
                         orderListOrders.filter((order) => {
                           if (orderListOpenMode !== 'pickup') return true;
-                          const _t = (order.order_type || '').toUpperCase();
                           const _f = String(order.fulfillment_mode || '').toLowerCase();
                           const _s = String(order.status || '').toUpperCase();
-                          const _ps = String(order.payment_status || '').toUpperCase();
-                          const isDineIn = _t === 'DINE_IN' || _t === 'DINE-IN' || _t === 'POS';
+                          const _t = orderListNormalizeChannelToken(order.order_type);
+                          const isDineIn = _t === 'DINEIN' || _t === 'POS';
                           if (isDineIn) return false;
                           if (_s === 'PICKED_UP') return false;
                           if (_s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
-                          const isDeliveryOrder = _t === 'DELIVERY' || _f === 'delivery' || _t === 'UBEREATS' || _t === 'UBER' || _t === 'DOORDASH' || _t === 'SKIP' || _t === 'SKIPTHEDISHES' || _t === 'FANTUAN';
-                          const isOnlineOrder = _t === 'ONLINE' || _t === 'WEB' || _t === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL');
-                          const isTogoOrder = _t === 'TOGO' || _f === 'togo' || _f === 'pickup';
-                          if (orderListChannelFilter === 'delivery') return isDeliveryOrder;
-                          if (orderListChannelFilter === 'online') return isOnlineOrder;
-                          if (orderListChannelFilter === 'togo') return isTogoOrder;
+                          const pickupChannel = orderListGetPickupChannel({
+                            ...order,
+                            fulfillment: _f,
+                          });
+                          const normalizedPickupChannel = pickupChannel === 'other' ? 'togo' : pickupChannel;
+                          if (orderListChannelFilter === 'delivery') return normalizedPickupChannel === 'delivery';
+                          if (orderListChannelFilter === 'online') return normalizedPickupChannel === 'online';
+                          if (orderListChannelFilter === 'togo') return normalizedPickupChannel === 'togo';
                           return true;
                         }).map((order) => {
                           const badge = orderListGetChannelBadge(order);
