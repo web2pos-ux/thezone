@@ -682,9 +682,8 @@ useEffect(() => {
         } else {
           scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
         }
-        const isCardPayment = ['DEBIT', 'VISA', 'MC', 'OTHER_CARD'].includes(effectiveMethod.toUpperCase());
-        const isCashLikeMethod = (effectiveMethod === 'CASH') || isCardPayment;
         const isCashMethod = effectiveMethod === 'CASH';
+        const isCashLikeMethod = isCashMethod;
 
         // Cash/Card: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip 입력 기회 제공 — OK 누르기 전까지 Payment Complete로 가지 않음)
         if (isCashLikeMethod && rawAmt >= scopeDueNow && scopeDueNow > 0) {
@@ -745,12 +744,8 @@ useEffect(() => {
         setChangeDueDigits('');
         setIsProcessing(false);
         
-        // 결제 처리 후 잔액이 0이면 바로 Payment Complete 모달 표시
-        // Cash-like (Cash + Cards): 항상 결제 완료 처리 (초과분은 Change)
-        // 기타: scopeDueNow - finalAmount로 남은 잔액 계산
-        const remainingAfterPayment = isCashLikeMethod
-          ? 0
-          : scopeDueNow - finalAmount;
+        // 카드 부분결제는 잔액이 남아야 하므로 실제 남은 Due를 그대로 사용한다.
+        const remainingAfterPayment = scopeDueNow - finalAmount;
         
         if (Math.abs(remainingAfterPayment) < 0.005 && onPaymentComplete) {
           const displayAmount = isCashLikeMethod
@@ -1012,8 +1007,7 @@ useEffect(() => {
         } else {
           scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
         }
-        const isCardPayment2 = ['DEBIT', 'VISA', 'MC', 'OTHER_CARD'].includes(effectiveMethod.toUpperCase());
-        const isCashLikeMethod2 = (effectiveMethod === 'CASH') || isCardPayment2;
+        const isCashLikeMethod2 = effectiveMethod === 'CASH';
         let finalAmount: number;
         let t: number;
         
@@ -1505,9 +1499,8 @@ const addQuick = async (q: number) => {
 					scopeDueNow = Math.max(0, Number((grand - confirmedTotalNow).toFixed(2)));
 				}
 				
-        const isCardPaymentDraft = ['DEBIT', 'VISA', 'MC', 'OTHER_CARD'].includes(String(effectiveMethod || '').toUpperCase());
-        const isCashLikeMethodDraft = (String(effectiveMethod || '').toUpperCase() === 'CASH') || isCardPaymentDraft;
         const isCashMethodDraft = String(effectiveMethod || '').toUpperCase() === 'CASH';
+        const isCashLikeMethodDraft = isCashMethodDraft;
 
         // Cash/Card: 결제 금액이 Due 이상이면 대기 상태로 전환 (Tip 입력 기회 제공 — OK 누르기 전까지 Payment Complete로 가지 않음)
         if (isCashLikeMethodDraft && currentAmt >= scopeDueNow && scopeDueNow > 0) {
@@ -1579,7 +1572,7 @@ const addQuick = async (q: number) => {
 				}
 				setIsProcessing(false);
 
-        const remainingDraft = isCashLikeMethodDraft ? 0 : scopeDueNow - finalAmount;
+        const remainingDraft = scopeDueNow - finalAmount;
         if (Math.abs(remainingDraft) < 0.005 && onPaymentComplete) {
           const draftDisplayAmount = isCashLikeMethodDraft
             ? (currentAmt > 0 ? currentAmt : Number((finalAmount + tipToSend).toFixed(2)))

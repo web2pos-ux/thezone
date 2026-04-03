@@ -506,6 +506,7 @@ app.use('/api/modifier-groups', modifierGroupRoutes);
 app.use('/api/menu-independent-options', menuIndependentOptionsRoutes);
 app.use('/api/open-price', openPriceRoutes);
 app.use('/api/reservations', reservationRoutes);
+app.use('/api', reservationRoutes);
 app.use('/api/reservation-settings', reservationSettingsRoutes);
 app.use('/api/waiting-list', waitingListRoutes);
 app.use('/api/admin-settings', adminSettingsRoutes);
