@@ -264,24 +264,33 @@ function buildKitchenTicketText(orderData) {
   if (channel === 'PICKUP') {
     const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
     if (phoneDigits.length >= 4) {
-      headerText = cleanNum ? `#${cleanNum} PICKUP "${phoneDigits.slice(-4)}"` : `PICKUP "${phoneDigits.slice(-4)}"`;
+      headerText = cleanNum ? `#${cleanNum} PICKUP-${phoneDigits.slice(-4)}` : `PICKUP-${phoneDigits.slice(-4)}`;
     } else if (phoneDigits.length > 0) {
-      headerText = cleanNum ? `#${cleanNum} PICKUP "${phoneDigits}"` : `PICKUP "${phoneDigits}"`;
+      headerText = cleanNum ? `#${cleanNum} PICKUP-${phoneDigits}` : `PICKUP-${phoneDigits}`;
     } else {
       headerText = cleanNum ? `#${cleanNum} PICKUP` : 'PICKUP';
     }
   } else if (channel === 'TOGO' || channel === 'TAKEOUT') {
     const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
+    const nameStr = String(customerName || '').trim();
+    let togoSuffix = '';
     if (phoneDigits.length >= 4) {
-      headerText = cleanNum ? `#${cleanNum} TOGO "${phoneDigits.slice(-4)}"` : `TOGO "${phoneDigits.slice(-4)}"`;
+      togoSuffix = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      headerText = cleanNum ? `#${cleanNum} TOGO "${phoneDigits}"` : `TOGO "${phoneDigits}"`;
+      togoSuffix = phoneDigits;
+    } else if (nameStr) {
+      togoSuffix = nameStr.slice(0, 8).toUpperCase();
+    } else if (cleanNum) {
+      togoSuffix = String(cleanNum);
+    }
+    if (togoSuffix) {
+      headerText = cleanNum ? `#${cleanNum} TOGO-${togoSuffix}` : `TOGO-${togoSuffix}`;
     } else {
-      headerText = cleanNum ? `#${cleanNum} TOGO` : 'TOGO';
+      headerText = 'TOGO';
     }
   } else if (channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE') {
     headerText = cleanNum ? `#${cleanNum} EAT IN` : 'EAT IN';
-  } else if (channel === 'ONLINE') {
+  } else if (channel === 'ONLINE' || channel === 'THEZONE') {
     const onlineOrderTrim = String(orderInfo.onlineOrderNumber || orderData.onlineOrderNumber || header.onlineOrderNumber || '').trim().replace(/"/g, '');
     const phoneDigits = String(customerPhone || '').replace(/\D/g, '');
     let quoteBody = '';
@@ -296,7 +305,7 @@ function buildKitchenTicketText(orderData) {
     }
     if (quoteBody) {
       const qUpper = quoteBody.toUpperCase();
-      headerText = cleanNum ? `#${cleanNum} ONLINE "${qUpper}"` : `ONLINE "${qUpper}"`;
+      headerText = cleanNum ? `#${cleanNum} ONLINE-${qUpper}` : `ONLINE-${qUpper}`;
     } else {
       headerText = cleanNum ? `#${cleanNum} ONLINE` : 'ONLINE';
     }
@@ -307,7 +316,7 @@ function buildKitchenTicketText(orderData) {
     const normKey = String(deliveryCompany).toUpperCase().replace(/\s+/g, '');
     const platform = platformMap[normKey] || deliveryCompany || 'DELIVERY';
     const ext = String(deliveryOrderNumber || '').replace(/^#\s*/, '').replace(/[^a-zA-Z0-9-]/g, '').toUpperCase();
-    const channelPart = ext ? `${platform} "${ext}"` : platform;
+    const channelPart = ext ? `${platform}-${ext}` : platform;
     headerText = cleanNum ? `#${cleanNum} ${channelPart}` : channelPart;
   } else if (tableName) {
     const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
@@ -332,20 +341,21 @@ function buildKitchenTicketText(orderData) {
   }
   
   // === 상태 표시 (UNPAID/PAID/REPRINT/ADDITIONAL) ===
+  const isKitchenPrinter = orderData.isKitchenPrinter || false;
   output += CENTER + DOUBLE_HEIGHT + BOLD_ON;
   if (isReprint) {
     output += '** REPRINT **' + LF;
   } else if (isAdditionalOrder) {
     output += '** ADDITIONAL **' + LF;
-  } else if (isPaid) {
+  } else if (!isKitchenPrinter && isPaid) {
     output += 'PAID' + LF;
-  } else {
+  } else if (!isKitchenPrinter) {
     output += 'UNPAID' + LF;
   }
   output += NORMAL_SIZE + BOLD_OFF + LEFT;
   
-  // === 고객명 ===
-  if (customerName) {
+  // === 고객명 (TOGO/ONLINE/THEZONE 채널 제외) ===
+  if (customerName && channel !== 'ONLINE' && channel !== 'THEZONE' && channel !== 'TOGO' && channel !== 'TAKEOUT') {
     output += BOLD_ON + customerName + BOLD_OFF + LF;
   }
   

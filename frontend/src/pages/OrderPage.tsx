@@ -6578,7 +6578,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               deliveryOrderNumber: deliveryOrderNumber,
               // 고객 정보 (입력값 있을 때만 출력됨)
               customerName: getPersistableCustomerName() || '',
-              customerPhone: orderCustomerInfo?.phone || '',
+              customerPhone: getPersistableCustomerPhone() || '',
               onlineOrderNumber:
                 (orderType || '').toLowerCase() === 'online' ? onlineOrderNumberForKitchenRef.current || '' : '',
             },

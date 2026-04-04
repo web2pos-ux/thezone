@@ -8317,6 +8317,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         return it;
     });
 
+    // Calculate subtotal/tax from computeGuestTotals for accurate DB storage
+    const orderTotalsForSave = computeGuestTotals('ALL');
+    const saveBaseSubtotal = Number((orderTotalsForSave.subtotal || 0).toFixed(2));
+    const saveBaseTaxLines = (orderTotalsForSave.taxLines || []).map((t: any) => ({ name: t.name, amount: Number((t.amount || 0).toFixed(2)) }));
+    const saveApplied = applySubtotalAdjustments({ subtotal: saveBaseSubtotal, taxLines: saveBaseTaxLines }, adjustments);
+    const saveSubtotal = Number((saveApplied.subtotal || 0).toFixed(2));
+    const saveTax = Number((saveApplied.taxesTotal || 0).toFixed(2));
+    const saveTotal = Number((saveApplied.total || 0).toFixed(2));
+
     if (!savedOrderIdRef.current) {
         // QSR 모드에서는 qsrOrderType 사용 (forhere, togo, pickup, online, delivery)
         const effectiveOrderType = isQsrMode ? (qsrOrderType || 'forhere').toUpperCase() : (orderType || 'POS');
@@ -8325,7 +8334,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           body: JSON.stringify({
             orderNumber,
             orderType: effectiveOrderType,
-            total: adjustedTotal,
+            total: saveTotal,
+            subtotal: saveSubtotal,
+            tax: saveTax,
             items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })), 
             adjustments,
             tableId: tableIdForMap,
@@ -8388,7 +8399,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const putRes = await fetch(`${API_URL}/orders/${encodeURIComponent(String(savedOrderIdRef.current))}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            total: adjustedTotal,
+            total: saveTotal,
+            subtotal: saveSubtotal,
+            tax: saveTax,
             items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId })),
             adjustments,
             serverId: selectedServer?.id || null,
@@ -8579,7 +8592,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               specialInstructions: savedKitchenMemo || '',
               // Customer info for QSR (Delivery 프리뷰와 동일하게)
               customerName: orderCustomerInfo?.name || qsrCustomerName || '',
-              customerPhone: orderCustomerInfo?.phone || qsrCustomerPhone || '',
+              customerPhone: orderCustomerInfo?.phone || qsrCustomerPhone || qsrCustomerPhoneRef.current || '',
               // 딜리버리 주문 정보 추가 (Ticket for Delivery 레이아웃용)
               deliveryCompany: deliveryCompany,
               deliveryChannel: deliveryCompany,  // 백엔드에서 사용하는 키

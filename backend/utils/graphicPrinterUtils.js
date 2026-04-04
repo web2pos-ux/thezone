@@ -731,23 +731,28 @@ function renderKitchenTicketGraphic(orderData) {
     const phoneDigits = phoneRaw.replace(/\D/g, '');
     rightBoxChannelPart = 'PICKUP';
     if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+      rightBoxInfoPart = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      rightBoxInfoPart = phoneDigits;
     } else if (cleanPosSeq) {
       rightBoxInfoPart = `#${cleanPosSeq}`;
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isTogoLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
+    const nameStr = String(customerName || '').trim();
     rightBoxChannelPart = 'TOGO';
     if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+      rightBoxInfoPart = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      rightBoxInfoPart = phoneDigits;
+    } else if (nameStr) {
+      rightBoxInfoPart = nameStr.slice(0, 8).toUpperCase();
+    } else if (cleanPosSeq) {
+      rightBoxInfoPart = String(cleanPosSeq);
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isOnlineLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
@@ -768,15 +773,15 @@ function renderKitchenTicketGraphic(orderData) {
       quoteBody = String(cleanPosSeq);
     }
     if (quoteBody) {
-      rightBoxInfoPart = `"${quoteBody.toUpperCase()}"`;
+      rightBoxInfoPart = quoteBody.toUpperCase();
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isDeliveryLike) {
     const platform = getKitchenDeliveryCompanyLabel(deliveryCompany) || 'DELIVERY';
     const ext = formatExternalAlphaNumTail(deliveryOrderNumber, 12);
     rightBoxChannelPart = platform;
-    if (ext) rightBoxInfoPart = `"${ext}"`;
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    if (ext) rightBoxInfoPart = ext;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (tableName) {
     const tableLabel = formatTableLabel(tableName);
     rightBoxChannelPart = tableLabel;
@@ -877,11 +882,11 @@ function renderKitchenTicketGraphic(orderData) {
     const maxRightTextW = Math.max(0, rightBoxW - orderHeaderPadX * 2);
 
     if (rightBoxInfoPart) {
-      // 채널명과 부가정보를 분리 렌더링
-      const spaceBetween = 6;
+      // 채널명-부가정보를 하이픈으로 연결하여 렌더링 (예: ONLINE-7777, UBER-5DIS59)
+      const channelWithHyphen = `${rightBoxChannelPart}-`;
+      const spaceBetween = 0;
       ctx.font = channelFont;
-      const channelTextW = ctx.measureText(rightBoxChannelPart).width;
-      const spaceW = ctx.measureText(' ').width;
+      const channelTextW = ctx.measureText(channelWithHyphen).width;
 
       // 부가정보에 사용 가능한 너비
       const availableForInfo = Math.max(0, maxRightTextW - channelTextW - spaceBetween);
@@ -906,10 +911,10 @@ function renderKitchenTicketGraphic(orderData) {
       const startX = rightBoxX + (rightBoxW - totalTextW) / 2;
       const centerY = headerStartY + headerH / 2;
 
-      // 채널명 그리기 (고정 크기)
+      // 채널명 + 하이픈 그리기 (고정 크기)
       ctx.font = channelFont;
       ctx.textAlign = 'left';
-      ctx.fillText(rightBoxChannelPart, startX, centerY);
+      ctx.fillText(channelWithHyphen, startX, centerY);
 
       // 부가정보 그리기 (동적 크기)
       ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
@@ -976,8 +981,8 @@ function renderKitchenTicketGraphic(orderData) {
     }, y);
   }
   
-  // 주문자 정보 (TOGO, ONLINE, DELIVERY 채널에서 이름 · 전화번호 표시)
-  const showCustomerInfo = (channel === 'TOGO' || channel === 'ONLINE' || isDeliveryLike) && (customerName || customerPhone);
+  // 주문자 정보 (DELIVERY 채널에서 이름 · 전화번호 표시, TOGO/ONLINE/THEZONE 제외)
+  const showCustomerInfo = isDeliveryLike && !isOnlineLike && (customerName || customerPhone);
   if (showCustomerInfo) {
     let customerDisplay = '';
     if (customerName && customerPhone) {
@@ -1007,8 +1012,7 @@ function renderKitchenTicketGraphic(orderData) {
   const hidePaidStatus = isKitchenPrinter || isDineInStyle;
   let paidStatusText = '';
   if (!isReprint && !isAdditionalOrder) {
-    if (isDeliveryLike && !isKitchenPrinter) paidStatusText = 'PAID';
-    else if (!hidePaidStatus && isPaid) paidStatusText = 'PAID';
+    if (!hidePaidStatus && isPaid) paidStatusText = 'PAID';
     else if (!hidePaidStatus) paidStatusText = 'UNPAID';
   }
   
