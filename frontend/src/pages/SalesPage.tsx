@@ -316,8 +316,9 @@ const SalesPage: React.FC = () => {
   const [togoStaleMinutes, setTogoStaleMinutes] = useState<number>(10);
 
   // Swipe-to-pickup state for order list cards
-  const swipeDragRef = useRef<{ id: string; startX: number; currentX: number; type: string } | null>(null);
-  const [swipeDragState, setSwipeDragState] = useState<{ id: string; offsetX: number } | null>(null);
+  const swipeDragRef = useRef<{ id: string; startX: number; currentX: number; type: string; cardWidth: number } | null>(null);
+  const swipeDraggedRef = useRef<boolean>(false);
+  const [swipeDragState, setSwipeDragState] = useState<{ id: string; offsetX: number; dismissing?: boolean } | null>(null);
   const [softKbOpen, setSoftKbOpen] = useState(false);
   const [kbLang, setKbLang] = useState<string>('EN');
   const [refreshOrdersTrigger, setRefreshOrdersTrigger] = useState(0);
@@ -339,6 +340,12 @@ const SalesPage: React.FC = () => {
   const [selectedOrderType, setSelectedOrderType] = useState<'online' | 'togo' | 'delivery' | null>(null);
 
   // Online/Togo ê²°ì œ ëª¨ë‹¬ state
+  // Card detail modal state (individual card click)
+  const [showCardDetailModal, setShowCardDetailModal] = useState<boolean>(false);
+  const [cardDetailOrder, setCardDetailOrder] = useState<any | null>(null);
+  const [cardDetailItems, setCardDetailItems] = useState<any[]>([]);
+  const [cardDetailChannel, setCardDetailChannel] = useState<'online' | 'togo' | 'delivery' | null>(null);
+
   const [showOnlineTogoPaymentModal, setShowOnlineTogoPaymentModal] = useState<boolean>(false);
   const [onlineTogoPaymentOrder, setOnlineTogoPaymentOrder] = useState<any | null>(null);
   
@@ -3344,14 +3351,10 @@ const SalesPage: React.FC = () => {
                 taxBreakdown: data.order?.tax_breakdown ? JSON.parse(data.order.tax_breakdown) : null,
                 total: data.order?.total || order.total || 0
               };
-              setSelectedOrderDetail({ ...order, fullOrder });
-              setSelectedOrderType(channel);
-              setOrderListOpenMode('pickup');
-              setOrderListChannelFilter('all');
-              setOrderListTab('history');
-              setShowOrderListModal(true);
-              fetchOrderList(orderListDate, 'pickup');
-              setTimeout(() => fetchOrderDetails(order.id), 300);
+              setCardDetailOrder({ ...order, fullOrder, subtotal: data.order?.subtotal || calculatedSubtotal, tax: data.order?.tax || 0, total: data.order?.total || order.total || 0 });
+              setCardDetailItems(parsedItems);
+              setCardDetailChannel(channel);
+              setShowCardDetailModal(true);
               return;
             }
           }
@@ -3359,15 +3362,30 @@ const SalesPage: React.FC = () => {
           console.warn(`Failed to load ${channel} order details:`, e);
         }
       }
-      setSelectedOrderDetail(order);
-      setSelectedOrderType(channel);
-      setOrderListOpenMode('pickup');
-      setOrderListChannelFilter('all');
-      setOrderListTab('history');
-      setShowOrderListModal(true);
-      fetchOrderList(orderListDate, 'pickup');
-      const orderId = channel === 'delivery' ? (order.order_id || order.id) : order.id;
-      if (orderId) setTimeout(() => fetchOrderDetails(orderId), 300);
+      if (channel === 'online' && order.fullOrder?.items) {
+        setCardDetailOrder(order);
+        setCardDetailItems(order.fullOrder.items);
+        setCardDetailChannel(channel);
+        setShowCardDetailModal(true);
+      } else {
+        setCardDetailOrder(order);
+        setCardDetailItems([]);
+        setCardDetailChannel(channel);
+        setShowCardDetailModal(true);
+        const actualOrderId = channel === 'delivery' ? (order.order_id || order.id) : order.id;
+        if (actualOrderId) {
+          try {
+            const res = await fetch(`${API_URL}/orders/${actualOrderId}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.success && data.items) {
+                setCardDetailItems(data.items);
+                setCardDetailOrder((prev: any) => prev ? { ...prev, subtotal: data.order?.subtotal || 0, tax: data.order?.tax || 0, total: data.order?.total || 0 } : prev);
+              }
+            }
+          } catch {}
+        }
+      }
     },
     [isMoveMergeMode, sourceTableId, sourceTogoOrder, sourceOnlineOrder, selectionChoice, selectedFloor, loadTogoOrders, clearMoveMergeSelection, API_URL]
   );
@@ -4251,17 +4269,20 @@ const SalesPage: React.FC = () => {
     setShowDeliveryOrderModal(true);
   };
 
-  const SWIPE_THRESHOLD = 80;
-
   const handleSwipeStart = (e: React.TouchEvent | React.MouseEvent, id: string, orderType: string) => {
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    swipeDragRef.current = { id, startX: clientX, currentX: clientX, type: orderType };
+    const target = (e.currentTarget as HTMLElement);
+    const cardWidth = target?.offsetWidth || 200;
+    swipeDragRef.current = { id, startX: clientX, currentX: clientX, type: orderType, cardWidth };
+    swipeDraggedRef.current = false;
     setSwipeDragState({ id, offsetX: 0 });
   };
 
   const handleSwipeMove = (e: React.TouchEvent | React.MouseEvent) => {
     if (!swipeDragRef.current) return;
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const movedPx = Math.abs(clientX - swipeDragRef.current.startX);
+    if (movedPx > 5) swipeDraggedRef.current = true;
     swipeDragRef.current.currentX = clientX;
     const deltaX = clientX - swipeDragRef.current.startX;
     const clamped = Math.min(0, deltaX);
@@ -4270,12 +4291,18 @@ const SalesPage: React.FC = () => {
 
   const handleSwipeEnd = async () => {
     if (!swipeDragRef.current) return;
-    const { id, startX, currentX, type: orderType } = swipeDragRef.current;
+    const { id, startX, currentX, type: orderType, cardWidth } = swipeDragRef.current;
     const delta = startX - currentX;
     swipeDragRef.current = null;
-    setSwipeDragState(null);
+    setTimeout(() => { swipeDraggedRef.current = false; }, 50);
 
-    if (delta < SWIPE_THRESHOLD) return;
+    if (delta < cardWidth * 2 / 3) {
+      setSwipeDragState(null);
+      return;
+    }
+
+    setSwipeDragState({ id, offsetX: -(cardWidth + 50), dismissing: true });
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     try {
       if (orderType === 'delivery') {
@@ -4316,11 +4343,28 @@ const SalesPage: React.FC = () => {
           });
         }
         setOnlineQueueCards(prev => prev.filter(c => String(c.id) !== String(id)));
+      } else if (orderType === 'togo') {
+        const order = togoOrders.find(o => String(o.id) === String(id));
+        if (!order) return;
+        const actualOrderId = order.order_id || order.id;
+        if (Number.isFinite(Number(actualOrderId))) {
+          await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'PICKED_UP' }),
+          });
+        }
+        setTogoOrders(prev => prev.filter(o => String(o.id) !== String(id)));
       }
       loadOnlineOrders();
       loadTogoOrders();
+      if (showOrderListModal) {
+        fetchOrderList(orderListDate, orderListOpenMode);
+      }
     } catch (err) {
       console.error('Swipe pickup error:', err);
+    } finally {
+      setSwipeDragState(null);
     }
   };
 
@@ -5614,6 +5658,55 @@ const SalesPage: React.FC = () => {
     });
   }, [showOrderListModal, orderListOpenMode, togoOrders, onlineQueueCards, mergeOnlineCardsForPickup]);
 
+  useEffect(() => {
+    if (!showOrderListModal || orderListLoading) return;
+    if (orderListOrders.length === 0) return;
+    const filtered = orderListOrders.filter((order) => {
+      if (orderListOpenMode !== 'pickup') return true;
+      const _f = String(order.fulfillment_mode || '').toLowerCase();
+      const _s = String(order.status || '').toUpperCase();
+      const _t = orderListNormalizeChannelToken(order.order_type);
+      const isDineIn = _t === 'DINEIN' || _t === 'POS';
+      if (isDineIn) return false;
+      if (_s === 'PICKED_UP') return false;
+      if (_s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
+      const pickupChannel = orderListGetPickupChannel({ ...order, fulfillment: _f });
+      const normalizedPickupChannel = pickupChannel === 'other' ? 'togo' : pickupChannel;
+      if (orderListChannelFilter === 'delivery') return normalizedPickupChannel === 'delivery';
+      if (orderListChannelFilter === 'online') return normalizedPickupChannel === 'online';
+      if (orderListChannelFilter === 'togo') return normalizedPickupChannel === 'togo';
+      return true;
+    });
+    const now = Date.now();
+    const parseRT = (o: any): number | null => {
+      const rt = o.ready_time || o.readyTime || '';
+      if (!rt) return null;
+      const today = new Date();
+      const ds = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+      const p = new Date(`${ds}T${rt}`);
+      return isNaN(p.getTime()) ? null : p.getTime();
+    };
+    filtered.sort((a, b) => {
+      const aTime = parseRT(a);
+      const bTime = parseRT(b);
+      if (aTime === null && bTime === null) return 0;
+      if (aTime === null) return -1;
+      if (bTime === null) return 1;
+      const aIsPast = aTime <= now;
+      const bIsPast = bTime <= now;
+      if (aIsPast && !bIsPast) return -1;
+      if (!aIsPast && bIsPast) return 1;
+      return aTime - bTime;
+    });
+    if (filtered.length > 0) {
+      const firstId = filtered[0].id;
+      fetchOrderDetails(firstId);
+    } else {
+      setOrderListSelectedOrder(null);
+      setOrderListSelectedItems([]);
+    }
+  }, [showOrderListModal, orderListOrders, orderListChannelFilter, orderListLoading]);
+
   const handleOrderListDateChange = (days: number) => {
     const current = new Date(orderListDate + 'T00:00:00');
     current.setDate(current.getDate() + days);
@@ -6348,23 +6441,25 @@ const SalesPage: React.FC = () => {
     const channel = orderListGetPickupChannel(order);
 
     if (channel === 'online') {
-      return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
+      return { label: 'ONLINE', bgColor: 'bg-purple-500', textColor: 'text-white' };
     }
 
     if (channel === 'delivery') {
-      return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
+      const { company } = orderListGetDeliveryMeta(order);
+      const abbr = orderListNormalizeDeliveryAbbr(company);
+      const deliveryLabel = abbr || 'DLV';
+      return { label: deliveryLabel, bgColor: 'bg-red-500', textColor: 'text-white' };
     }
 
     if (channel === 'togo') {
-      return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
+      return { label: 'TOGO', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
 
     const normalizedType = orderListNormalizeChannelToken(order?.order_type);
     if (normalizedType && normalizedType !== 'DINEIN' && normalizedType !== 'POS') {
-      return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
+      return { label: 'TOGO', bgColor: 'bg-green-600', textColor: 'text-white' };
     }
     
-    // FSR → Dine-in (blue) / QSR → Eat In (amber)
     if (serviceMode === 'FSR') {
       return { label: 'Dine-in', bgColor: 'bg-blue-500', textColor: 'text-white' };
     }
@@ -9530,6 +9625,7 @@ const SalesPage: React.FC = () => {
                 { label: 'DLV', onClick: handleNewDeliveryClick },
                 { label: 'ONLINE', onClick: handleNewOnlineClick },
                 { label: 'TOGO', onClick: handleNewTogoClick },
+                { label: 'LIST', onClick: () => { setOrderListOpenMode('pickup'); setOrderListChannelFilter('all'); setOrderListTab('history'); setShowOrderListModal(true); fetchOrderList(orderListDate, 'pickup'); } },
               ] as const).map(({ label, onClick }) => {
                 const shadowNormal = [
                   '-8px -8px 20px rgba(255,255,255,0.95)',
@@ -9556,8 +9652,8 @@ const SalesPage: React.FC = () => {
                     onClick={onClick}
                     className="relative flex-1 min-h-[48px] flex items-center justify-center"
                     style={{
-                      borderRadius: '40px',
-                      border: 'none',
+                      borderRadius: '12px',
+                      border: '1px solid rgba(0,0,0,0.08)',
                       fontSize: `var(--bottom-bar-btn-font, ${footerButtonFontPx}px)`,
                       fontWeight: 700,
                       letterSpacing: '-0.02em',
@@ -9667,10 +9763,11 @@ const SalesPage: React.FC = () => {
                                 ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
                                 : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
                               transform: swipeDragState?.id === String(order.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
-                              transition: swipeDragState?.id === String(order.id) ? 'none' : 'transform 0.2s ease',
+                              transition: swipeDragState?.id === String(order.id) ? (swipeDragState.dismissing ? 'transform 0.3s ease-in, opacity 0.3s ease-in' : 'none') : 'transform 0.2s ease',
+                              opacity: swipeDragState?.id === String(order.id) && swipeDragState.dismissing ? 0 : undefined,
                             }}
                             onClick={(e) => {
-                              if (swipeDragRef.current) return;
+                              if (swipeDragRef.current || swipeDraggedRef.current) return;
                               e.stopPropagation();
                               handleVirtualOrderCardClick(deliveryCardType as 'delivery' | 'online', order);
                             }}
@@ -9728,10 +9825,24 @@ const SalesPage: React.FC = () => {
                         return Infinity;
                       }
                     };
+                    const onlineQueueFirebaseIds = new Set(
+                      onlineQueueCards.map(c => String(c.id)).filter(Boolean)
+                    );
+                    const onlineQueueLocalIds = new Set(
+                      onlineQueueCards.map(c => String((c as any).localOrderId || (c as any).fullOrder?.localOrderId || '')).filter(v => v && v !== '')
+                    );
                     const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
                       ...togoOrders
                         .filter(o => {
-                          return !isRightPanelDeliveryOrder(o);
+                          if (isRightPanelDeliveryOrder(o)) return false;
+                          const pickupChannel = orderListGetPickupChannel(o);
+                          if (pickupChannel === 'online') {
+                            const fbId = String(o.firebase_order_id || o.firebaseOrderId || '');
+                            const localId = String(o.id || '');
+                            if (fbId && onlineQueueFirebaseIds.has(fbId)) return false;
+                            if (localId && onlineQueueLocalIds.has(localId)) return false;
+                          }
+                          return true;
                         })
                         .map(o => {
                           const pickupChannel = orderListGetPickupChannel(o);
@@ -9775,21 +9886,40 @@ const SalesPage: React.FC = () => {
                           borderColor = '#8B5CF6';
                           borderWidth = 3;
                         }
+                        const togoCanSwipe = tIsPaid;
                         return (
-                          <div key={`togo-${order.id}`}>
+                          <div key={`togo-${order.id}`} className="relative overflow-hidden rounded-lg">
+                          {togoCanSwipe && swipeDragState?.id === String(order.id) && swipeDragState.offsetX < -20 && (
+                            <div className="absolute inset-0 flex items-center justify-end pr-3 bg-emerald-500 rounded-lg z-0">
+                              <span className="text-white font-bold text-xs">Pickup ✓</span>
+                            </div>
+                          )}
                           <button 
-                            className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : tIsPickedUp ? '#A8D5A8' : '#3d5c48',
                               border: 'none',
                               boxShadow: isSourceTogo || isTargetSelectable
                                 ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
                                 : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
+                              transform: togoCanSwipe && swipeDragState?.id === String(order.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
+                              transition: togoCanSwipe && swipeDragState?.id === String(order.id) ? (swipeDragState.dismissing ? 'transform 0.3s ease-in, opacity 0.3s ease-in' : 'none') : 'transform 0.2s ease',
+                              opacity: togoCanSwipe && swipeDragState?.id === String(order.id) && swipeDragState.dismissing ? 0 : undefined,
                             }}
                             onClick={(e) => {
+                              if (swipeDragRef.current || swipeDraggedRef.current) return;
                               e.stopPropagation();
                               handleVirtualOrderCardClick('togo', order);
                             }}
+                            {...(togoCanSwipe ? {
+                              onTouchStart: (e: React.TouchEvent) => handleSwipeStart(e, String(order.id), 'togo'),
+                              onTouchMove: handleSwipeMove,
+                              onTouchEnd: handleSwipeEnd,
+                              onMouseDown: (e: React.MouseEvent) => handleSwipeStart(e, String(order.id), 'togo'),
+                              onMouseMove: handleSwipeMove,
+                              onMouseUp: handleSwipeEnd,
+                              onMouseLeave: () => { if (swipeDragRef.current?.id === String(order.id)) { swipeDragRef.current = null; setSwipeDragState(null); } },
+                            } : {})}
                           >
                               <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
                                 <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
@@ -9857,9 +9987,10 @@ const SalesPage: React.FC = () => {
                                   ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceOnline ? '3px #7C3AED' : '2px #8B5CF6'}`
                                   : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
                                 transform: canSwipe && swipeDragState?.id === String(card.id) ? `translateX(${swipeDragState.offsetX}px)` : undefined,
-                                transition: canSwipe && swipeDragState?.id === String(card.id) ? 'none' : 'transform 0.2s ease',
+                                transition: canSwipe && swipeDragState?.id === String(card.id) ? (swipeDragState.dismissing ? 'transform 0.3s ease-in, opacity 0.3s ease-in' : 'none') : 'transform 0.2s ease',
+                                opacity: canSwipe && swipeDragState?.id === String(card.id) && swipeDragState.dismissing ? 0 : undefined,
                               }}
-                              onClick={() => { if (!swipeDragRef.current) handleVirtualOrderCardClick('online', card); }}
+                              onClick={() => { if (!swipeDragRef.current && !swipeDraggedRef.current) handleVirtualOrderCardClick('online', card); }}
                               {...(canSwipe ? {
                                 onTouchStart: (e: React.TouchEvent) => handleSwipeStart(e, String(card.id), 'online'),
                                 onTouchMove: handleSwipeMove,
@@ -11287,6 +11418,258 @@ const SalesPage: React.FC = () => {
           </div>
         )}
 
+        {/* Card Detail Modal — individual card click */}
+        {showCardDetailModal && cardDetailOrder && (() => {
+          const cdOrder = cardDetailOrder;
+          const cdItems = cardDetailItems;
+          const cdChannel = cardDetailChannel;
+          const cdStatus = String(cdOrder.status || cdOrder.fullOrder?.status || '').toUpperCase();
+          const cdIsPaid = cdStatus === 'PAID' || cdStatus === 'COMPLETED' || cdStatus === 'CLOSED';
+          const cdOrderId = cdChannel === 'delivery' ? (cdOrder.order_id || cdOrder.id) : cdOrder.id;
+          const cdSubtotal = cdOrder.subtotal || cdOrder.fullOrder?.subtotal || 0;
+          const cdTax = cdOrder.tax || cdOrder.fullOrder?.tax || 0;
+          const cdTotal = cdOrder.total || cdOrder.fullOrder?.total || 0;
+          const cdName = cdOrder.name || cdOrder.customer_name || cdOrder.fullOrder?.customerName || '';
+          const cdPhone = cdOrder.phone || cdOrder.customer_phone || cdOrder.fullOrder?.customerPhone || '';
+          const cdNumber = cdOrder.number || cdOrder.order_number || '';
+          const cdChannelLabel = cdChannel === 'delivery' ? 'DLV' : cdChannel === 'online' ? 'ONLINE' : 'TOGO';
+
+          return (
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowCardDetailModal(false)}>
+              <div className="absolute inset-0 bg-black/50" />
+              <div
+                className="relative bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+                style={{ width: Math.min(480, frameWidthPx - 40), maxHeight: contentHeightPx - 40 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Header */}
+                <div className="px-5 py-4 bg-slate-700 text-white flex items-center justify-between flex-shrink-0 relative">
+                  <div className="flex items-center gap-3">
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${cdChannel === 'delivery' ? 'bg-red-500' : cdChannel === 'online' ? 'bg-purple-500' : 'bg-green-600'}`}>{cdChannelLabel}</span>
+                    <span className="font-bold text-lg">#{cdNumber}</span>
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${cdIsPaid ? 'bg-emerald-500' : 'bg-red-500'}`}>{cdIsPaid ? 'READY' : 'UNPAID'}</span>
+                  </div>
+                  <button
+                    onClick={() => setShowCardDetailModal(false)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors shadow-lg backdrop-blur-sm"
+                  >
+                    <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Customer Info */}
+                {(cdName || cdPhone) && (
+                  <div className="px-5 py-2 bg-slate-100 text-sm text-gray-600 flex gap-4 flex-shrink-0">
+                    {cdName && <span>{cdName}</span>}
+                    {cdPhone && <span>{cdPhone}</span>}
+                  </div>
+                )}
+
+                {/* Items List */}
+                <div className="flex-1 overflow-auto px-5 py-3">
+                  {cdItems.length === 0 ? (
+                    <div className="text-gray-400 text-center py-8">Loading items...</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {cdItems.map((item: any, idx: number) => {
+                        const itemPrice = Number(item.price || item.total_price || 0);
+                        const qty = item.quantity || 1;
+                        const modPrice = Number(item.totalModifierPrice || 0);
+                        let mods: any[] = [];
+                        try {
+                          if (item.modifiers_json) { mods = typeof item.modifiers_json === 'string' ? JSON.parse(item.modifiers_json) : item.modifiers_json; }
+                          else if (item.options) { mods = item.options; }
+                          else if (item.modifiers) { mods = item.modifiers; }
+                        } catch {}
+                        return (
+                          <div key={item.id || item.order_line_id || idx} className="flex justify-between items-start py-1.5 border-b border-gray-100 last:border-0">
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-800">
+                                {qty > 1 && <span className="text-blue-600 font-bold mr-1">{qty}x</span>}
+                                {item.name}
+                              </div>
+                              {Array.isArray(mods) && mods.length > 0 && (
+                                <div className="text-xs text-gray-500 mt-0.5 pl-3">
+                                  {mods.map((mod: any, mi: number) => {
+                                    const entries = mod.selectedEntries || mod.entries || [];
+                                    if (entries.length > 0) {
+                                      return entries.map((e: any, ei: number) => (
+                                        <div key={`${mi}-${ei}`}>+ {e.name || e.label}{e.price_delta || e.price ? ` ($${Number(e.price_delta || e.price).toFixed(2)})` : ''}</div>
+                                      ));
+                                    }
+                                    return mod.name ? <div key={mi}>+ {mod.name}</div> : null;
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                            <span className="text-sm font-medium text-gray-700 ml-3 whitespace-nowrap">
+                              {formatCurrency((itemPrice + modPrice) * qty)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Totals */}
+                <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 flex-shrink-0">
+                  <div className="flex justify-between text-sm text-gray-600"><span>Subtotal</span><span>{formatCurrency(cdSubtotal)}</span></div>
+                  <div className="flex justify-between text-sm text-gray-600 mt-1"><span>Tax</span><span>{formatCurrency(cdTax)}</span></div>
+                  <div className="flex justify-between text-base font-bold text-gray-900 mt-2 pt-2 border-t border-gray-300"><span>Total</span><span>{formatCurrency(cdTotal)}</span></div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="px-4 py-3 bg-slate-700 flex gap-2 flex-shrink-0">
+                  <button
+                    onClick={async () => {
+                      if (!cdOrderId) return;
+                      setOrderListSelectedOrder(cdOrder);
+                      setOrderListSelectedItems(cdItems);
+                      await new Promise(r => setTimeout(r, 50));
+                      handleOrderListPrintBill();
+                    }}
+                    className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-bold"
+                  >Print Bill</button>
+                  <button
+                    onClick={async () => {
+                      if (!cdOrderId) return;
+                      setOrderListSelectedOrder(cdOrder);
+                      setOrderListSelectedItems(cdItems);
+                      await new Promise(r => setTimeout(r, 50));
+                      handleOrderListPrintKitchen();
+                    }}
+                    className="flex-1 py-3 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-xs font-bold"
+                  >Reprint</button>
+                  <button
+                    onClick={() => {
+                      try {
+                        const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
+                        const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
+                        const rawTableId = String(cdOrder.table_id || '').toUpperCase();
+                        const voidType =
+                          rawType.includes('delivery') || rawFulfillment.includes('delivery') || rawTableId.startsWith('DL')
+                            ? 'delivery'
+                            : rawType.includes('online') ? 'online'
+                            : rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup') ? 'togo'
+                            : 'pos';
+                        const items = (cdItems || []).map((it: any) => {
+                          let mods: any[] = [];
+                          try { if (it.modifiers_json) { mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json; } } catch {}
+                          return { ...it, modifiers: mods };
+                        });
+                        if (!items.length) { alert('No items to void.'); return; }
+                        const sels: Record<string, { checked: boolean; qty: number }> = {};
+                        items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
+                        const orderForVoid = { ...cdOrder, number: cdOrder.order_number || cdOrder.number || cdOrder.id };
+                        setTogoVoidOrder(orderForVoid); setTogoVoidOrderType(voidType); setTogoVoidItems(items); setTogoVoidSelections(sels);
+                        setTogoVoidPin(''); setTogoVoidPinError(''); setTogoVoidReason(''); setTogoVoidReasonPreset(''); setTogoVoidNote(''); setTogoVoidLoading(false);
+                        setShowTogoVoidModal(true);
+                        setShowCardDetailModal(false);
+                      } catch (e) { console.error('[Card Detail Void] Failed:', e); alert('Failed to open void.'); }
+                    }}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-xs font-bold"
+                  >Void</button>
+                  {cdIsPaid ? (
+                    <button
+                      onClick={async () => {
+                        if (!cdOrderId) return;
+                        try {
+                          await fetch(`${API_URL}/orders/${cdOrderId}/status`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'PICKED_UP' }),
+                          });
+                          const firebaseId = cdOrder.firebase_id;
+                          if (firebaseId) {
+                            try { await fetch(`${API_URL}/online-orders/order/${firebaseId}/pickup`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); } catch {}
+                          }
+                          if (cdChannel === 'delivery') {
+                            const deliveryMetaId = cdOrder.deliveryMetaId || cdOrder.delivery_meta_id;
+                            if (deliveryMetaId) {
+                              try { await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(deliveryMetaId))}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'PICKED_UP' }) }); } catch {}
+                            }
+                          }
+                          setShowCardDetailModal(false);
+                          loadTogoOrders();
+                          loadOnlineOrders();
+                        } catch (e) { console.error('[Card Detail Pickup] Error:', e); }
+                      }}
+                      className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg text-xs font-bold"
+                    >Pickup</button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => {
+                          try {
+                            const orderId = Number(cdOrderId);
+                            if (!Number.isFinite(orderId)) return;
+                            const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
+                            const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
+                            const nextOrderType =
+                              rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                ? 'togo'
+                                : rawType.includes('online') ? 'online' : 'pos';
+                            navigate('/sales/order', {
+                              state: {
+                                orderType: nextOrderType,
+                                menuId: defaultMenu.menuId,
+                                menuName: defaultMenu.menuName,
+                                orderId,
+                                customerName: cdName,
+                                customerPhone: cdPhone,
+                                readyTimeLabel: cdOrder.ready_time || cdOrder.readyTimeLabel || '',
+                                fulfillmentMode: cdOrder.fulfillment_mode || null,
+                                openPayment: true,
+                                fromOrderHistory: true,
+                              },
+                            });
+                            setShowCardDetailModal(false);
+                          } catch (e) { console.error('[Card Detail Pay] Failed:', e); }
+                        }}
+                        className="flex-1 py-3 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-xs font-bold"
+                      >Pay</button>
+                      <button
+                        onClick={() => {
+                          try {
+                            const orderId = Number(cdOrderId);
+                            if (!Number.isFinite(orderId)) return;
+                            const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
+                            const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
+                            const nextOrderType =
+                              rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                ? 'togo'
+                                : rawType.includes('online') ? 'online' : 'pos';
+                            navigate('/sales/order', {
+                              state: {
+                                orderType: nextOrderType,
+                                menuId: defaultMenu.menuId,
+                                menuName: defaultMenu.menuName,
+                                orderId,
+                                customerName: cdName,
+                                customerPhone: cdPhone,
+                                readyTimeLabel: cdOrder.ready_time || cdOrder.readyTimeLabel || '',
+                                fulfillmentMode: cdOrder.fulfillment_mode || null,
+                                openPayment: true,
+                                autoPickup: true,
+                                fromOrderHistory: true,
+                              },
+                            });
+                            setShowCardDetailModal(false);
+                          } catch (e) { console.error('[Card Detail Pay&Pickup] Failed:', e); }
+                        }}
+                        className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg text-xs font-bold"
+                      >Pay &amp; Pickup</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Order List Modal - Inline rendering to prevent scroll reset on state change */}
         {showOrderListModal && (() => {
           const totals = orderListSelectedOrder ? orderListCalculateTotals() : null;
@@ -11435,12 +11818,13 @@ const SalesPage: React.FC = () => {
                 <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
                   {/* Left Panel - Order List (55%) */}
                   <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
-                    <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center gap-1.5 flex-shrink-0">
-                      <span className="w-16 text-center">Channel</span>
-                      <span className="w-28">ID / Order#</span>
-                      <span className="w-20 text-center">Time</span>
-                      <span className="flex-1 ml-2">Table/Customer</span>
-                      <span className="w-18 text-right">Amount</span>
+                    <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center flex-shrink-0">
+                      <span className="w-[60px] text-center flex-shrink-0">Channel</span>
+                      <span className="w-[87px] text-center flex-shrink-0">#</span>
+                      <span className="flex-1 min-w-0 ml-1">Order ID</span>
+                      <span className="w-[70px] text-center flex-shrink-0">Ready Time</span>
+                      <span className="w-[52px] text-center flex-shrink-0">Status</span>
+                      <span className="w-[60px] text-right flex-shrink-0">Amount</span>
                     </div>
                     <div 
                       className="flex-1 bg-slate-50 relative" 
@@ -11476,29 +11860,81 @@ const SalesPage: React.FC = () => {
                           if (orderListChannelFilter === 'online') return normalizedPickupChannel === 'online';
                           if (orderListChannelFilter === 'togo') return normalizedPickupChannel === 'togo';
                           return true;
-                        }).map((order) => {
+                        }).sort((a, b) => {
+                          const now = Date.now();
+                          const parseReadyTime = (o: any): number | null => {
+                            const rt = o.ready_time || o.readyTime || '';
+                            if (!rt) return null;
+                            const today = new Date();
+                            const dateStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+                            const parsed = new Date(`${dateStr}T${rt}`);
+                            return isNaN(parsed.getTime()) ? null : parsed.getTime();
+                          };
+                          const aTime = parseReadyTime(a);
+                          const bTime = parseReadyTime(b);
+                          if (aTime === null && bTime === null) return 0;
+                          if (aTime === null) return -1;
+                          if (bTime === null) return 1;
+                          const aIsPast = aTime <= now;
+                          const bIsPast = bTime <= now;
+                          if (aIsPast && !bIsPast) return -1;
+                          if (!aIsPast && bIsPast) return 1;
+                          return aTime - bTime;
+                        }).map((order, _rowIdx) => {
                           const badge = orderListGetChannelBadge(order);
                           const type = (order.order_type || '').toUpperCase();
                           const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
                           const isDelivery = type === 'DELIVERY' || fulfillment === 'delivery';
+                          const isOnline = type === 'ONLINE' || type === 'WEB' || type === 'QR';
+                          const isTogo = type === 'TOGO' || type === 'TAKEOUT' || type === 'PICKUP';
                           const { company: deliveryCompanyRaw, orderNumber: deliveryOrderNumberRaw } = orderListGetDeliveryMeta(order);
                           const deliveryCompanyAbbr = orderListNormalizeDeliveryAbbr(deliveryCompanyRaw);
                           const deliveryOrderNumber = String(deliveryOrderNumberRaw || '').replace(/^#/, '').trim();
-                          const displayIdText = order.order_number ? `#${order.order_number}` : `#${String(order.id).padStart(3, '0')}`;
+                          const posSeqNum = order.order_number ? `#${order.order_number}` : `#${String(order.id).padStart(3, '0')}`;
+                          const phoneDigits = String(order.customer_phone || order.customerPhone || '').replace(/\D/g, '');
+                          const custName = String(order.customer_name || order.customerName || '').trim();
+                          let channelOrderId = '';
+                          if (isDelivery) {
+                            const extClean = String(deliveryOrderNumber || '').toUpperCase();
+                            channelOrderId = extClean ? `${deliveryCompanyAbbr || 'DLV'}-${extClean}` : (deliveryCompanyAbbr || 'DLV');
+                          } else if (isOnline) {
+                            const onlineNum = String(order.online_order_number || order.onlineOrderNumber || '').trim().replace(/"/g, '');
+                            let suffix = '';
+                            if (onlineNum) { suffix = onlineNum.toUpperCase(); }
+                            else if (phoneDigits.length >= 4) { suffix = phoneDigits.slice(-4); }
+                            else if (phoneDigits.length > 0) { suffix = phoneDigits; }
+                            else { const seq = String(order.order_number || ''); if (seq) suffix = seq; }
+                            channelOrderId = suffix ? `ONLINE-${suffix}` : 'ONLINE';
+                          } else if (isTogo) {
+                            let suffix = '';
+                            if (phoneDigits.length >= 4) { suffix = phoneDigits.slice(-4); }
+                            else if (phoneDigits.length > 0) { suffix = phoneDigits; }
+                            else if (custName) { suffix = custName.slice(0, 8).toUpperCase(); }
+                            else { const seq = String(order.order_number || ''); if (seq) suffix = seq; }
+                            channelOrderId = suffix ? `TOGO-${suffix}` : 'TOGO';
+                          } else {
+                            channelOrderId = custName || '-';
+                          }
+                          const readyTimeRaw = order.ready_time || order.readyTime || order.readyTimeLabel || '';
+                          const readyTimeDisplay = readyTimeRaw ? String(readyTimeRaw) : '';
                           const subtotalVal = Number(order.subtotal || 0);
                           const taxVal = Number(order.tax || 0);
-                          // Order History list Amount should be tax-inclusive (subtotal + tax).
-                          // Some historical rows may have subtotal/tax missing; fall back to stored total in that case.
                           const totalVal = Number(order.total || 0);
                           const hasSubtotalOrTax = Number.isFinite(subtotalVal) && Number.isFinite(taxVal) && (Math.abs(subtotalVal) > 0 || Math.abs(taxVal) > 0);
                           const displayAmount = hasSubtotalOrTax ? Number((subtotalVal + taxVal).toFixed(2)) : totalVal;
                           const olStatus = String(order.status || '').toUpperCase();
-                          const olIsPaid = olStatus === 'PAID' || olStatus === 'COMPLETED' || olStatus === 'CLOSED' || isDelivery;
+                          const olIsPaid = olStatus === 'PAID' || olStatus === 'COMPLETED' || olStatus === 'CLOSED';
                           const olIsPickedUp = olStatus === 'PICKED_UP';
                           const olIsSelected = orderListSelectedOrder?.id === order.id;
-                          const olBg = olIsSelected ? '#BFDBFE' : olIsPickedUp ? '#FFFFFF' : olIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
-                          const olIsLabelTarget = !olIsPickedUp && (badge.label === 'Online' || badge.label === 'Delivery' || badge.label === 'Togo' || badge.label === 'Pickup');
-                          const olLabel = olIsLabelTarget ? (!olIsPaid ? 'Unpaid' : 'Ready') : null;
+                          const olEvenBg = _rowIdx % 2 === 0 ? '#F8FAFC' : '#F1F5F9';
+                          const olBg = olIsSelected ? '#BFDBFE' : olIsPickedUp ? '#FFFFFF' : olEvenBg;
+                          const olIsLabelTarget = !olIsPickedUp && (isOnline || isDelivery || isTogo);
+                          let olLabel: string | null = null;
+                          if (olIsLabelTarget) {
+                            if (isDelivery) { olLabel = 'Ready'; }
+                            else if (isOnline) { olLabel = olIsPaid ? 'Ready' : 'Unpaid'; }
+                            else { olLabel = 'Unpaid'; }
+                          }
                           return (
                             <React.Fragment key={order.id}>
                             <div
@@ -11507,22 +11943,20 @@ const SalesPage: React.FC = () => {
                               style={{ backgroundColor: olBg }}
                             >
                               {/* ì±„ë„ ë ì§€ */}
-                              <span className={`w-16 px-1.5 py-1 rounded text-center text-xs font-bold ${badge.bgColor} ${badge.textColor}`}>
+                              <span className={`w-[60px] px-1 py-1 rounded text-center text-xs font-bold flex-shrink-0 ${badge.bgColor} ${badge.textColor}`}>
                                 {badge.label}
                               </span>
-                              <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
-                                <span className="font-bold text-gray-700">{(isDelivery || type === 'ONLINE' || type === 'WEB' || type === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL')) ? displayIdText.toUpperCase() : displayIdText}</span>
-                              </span>
-                              <span className="w-20 text-center font-bold">{orderListFormatTime(order.created_at)}</span>
-                              <span className="flex-1 truncate font-bold ml-2">{orderListGetTableOrCustomer(order)}</span>
-                              <span className="inline-block w-[38px] text-center">
+                              <span className="w-[87px] text-center font-bold text-gray-700 flex-shrink-0">{posSeqNum}</span>
+                              <span className="flex-1 min-w-0 truncate font-bold ml-1" title={channelOrderId}>{channelOrderId}</span>
+                              <span className="w-[70px] text-center font-bold flex-shrink-0 text-xs">{readyTimeDisplay}</span>
+                              <span className="w-[52px] text-center flex-shrink-0">
                                 {olLabel && (
-                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
+                                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
                                 )}
                               </span>
-                              <span className="w-18 text-right font-bold">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
+                              <span className="w-[60px] text-right font-bold flex-shrink-0">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
                             </div>
-                            <div style={{ height: '3px', backgroundColor: 'rgba(190,209,236,0.15)' }} />
+                            <div style={{ height: '1px', backgroundColor: 'rgba(190,209,236,0.2)' }} />
                             </React.Fragment>
                           );
                         })
@@ -11906,7 +12340,7 @@ const SalesPage: React.FC = () => {
                             let channelName = badge.label;
                             let channelOrderNum = '';
 
-                            if (badge.label === 'Online' || badge.label === 'Delivery') {
+                            if (badge.label === 'ONLINE' || badge.label === 'UBER' || badge.label === 'DDASH' || badge.label === 'SKIP' || badge.label === 'FTUAN' || badge.label === 'DLV' || badge.label === 'Delivery') {
                               if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
                                 channelName = 'UberEATS';
                               } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
@@ -11938,7 +12372,7 @@ const SalesPage: React.FC = () => {
                               if (!channelOrderNum && channelName === 'Online' && orderListSelectedOrder.customer_name) {
                                 channelOrderNum = orderListSelectedOrder.customer_name;
                               }
-                            } else if (badge.label === 'Togo' || badge.label === 'Pickup') {
+                            } else if (badge.label === 'TOGO' || badge.label === 'Pickup') {
                               channelName = 'TOGO';
                               const rawPhone = String(orderListSelectedOrder.customer_phone || '').replace(/\D/g, '');
                               if (rawPhone.length >= 4) {
