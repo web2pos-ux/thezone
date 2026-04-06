@@ -2195,6 +2195,7 @@ const handleVoidPinClear = useCallback(() => {
     
     clearServerAssignmentForContext();
     setSelectedServer(null);
+    window.dispatchEvent(new Event('paymentCompleted'));
     navigate('/sales', { replace: true });
     } catch (e) {
       console.error(e);
@@ -2208,6 +2209,7 @@ const handleVoidPinClear = useCallback(() => {
 
   // 결제 완료 모달에서 최종 완료 처리 (전체 결제 완료 시)
   const handlePaymentCompleteClose = async (receiptCount: number) => {
+    window.dispatchEvent(new Event('paymentCompleted'));
     const savedPaymentData = paymentCompleteData;
     setShowPaymentCompleteModal(false);
     setPaymentCompleteData(null);
@@ -12990,37 +12992,37 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+            <div className="rounded-2xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)', background: '#e0e5ec' }}>
               {/* Header */}
-              <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-4 py-3 flex justify-between items-center">
-                <h3 className="text-lg font-bold text-white">Item Discount</h3>
-                <button onClick={handleCancelItemDiscount} className="text-white hover:text-gray-200 text-2xl font-bold leading-none">&times;</button>
+              <div className="px-4 py-3 flex justify-between items-center rounded-t-2xl" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
+                <h3 className="text-lg font-bold text-gray-700">Item Discount</h3>
+                <button onClick={handleCancelItemDiscount} className="text-red-400 hover:text-red-500 text-2xl font-bold leading-none">&times;</button>
               </div>
               
               {/* Item Info */}
-              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+              <div className="px-4 py-2 mx-4 mt-3 rounded-2xl" style={{ background: '#e0e5ec', boxShadow: 'inset 2px 2px 5px #b8bec7, inset -2px -2px 5px #ffffff' }}>
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-gray-700 truncate max-w-[280px]">{itemName}</span>
-                  <span className="text-base font-bold text-gray-900">${itemOriginalPrice.toFixed(2)}</span>
+                  <span className="text-sm font-medium text-gray-600 truncate max-w-[280px]">{itemName}</span>
+                  <span className="text-base font-bold text-gray-700">${itemOriginalPrice.toFixed(2)}</span>
                 </div>
               </div>
 
               <div className="p-4 space-y-3">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className={`rounded-lg p-2 ${itemDiscountMode === 'percent' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
+                <div className="rounded-2xl p-3 border-0" style={itemDiscountMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
-                      <div className="text-lg font-bold text-gray-800">${finalPrice.toFixed(2)}</div>
+                      <div className="text-lg font-bold text-gray-700">${finalPrice.toFixed(2)}</div>
                       <div className="text-gray-400 text-xs line-through">${itemOriginalPrice.toFixed(2)}</div>
                     </div>
-                    <div className="border-l border-gray-300 h-10 mx-3"></div>
+                    <div className="h-10 mx-3" style={{ width: '1px', background: 'linear-gradient(to bottom, #b8bec7, #ffffff, #b8bec7)' }}></div>
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Discount</div>
-                      <div className="text-lg font-bold" style={{ color: itemDiscountMode === 'percent' ? '#2563eb' : '#16a34a' }}>
+                      <div className="text-lg font-bold" style={{ color: itemDiscountMode === 'percent' ? '#3b82f6' : '#22c55e' }}>
                         {itemDiscountMode === 'percent' ? `${inputVal || 0}%` : `$${inputVal.toFixed(2)}`}
                       </div>
-                      <div className="text-red-500 font-semibold text-xs">
+                      <div className="text-red-400 font-semibold text-xs">
                         -${discountAmount.toFixed(2)}
                       </div>
                     </div>
@@ -13030,9 +13032,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 {/* Percent & Amount Presets - Side by Side */}
                 <div className="flex gap-3">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 bg-blue-50 rounded-lg p-3 border border-blue-200">
-                    <div className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1">
-                      <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-xs">%</span>
+                  <div className="flex-1 rounded-2xl p-3" style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' }}>
+                    <div className="text-xs font-bold text-blue-500 mb-2 flex items-center gap-1">
+                      <span className="rounded-lg px-2 py-0.5 text-xs font-bold text-blue-500" style={{ background: '#e0e5ec', boxShadow: '2px 2px 4px #b8bec7, -2px -2px 4px #ffffff' }}>%</span>
                       Percent
                     </div>
                     <div className="grid grid-cols-3 gap-1.5">
@@ -13040,11 +13042,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         <button
                           key={`pct-${v}`}
                           onClick={() => { setItemDiscountMode('percent'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded text-base font-semibold transition-all ${
+                          className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
                             itemDiscountMode === 'percent' && itemDiscountValue === String(v)
-                              ? 'bg-blue-600 text-white shadow-md'
-                              : 'bg-white hover:bg-blue-100 text-gray-700 border border-gray-300'
+                              ? 'text-blue-500'
+                              : 'text-gray-600'
                           }`}
+                          style={itemDiscountMode === 'percent' && itemDiscountValue === String(v)
+                            ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }
+                            : { background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                         >
                           {v}%
                         </button>
@@ -13053,9 +13058,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 bg-green-50 rounded-lg p-3 border border-green-200">
-                    <div className="text-xs font-semibold text-green-700 mb-2 flex items-center gap-1">
-                      <span className="bg-green-600 text-white px-2 py-0.5 rounded text-xs">$</span>
+                  <div className="flex-1 rounded-2xl p-3" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                    <div className="text-xs font-bold text-emerald-500 mb-2 flex items-center gap-1">
+                      <span className="rounded-lg px-2 py-0.5 text-xs font-bold text-emerald-500" style={{ background: '#e0e5ec', boxShadow: '2px 2px 4px #b8bec7, -2px -2px 4px #ffffff' }}>$</span>
                       Amount
                     </div>
                     <div className="grid grid-cols-3 gap-1.5">
@@ -13063,22 +13068,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         <button
                           key={`amt-${v}`}
                           onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded text-base font-semibold transition-all ${
+                          className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
                             itemDiscountMode === 'amount' && itemDiscountValue === String(v)
-                              ? 'bg-green-600 text-white shadow-md'
-                              : 'bg-white hover:bg-green-100 text-gray-700 border border-gray-300'
+                              ? 'text-emerald-500'
+                              : 'text-gray-600'
                           }`}
+                          style={itemDiscountMode === 'amount' && itemDiscountValue === String(v)
+                            ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }
+                            : { background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                         >
                           ${v}
                         </button>
                       ))}
                       <button
                         onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(Number(itemOriginalPrice.toFixed(2)))); }}
-                        className={`py-3 rounded text-base font-bold transition-all ${
+                        className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
                           itemDiscountMode === 'amount' && Number(itemDiscountValue) === Number(itemOriginalPrice.toFixed(2))
-                            ? 'bg-yellow-500 text-white shadow-md'
-                            : 'bg-yellow-400 hover:bg-yellow-500 text-white'
+                            ? 'text-orange-500'
+                            : 'text-orange-400'
                         }`}
+                        style={itemDiscountMode === 'amount' && Number(itemDiscountValue) === Number(itemOriginalPrice.toFixed(2))
+                          ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }
+                          : { background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                       >
                         Full
                       </button>
@@ -13087,7 +13098,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="bg-gray-100 rounded-lg p-3">
+                <div className="rounded-2xl p-3" style={{ background: '#e0e5ec' }}>
                   <div className="grid grid-cols-5 gap-2">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
@@ -13111,19 +13122,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               appendDiscountDigit(key);
                             }
                           }}
-                          className={`h-12 rounded font-semibold text-lg transition-all ${
+                          className={`h-12 rounded-xl border-0 font-bold text-lg transition-all active:scale-95 ${
                             isPercent
                               ? itemDiscountMode === 'percent'
-                                ? 'bg-blue-600 text-white'
-                                : 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300'
+                                ? 'text-blue-500'
+                                : 'text-blue-400'
                               : isDollar
                                 ? itemDiscountMode === 'amount'
-                                  ? 'bg-green-600 text-white'
-                                  : 'bg-green-100 hover:bg-green-200 text-green-700 border border-green-300'
+                                  ? 'text-emerald-500'
+                                  : 'text-emerald-400'
                                 : isBackspace
-                                  ? 'bg-gray-300 hover:bg-gray-400 text-gray-700'
-                                  : 'bg-white hover:bg-gray-200 text-gray-800 border border-gray-300'
+                                  ? 'text-gray-500'
+                                  : 'text-gray-600'
                           }`}
+                          style={
+                            (isPercent && itemDiscountMode === 'percent') || (isDollar && itemDiscountMode === 'amount')
+                              ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }
+                              : { background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
+                          }
                         >
                           {key}
                         </button>
@@ -13136,13 +13152,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <div className="flex gap-3">
                   <button 
                     onClick={handleCancelItemDiscount} 
-                    className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all text-base"
+                    className="flex-1 py-3 rounded-2xl border-0 text-gray-500 font-bold transition-all text-base active:scale-95"
+                    style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                   >
                     Cancel
                   </button>
                   <button 
                     onClick={handleApplyItemDiscount} 
-                    className="flex-1 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-all text-base"
+                    className="flex-1 py-3 rounded-2xl border-0 text-orange-500 font-bold transition-all text-base active:scale-95"
+                    style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                   >
                     Apply Discount
                   </button>
@@ -13261,37 +13279,43 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+            <div className="rounded-3xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)', background: 'linear-gradient(145deg, #e6ebf2, #dce1e8)', boxShadow: '12px 12px 24px rgba(0,0,0,0.3)' }}>
               {/* Header */}
-              <div className="bg-gradient-to-r from-purple-600 to-purple-700 px-3 py-2 flex justify-between items-center">
-                <h3 className="text-base font-bold text-white">Order Discount</h3>
-                <button onClick={handleCancelDiscount} className="text-white hover:text-gray-200 text-xl font-bold leading-none">&times;</button>
+              <div className="px-4 py-2.5 flex justify-between items-center rounded-t-3xl" style={{ background: 'linear-gradient(135deg, #e2e7ee, #d8dde4)', boxShadow: 'inset 2px 2px 5px #c8cdd6, inset -2px -2px 5px #f0f5fc' }}>
+                <h3 className="text-base font-bold text-gray-700 tracking-wide">Order Discount</h3>
+                <button 
+                  onClick={handleCancelDiscount} 
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-red-400 hover:text-red-500 text-lg font-bold leading-none transition-all active:scale-90"
+                  style={{ background: 'linear-gradient(145deg, #e8edf4, #d8dde4)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
+                >
+                  &times;
+                </button>
               </div>
               
               {/* Order Subtotal Info */}
-              <div className="bg-gray-50 px-3 py-1.5 border-b border-gray-200">
+              <div className="px-3 py-1.5 mx-3 mt-2 rounded-2xl" style={{ background: 'linear-gradient(145deg, #dce1e8, #e6ebf2)', boxShadow: 'inset 2px 2px 5px #c0c5ce, inset -2px -2px 5px #f4f9ff' }}>
                 <div className="flex justify-between items-center">
-                  <span className="text-xs font-medium text-gray-700">Order Subtotal</span>
-                  <span className="text-sm font-bold text-gray-900">${orderSubtotal.toFixed(2)}</span>
+                  <span className="text-xs font-medium text-gray-600">Order Subtotal</span>
+                  <span className="text-sm font-bold text-gray-700">${orderSubtotal.toFixed(2)}</span>
                 </div>
               </div>
 
               <div className="p-3 space-y-2">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className={`rounded-lg p-1 ${discountInputMode === 'percent' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
+                <div className="rounded-2xl p-2 border-0" style={discountInputMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
-                      <div className="text-base font-bold text-gray-800">${dcFinalPrice.toFixed(2)}</div>
+                      <div className="text-base font-bold text-gray-700">${dcFinalPrice.toFixed(2)}</div>
                       <div className="text-gray-400 text-xs line-through">${orderSubtotal.toFixed(2)}</div>
                     </div>
-                    <div className="border-l border-gray-300 h-8 mx-2"></div>
+                    <div className="h-8 mx-2" style={{ width: '1px', background: 'linear-gradient(to bottom, #b8bec7, #ffffff, #b8bec7)' }}></div>
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Discount</div>
-                      <div className="text-base font-bold" style={{ color: discountInputMode === 'percent' ? '#2563eb' : '#16a34a' }}>
+                      <div className="text-base font-bold" style={{ color: discountInputMode === 'percent' ? '#3b82f6' : '#22c55e' }}>
                         {discountInputMode === 'percent' ? `${dcInputVal || 0}%` : `$${dcInputVal.toFixed(2)}`}
                       </div>
-                      <div className="text-red-500 font-semibold text-xs">
+                      <div className="text-red-400 font-semibold text-xs">
                         -${dcDiscountAmount.toFixed(2)}
                       </div>
                     </div>
@@ -13299,17 +13323,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Discount Type */}
-                <div className="grid grid-cols-4 gap-1">
+                <div className="grid grid-cols-4 gap-1.5">
                   {discountTypes.filter(type => type !== 'Custom').sort((a, b) => a.localeCompare(b)).map(type => (
                     <button
                       key={type}
                       type="button"
                       onClick={() => setSelectedDiscountType(type)}
-                      className={`h-10 px-1 rounded text-sm font-semibold text-center transition-all ${
+                      className={`h-10 px-1 rounded-xl border-0 text-sm font-bold text-center transition-all duration-200 active:scale-95 ${
                         selectedDiscountType === type
-                          ? 'bg-purple-600 text-white shadow-md'
-                          : 'bg-purple-50 text-gray-800 border border-purple-200 hover:bg-purple-100'
+                          ? 'text-purple-600'
+                          : 'text-gray-600 hover:text-gray-700'
                       }`}
+                      style={selectedDiscountType === type
+                        ? { background: 'linear-gradient(145deg, #dcd1f0, #e8ddf8)', boxShadow: 'inset 3px 3px 6px #c4b8d8, inset -3px -3px 6px #f8f2ff' }
+                        : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                     >
                       {type}
                     </button>
@@ -13319,21 +13346,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 {/* Percent & Amount Presets - Side by Side */}
                 <div className="flex gap-2">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 bg-blue-50 rounded-lg p-2 border border-blue-200">
-                    <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1">
-                      <span className="bg-blue-600 text-white px-1.5 py-0.5 rounded text-xs">%</span>
+                  <div className="flex-1 rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' }}>
+                    <div className="text-xs font-bold text-blue-500 mb-1 flex items-center gap-1">
+                      <span className="rounded-lg px-1.5 py-0.5 text-xs font-bold text-blue-500" style={{ background: 'linear-gradient(145deg, #e8edf6, #d8ddf0)', boxShadow: '2px 2px 4px #b0b8c9, -2px -2px 4px #ffffff' }}>%</span>
                       Percent
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(v => (
                         <button
                           key={`dc-pct-${v}`}
                           onClick={() => { setDiscountInputMode('percent'); setDiscountPercentage(`${v}%`); setCustomDiscountPercentage(''); }}
-                          className={`h-10 rounded text-sm font-semibold transition-all ${
+                          className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
                             discountInputMode === 'percent' && discountPercentage === `${v}%`
-                              ? 'bg-blue-600 text-white shadow-md'
-                              : 'bg-blue-100 hover:bg-blue-200 text-gray-800 border border-blue-200'
+                              ? 'text-blue-600'
+                              : 'text-gray-600 hover:text-blue-400'
                           }`}
+                          style={discountInputMode === 'percent' && discountPercentage === `${v}%`
+                            ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 7px #a8b0c4, inset -3px -3px 7px #f0f5ff' }
+                            : { background: 'linear-gradient(145deg, #eaf0fa, #dce2f0)', boxShadow: '4px 4px 8px #b0b8c9, -4px -4px 8px #ffffff' }}
                         >
                           {v}%
                         </button>
@@ -13342,32 +13372,38 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 bg-green-50 rounded-lg p-2 border border-green-200">
-                    <div className="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1">
-                      <span className="bg-green-600 text-white px-1.5 py-0.5 rounded text-xs">$</span>
+                  <div className="flex-1 rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                    <div className="text-xs font-bold text-emerald-500 mb-1 flex items-center gap-1">
+                      <span className="rounded-lg px-1.5 py-0.5 text-xs font-bold text-emerald-500" style={{ background: 'linear-gradient(145deg, #e4f4ea, #d8ece0)', boxShadow: '2px 2px 4px #b0c9b8, -2px -2px 4px #ffffff' }}>$</span>
                       Amount
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {[1, 2, 5, 10, 20, 25, 50, 100].map(v => (
                         <button
                           key={`dc-amt-${v}`}
                           onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(v)); }}
-                          className={`h-10 rounded text-sm font-semibold transition-all ${
+                          className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
                             discountInputMode === 'amount' && discountAmountValue === String(v)
-                              ? 'bg-green-600 text-white shadow-md'
-                              : 'bg-green-100 hover:bg-green-200 text-gray-800 border border-green-200'
+                              ? 'text-emerald-600'
+                              : 'text-gray-600 hover:text-emerald-400'
                           }`}
+                          style={discountInputMode === 'amount' && discountAmountValue === String(v)
+                            ? { background: 'linear-gradient(145deg, #d0ecd8, #dcf0e4)', boxShadow: 'inset 3px 3px 7px #a0c4a8, inset -3px -3px 7px #f0fff5' }
+                            : { background: 'linear-gradient(145deg, #e8f6ee, #dceee4)', boxShadow: '4px 4px 8px #b0c9b8, -4px -4px 8px #ffffff' }}
                         >
                           ${v}
                         </button>
                       ))}
                       <button
                         onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(Number(orderSubtotal.toFixed(2)))); }}
-                        className={`h-10 rounded text-sm font-bold transition-all ${
+                        className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
                           discountInputMode === 'amount' && Number(discountAmountValue) === Number(orderSubtotal.toFixed(2))
-                            ? 'bg-yellow-500 text-white shadow-md'
-                            : 'bg-yellow-400 hover:bg-yellow-500 text-white'
+                            ? 'text-orange-600'
+                            : 'text-orange-400 hover:text-orange-500'
                         }`}
+                        style={discountInputMode === 'amount' && Number(discountAmountValue) === Number(orderSubtotal.toFixed(2))
+                          ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
+                          : { background: 'linear-gradient(145deg, #f6eee8, #eee4dc)', boxShadow: '4px 4px 8px #c9beb8, -4px -4px 8px #ffffff' }}
                       >
                         Full
                       </button>
@@ -13376,8 +13412,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="bg-gray-100 rounded-lg p-2">
-                  <div className="grid grid-cols-5 gap-1">
+                <div className="rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
+                  <div className="grid grid-cols-5 gap-1.5">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
                       const isDollar = key === '$';
@@ -13421,19 +13457,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               }
                             }
                           }}
-                          className={`h-10 rounded font-semibold text-base transition-all ${
+                          className={`h-10 rounded-xl border-0 font-bold text-base transition-all duration-200 active:scale-95 ${
                             isPercent
                               ? discountInputMode === 'percent'
-                                ? 'bg-blue-600 text-white'
-                                : 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-300'
+                                ? 'text-blue-600'
+                                : 'text-blue-400 hover:text-blue-500'
                               : isDollar
                                 ? discountInputMode === 'amount'
-                                  ? 'bg-green-600 text-white'
-                                  : 'bg-green-100 hover:bg-green-200 text-green-700 border border-green-300'
+                                  ? 'text-emerald-600'
+                                  : 'text-emerald-400 hover:text-emerald-500'
                                 : isBackspace
-                                  ? 'bg-gray-300 hover:bg-gray-400 text-gray-700'
-                                  : 'bg-white hover:bg-gray-200 text-gray-800 border border-gray-300'
+                                  ? 'text-gray-500 hover:text-red-400'
+                                  : 'text-gray-600 hover:text-gray-700'
                           }`}
+                          style={
+                            (isPercent && discountInputMode === 'percent')
+                              ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 7px #a8b0c4, inset -3px -3px 7px #f0f5ff' }
+                              : (isDollar && discountInputMode === 'amount')
+                                ? { background: 'linear-gradient(145deg, #d0ecd8, #dcf0e4)', boxShadow: 'inset 3px 3px 7px #a0c4a8, inset -3px -3px 7px #f0fff5' }
+                                : isBackspace
+                                  ? { background: 'linear-gradient(145deg, #eee8e6, #e6e0de)', boxShadow: '4px 4px 8px #c0bab8, -4px -4px 8px #ffffff' }
+                                  : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
+                          }
                         >
                           {key}
                         </button>
@@ -13443,16 +13488,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-2">
+                <div className="flex gap-3">
                   <button 
                     onClick={handleCancelDiscount} 
-                    className="flex-1 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all text-sm"
+                    className="flex-1 py-2.5 rounded-2xl border-0 text-gray-500 font-bold transition-all duration-200 text-sm active:scale-95 hover:text-gray-600"
+                    style={{ background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff' }}
                   >
                     Cancel
                   </button>
                   <button 
                     onClick={handleApplyDiscount} 
-                    className="flex-1 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold transition-all text-sm"
+                    className="flex-[2] py-2.5 rounded-2xl border-0 text-orange-500 font-extrabold transition-all duration-200 text-sm active:scale-95 hover:text-orange-600"
+                    style={{ background: 'linear-gradient(145deg, #f6eee8, #eee4dc)', boxShadow: '6px 6px 12px #c9beb8, -6px -6px 12px #ffffff' }}
                   >
                     Apply Discount
                   </button>

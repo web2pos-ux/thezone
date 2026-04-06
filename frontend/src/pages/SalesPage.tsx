@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import { firebaseDb } from '../config/firebase';
@@ -209,6 +210,9 @@ const SalesPage: React.FC = () => {
   const [pressedButton, setPressedButton] = useState<string | null>(null);
   const [tableOccupiedTimes, setTableOccupiedTimes] = useState<Record<string, number>>({});
   const [tableReservationNames, setTableReservationNames] = useState<Record<string, string>>({});
+  const [tableReservationDetails, setTableReservationDetails] = useState<Record<string, { name: string; time: string; partySize: number }>>({});
+  const [tableHoldInfo, setTableHoldInfo] = useState<Record<string, { customerName: string; reservationTime: string; reservationId: string }>>({});
+  const [showReservedActionModal, setShowReservedActionModal] = useState<{ tableId: string; tableName: string; isHoldOrigin: boolean; customerName: string; reservationTime: string } | null>(null);
 
   const persistOccupiedTimes = useCallback(
     (next: Record<string, number>) => {
@@ -3372,7 +3376,9 @@ const SalesPage: React.FC = () => {
         setCardDetailItems([]);
         setCardDetailChannel(channel);
         setShowCardDetailModal(true);
-        const actualOrderId = channel === 'delivery' ? (order.order_id || order.id) : order.id;
+        const actualOrderId = channel === 'delivery'
+          ? (order.order_id || order.id)
+          : (order.localOrderId || order.fullOrder?.localOrderId || order.order_id || order.id);
         if (actualOrderId) {
           try {
             const res = await fetch(`${API_URL}/orders/${actualOrderId}`);
@@ -4409,12 +4415,33 @@ const SalesPage: React.FC = () => {
           const hours = Math.floor(elapsed / 60);
           const minutes = elapsed % 60;
           displayName += `\n${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-          console.log(`Table ${element.id} occupied time:`, `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`);
+          const occDetail = tableReservationDetails[String(element.id)];
+          if (occDetail) {
+            displayName += `\n${occDetail.name}${occDetail.partySize ? ` ${occDetail.partySize}p` : ''}`;
+          }
         }
         // Hold ë˜ëŠ” Reserved ìƒíƒœì¸ ê²½ìš° ì˜ˆì•½ìž ì´ë¦„ í‘œì‹œ
         else if ((element.status === 'Hold' || element.status === 'Reserved') && tableReservationNames[String(element.id)]) {
-          displayName += `\n${tableReservationNames[String(element.id)]}`;
-          console.log(`Table ${element.id} reservation name:`, tableReservationNames[String(element.id)]);
+          const detail = tableReservationDetails[String(element.id)];
+          if (detail && (detail.time || detail.partySize)) {
+            const timePart = detail.time ? detail.time.slice(0, 5) : '';
+            const sizePart = detail.partySize ? `${detail.partySize}p` : '';
+            displayName += `\n${detail.name}`;
+            displayName += `\n${[timePart, sizePart].filter(Boolean).join(' ')}`;
+          } else {
+            displayName += `\n${tableReservationNames[String(element.id)]}`;
+          }
+        }
+        else {
+          const fallbackDetail = tableReservationDetails[String(element.id)];
+          if (fallbackDetail) {
+            const timePart = fallbackDetail.time ? fallbackDetail.time.slice(0, 5) : '';
+            const sizePart = fallbackDetail.partySize ? `${fallbackDetail.partySize}p` : '';
+            displayName += `\n${fallbackDetail.name}`;
+            if (timePart || sizePart) {
+              displayName += `\n${[timePart, sizePart].filter(Boolean).join(' ')}`;
+            }
+          }
         }
         
         return displayName;
@@ -4488,6 +4515,20 @@ const SalesPage: React.FC = () => {
           }
         } catch {}
         setTableElements(patchedElements);
+        setTableHoldInfo(prev => {
+          const ids = Object.keys(prev);
+          if (ids.length === 0) return prev;
+          const next = { ...prev };
+          let changed = false;
+          for (const tId of ids) {
+            const el = patchedElements.find((e: any) => String(e.id) === tId);
+            if (el && el.status === 'Occupied' && el.current_order_id) {
+              delete next[tId];
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
         try {
           patchedElements.forEach((element: any) => {
             const key = `lastOrderIdByTable_${element.id}`;
@@ -4511,6 +4552,10 @@ const SalesPage: React.FC = () => {
         try {
           const nRaw = localStorage.getItem(`reservedNames_${selectedFloor}`);
           if (nRaw) setTableReservationNames(JSON.parse(nRaw));
+        } catch {}
+        try {
+          const dRaw = localStorage.getItem(`reservationDetails_${selectedFloor}`);
+          if (dRaw) setTableReservationDetails(JSON.parse(dRaw));
         } catch {}
 
         // 2) ì €ìž¥ê°’ì´ ì—†ì„ ë•Œë§Œ ì´ˆê¸° ë¶€íŒ… ë³´ì • (í˜„ìž¬ ì‹œê°„ì„ ì‹œë“œ)
@@ -4564,6 +4609,7 @@ const SalesPage: React.FC = () => {
           console.warn('⚠️ [Auto-detect] Failed to save screen size:', saveErr);
         }
       }
+      checkHoldRef.current?.();
     } catch (err) {
       console.error('ë°ì´í„° ê°€ì ¸ì˜¤ê¸° ì˜¤ë¥˜:', err);
       setError('ë°ì´í„°ë¥¼ ë¶ˆëŸ¬ì˜¬ ìˆ˜ ì—†ìŠµë‹ˆë‹¤.');
@@ -4584,7 +4630,103 @@ const SalesPage: React.FC = () => {
     }, 15000);
     
     return () => clearInterval(tableRefreshInterval);
-  }, [selectedFloor]); // selectedFloorê°€ ë³€ê²½ë  ë•Œë§ˆë‹¤ ë°ì´í„° ë‹¤ì‹œ ê°€ì ¸ì˜¤ê¸°
+  }, [selectedFloor]);
+
+  const checkHoldRef = useRef<() => Promise<void>>(undefined);
+  checkHoldRef.current = async () => {
+    try {
+      const [availRes, upcomingRes] = await Promise.all([
+        fetch(`${API_URL}/table-map/elements/available-count`),
+        fetch(`${API_URL}/reservations/reservations/upcoming-hold?minutes_before=45`)
+      ]);
+      if (!availRes.ok || !upcomingRes.ok) return;
+      const { count: availCount } = await availRes.json();
+      const upcomingList: any[] = await upcomingRes.json();
+      if (!upcomingList || upcomingList.length === 0) { setTableHoldInfo({}); return; }
+      const reservationsNeedingTables = upcomingList.filter((r: any) => r.status !== 'completed');
+      const totalTablesNeeded = reservationsNeedingTables.reduce((sum: number, r: any) => sum + (r.tables_needed || 1), 0);
+
+      if (availCount > 0 && reservationsNeedingTables.length > 0) {
+        const availableTables = tableElements.filter(
+          (el: any) => el.status === 'Available' &&
+            (el.type === 'rounded-rectangle' || el.type === 'circle' || el.type === 'bar' || el.type === 'room')
+        );
+        const prevHold = tableHoldInfo;
+        const holdTableIds = Object.keys(prevHold);
+        if (holdTableIds.length > 0 && availableTables.length > 0) {
+          let rsvI = 0;
+          for (const avTable of availableTables) {
+            if (rsvI >= reservationsNeedingTables.length) break;
+            const rsv = reservationsNeedingTables[rsvI];
+            const tId = String(avTable.id);
+            try {
+              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(tId)}/status`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'Reserved' })
+              });
+            } catch {}
+            setTableElements(prev => prev.map(el =>
+              String(el.id) === tId ? { ...el, status: 'Reserved', current_order_id: null as any } : el
+            ));
+            const cName = rsv.customer_name || 'Guest';
+            const rTime = rsv.reservation_time || '';
+            setTableReservationDetails(prev => {
+              const next = { ...prev, [tId]: { name: cName, time: rTime, partySize: rsv.party_size || 0 } };
+              try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next)); } catch {}
+              return next;
+            });
+            setTableReservationNames(prev => {
+              const next = { ...prev, [tId]: cName };
+              try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
+              return next;
+            });
+            const oldHoldId = holdTableIds.find(hId => prevHold[hId]?.reservationId === String(rsv.id || ''));
+            if (oldHoldId && oldHoldId !== tId) {
+              setTableHoldInfo(prev => {
+                const copy = { ...prev };
+                delete copy[oldHoldId];
+                copy[tId] = { customerName: cName, reservationTime: rTime, reservationId: String(rsv.id || '') };
+                return copy;
+              });
+            }
+            rsvI++;
+          }
+          return;
+        }
+      }
+
+      if (availCount >= totalTablesNeeded) { setTableHoldInfo({}); return; }
+      const deficit = totalTablesNeeded - availCount;
+      const candidatesRes = await fetch(`${API_URL}/table-map/elements/hold-candidates`);
+      if (!candidatesRes.ok) return;
+      const candidates: any[] = await candidatesRes.json();
+      const newHoldInfo: Record<string, { customerName: string; reservationTime: string; reservationId: string }> = {};
+      let assigned = 0;
+      let rsvIdx = 0;
+      for (const candidate of candidates) {
+        if (assigned >= deficit) break;
+        if (rsvIdx < reservationsNeedingTables.length) {
+          const rsv = reservationsNeedingTables[rsvIdx];
+          newHoldInfo[String(candidate.id)] = {
+            customerName: rsv.customer_name || 'Guest',
+            reservationTime: rsv.reservation_time || '',
+            reservationId: String(rsv.id || '')
+          };
+          assigned++;
+          const tablesForThisRsv = rsv.tables_needed || 1;
+          if (assigned % tablesForThisRsv === 0) rsvIdx++;
+        }
+      }
+      setTableHoldInfo(newHoldInfo);
+    } catch {}
+  };
+
+  useEffect(() => {
+    checkHoldRef.current?.();
+    const onPaymentCompleted = () => { checkHoldRef.current?.(); };
+    window.addEventListener('paymentCompleted', onPaymentCompleted);
+    return () => { window.removeEventListener('paymentCompleted', onPaymentCompleted); };
+  }, []); // paymentCompletedê°€ ë³€ê²½ë  ë•Œë§ˆë‹¤ ë°ì´í„° ë‹¤ì‹œ ê°€ì ¸ì˜¤ê¸°
 
   // Back Office ì €ìž¥ ì‹ í˜¸(localStorage) ìˆ˜ì‹  ì‹œ ìž¬ë¡œë“œ
   useEffect(() => {
@@ -4706,7 +4848,7 @@ const SalesPage: React.FC = () => {
       'Payment Pending':'#78909c',
       Cleaning:         '#90a4ae',
       Hold:             '#ef5350',
-      Reserved:         '#ce93d8',
+      Reserved:         '#b258c4',
     };
     const STATUS_TEXT: Record<string, string> = {
       Available:        '#003d2e',
@@ -4726,7 +4868,7 @@ const SalesPage: React.FC = () => {
       'Payment Pending':'#546e7a',
       Cleaning:         '#607d8b',
       Hold:             '#d50000',
-      Reserved:         '#aa00ff',
+      Reserved:         '#9c27b0',
     };
     const neon = STATUS_NEON[status] || '#00e676';
 
@@ -5023,21 +5165,14 @@ const SalesPage: React.FC = () => {
           }
         });
       } else if (currentStatus === 'Reserved') {
-        // Reserved table can start ordering, but MUST NOT become Occupied without an actual linked order.
-        const latestElement = tableElements.find(el => String(el.id) === String(element.id));
-        const effectiveOrderId = latestElement?.current_order_id || (element as any).current_order_id;
-        navigate('/sales/order', {
-          state: {
-            orderType: 'POS',
-            menuId: defaultMenu.menuId,
-            menuName: defaultMenu.menuName,
-            tableId: element.id,
-            tableLabel: element.text,
-            tableName: element.text,
-            floor: selectedFloor,
-            loadExisting: Boolean(effectiveOrderId),
-            orderId: effectiveOrderId || null
-          }
+        const holdData = tableHoldInfo[String(element.id)];
+        const rsvDetail = tableReservationDetails[String(element.id)];
+        setShowReservedActionModal({
+          tableId: String(element.id),
+          tableName: element.text || `T${element.id}`,
+          isHoldOrigin: !!holdData,
+          customerName: rsvDetail?.name || holdData?.customerName || '',
+          reservationTime: rsvDetail?.time || holdData?.reservationTime || ''
         });
       } else if (currentStatus === 'Preparing') {
         // Legacy: treat Preparing as Available
@@ -5090,19 +5225,45 @@ const SalesPage: React.FC = () => {
               body: JSON.stringify({ status: 'Available' })
             });
           } catch {}
-          setTableElements(prev => prev.map(el =>
-            String(el.id) === String(element.id)
-              ? { ...el, status: 'Available', current_order_id: null as any }
-              : el
-          ));
+          const holdForThisTable = tableHoldInfo[String(element.id)];
+          if (holdForThisTable) {
+            try {
+              await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'Reserved' })
+              });
+            } catch {}
+            setTableElements(prev => prev.map(el =>
+              String(el.id) === String(element.id)
+                ? { ...el, status: 'Reserved', current_order_id: null as any }
+                : el
+            ));
+            setTableReservationDetails(prev => {
+              const next = { ...prev, [String(element.id)]: { name: holdForThisTable.customerName, time: holdForThisTable.reservationTime, partySize: 0 } };
+              try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next)); } catch {}
+              return next;
+            });
+            setTableReservationNames(prev => {
+              const next = { ...prev, [String(element.id)]: holdForThisTable.customerName };
+              try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
+              return next;
+            });
+          } else {
+            setTableElements(prev => prev.map(el =>
+              String(el.id) === String(element.id)
+                ? { ...el, status: 'Available', current_order_id: null as any }
+                : el
+            ));
+          }
           clearOccupiedTimestamp(element.id);
-          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: 'Available', ts: Date.now() })); } catch {}
+          try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: holdForThisTable ? 'Reserved' : 'Available', ts: Date.now() })); } catch {}
           try {
             localStorage.removeItem(`splitGuests_${element.id}`);
             localStorage.removeItem(`paidGuests_${element.id}`);
             localStorage.removeItem(`voidDisplay_${element.id}`);
             localStorage.removeItem(`lastOrderIdByTable_${element.id}`);
           } catch {}
+          window.dispatchEvent(new Event('paymentCompleted'));
           return;
         }
 
@@ -8911,6 +9072,20 @@ const SalesPage: React.FC = () => {
             }
           } catch {}
           setTableElements(patchedElements);
+          setTableHoldInfo(prev => {
+            const ids = Object.keys(prev);
+            if (ids.length === 0) return prev;
+            const next = { ...prev };
+            let changed = false;
+            for (const tId of ids) {
+              const el = patchedElements.find((e: any) => String(e.id) === tId);
+              if (el && el.status === 'Occupied' && el.current_order_id) {
+                delete next[tId];
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
         } else {
           console.warn('í…Œì´ë¸” ìš”ì†Œë¥¼ ê°€ì ¸ì˜¬ ìˆ˜ ì—†ìŠµë‹ˆë‹¤. ê¸°ë³¸ê°’ì„ ì‚¬ìš©í•©ë‹ˆë‹¤.');
           setTableElements([]);
@@ -9334,6 +9509,7 @@ const SalesPage: React.FC = () => {
     
     // Notify other components (PickupListPanel, etc.) that payment completed
     window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId: paymentOrder?.id } }));
+    window.dispatchEvent(new Event('paymentCompleted'));
 
     // Refresh order lists
     loadOnlineOrders();
@@ -9569,8 +9745,25 @@ const SalesPage: React.FC = () => {
                             element.type === 'room' ||
                             element.type === 'circle';
                           const glossRadius = element.type === 'circle' ? '50%' : '26px';
+                          const holdData = tableHoldInfo[String(element.id)];
+                          const isReservedWithHold = element.status === 'Reserved' && holdData;
+                          const showHoldBand = holdData && (element.status === 'Occupied' || element.status === 'Payment Pending' || isReservedWithHold);
                           return (
                             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+                              {showHoldBand ? (
+                                <div style={{
+                                  position: 'absolute', top: 0, left: 0, right: 0, zIndex: 3,
+                                  height: isReservedWithHold ? '6px' : '20%',
+                                  maxHeight: isReservedWithHold ? 6 : undefined,
+                                  background: 'linear-gradient(90deg, #ef4444, #dc2626)',
+                                  borderRadius: element.type === 'circle' ? '50% 50% 0 0' : '6px 6px 0 0',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  color: '#fff', fontSize: 11, fontWeight: 700, letterSpacing: 0.3,
+                                  textShadow: '0 1px 2px rgba(0,0,0,0.3)', overflow: 'hidden', whiteSpace: 'nowrap' as const
+                                }}>
+                                  {!isReservedWithHold && `Hold · ${holdData.customerName} · ${holdData.reservationTime}`}
+                                </div>
+                              ) : null}
                               {isGlassTable ? (
                                 <div
                                   aria-hidden
@@ -9605,6 +9798,9 @@ const SalesPage: React.FC = () => {
                                 <div style={{ fontSize: nameFontSize, fontWeight: 800 }}>{firstLine}</div>
                                 {secondLine ? (
                                   <div style={{ fontSize: timeFont, fontWeight: 700, marginTop: 2, opacity: 0.85 }}>{secondLine}</div>
+                                ) : null}
+                                {parts[2] ? (
+                                  <div style={{ fontSize: Math.max(9, timeFont - 2), fontWeight: 600, marginTop: 1, opacity: 0.75 }}>{parts[2]}</div>
                                 ) : null}
                               </div>
                             </div>
@@ -10149,34 +10345,49 @@ const SalesPage: React.FC = () => {
               </div>
               
               {/* Tabs - ìž…ì²´ê° ìžˆëŠ” ë²„íŠ¼ */}
-              <div className="flex gap-2 p-3 bg-gray-100">
+              <div className="flex gap-2.5 p-3" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)' }}>
                 <button
                   onClick={() => setOnlineModalTab('preptime')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'preptime' ? 'bg-white text-blue-700 shadow-md border-2 border-blue-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'preptime' ? 'text-blue-600' : 'text-gray-600 hover:text-blue-400'}`}
+                  style={onlineModalTab === 'preptime'
+                    ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 7px #a8b0c4, inset -3px -3px 7px #f0f5ff' }
+                    : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Prep Time
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('pause')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'pause' ? 'bg-white text-orange-700 shadow-md border-2 border-orange-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'pause' ? 'text-orange-600' : 'text-gray-600 hover:text-orange-400'}`}
+                  style={onlineModalTab === 'pause'
+                    ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
+                    : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Pause
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('dayoff')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'dayoff' ? 'bg-white text-red-700 shadow-md border-2 border-red-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'dayoff' ? 'text-red-600' : 'text-gray-600 hover:text-red-400'}`}
+                  style={onlineModalTab === 'dayoff'
+                    ? { background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: 'inset 3px 3px 7px #c9a0a0, inset -3px -3px 7px #fff0f0' }
+                    : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Day Off
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('menuhide')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'menuhide' ? 'bg-white text-purple-700 shadow-md border-2 border-purple-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'menuhide' ? 'text-purple-600' : 'text-gray-600 hover:text-purple-400'}`}
+                  style={onlineModalTab === 'menuhide'
+                    ? { background: 'linear-gradient(145deg, #dcd1f0, #e8ddf8)', boxShadow: 'inset 3px 3px 7px #c4b8d8, inset -3px -3px 7px #f8f2ff' }
+                    : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Menu Hide
                 </button>
                 <button
                   onClick={() => setOnlineModalTab('utility')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-lg transition-all ${onlineModalTab === 'utility' ? 'bg-white text-violet-700 shadow-md border-2 border-violet-400' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 border-2 border-transparent'}`}
+                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'utility' ? 'text-violet-600' : 'text-gray-600 hover:text-violet-400'}`}
+                  style={onlineModalTab === 'utility'
+                    ? { background: 'linear-gradient(145deg, #ddd1f0, #e8ddf8)', boxShadow: 'inset 3px 3px 7px #b8a8d8, inset -3px -3px 7px #f5f0ff' }
+                    : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Utility
                 </button>
@@ -10204,16 +10415,22 @@ const SalesPage: React.FC = () => {
                       </td>
                       <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
+                          <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.thezoneorder.mode === 'auto'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.thezoneorder.mode === 'manual'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Manual
                             </button>
@@ -10239,7 +10456,8 @@ const SalesPage: React.FC = () => {
                             doordash: { ...prev.doordash, time: prev.thezoneorder.time },
                             skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time },
                           }))}
-                          className="px-3 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold whitespace-nowrap"
+                          className="px-3 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap border-0 text-blue-600 transition-all duration-200 active:scale-95"
+                          style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: '4px 4px 8px #b0b8c9, -4px -4px 8px #ffffff' }}
                         >
                           Apply All
                         </button>
@@ -10253,16 +10471,22 @@ const SalesPage: React.FC = () => {
                       </td>
                       <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
+                          <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.ubereats.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.ubereats.mode === 'auto'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.ubereats.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.ubereats.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.ubereats.mode === 'manual'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Manual
                             </button>
@@ -10290,16 +10514,22 @@ const SalesPage: React.FC = () => {
                       </td>
                       <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
+                          <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.doordash.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.doordash.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.doordash.mode === 'auto'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.doordash.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.doordash.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.doordash.mode === 'manual'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Manual
                             </button>
@@ -10327,16 +10557,22 @@ const SalesPage: React.FC = () => {
                       </td>
                       <td className="py-4">
                         <div className="flex justify-center">
-                          <div className="inline-flex bg-gray-100 rounded-lg p-1">
+                          <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.skipthedishes.mode === 'auto'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Auto
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              style={prepTimeSettings.skipthedishes.mode === 'manual'
+                                ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
+                                : { background: 'transparent' }}
                             >
                               Manual
                             </button>
@@ -10379,7 +10615,8 @@ const SalesPage: React.FC = () => {
                         alert('Failed to save settings');
                       }
                     }}
-                    className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all"
+                    className="w-full py-3 rounded-2xl text-lg font-extrabold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                    style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
                   >
                     Save
                   </button>
@@ -10429,14 +10666,15 @@ const SalesPage: React.FC = () => {
                             setSelectedPauseDuration(null);
                           } catch (error) { console.error('Resume failed:', error); alert('Resume failed'); }
                         }}
-                        className="px-5 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg text-base font-bold shadow-md"
+                        className="px-5 py-3 rounded-2xl text-base font-bold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                        style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '5px 5px 10px #b0c9b4, -5px -5px 10px #ffffff' }}
                       >
                         Resume All
                       </button>
                     </div>
                     
                     {/* ì¤‘ê°„: ì±„ë„ ì„ íƒ */}
-                    <div className="p-3 bg-gray-50 rounded-lg border">
+                    <div className="p-3 rounded-2xl" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                       <div className="grid grid-cols-5 gap-3">
                         <button
                           onClick={() => {
@@ -10448,11 +10686,14 @@ const SalesPage: React.FC = () => {
                               skipthedishes: { ...prev.skipthedishes, paused: !allSelected },
                             }));
                           }}
-                          className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${
+                          className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${
                             ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused)
-                              ? 'bg-gray-700 text-white border-gray-800'
-                              : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+                              ? 'text-gray-700'
+                              : 'text-gray-500 hover:text-gray-700'
                           }`}
+                          style={['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused)
+                            ? { background: 'linear-gradient(145deg, #d4d9e0, #dfe4eb)', boxShadow: 'inset 3px 3px 7px #b0b5be, inset -3px -3px 7px #f0f5fc' }
+                            : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                         >
                           All
                         </button>
@@ -10463,7 +10704,10 @@ const SalesPage: React.FC = () => {
                             <button
                               key={channel}
                               onClick={() => setPauseSettings(prev => ({ ...prev, [channel]: { ...prev[channel], paused: !prev[channel].paused } }))}
-                              className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${isSelected ? 'bg-orange-500 text-white border-orange-600' : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'}`}
+                              className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
+                              style={isSelected
+                                ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
+                                : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                             >
                               {labels[channel]}
                             </button>
@@ -10473,7 +10717,7 @@ const SalesPage: React.FC = () => {
                     </div>
                     
                     {/* í•˜ë‹¨: Pause ì‹œê°„ ì„ íƒ - 4x2 ê·¸ë¦¬ë“œ */}
-                    <div className="p-3 bg-gray-50 rounded-lg border">
+                    <div className="p-3 rounded-2xl" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                       <div className="grid grid-cols-4 gap-3">
                         {[
                           { label: '15m', min: 15 },
@@ -10502,11 +10746,14 @@ const SalesPage: React.FC = () => {
                                 return updated;
                               });
                             }}
-                            className={`py-4 rounded-lg text-base font-bold transition-all border-2 ${
+                            className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${
                               selectedPauseDuration === label 
-                                ? 'bg-orange-600 text-white border-orange-700 shadow-md' 
-                                : 'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200'
+                                ? 'text-orange-600' 
+                                : 'text-gray-500 hover:text-orange-400'
                             }`}
+                            style={selectedPauseDuration === label
+                              ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
+                              : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                           >
                             {label}
                           </button>
@@ -10541,7 +10788,8 @@ const SalesPage: React.FC = () => {
                             alert('Failed to save settings');
                           }
                         }}
-                        className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all"
+                        className="w-full py-3 rounded-2xl text-lg font-extrabold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                        style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
                       >
                         Save
                       </button>
@@ -10555,7 +10803,7 @@ const SalesPage: React.FC = () => {
                     {/* ìƒë‹¨: 3-column ë ˆì´ì•„ì›ƒ */}
                     <div className="flex gap-3 flex-1">
                       {/* ì™¼ìª½: Channels (16%) */}
-                      <div className="flex flex-col bg-gray-50 rounded-lg p-3 border border-gray-200" style={{ width: '16%' }}>
+                      <div className="flex flex-col rounded-2xl p-3" style={{ width: '16%', background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                         <div className="text-sm font-bold text-orange-500 mb-2">Channels</div>
                         <div className="space-y-2">
                           {[
@@ -10573,12 +10821,10 @@ const SalesPage: React.FC = () => {
                               <button
                                 key={channel.id}
                                 onClick={() => toggleDayOffChannel(channel.id)}
-                                className={`
-                                  w-full py-2 px-2 rounded-lg text-sm font-semibold text-center transition-all border-2
-                                  ${isSelected 
-                                    ? 'bg-orange-500 text-white border-orange-600' 
-                                    : 'bg-white text-gray-600 hover:bg-gray-100 border-orange-300'}
-                                `}
+                                className={`w-full py-2 px-2 rounded-xl text-sm font-bold text-center transition-all duration-200 border-0 active:scale-95 ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
+                                style={isSelected
+                                  ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 6px #c9b0a0, inset -3px -3px 6px #fff5f0' }
+                                  : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                               >
                                 {channel.name}
                               </button>
@@ -10678,23 +10924,27 @@ const SalesPage: React.FC = () => {
                             { id: 'extended', name: 'Ext Open', color: 'green' },
                             { id: 'early', name: 'Early Close', color: 'yellow' },
                             { id: 'late', name: 'Late Open', color: 'purple' },
-                          ].map((type) => (
+                          ].map((type) => {
+                            const colorMap: Record<string, { selected: { bg: string; shadow: string; text: string }; hover: string }> = {
+                              closed: { selected: { bg: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', shadow: 'inset 3px 3px 6px #c9a0a0, inset -3px -3px 6px #fff0f0', text: 'text-red-600' }, hover: 'hover:text-red-400' },
+                              extended: { selected: { bg: 'linear-gradient(145deg, #d0ecd8, #dcf0e4)', shadow: 'inset 3px 3px 6px #a0c4a8, inset -3px -3px 6px #f0fff5', text: 'text-emerald-600' }, hover: 'hover:text-emerald-400' },
+                              early: { selected: { bg: 'linear-gradient(145deg, #f0e8d0, #f4ecd8)', shadow: 'inset 3px 3px 6px #c9c0a0, inset -3px -3px 6px #fffff0', text: 'text-amber-600' }, hover: 'hover:text-amber-400' },
+                              late: { selected: { bg: 'linear-gradient(145deg, #dcd1f0, #e8ddf8)', shadow: 'inset 3px 3px 6px #c4b8d8, inset -3px -3px 6px #f8f2ff', text: 'text-purple-600' }, hover: 'hover:text-purple-400' },
+                            };
+                            const c = colorMap[type.id];
+                            return (
                             <button
                               key={type.id}
                               onClick={() => setDayOffType(type.id as 'closed' | 'extended' | 'early' | 'late')}
-                              className={`
-                                py-2.5 px-1 rounded-lg text-xs font-bold text-center transition-all min-h-[40px]
-                                ${dayOffType === type.id 
-                                  ? type.id === 'closed' ? 'bg-red-500 text-white shadow-md' 
-                                    : type.id === 'extended' ? 'bg-green-500 text-white shadow-md'
-                                    : type.id === 'early' ? 'bg-yellow-500 text-white shadow-md'
-                                    : 'bg-purple-500 text-white shadow-md'
-                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-300 active:bg-gray-300'}
-                              `}
+                              className={`py-2.5 px-1 rounded-xl text-xs font-bold text-center transition-all duration-200 min-h-[40px] border-0 active:scale-95 ${dayOffType === type.id ? c.selected.text : `text-gray-500 ${c.hover}`}`}
+                              style={dayOffType === type.id
+                                ? { background: c.selected.bg, boxShadow: c.selected.shadow }
+                                : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
                             >
                               {type.name}
                             </button>
-                          ))}
+                            );
+                          })}
                         </div>
                         
                         {/* ì‹œê°„ ì„ íƒ (Closedê°€ ì•„ë‹ ë•Œë§Œ í‘œì‹œ) */}
@@ -10730,14 +10980,10 @@ const SalesPage: React.FC = () => {
                           <button
                             onClick={saveDayOffs}
                             disabled={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0}
-                            className={`
-                              w-full py-3 rounded-lg font-bold text-lg transition-all shadow-md
-                              ${dayOffSaveStatus === 'saving'
-                                ? 'bg-gray-400 text-white cursor-wait'
-                                : dayOffSelectedDates.length > 0
-                                ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                                : 'bg-gray-200 text-gray-400 cursor-not-allowed'}
-                            `}
+                            className={`w-full py-3 rounded-2xl font-extrabold text-lg transition-all duration-200 border-0 active:scale-95 ${dayOffSaveStatus === 'saving' ? 'text-gray-400 cursor-wait' : dayOffSelectedDates.length > 0 ? 'text-emerald-600 hover:text-emerald-700' : 'text-gray-400 cursor-not-allowed'}`}
+                            style={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0
+                              ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
+                              : { background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
                           >
                             {dayOffSaveStatus === 'saving' ? 'Saving...' : 'Save'}
                           </button>
@@ -11261,7 +11507,14 @@ const SalesPage: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                    <button onClick={saveUtilitySettings} disabled={savingUtility} className={`w-full py-3 rounded-lg font-bold text-base transition-all ${savingUtility ? 'bg-gray-400 text-white cursor-wait' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>
+                    <button
+                      onClick={saveUtilitySettings}
+                      disabled={savingUtility}
+                      className={`w-full py-3 rounded-2xl font-extrabold text-base transition-all duration-200 border-0 active:scale-95 ${savingUtility ? 'text-gray-400 cursor-wait' : 'text-violet-600 hover:text-violet-700'}`}
+                      style={savingUtility
+                        ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
+                        : { background: 'linear-gradient(145deg, #ddd1f0, #e8ddf8)', boxShadow: '6px 6px 12px #b8a8d8, -6px -6px 12px #ffffff' }}
+                    >
                       {savingUtility ? 'Saving...' : 'Save Utility Settings'}
                     </button>
                   </div>
@@ -11270,10 +11523,11 @@ const SalesPage: React.FC = () => {
               </div>
               
               {/* Footer - Close */}
-              <div className="flex justify-end gap-2 px-4 py-3 bg-gray-100 rounded-b-xl border-t">
+              <div className="flex justify-end gap-2 px-4 py-3 rounded-b-xl" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)' }}>
                 <button
                   onClick={() => setShowPrepTimeModal(false)}
-                  className="px-5 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg text-sm font-semibold"
+                  className="px-6 py-2.5 rounded-2xl text-sm font-bold border-0 text-gray-500 transition-all duration-200 active:scale-95 hover:text-gray-600"
+                  style={{ background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Close
                 </button>
@@ -11425,7 +11679,9 @@ const SalesPage: React.FC = () => {
           const cdChannel = cardDetailChannel;
           const cdStatus = String(cdOrder.status || cdOrder.fullOrder?.status || '').toUpperCase();
           const cdIsPaid = cdStatus === 'PAID' || cdStatus === 'COMPLETED' || cdStatus === 'CLOSED';
-          const cdOrderId = cdChannel === 'delivery' ? (cdOrder.order_id || cdOrder.id) : cdOrder.id;
+          const cdOrderId = cdChannel === 'delivery'
+            ? (cdOrder.order_id || cdOrder.id)
+            : (cdOrder.localOrderId || cdOrder.fullOrder?.localOrderId || cdOrder.order_id || cdOrder.id);
           const cdSubtotal = cdOrder.subtotal || cdOrder.fullOrder?.subtotal || 0;
           const cdTax = cdOrder.tax || cdOrder.fullOrder?.tax || 0;
           const cdTotal = cdOrder.total || cdOrder.fullOrder?.total || 0;
@@ -11435,12 +11691,13 @@ const SalesPage: React.FC = () => {
           const cdChannelLabel = cdChannel === 'delivery' ? 'DLV' : cdChannel === 'online' ? 'ONLINE' : 'TOGO';
 
           return (
-            <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowCardDetailModal(false)}>
-              <div className="absolute inset-0 bg-black/50" />
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={() => setShowCardDetailModal(false)} onTouchEnd={(e) => { if (e.target === e.currentTarget) setShowCardDetailModal(false); }}>
+              <div className="absolute inset-0 bg-black/50 pointer-events-none" />
               <div
-                className="relative bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+                className="relative z-10 bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden"
                 style={{ width: Math.min(480, frameWidthPx - 40), maxHeight: contentHeightPx - 40 }}
                 onClick={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
               >
                 {/* Header */}
                 <div className="px-5 py-4 bg-slate-700 text-white flex items-center justify-between flex-shrink-0 relative">
@@ -11524,21 +11781,27 @@ const SalesPage: React.FC = () => {
                 {/* Action Buttons */}
                 <div className="px-4 py-3 bg-slate-700 flex gap-2 flex-shrink-0">
                   <button
-                    onClick={async () => {
+                    onClick={() => {
                       if (!cdOrderId) return;
-                      setOrderListSelectedOrder(cdOrder);
-                      setOrderListSelectedItems(cdItems);
-                      await new Promise(r => setTimeout(r, 50));
+                      const dbId = cdOrder.localOrderId || cdOrder.fullOrder?.localOrderId || cdOrder.order_id || cdOrderId;
+                      const orderForList = { ...cdOrder, id: dbId, order_number: cdOrder.order_number || cdOrder.number || cdOrderId };
+                      flushSync(() => {
+                        setOrderListSelectedOrder(orderForList);
+                        setOrderListSelectedItems(cdItems || []);
+                      });
                       handleOrderListPrintBill();
                     }}
                     className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-bold"
                   >Print Bill</button>
                   <button
-                    onClick={async () => {
+                    onClick={() => {
                       if (!cdOrderId) return;
-                      setOrderListSelectedOrder(cdOrder);
-                      setOrderListSelectedItems(cdItems);
-                      await new Promise(r => setTimeout(r, 50));
+                      const dbId = cdOrder.localOrderId || cdOrder.fullOrder?.localOrderId || cdOrder.order_id || cdOrderId;
+                      const orderForList = { ...cdOrder, id: dbId, order_number: cdOrder.order_number || cdOrder.number || cdOrderId };
+                      flushSync(() => {
+                        setOrderListSelectedOrder(orderForList);
+                        setOrderListSelectedItems(cdItems || []);
+                      });
                       handleOrderListPrintKitchen();
                     }}
                     className="flex-1 py-3 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-xs font-bold"
@@ -11604,8 +11867,9 @@ const SalesPage: React.FC = () => {
                       <button
                         onClick={() => {
                           try {
-                            const orderId = Number(cdOrderId);
-                            if (!Number.isFinite(orderId)) return;
+                            const numId = Number(cdOrderId);
+                            const orderId = Number.isFinite(numId) ? numId : cdOrderId;
+                            if (!orderId) return;
                             const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
                             const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
                             const nextOrderType =
@@ -11634,8 +11898,9 @@ const SalesPage: React.FC = () => {
                       <button
                         onClick={() => {
                           try {
-                            const orderId = Number(cdOrderId);
-                            if (!Number.isFinite(orderId)) return;
+                            const numId = Number(cdOrderId);
+                            const orderId = Number.isFinite(numId) ? numId : cdOrderId;
+                            if (!orderId) return;
                             const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
                             const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
                             const nextOrderType =
@@ -14406,13 +14671,82 @@ const SalesPage: React.FC = () => {
         );
       })()}
 
+      {showReservedActionModal && (() => {
+        const m = showReservedActionModal;
+        const handleCancelReservation = async () => {
+          try {
+            await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(m.tableId)}/status`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'Available' })
+            });
+            setTableReservationNames(prev => { const n = { ...prev }; delete n[m.tableId]; try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(n)); } catch {} return n; });
+            setTableReservationDetails(prev => { const n = { ...prev }; delete n[m.tableId]; try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(n)); } catch {} return n; });
+            setTableHoldInfo(prev => { const n = { ...prev }; delete n[m.tableId]; return n; });
+            fetchTableMapData();
+          } catch {}
+          setShowReservedActionModal(null);
+        };
+        const handleSeatGuest = async () => {
+          const el = tableElements.find((e: any) => String(e.id) === m.tableId);
+          setTableReservationNames(prev => { const n = { ...prev }; delete n[m.tableId]; try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(n)); } catch {} return n; });
+          setTableReservationDetails(prev => { const n = { ...prev }; delete n[m.tableId]; try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(n)); } catch {} return n; });
+          setTableHoldInfo(prev => { const n = { ...prev }; delete n[m.tableId]; return n; });
+          if (el && defaultMenu) {
+            navigate('/sales/order', {
+              state: {
+                orderType: 'POS', menuId: defaultMenu.menuId, menuName: defaultMenu.menuName,
+                tableId: el.id, tableLabel: el.text, tableName: el.text,
+                floor: selectedFloor, loadExisting: false
+              }
+            });
+          }
+          setShowReservedActionModal(null);
+        };
+        return (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setShowReservedActionModal(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl p-6 min-w-[320px] max-w-[400px]" onClick={e => e.stopPropagation()}>
+              <div className="text-center mb-5">
+                <div className="text-lg font-bold text-gray-800">{m.tableName}</div>
+                <div className="text-sm text-gray-500 mt-1">
+                  {m.customerName && <span className="font-semibold">{m.customerName}</span>}
+                  {m.reservationTime && <span className="ml-2">{m.reservationTime}</span>}
+                </div>
+                {m.isHoldOrigin && <div className="mt-1 text-xs text-red-500 font-semibold">Auto-Hold Applied</div>}
+              </div>
+              <div className="flex flex-col gap-3">
+                <button
+                  className="w-full py-3.5 rounded-xl text-white font-bold text-base transition-all"
+                  style={{ background: 'linear-gradient(135deg, #10b981, #059669)', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' }}
+                  onClick={handleSeatGuest}
+                >
+                  Seat Guest
+                </button>
+                <button
+                  className="w-full py-3.5 rounded-xl text-white font-bold text-base transition-all"
+                  style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)', boxShadow: '0 4px 12px rgba(239,68,68,0.3)' }}
+                  onClick={handleCancelReservation}
+                >
+                  Cancel Reservation
+                </button>
+                <button
+                  className="w-full py-2.5 rounded-xl text-gray-500 font-semibold text-sm bg-gray-100 hover:bg-gray-200 transition-all"
+                  onClick={() => setShowReservedActionModal(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <ReservationCreateModal
         open={showReservationModal}
         onClose={() => setShowReservationModal(false)}
         onCreated={() => {
           setShowReservationModal(false);
         }}
-        onTableStatusChanged={(tableId, tableName, status, customerName) => {
+        onTableStatusChanged={(tableId, tableName, status, customerName, reservationTime, partySize) => {
           // í…Œì´ë¸” ìƒíƒœê°€ ë³€ê²½ë˜ì—ˆì„ ë•Œ í…Œì´ë¸” ëª©ë¡ì„ ìƒˆë¡œê³ ì¹¨
           fetchTableMapData();
           
@@ -14423,7 +14757,6 @@ const SalesPage: React.FC = () => {
               try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
               return next;
             });
-            console.log(`Setting reservation name for table ${tableId}:`, customerName);
           }
           
           // Occupied ìƒíƒœì¸ ê²½ìš° ì‹œê°„ ê¸°ë¡ (ê¸°ì¡´ ì ìœ  ì‹œê°„ì´ ì—†ì„ ë•Œë§Œ)
@@ -14431,10 +14764,15 @@ const SalesPage: React.FC = () => {
             const existingTime = tableOccupiedTimes[String(tableId)];
             if (!existingTime) {
               setOccupiedTimestamp(tableId, Date.now());
-              console.log(`Setting occupied time for table ${tableId}:`, new Date().toLocaleTimeString());
-            } else {
-              console.log(`Keeping existing occupied time for table ${tableId}`);
             }
+          }
+
+          if (customerName) {
+            setTableReservationDetails(prev => {
+              const next = { ...prev, [String(tableId)]: { name: customerName, time: reservationTime || '', partySize: partySize || 0 } };
+              try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next)); } catch {}
+              return next;
+            });
           }
         }}
       />
