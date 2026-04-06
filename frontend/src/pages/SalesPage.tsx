@@ -684,29 +684,29 @@ const SalesPage: React.FC = () => {
   
   // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ
   const onlineOrderAudioRef = useRef<HTMLAudioElement | null>(null);
-  
-  // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ì´ˆê¸°í™”
+
   useEffect(() => {
-    if (!onlineOrderAudioRef.current) {
-      onlineOrderAudioRef.current = new Audio('/sounds/Online_Order.mp3');
-      onlineOrderAudioRef.current.preload = 'auto';
-      onlineOrderAudioRef.current.volume = 1.0;
-    }
+    const audio = new Audio('/sounds/Online_Order.mp3');
+    audio.preload = 'auto';
+    onlineOrderAudioRef.current = audio;
+    return () => {
+      if (onlineOrderAudioRef.current) {
+        onlineOrderAudioRef.current.pause();
+        onlineOrderAudioRef.current = null;
+      }
+    };
   }, []);
-  
-  // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ìž¬ìƒ í•¨ìˆ˜
+
   const playOnlineOrderSound = useCallback(() => {
     try {
-      if (!onlineOrderAudioRef.current) {
-        onlineOrderAudioRef.current = new Audio('/sounds/Online_Order.mp3');
+      const audio = onlineOrderAudioRef.current;
+      if (audio) {
+        audio.currentTime = 0;
+        audio.play().catch(err => console.error('Audio play failed:', err));
+        console.log('Online order alarm played (MP3)');
       }
-      onlineOrderAudioRef.current.currentTime = 0;
-      onlineOrderAudioRef.current.volume = 1.0;
-      onlineOrderAudioRef.current.play()
-        .then(() => console.log('🔄 ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ ìž¬ìƒ'))
-        .catch(err => console.warn('ì•Œë¦¼ìŒ ìž¬ìƒ ì‹¤íŒ¨:', err.message));
     } catch (error) {
-      console.error('ì˜¤ë””ì˜¤ ìž¬ìƒ ì˜¤ë¥˜:', error);
+      console.error('Audio playback error:', error);
     }
   }, []);
 
@@ -2553,6 +2553,8 @@ const SalesPage: React.FC = () => {
             // ìƒˆ ì£¼ë¬¸ í‘¸ì‹œ ìˆ˜ì‹ 
             const newOrder = data.order;
             console.log('[SSE] New order received:', newOrder.id);
+
+            playOnlineOrderSound();
 
             if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
               // Auto ëª¨ë“œ: ìžë™ìœ¼ë¡œ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
