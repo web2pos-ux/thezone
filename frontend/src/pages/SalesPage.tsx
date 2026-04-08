@@ -19,6 +19,7 @@ import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { printReceipt, printKitchenTicket, printBill, openCashDrawer } from '../utils/printUtils';
+import { SOFT_NEO, OH_ACTION_NEO } from '../utils/softNeumorphic';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
@@ -4434,15 +4435,18 @@ const SalesPage: React.FC = () => {
             displayName += `\n${tableReservationNames[String(element.id)]}`;
           }
         }
-        else {
+        // Available 등 비예약 상태에서는 reservationDetails가 localStorage에 남아 있어도 표시하지 않음 (결제 후 T4처럼 잔상 방지)
+        else if (
+          (element.status === 'Hold' || element.status === 'Reserved') &&
+          !tableReservationNames[String(element.id)] &&
+          tableReservationDetails[String(element.id)]
+        ) {
           const fallbackDetail = tableReservationDetails[String(element.id)];
-          if (fallbackDetail) {
-            const timePart = fallbackDetail.time ? fallbackDetail.time.slice(0, 5) : '';
-            const sizePart = fallbackDetail.partySize ? `${fallbackDetail.partySize}p` : '';
-            displayName += `\n${fallbackDetail.name}`;
-            if (timePart || sizePart) {
-              displayName += `\n${[timePart, sizePart].filter(Boolean).join(' ')}`;
-            }
+          const timePart = fallbackDetail.time ? fallbackDetail.time.slice(0, 5) : '';
+          const sizePart = fallbackDetail.partySize ? `${fallbackDetail.partySize}p` : '';
+          displayName += `\n${fallbackDetail.name}`;
+          if (timePart || sizePart) {
+            displayName += `\n${[timePart, sizePart].filter(Boolean).join(' ')}`;
           }
         }
         
@@ -5103,6 +5107,45 @@ const SalesPage: React.FC = () => {
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
   };
 
+  /** 예약 모달·웨이팅 배정 시 테이블맵/예약 표시 동기화 (ReservationCreateModal 콜백 타입과 호환) */
+  const handleGuestFlowTableStatusChanged = (
+    tableId: number,
+    _tableName: string,
+    status: string,
+    customerName?: string,
+    reservationTime?: string,
+    partySize?: number
+  ) => {
+    fetchTableMapData();
+    if ((status === 'Hold' || status === 'Reserved') && customerName) {
+      setTableReservationNames(prev => {
+        const next = { ...prev, [String(tableId)]: customerName };
+        try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+    if (status === 'Occupied') {
+      const existingTime = tableOccupiedTimes[String(tableId)];
+      if (!existingTime) {
+        setOccupiedTimestamp(tableId, Date.now());
+      }
+    }
+    if (customerName) {
+      setTableReservationDetails(prev => {
+        const next = {
+          ...prev,
+          [String(tableId)]: {
+            name: customerName,
+            time: reservationTime ?? '',
+            partySize: partySize !== undefined && partySize !== null ? Number(partySize) || 0 : 0,
+          },
+        };
+        try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+  };
+
   // í…Œì´ë¸” ìƒíƒœ ë³€ê²½ (release ì‹œ ë™ìž‘)
   const handleTableClick = async (element: TableElement) => {
     const clickTime = performance.now();
@@ -5134,17 +5177,21 @@ const SalesPage: React.FC = () => {
         await fetch(`${API_URL}/table-map/elements/${encodeURIComponent(String(element.id))}/status`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Reserved' })
         });
-        // update local state
         setTableElements(prev => prev.map(el => String(el.id) === String(element.id) ? { ...el, status: 'Reserved' } : el));
-        // save reservation name locally so it shows on the label
         const customerName = String(selectedWaitingEntry.customer_name || selectedWaitingEntry.name || '').trim();
-        if (customerName) {
-          setTableReservationNames(prev => {
-            const next = { ...prev, [String(element.id)]: customerName };
-            try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
-            return next;
-          });
-        }
+        const tableLabel = element.text || `T${element.id}`;
+        const partySize =
+          typeof selectedWaitingEntry.party_size === 'number' && Number.isFinite(selectedWaitingEntry.party_size)
+            ? selectedWaitingEntry.party_size
+            : 0;
+        handleGuestFlowTableStatusChanged(
+          Number(element.id),
+          String(tableLabel),
+          'Reserved',
+          customerName || undefined,
+          undefined,
+          partySize
+        );
         setSelectedWaitingEntry(null);
         setShowWaitingModal(false);
         return;
@@ -10219,7 +10266,7 @@ const SalesPage: React.FC = () => {
             </div>
 
             {/* í•˜ë‹¨ í”Œë¡œíŒ… ì˜ˆì•½ í˜„í™© - Online+Togo ê·¸ë¦¬ë“œì™€ ë™ì¼í•œ ë„ˆë¹„ */}
-            <div className="absolute bg-amber-50/95 border border-amber-300 rounded-lg px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.15)] z-[100] backdrop-blur-sm" style={{ height: '72px', left: '8px', right: '20px', bottom: '3px' }}>
+            <div className="absolute bg-amber-50/95 border border-amber-300 rounded-lg px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.15)] z-[100]" style={{ height: '72px', left: '8px', right: '20px', bottom: '3px' }}>
               <div className="flex items-center justify-between mb-1">
                 <div className="text-amber-800 text-xs font-bold flex items-center gap-1.5">
                   Today's Reservations ({todayReservations.length})
@@ -10338,7 +10385,7 @@ const SalesPage: React.FC = () => {
                 <h2 className="text-lg font-bold text-white" style={{ marginRight: '50px' }}>Online Settings</h2>
                 <button
                   onClick={() => setShowPrepTimeModal(false)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg"
                 >
                   <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -11710,7 +11757,7 @@ const SalesPage: React.FC = () => {
                   </div>
                   <button
                     onClick={() => setShowCardDetailModal(false)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors shadow-lg backdrop-blur-sm"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors shadow-lg"
                   >
                     <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -11950,10 +11997,13 @@ const SalesPage: React.FC = () => {
                 <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0 relative">
                   {/* Floating close button in header */}
                   <button
+                    type="button"
                     onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); setLiveOrderHighlightItem(null); }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                    className="absolute right-3 top-1/2 z-[99999] flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
+                    style={SOFT_NEO.btnRound}
+                    aria-label="Close"
                   >
-                    <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="h-5 w-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
@@ -11963,12 +12013,8 @@ const SalesPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setOrderListChannelFilter('all')}
-                        className={
-                          orderListChannelFilter === 'all'
-                            ? 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border-2 border-white/80 bg-white text-slate-800 shadow-[0_4px_18px_rgba(0,0,0,0.12)] backdrop-blur-md'
-                            : 'px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 border border-white/25 bg-white/10 text-white/90 hover:bg-white/18 hover:border-white/40 backdrop-blur-md'
-                        }
-                        style={{ WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)' }}
+                        className="px-4 py-2 rounded-xl text-sm font-bold text-slate-800 transition-transform active:scale-[0.98] touch-manipulation"
+                        style={orderListChannelFilter === 'all' ? SOFT_NEO.panel : SOFT_NEO.tabRaised}
                       >
                         All
                       </button>
@@ -11984,22 +12030,22 @@ const SalesPage: React.FC = () => {
                   ) : (
                     <div className="flex items-center gap-1">
                       <button
+                        type="button"
                         onClick={() => { setOrderListTab('history'); setLiveOrderHighlightItem(null); }}
-                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                          orderListTab === 'history'
-                            ? 'bg-white text-slate-700'
-                            : 'bg-slate-600 text-white hover:bg-slate-500'
+                        className={`px-4 py-2 rounded-xl text-sm font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                          orderListTab === 'history' ? 'text-white' : 'text-slate-800'
                         }`}
+                        style={orderListTab === 'history' ? OH_ACTION_NEO.slate : SOFT_NEO.tabRaised}
                       >
                         Order History
                       </button>
                       <button
+                        type="button"
                         onClick={() => setOrderListTab('live')}
-                        className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                          orderListTab === 'live'
-                            ? 'bg-green-500 text-white'
-                            : 'bg-slate-600 text-white hover:bg-slate-500'
+                        className={`px-4 py-2 rounded-xl text-sm font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                          orderListTab === 'live' ? 'text-white' : 'text-slate-800'
                         }`}
+                        style={orderListTab === 'live' ? OH_ACTION_NEO.green : SOFT_NEO.tabRaised}
                       >
                         🟢 Live Order
                       </button>
@@ -12010,23 +12056,29 @@ const SalesPage: React.FC = () => {
                     {orderListOpenMode === 'history' && orderListTab === 'history' && (
                       <>
                         <button
+                          type="button"
                           onClick={() => handleOrderListDateChange(-1)}
-                          className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                          className="px-3 py-2 text-sm font-bold text-gray-800 transition-transform active:scale-95 touch-manipulation sm:px-5 sm:py-3 sm:text-base rounded-xl"
+                          style={SOFT_NEO.tabRaised}
                         >
                           ◀
                         </button>
                         <button
+                          type="button"
                           onClick={() => {
                             setOrderListCalendarMonth(new Date(orderListDate));
                             setShowOrderListCalendar(!showOrderListCalendar);
                           }}
-                          className="px-3 sm:px-5 py-2 sm:py-3 bg-white hover:bg-gray-50 border-2 border-gray-300 rounded-lg text-sm sm:text-base font-bold min-w-[150px] sm:min-w-[200px] text-center active:bg-gray-100"
+                          className="min-w-[150px] rounded-xl px-3 py-2 text-center text-sm font-bold text-gray-800 transition-transform active:scale-[0.99] touch-manipulation sm:min-w-[200px] sm:px-5 sm:py-3 sm:text-base"
+                          style={SOFT_NEO.panel}
                         >
                           📅 {orderListFormatDate(orderListDate)}
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleOrderListDateChange(1)}
-                          className="px-3 sm:px-5 py-2 sm:py-3 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm sm:text-base font-bold active:bg-gray-400"
+                          className="px-3 py-2 text-sm font-bold text-gray-800 transition-transform active:scale-95 touch-manipulation sm:px-5 sm:py-3 sm:text-base rounded-xl"
+                          style={SOFT_NEO.tabRaised}
                         >
                           ▶
                         </button>
@@ -12038,17 +12090,21 @@ const SalesPage: React.FC = () => {
                       <div className="absolute top-full mt-2 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-xl border border-gray-300 p-3 z-50" style={{ width: '300px' }}>
                         <div className="flex items-center justify-between mb-3">
                           <button
+                            type="button"
                             onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() - 1))}
-                            className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
+                            className="rounded-xl p-2 text-lg font-bold text-gray-800 transition-transform active:scale-95 touch-manipulation"
+                            style={SOFT_NEO.tabRaised}
                           >
                             ◀
                           </button>
-                          <span className="font-bold text-lg">
+                          <span className="font-bold text-lg text-gray-800">
                             {orderListCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                           </span>
                           <button
+                            type="button"
                             onClick={() => setOrderListCalendarMonth(new Date(orderListCalendarMonth.getFullYear(), orderListCalendarMonth.getMonth() + 1))}
-                            className="p-2 hover:bg-gray-100 rounded-lg text-lg font-bold"
+                            className="rounded-xl p-2 text-lg font-bold text-gray-800 transition-transform active:scale-95 touch-manipulation"
+                            style={SOFT_NEO.tabRaised}
                           >
                             ▶
                           </button>
@@ -12062,14 +12118,22 @@ const SalesPage: React.FC = () => {
                           {orderListGetDaysInMonth(orderListCalendarMonth).map((day, idx) => (
                             <button
                               key={idx}
+                              type="button"
                               onClick={() => day && orderListHandleCalendarDateSelect(day)}
                               disabled={!day}
-                              className={`p-2 rounded-lg text-sm font-medium ${
+                              className={`p-2 rounded-xl text-sm font-medium transition-transform active:scale-95 touch-manipulation ${
                                 !day ? '' :
                                 getLocalDateString(day) === orderListDate 
-                                  ? 'bg-blue-600 text-white' 
-                                  : 'hover:bg-gray-100'
+                                  ? 'text-white' 
+                                  : 'text-gray-800'
                               }`}
+                              style={
+                                !day
+                                  ? undefined
+                                  : getLocalDateString(day) === orderListDate
+                                    ? OH_ACTION_NEO.blue
+                                    : SOFT_NEO.tabRaised
+                              }
                             >
                               {day?.getDate() || ''}
                             </button>
@@ -12240,24 +12304,27 @@ const SalesPage: React.FC = () => {
                     ) : (
                       <>
                         {/* Action Buttons - ë§¨ ìœ„ë¡œ ì´ë™ */}
-                        <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                        <div className="flex flex-shrink-0 gap-3 px-4 py-3" style={OH_ACTION_NEO.bar}>
                           {orderListOpenMode === 'pickup' ? (
                             <>
                               <button
+                                type="button"
                                 onClick={handleOrderListPrintBill}
-                                style={{ flex: 1 }}
-                                className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold"
+                                style={{ flex: 1, ...OH_ACTION_NEO.blue }}
+                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                               >
                                 Print Bill
                               </button>
                               <button
+                                type="button"
                                 onClick={handleOrderListPrintKitchen}
-                                style={{ flex: 1 }}
-                                className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold"
+                                style={{ flex: 1, ...OH_ACTION_NEO.orange }}
+                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                               >
                                 Reprint
                               </button>
                               <button
+                                type="button"
                                 onClick={async () => {
                                   try {
                                     const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
@@ -12283,8 +12350,8 @@ const SalesPage: React.FC = () => {
                                     setShowTogoVoidModal(true);
                                   } catch (e) { console.error('[Pickup Void] Failed:', e); alert('Failed to open void.'); }
                                 }}
-                                style={{ flex: 1 }}
-                                className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-sm font-bold"
+                                style={{ flex: 1, ...OH_ACTION_NEO.red }}
+                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                               >
                                 Void
                               </button>
@@ -12341,8 +12408,9 @@ const SalesPage: React.FC = () => {
                                           loadOnlineOrders();
                                         } catch (e) { console.error('[Pickup Complete] Error:', e); }
                                       }}
-                                      style={{ flex: 1 }}
-                                      className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                      type="button"
+                                      style={{ flex: 1, ...OH_ACTION_NEO.green }}
+                                      className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                                     >
                                       Pickup
                                     </button>
@@ -12383,8 +12451,9 @@ const SalesPage: React.FC = () => {
                                         alert('Failed to open payment.');
                                       }
                                     }}
-                                    style={{ flex: 1 }}
-                                    className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                    type="button"
+                                    style={{ flex: 1, ...OH_ACTION_NEO.green }}
+                                    className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                                   >
                                     Pay
                                   </button>
@@ -12404,6 +12473,7 @@ const SalesPage: React.FC = () => {
                               _type === 'DELIVERY' || _fulfillment === 'delivery' || _tableId.startsWith('DL');
                             return (
                               <button
+                                type="button"
                                 disabled={isOnlineOrDelivery}
                                 onClick={() => {
                                   if (isOnlineOrDelivery) return;
@@ -12430,11 +12500,11 @@ const SalesPage: React.FC = () => {
 
                                   setShowOrderListModal(false);
                                 }}
-                                style={{ flex: 1 }}
-                                className={`py-4 rounded-lg text-sm font-bold ${
+                                style={{ flex: 1, ...(isOnlineOrDelivery ? OH_ACTION_NEO.disabled : OH_ACTION_NEO.slate) }}
+                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
                                   isOnlineOrDelivery
-                                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                    : 'bg-slate-500 hover:bg-slate-600 active:bg-slate-700 text-white'
+                                    ? 'cursor-not-allowed'
+                                    : 'text-white active:scale-[0.98]'
                                 }`}
                               >
                                 Back to Order
@@ -12443,6 +12513,7 @@ const SalesPage: React.FC = () => {
                           })()}
                           {/* 2. Void */}
                           <button
+                            type="button"
                             onClick={async () => {
                               try {
                                 const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
@@ -12493,24 +12564,26 @@ const SalesPage: React.FC = () => {
                                 alert('Failed to open void.');
                               }
                             }}
-                            style={{ flex: 1 }}
-                            className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-sm font-bold"
+                            style={{ flex: 1, ...OH_ACTION_NEO.red }}
+                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                           >
                             Void
                           </button>
                           {/* 3. Reprint */}
                           <button
+                            type="button"
                             onClick={handleOrderListPrintKitchen}
-                            style={{ flex: 1 }}
-                            className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold"
+                            style={{ flex: 1, ...OH_ACTION_NEO.orange }}
+                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                           >
                             Reprint
                           </button>
                           {/* 4. Print Bill */}
                           <button
+                            type="button"
                             onClick={handleOrderListPrintBill}
-                            style={{ flex: 1 }}
-                            className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold"
+                            style={{ flex: 1, ...OH_ACTION_NEO.blue }}
+                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
                           >
                             Print Bill
                           </button>
@@ -12521,10 +12594,13 @@ const SalesPage: React.FC = () => {
                               (orderListSelectedOrder as any)?.paid === true;
                             return (
                               <button
+                                type="button"
                                 onClick={isPaid ? handleOrderListPrintReceipt : undefined}
                                 disabled={!isPaid}
-                                style={{ flex: 1 }}
-                                className={`py-4 rounded-lg text-sm font-bold ${isPaid ? 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+                                style={{ flex: 1, ...(isPaid ? OH_ACTION_NEO.emerald : OH_ACTION_NEO.disabled) }}
+                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
+                                  isPaid ? 'text-white active:scale-[0.98]' : 'cursor-not-allowed'
+                                }`}
                               >
                                 Print Receipt
                               </button>
@@ -12546,6 +12622,7 @@ const SalesPage: React.FC = () => {
                             );
                             return (
                               <button
+                                type="button"
                                 disabled={isPaid}
                                 onClick={async () => {
                                   if (isPaid) return;
@@ -12580,11 +12657,9 @@ const SalesPage: React.FC = () => {
                                     alert('Failed to open payment modal.');
                                   }
                                 }}
-                                style={{ flex: 1 }}
-                                className={`py-4 rounded-lg text-sm font-bold ${
-                                  isPaid
-                                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                    : 'bg-green-600 hover:bg-green-700 active:bg-green-800 text-white'
+                                style={{ flex: 1, ...(isPaid ? OH_ACTION_NEO.disabled : OH_ACTION_NEO.green) }}
+                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
+                                  isPaid ? 'cursor-not-allowed' : 'text-white active:scale-[0.98]'
                                 }`}
                               >
                                 Pay
@@ -13121,7 +13196,7 @@ const SalesPage: React.FC = () => {
              <div className="h-[60px] relative w-full pointer-events-none">
               <button
                 onClick={() => setShowWaitingModal(false)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg backdrop-blur-sm pointer-events-auto"
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg pointer-events-auto"
               >
                 <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -13134,6 +13209,7 @@ const SalesPage: React.FC = () => {
       <WaitingListModal
         open={showWaitingModal}
         onClose={() => setShowWaitingModal(false)}
+        onTableStatusChanged={handleGuestFlowTableStatusChanged}
         onAssignTable={(entry) => {
           // Enable assign-from-waiting mode; next table click will reserve it for this entry
           setSelectedWaitingEntry(entry);
@@ -14748,35 +14824,7 @@ const SalesPage: React.FC = () => {
         onCreated={() => {
           setShowReservationModal(false);
         }}
-        onTableStatusChanged={(tableId, tableName, status, customerName, reservationTime, partySize) => {
-          // í…Œì´ë¸” ìƒíƒœê°€ ë³€ê²½ë˜ì—ˆì„ ë•Œ í…Œì´ë¸” ëª©ë¡ì„ ìƒˆë¡œê³ ì¹¨
-          fetchTableMapData();
-          
-          // Hold ë˜ëŠ” Reserved ìƒíƒœì¸ ê²½ìš° ì˜ˆì•½ìž ì´ë¦„ ì €ìž¥
-          if ((status === 'Hold' || status === 'Reserved') && customerName) {
-            setTableReservationNames(prev => {
-              const next = { ...prev, [String(tableId)]: customerName };
-              try { localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next)); } catch {}
-              return next;
-            });
-          }
-          
-          // Occupied ìƒíƒœì¸ ê²½ìš° ì‹œê°„ ê¸°ë¡ (ê¸°ì¡´ ì ìœ  ì‹œê°„ì´ ì—†ì„ ë•Œë§Œ)
-          if (status === 'Occupied') {
-            const existingTime = tableOccupiedTimes[String(tableId)];
-            if (!existingTime) {
-              setOccupiedTimestamp(tableId, Date.now());
-            }
-          }
-
-          if (customerName) {
-            setTableReservationDetails(prev => {
-              const next = { ...prev, [String(tableId)]: { name: customerName, time: reservationTime || '', partySize: partySize || 0 } };
-              try { localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next)); } catch {}
-              return next;
-            });
-          }
-        }}
+        onTableStatusChanged={handleGuestFlowTableStatusChanged}
       />
       {softKbOpen && (
         <VirtualKeyboard
@@ -14803,7 +14851,7 @@ const SalesPage: React.FC = () => {
              <div className="w-full relative h-[60px] pointer-events-none flex justify-end">
               <button
                 onClick={() => setShowOpeningModal(false)}
-                className="absolute right-0 top-0 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[9999999] shadow-lg pointer-events-auto backdrop-blur-sm"
+                className="absolute right-0 top-0 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[9999999] shadow-lg pointer-events-auto"
                 style={{ transform: 'translate(20px, -20px)' }}
               >
                 <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -14830,7 +14878,7 @@ const SalesPage: React.FC = () => {
 
       {/* Day Closed Overlay */}
       {isDayClosed && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-70 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-70">
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
             <div className="text-6xl mb-4"></div>
             <h2 className="text-3xl font-bold text-gray-800 mb-2">Day is Closed</h2>
@@ -14876,7 +14924,7 @@ const SalesPage: React.FC = () => {
             {/* Floating close button */}
             <button
               onClick={() => setShowClockInOutMenu(false)}
-              className="absolute top-2 right-2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg backdrop-blur-sm"
+              className="absolute top-2 right-2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg"
             >
               <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -15092,13 +15140,17 @@ const SalesPage: React.FC = () => {
       {/* Gift Card Modal */}
       {showGiftCardModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[90vh] overflow-hidden relative" style={{ transform: 'translateY(-70px)' }}>
-            {/* Header */}
-            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3 flex justify-between items-center relative">
-              <h3 className="text-lg font-bold text-white">Gift Card</h3>
+          <div
+            className="relative w-[600px] max-h-[90vh] overflow-hidden rounded-2xl"
+            style={{ ...SOFT_NEO.shell, transform: 'translateY(-70px)' }}
+          >
+            <div className="relative flex shrink-0 items-center justify-between border-b border-gray-400/20 px-4 py-3">
+              <h3 className="text-lg font-bold text-gray-800">Gift Card</h3>
               <button
+                type="button"
                 onClick={() => setShowGiftCardModal(false)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                className="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95 z-[99999]"
+                style={SOFT_NEO.btnRound}
               >
                 <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -15107,19 +15159,20 @@ const SalesPage: React.FC = () => {
             </div>
 
             <div className="p-3 space-y-2">
-              {/* Section 1: Card Number + Sell/Balance - Blue Background */}
-              <div className="bg-blue-50 rounded-lg p-3">
+              {/* Section 1: Card Number + Sell/Balance */}
+              <div className="rounded-xl p-3" style={SOFT_NEO.panel}>
                 <div className="flex gap-3">
                   {/* Card Number */}
                   <div 
-                    className={`flex-1 p-3 rounded-lg cursor-pointer ${
+                    className={`flex-1 cursor-pointer rounded-xl p-3 transition-all ${
                       giftCardInputFocus === 'card' 
-                        ? 'bg-white border-2 border-blue-400 shadow-md' 
-                        : 'bg-blue-100 border-2 border-blue-200'
+                        ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e8ecf2]' 
+                        : ''
                     }`}
+                    style={SOFT_NEO.insetWell}
                     onClick={() => setGiftCardInputFocus('card')}
                   >
-                    <div className="text-xs font-semibold text-blue-600 mb-1">Card Number</div>
+                    <div className="text-xs font-semibold text-gray-700 mb-1">Card Number</div>
                     <div className="text-3xl font-mono tracking-wide text-gray-800 flex items-center">
                       {[0, 1, 2, 3].map((groupIdx) => (
                         <span key={groupIdx} className="flex items-center">
@@ -15142,16 +15195,17 @@ const SalesPage: React.FC = () => {
                   {/* Sell / Balance Buttons */}
                   <div className="flex flex-col gap-2 w-28">
                     <button
+                      type="button"
                       onClick={() => { setGiftCardMode('sell'); setGiftCardBalance(null); setGiftCardError(''); }}
-                      className={`flex-1 py-3 rounded-lg font-bold text-base ${
-                        giftCardMode === 'sell'
-                          ? 'bg-amber-500 text-white shadow-md'
-                          : 'bg-white text-gray-700 hover:bg-gray-100 border border-blue-200'
+                      className={`flex-1 rounded-xl py-3 text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                        giftCardMode === 'sell' ? 'text-white' : 'text-gray-700'
                       }`}
+                      style={giftCardMode === 'sell' ? SOFT_NEO.btnAmber : SOFT_NEO.tabRaised}
                     >
                       Sell
                     </button>
                     <button
+                      type="button"
                       onClick={() => { 
                         setGiftCardMode('balance'); 
                         setGiftCardError(''); 
@@ -15173,11 +15227,10 @@ const SalesPage: React.FC = () => {
                           })();
                         }
                       }}
-                      className={`flex-1 py-3 rounded-lg font-bold text-base ${
-                        giftCardMode === 'balance'
-                          ? 'bg-green-500 text-white shadow-md'
-                          : 'bg-white text-gray-700 hover:bg-gray-100 border border-blue-200'
+                      className={`flex-1 rounded-xl py-3 text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                        giftCardMode === 'balance' ? 'text-white' : 'text-gray-700'
                       }`}
+                      style={giftCardMode === 'balance' ? SOFT_NEO.btnSuccess : SOFT_NEO.tabRaised}
                     >
                       Balance
                     </button>
@@ -15188,51 +15241,54 @@ const SalesPage: React.FC = () => {
               {/* Section 2 & 3: Amount + Bill Buttons + Payment Method (Sell mode only) */}
               {giftCardMode === 'sell' && (
                 <div className="flex gap-2 items-stretch h-[112px]">
-                  {/* Section 2: Amount + Quick Buttons - Gray Background */}
-                  <div className="bg-gray-200 rounded-lg p-2 flex gap-2">
-                    {/* Amount Display */}
+                  <div className="flex gap-2 rounded-xl p-2" style={SOFT_NEO.insetWell}>
                     <div 
-                      className={`w-32 p-2 rounded-lg cursor-pointer flex flex-col justify-center ${
+                      className={`flex w-32 cursor-pointer flex-col justify-center rounded-xl p-2 transition-all ${
                         giftCardInputFocus === 'amount' 
-                          ? 'bg-white border-2 border-amber-400 shadow-md' 
-                          : 'bg-gray-100 border-2 border-gray-300'
+                          ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#dce1ea]' 
+                          : ''
                       }`}
+                      style={SOFT_NEO.panel}
                       onClick={() => setGiftCardInputFocus('amount')}
                     >
                       <div className="text-xs font-semibold text-gray-600 mb-1">Amount</div>
-                      <div className="text-3xl font-bold text-amber-700 text-center py-2">
+                      <div className="text-3xl font-bold text-amber-800 text-center py-2">
                         ${giftCardAmount || '0'}
                       </div>
                     </div>
-                    {/* Quick Amount Buttons 2x2 */}
                     <div className="grid grid-cols-2 gap-2">
                       {[25, 50, 100, 200].map((amt) => (
                         <button
                           key={amt}
+                          type="button"
                           onClick={() => { setGiftCardAmount(String(amt)); setGiftCardInputFocus('amount'); }}
-                          className={`w-24 h-12 rounded-lg text-base font-bold transition-all ${
-                            giftCardAmount === String(amt)
-                              ? 'bg-amber-500 text-white shadow-md'
-                              : 'bg-white text-gray-700 hover:bg-amber-100 border border-gray-300'
+                          className={`h-12 w-24 rounded-xl text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                            giftCardAmount === String(amt) ? 'text-white' : 'text-gray-700'
                           }`}
+                          style={giftCardAmount === String(amt) ? SOFT_NEO.btnAmber : SOFT_NEO.tabRaised}
                         >
                           ${amt}
                         </button>
                       ))}
                     </div>
                   </div>
-                  {/* Section 3: Payment Method 2x2 - Gray Background */}
-                  <div className="bg-gray-200 rounded-lg p-2">
+                  <div className="rounded-xl p-2" style={SOFT_NEO.insetWell}>
                     <div className="grid grid-cols-2 gap-2">
                       {(['Cash', 'Visa', 'Master', 'Other'] as const).map((method) => (
                         <button
                           key={method}
+                          type="button"
                           onClick={() => setGiftCardPaymentMethod(method === 'Master' ? 'MasterCard' : method as any)}
-                          className={`w-24 h-12 rounded-lg text-base font-bold transition-all ${
+                          className={`h-12 w-24 rounded-xl text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
                             (method === 'Master' ? giftCardPaymentMethod === 'MasterCard' : giftCardPaymentMethod === method)
-                              ? 'bg-blue-500 text-white shadow-md'
-                              : 'bg-white text-gray-700 hover:bg-blue-100 border border-gray-300'
+                              ? 'text-white'
+                              : 'text-gray-700'
                           }`}
+                          style={
+                            (method === 'Master' ? giftCardPaymentMethod === 'MasterCard' : giftCardPaymentMethod === method)
+                              ? SOFT_NEO.btnPrimary
+                              : SOFT_NEO.tabRaised
+                          }
                         >
                           {method}
                         </button>
@@ -15244,18 +15300,17 @@ const SalesPage: React.FC = () => {
 
               {/* Balance Display (Balance mode only) */}
               {giftCardMode === 'balance' && (
-                <div className="bg-green-50 border-2 border-green-200 rounded-lg p-2 h-[112px] flex flex-col justify-center text-center">
-                  <div className="text-xs text-green-600 mb-1">Available Balance</div>
+                <div className="flex h-[112px] flex-col justify-center rounded-xl p-2 text-center" style={SOFT_NEO.insetWell}>
+                  <div className="text-xs font-semibold text-green-700 mb-1">Available Balance</div>
                   {giftCardBalance !== null ? (
-                    <div className="text-4xl font-bold text-green-600">{`$${giftCardBalance.toFixed(2)}`}</div>
+                    <div className="text-4xl font-bold text-green-700">{`$${giftCardBalance.toFixed(2)}`}</div>
                   ) : (
-                    <div className="text-base font-medium text-gray-400">Enter card number and check</div>
+                    <div className="text-base font-medium text-gray-500">Enter card number and check</div>
                   )}
                 </div>
               )}
 
-              {/* Section 4: Numpad - Gray Background */}
-              <div className="bg-gray-200 rounded-lg p-3">
+              <div className="rounded-xl p-3" style={SOFT_NEO.insetWell}>
                 <div className="grid grid-cols-4 gap-2">
                   {['1', '2', '3', 'C', '4', '5', '6', 'âŒ«', '7', '8', '9', '', '0', '00', '.', ''].map((key, idx) => (
                     <button
@@ -15313,15 +15368,16 @@ const SalesPage: React.FC = () => {
                           }
                         }
                       }}
-                      className={`h-12 rounded-lg font-bold text-lg transition-all ${
+                      className={`h-12 rounded-xl font-bold text-lg transition-transform active:scale-95 touch-manipulation ${
                         key === ''
-                          ? 'bg-transparent cursor-default'
+                          ? 'cursor-default bg-transparent'
                           : key === 'C'
-                          ? 'bg-red-100 hover:bg-red-200 text-red-700'
+                          ? 'text-red-700'
                           : key === 'âŒ«'
-                          ? 'bg-gray-300 hover:bg-gray-400 text-gray-700'
-                          : 'bg-white hover:bg-gray-200 text-gray-800 border border-gray-300'
+                          ? 'text-amber-900'
+                          : 'text-gray-800'
                       }`}
+                      style={key === '' ? undefined : SOFT_NEO.tabRaised}
                       disabled={key === ''}
                     >
                       {key}
@@ -15332,41 +15388,41 @@ const SalesPage: React.FC = () => {
 
               {/* Reload Mode Indicator */}
               {giftCardIsReload && giftCardMode === 'sell' && (
-                <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-2 text-center">
-                  <div className="text-blue-600 text-sm font-bold">
+                <div className="rounded-xl p-2 text-center" style={SOFT_NEO.panel}>
+                  <div className="text-sm font-bold text-blue-800">
                     🔄 ì¶©ì „ ëª¨ë“œ - ê¸°ì¡´ ìž”ì•¡: ${giftCardExistingBalance?.toFixed(2)}
                   </div>
                 </div>
               )}
 
-              {/* Error Message */}
               {giftCardError && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-center">
+                <div className="rounded-xl border border-red-200/80 bg-red-50/90 p-2 text-center">
                   <div className="text-red-600 text-sm font-medium">{giftCardError}</div>
                 </div>
               )}
 
-              {/* Section 5: Bottom Row - Green Background */}
-              <div className="bg-teal-50 rounded-lg p-3">
+              <div className="rounded-xl p-3" style={SOFT_NEO.panel}>
                 <div className="flex gap-2 items-end">
                   <div className="flex-1">
-                    <label className="block text-xs font-semibold text-teal-600 mb-1">Name</label>
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">Name</label>
                     <input
                       type="text"
                       value={giftCardCustomerName}
                       readOnly
                       onClick={() => setShowGiftCardNameKeyboard(true)}
-                      className="w-full px-2 py-2 text-sm border-2 border-teal-200 rounded-lg focus:border-teal-400 focus:outline-none bg-white cursor-pointer"
+                      className="w-full cursor-pointer rounded-xl border-0 px-2 py-2 text-sm text-gray-800 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                      style={SOFT_NEO.insetWell}
                       placeholder="Touch to enter"
                     />
                   </div>
                   <div className="flex-1">
-                    <label className="block text-xs font-semibold text-teal-600 mb-1">Phone</label>
+                    <label className="mb-1 block text-xs font-semibold text-gray-700">Phone</label>
                     <input
                       type="tel"
                       value={giftCardCustomerPhone}
                       onChange={(e) => setGiftCardCustomerPhone(e.target.value)}
-                      className="w-full px-2 py-2 text-sm border-2 border-teal-200 rounded-lg focus:border-teal-400 focus:outline-none bg-white"
+                      className="w-full rounded-xl border-0 px-2 py-2 text-sm text-gray-800 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                      style={SOFT_NEO.insetWell}
                       placeholder="Optional"
                     />
                   </div>
@@ -15375,44 +15431,45 @@ const SalesPage: React.FC = () => {
                       className="w-24 cursor-pointer"
                       onClick={() => setGiftCardInputFocus('pin')}
                     >
-                      <label className="block text-xs font-semibold text-red-600 mb-1">Seller PIN *</label>
+                      <label className="mb-1 block text-xs font-semibold text-red-700">Seller PIN *</label>
                       <div 
-                        className={`w-full px-2 py-2 text-sm rounded-lg bg-white text-center font-mono tracking-widest ${
-                          giftCardInputFocus === 'pin'
-                            ? 'border-2 border-red-500 shadow-md'
-                            : 'border-2 border-red-200'
+                        className={`w-full rounded-xl px-2 py-2 text-center text-sm font-mono tracking-widest text-gray-800 transition-all ${
+                          giftCardInputFocus === 'pin' ? 'ring-2 ring-red-500/90 ring-offset-2 ring-offset-[#e8ecf2]' : ''
                         }`}
+                        style={SOFT_NEO.insetWell}
                       >
-                        {giftCardSellerPin ? 'â—'.repeat(giftCardSellerPin.length) : <span className="text-gray-400">PIN</span>}
+                        {giftCardSellerPin ? 'â—'.repeat(giftCardSellerPin.length) : <span className="text-gray-500">PIN</span>}
                       </div>
                     </div>
                   )}
                   <button
+                    type="button"
                     onClick={() => {
                       setShowGiftCardModal(false);
                       setGiftCardIsReload(false);
                       setGiftCardExistingBalance(null);
                       setGiftCardSellerPin('');
                     }}
-                    className="px-6 py-2 rounded-lg bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold text-base transition-all"
+                    className="rounded-xl px-6 py-2 text-base font-bold text-gray-700 transition-transform active:scale-[0.98] touch-manipulation"
+                    style={SOFT_NEO.tabRaised}
                   >
                     Cancel
                   </button>
                   {giftCardMode === 'sell' ? (
                     <button
+                      type="button"
                       onClick={handleSellGiftCard}
-                      className={`px-8 py-2 rounded-lg font-bold text-base transition-all ${
-                        giftCardIsReload 
-                          ? 'bg-blue-500 hover:bg-blue-600 text-white' 
-                          : 'bg-amber-500 hover:bg-amber-600 text-white'
-                      }`}
+                      className="rounded-xl px-8 py-2 text-base font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                      style={giftCardIsReload ? SOFT_NEO.btnPrimary : SOFT_NEO.btnAmber}
                     >
                       {giftCardIsReload ? 'Reload' : 'Ok'}
                     </button>
                   ) : (
                     <button
+                      type="button"
                       onClick={handleCheckGiftCardBalance}
-                      className="px-8 py-2 rounded-lg bg-green-500 hover:bg-green-600 text-white font-bold text-base transition-all"
+                      className="rounded-xl px-8 py-2 text-base font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                      style={SOFT_NEO.btnSuccess}
                     >
                       Ok
                     </button>

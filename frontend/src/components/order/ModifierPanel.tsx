@@ -135,7 +135,7 @@ const SortableEmptySlot: React.FC<{ id: string; layoutSettings: any; itemHeightP
   return (
     <div
       ref={setNodeRef}
-      className={invisible ? 'w-full h-full' : 'rounded-xl border border-dashed border-gray-300 w-full h-full'}
+      className="w-full h-full"
       style={{ height: `${itemHeightPx}px`, fontSize: `${layoutSettings.modifierFontSize}px` }}
     />
   );
@@ -166,12 +166,9 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
   const effectiveEmptyMode: 'none' | 'configured' | 'fill' =
     emptySlotMode || (showEmptySlots === false ? 'none' : 'fill');
   const placeholdersEnabled = effectiveEmptyMode !== 'none';
-  // 패널 높이 = 외부 padding(상하 16px) + 내부 padding(상하 8px) + (행수 * 버튼높이) + (행-1) * 행간격(4px)
+  // 패널 높이 = padding + (행수 * modifierItemHeight) + (행-1)*gap — 행 수와 무관하게 슬라이더 높이 그대로 사용
   const rowCount = Math.max(1, Number(layoutSettings.modifierRows) || 1);
-  const baseItemHeight = Math.max(24, Number(layoutSettings.modifierItemHeight) || 24);
-  // Shrink each button height as rows increase (3 rows = 100%, 4 rows ≈ 75%, 5 rows ≈ 60%)
-  const shrinkFactor = Math.min(1, 3 / rowCount);
-  const itemHeight = Math.max(28, Math.floor(baseItemHeight * shrinkFactor));
+  const itemHeight = Math.max(24, Number(layoutSettings.modifierItemHeight) || 24);
   const gapPx = 4; // Tailwind gap-1
   const outerPadY = 2; // pt-0.5 (2px) + pb-0 (0px) = 2px
   const innerPadY = 3; // pt-px (1px) + pb-0.5 (2px) = 3px
