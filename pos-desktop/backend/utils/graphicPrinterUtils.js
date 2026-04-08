@@ -2761,8 +2761,9 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
     : 0;
   estH += 200 + tipsByServerRows * 44; // Tips (+ optional per-server lines)
   estH += 200; // Adjustments header + base rows
-  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 50;
-  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 50;
+  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 56;
+  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 56;
+  if (zReportData?.discount_details?.length) estH += zReportData.discount_details.length * 56;
   estH += 250; // Cash Drawer
   estH += 400; // Denominations (up to 11 rows)
   estH += 150; // footer
@@ -2898,13 +2899,32 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   (zReportData?.refund_details || []).forEach(r => {
     const orderNum = r.order_number || `#${r.order_id}`;
     y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(r.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const refBy = (r.refunded_by && String(r.refunded_by).trim()) ? String(r.refunded_by).trim() : '';
+    if (refBy) {
+      y = drawTextBlock(ctx, { text: `    Refund by: ${refBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
   });
   row('Voids', `${zReportData?.void_count || 0}`, `-${formatMoney(zReportData?.void_total || 0)}`);
   (zReportData?.void_details || []).forEach(v => {
     const orderNum = v.order_number || `#${v.order_id}`;
     y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(v.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const voidBy = (v.created_by && String(v.created_by).trim()) ? String(v.created_by).trim() : '';
+    if (voidBy) {
+      y = drawTextBlock(ctx, { text: `    Void by: ${voidBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
   });
   row('Discounts', `${zReportData?.discount_order_count || 0}`, `-${formatMoney(zReportData?.discount_total || 0)}`);
+  (zReportData?.discount_details || []).forEach((d) => {
+    const orderNum = d.order_number || `#${d.order_id}`;
+    const lbl = (d.label && String(d.label).trim()) ? String(d.label).trim().slice(0, 22) : String(d.kind || '').slice(0, 22);
+    y = drawLeftRightText(ctx, `  ${orderNum} ${lbl}`, `-${formatMoney(d.amount_applied)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const discBy = (d.applied_by_name && String(d.applied_by_name).trim())
+      ? String(d.applied_by_name).trim()
+      : (d.applied_by_employee_id && String(d.applied_by_employee_id).trim() ? String(d.applied_by_employee_id).trim() : '');
+    if (discBy) {
+      y = drawTextBlock(ctx, { text: `    Discount by: ${discBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
+  });
 
   // Cash Drawer
   y += 8;

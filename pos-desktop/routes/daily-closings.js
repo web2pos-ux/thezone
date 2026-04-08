@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // Restaurant ID 조회 헬퍼
 let cachedRestaurantId = null;
@@ -222,7 +223,7 @@ module.exports = (db) => {
   // Returns { where: 'created_at >= ? AND created_at <= ?', params: [start, end] }
   const sessionTimeFilter = (session, columnName = 'created_at') => {
     const startTime = session.opened_at;
-    const endTime = session.closed_at || new Date().toISOString();
+    const endTime = session.closed_at || getLocalDatetimeString();
     return {
       where: `${columnName} >= ? AND ${columnName} <= ?`,
       params: [startTime, endTime]
@@ -251,7 +252,7 @@ module.exports = (db) => {
     try {
       const { openingCash = 0, openedBy = '', cashBreakdown = {} } = req.body;
       const today = getLocalDate();
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
       const sessionId = generateSessionId();
 
       // Check if there's already an active session
@@ -340,20 +341,24 @@ module.exports = (db) => {
       params: [startTime, endTime]
     });
 
+    const PAID_STATUSES = `UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')`;
+    const PAY_STATUSES = `UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')`;
+    const PAY_STATUSES_SOLO = `UPPER(status) IN ('APPROVED','COMPLETED','SETTLED','PAID')`;
+
     // Sales Data - order counts and time range from orders table
     const salesData = await dbGet(`
       SELECT 
         COUNT(*) as order_count,
         COALESCE(SUM(subtotal), 0) as subtotal,
         COALESCE(SUM(tax), 0) as tax_total,
-        COALESCE(SUM(CASE WHEN UPPER(order_type) IN ('POS', 'DINE_IN', 'DINE-IN', 'TABLE_ORDER') THEN 1 ELSE 0 END), 0) as dine_in_order_count,
-        COALESCE(SUM(CASE WHEN UPPER(order_type) = 'TOGO' THEN 1 ELSE 0 END), 0) as togo_order_count,
-        COALESCE(SUM(CASE WHEN UPPER(order_type) = 'ONLINE' THEN 1 ELSE 0 END), 0) as online_order_count,
+        COALESCE(SUM(CASE WHEN UPPER(order_type) IN ('POS', 'DINE_IN', 'DINE-IN', 'TABLE_ORDER', 'FOR HERE', 'FORHERE') THEN 1 ELSE 0 END), 0) as dine_in_order_count,
+        COALESCE(SUM(CASE WHEN UPPER(order_type) IN ('TOGO', 'PICKUP', 'TAKEOUT') THEN 1 ELSE 0 END), 0) as togo_order_count,
+        COALESCE(SUM(CASE WHEN UPPER(order_type) IN ('ONLINE', 'WEB', 'QR') THEN 1 ELSE 0 END), 0) as online_order_count,
         COALESCE(SUM(CASE WHEN UPPER(order_type) = 'DELIVERY' THEN 1 ELSE 0 END), 0) as delivery_order_count,
         MIN(created_at) as first_order_time,
         MAX(created_at) as last_order_time
       FROM orders 
-      WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+      WHERE ${tf.where} AND ${PAID_STATUSES}
     `, tf.params);
 
     // Payments-based totals (actual revenue collected) - source of truth
@@ -371,9 +376,9 @@ module.exports = (db) => {
     const channelSalesRows = await dbAll(`
       SELECT
         CASE
-          WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER') THEN 'DINE_IN'
-          WHEN UPPER(o.order_type) = 'TOGO' THEN 'TOGO'
-          WHEN UPPER(o.order_type) = 'ONLINE' THEN 'ONLINE'
+          WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER','FOR HERE','FORHERE') THEN 'DINE_IN'
+          WHEN UPPER(o.order_type) IN ('TOGO','PICKUP','TAKEOUT') THEN 'TOGO'
+          WHEN UPPER(o.order_type) IN ('ONLINE','WEB','QR') THEN 'ONLINE'
           WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
           ELSE 'OTHER'
         END as ch,
@@ -381,7 +386,7 @@ module.exports = (db) => {
       FROM payments p
       JOIN orders o ON p.order_id = o.id
       WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
-        AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+        AND ${PAY_STATUSES}
         AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY ch
     `, tf.params);
@@ -392,17 +397,17 @@ module.exports = (db) => {
     salesData.online_sales = chMap['ONLINE'] || 0;
     salesData.delivery_sales = chMap['DELIVERY'] || 0;
 
-    // GST / PST separation from order_items + tax_groups (Canadian tax compliance)
+    // GST / PST separation (Canadian tax compliance)
+    // Uses orders.tax + orders.subtotal to calculate effective rate, then splits by tax table rates
     let gstTotal = 0, pstTotal = 0;
     try {
       const oTf = tfPrefixed('o');
+      // First try: tax_group_links based
       const taxSplit = await dbGet(`
         SELECT
           COALESCE(SUM(
             (oi.price * oi.quantity) * (
-              SELECT COALESCE(SUM(CASE WHEN UPPER(t.name) LIKE '%GST%' THEN t.rate ELSE 0 END),
-                CASE WHEN oi.tax_group_id IS NULL OR NOT EXISTS (SELECT 1 FROM tax_group_links tgl2 WHERE tgl2.tax_group_id = oi.tax_group_id) THEN 5 ELSE 0 END
-              ) / 100
+              SELECT COALESCE(SUM(CASE WHEN UPPER(t.name) LIKE '%GST%' THEN t.rate ELSE 0 END), 0) / 100
               FROM tax_group_links tgl
               JOIN taxes t ON t.tax_id = tgl.tax_id
               WHERE tgl.tax_group_id = oi.tax_group_id
@@ -423,23 +428,65 @@ module.exports = (db) => {
       `, oTf.params);
       gstTotal = Number(taxSplit?.gst_total || 0);
       pstTotal = Number(taxSplit?.pst_total || 0);
+
+      // Fallback: if tax_group_id is NULL for all items, use orders.tax + taxes table
+      if (gstTotal === 0 && pstTotal === 0) {
+        const activeTaxes = await dbAll(`
+          SELECT DISTINCT t.name, t.rate FROM taxes t
+          JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+          JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+          WHERE COALESCE(t.is_deleted, 0) = 0
+          ORDER BY t.rate ASC
+        `, []);
+        const gstRate = (activeTaxes || []).find(t => /gst/i.test(t.name))?.rate || 0;
+        const pstRates = (activeTaxes || []).filter(t => /pst/i.test(t.name)).map(t => Number(t.rate));
+        const mainPstRate = pstRates.length > 0 ? Math.min(...pstRates) : 0;
+
+        if (gstRate > 0) {
+          const orders = await dbAll(`
+            SELECT o.subtotal, o.tax FROM orders o
+            WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+              AND COALESCE(o.tax, 0) > 0
+          `, oTf.params);
+          (orders || []).forEach(o => {
+            const sub = Number(o.subtotal || 0);
+            const totalTax = Number(o.tax || 0);
+            if (sub <= 0 || totalTax <= 0) return;
+            const effRate = (totalTax / sub) * 100;
+            if (effRate <= gstRate + 0.5) {
+              gstTotal += totalTax;
+            } else if (mainPstRate > 0) {
+              const combinedRate = gstRate + mainPstRate;
+              gstTotal += (gstRate / combinedRate) * totalTax;
+              pstTotal += (mainPstRate / combinedRate) * totalTax;
+            } else {
+              gstTotal += totalTax;
+            }
+          });
+          gstTotal = Number(gstTotal.toFixed(2));
+          pstTotal = Number(pstTotal.toFixed(2));
+        }
+      }
     } catch (e) { /* tax_groups/taxes may not exist */ }
 
     // ---- CASH DRAWER CORRECT CALCULATION ----
-    // Actual cash = Order totals - Non-cash payments (change is automatically excluded)
-    // Non-cash payments (card, etc.) - amount minus tip
+    const oTfCash = tfPrefixed('o');
     const nonCashData = await dbGet(`
-      SELECT COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as non_cash_net
-      FROM payments
-      WHERE ${tf.where} AND status = 'APPROVED'
-      AND UPPER(payment_method) NOT IN ('CASH', 'NO_SHOW_FORFEITED')
-    `, tf.params);
-    // Cash tips that went into the drawer (tips table + legacy payments.tip)
+      SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as non_cash_net
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE ${oTfCash.where} AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      AND ${PAY_STATUSES}
+      AND UPPER(p.payment_method) NOT IN ('CASH', 'NO_SHOW_FORFEITED')
+    `, oTfCash.params);
+    // Cash tips that went into the drawer
     const cashTipLegacyData = await dbGet(`
-      SELECT COALESCE(SUM(COALESCE(tip, 0)), 0) as cash_tips
-      FROM payments
-      WHERE ${tf.where} AND status = 'APPROVED' AND UPPER(payment_method) = 'CASH'
-    `, tf.params);
+      SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) as cash_tips
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE ${oTfCash.where} AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      AND ${PAY_STATUSES} AND UPPER(p.payment_method) = 'CASH'
+    `, oTfCash.params);
     const cashTipData = await dbGet(`
       SELECT COALESCE(SUM(amount), 0) as cash_tips
       FROM tips
@@ -481,22 +528,24 @@ module.exports = (db) => {
     // Payment breakdown (legacy fixed columns: payments.tip)
     const paymentDataLegacy = await dbGet(`
       SELECT 
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as cash_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN COALESCE(tip, 0) ELSE 0 END), 0) as cash_tips,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'VISA' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as visa_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'VISA' THEN COALESCE(tip, 0) ELSE 0 END), 0) as visa_tips,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('MC', 'MASTERCARD') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as mastercard_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('MC', 'MASTERCARD') THEN COALESCE(tip, 0) ELSE 0 END), 0) as mastercard_tips,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'DEBIT' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as debit_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'DEBIT' THEN COALESCE(tip, 0) ELSE 0 END), 0) as debit_tips,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as other_card_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN COALESCE(tip, 0) ELSE 0 END), 0) as other_card_tips,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'MASTERCARD', 'DEBIT', 'OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT', 'NO_SHOW_FORFEITED') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as other_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'NO_SHOW_FORFEITED' THEN COALESCE(tip, 0) ELSE 0 END), 0) as tip_total,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER', 'NO_SHOW_FORFEITED') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as card_sales,
-        COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER', 'NO_SHOW_FORFEITED') THEN COALESCE(tip, 0) ELSE 0 END), 0) as card_tips
-      FROM payments 
-      WHERE ${tf.where} AND status = 'APPROVED'
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'CASH' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as cash_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'CASH' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as cash_tips,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'VISA' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as visa_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'VISA' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as visa_tips,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) IN ('MC', 'MASTERCARD') THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as mastercard_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) IN ('MC', 'MASTERCARD') THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as mastercard_tips,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'DEBIT' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as debit_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'DEBIT' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as debit_tips,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as other_card_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) IN ('OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT') THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as other_card_tips,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) NOT IN ('CASH', 'VISA', 'MC', 'MASTERCARD', 'DEBIT', 'OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT', 'NO_SHOW_FORFEITED') THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as other_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as tip_total,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER', 'NO_SHOW_FORFEITED') THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as card_sales,
+        COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER', 'NO_SHOW_FORFEITED') THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as card_tips
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+        AND ${PAY_STATUSES}
     `, tf.params);
 
     const tipsData = await dbGet(`
@@ -526,15 +575,17 @@ module.exports = (db) => {
     // Dynamic payment methods
     const paymentMethodsLegacy = await dbAll(`
       SELECT 
-        payment_method,
-        COUNT(DISTINCT order_id) as count,
-        COALESCE(SUM(amount - COALESCE(tip, 0)), 0) as net_amount,
-        COALESCE(SUM(amount), 0) as gross_amount,
-        COALESCE(SUM(COALESCE(tip, 0)), 0) as tip_amount,
-        COUNT(DISTINCT CASE WHEN COALESCE(tip, 0) > 0 THEN order_id END) as tip_order_count
-      FROM payments 
-      WHERE ${tf.where} AND status = 'APPROVED' AND UPPER(payment_method) != 'NO_SHOW_FORFEITED'
-      GROUP BY payment_method
+        p.payment_method,
+        COUNT(DISTINCT p.order_id) as count,
+        COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as net_amount,
+        COALESCE(SUM(p.amount), 0) as gross_amount,
+        COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tip_amount,
+        COUNT(DISTINCT CASE WHEN COALESCE(p.tip, 0) > 0 THEN p.order_id END) as tip_order_count
+      FROM payments p
+      JOIN orders o ON p.order_id = o.id
+      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+        AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED'
+      GROUP BY p.payment_method
       ORDER BY gross_amount DESC
     `, tf.params);
 
@@ -599,7 +650,7 @@ module.exports = (db) => {
     // Refund details
     const rTf = tfPrefixed('r');
     const refundDetails = await dbAll(`
-      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.created_at,
+      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.refunded_by, r.created_at,
              o.order_number
       FROM refunds r LEFT JOIN orders o ON r.order_id = o.id
       WHERE ${rTf.where}
@@ -673,6 +724,26 @@ module.exports = (db) => {
       discountOrderCount = 0;
     }
 
+    let discountDetails = [];
+    try {
+      const oAdjTf = tfPrefixed('o');
+      discountDetails = await dbAll(`
+        SELECT oa.id, oa.order_id, oa.kind, oa.amount_applied, oa.label, oa.created_at,
+               o.order_number,
+               COALESCE(oa.applied_by_employee_id, '') AS applied_by_employee_id,
+               COALESCE(oa.applied_by_name, '') AS applied_by_name
+        FROM order_adjustments oa
+        JOIN orders o ON oa.order_id = o.id
+        WHERE ${oAdjTf.where}
+          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          AND COALESCE(oa.amount_applied, 0) > 0
+          AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
+        ORDER BY oa.created_at ASC
+      `, oAdjTf.params);
+    } catch (e) {
+      discountDetails = [];
+    }
+
     // Payment order counts (Cash/Card/Other) for PAYMENT BREAKDOWN aligned counts
     let cashOrderCount = 0;
     let cardOrderCount = 0;
@@ -681,14 +752,16 @@ module.exports = (db) => {
       const pmCnt = await dbGet(
         `
         SELECT
-          COUNT(DISTINCT CASE WHEN UPPER(payment_method) = 'CASH' THEN order_id END) as cash_order_count,
-          COUNT(DISTINCT CASE WHEN UPPER(payment_method) IN ('VISA','MC','MASTERCARD','DEBIT','OTHER_CARD','OTHER CARD','AMEX','DISCOVER','CARD','CREDIT') THEN order_id END) as card_order_count,
+          COUNT(DISTINCT CASE WHEN UPPER(p.payment_method) = 'CASH' THEN p.order_id END) as cash_order_count,
+          COUNT(DISTINCT CASE WHEN UPPER(p.payment_method) IN ('VISA','MC','MASTERCARD','DEBIT','OTHER_CARD','OTHER CARD','AMEX','DISCOVER','CARD','CREDIT') THEN p.order_id END) as card_order_count,
           COUNT(DISTINCT CASE
-            WHEN UPPER(payment_method) NOT IN ('CASH','VISA','MC','MASTERCARD','DEBIT','OTHER_CARD','OTHER CARD','AMEX','DISCOVER','CARD','CREDIT','NO_SHOW_FORFEITED')
-            THEN order_id
+            WHEN UPPER(p.payment_method) NOT IN ('CASH','VISA','MC','MASTERCARD','DEBIT','OTHER_CARD','OTHER CARD','AMEX','DISCOVER','CARD','CREDIT','NO_SHOW_FORFEITED')
+            THEN p.order_id
           END) as other_order_count
-        FROM payments
-        WHERE ${tf.where} AND status = 'APPROVED'
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND ${PAY_STATUSES}
         `,
         tf.params
       );
@@ -710,34 +783,34 @@ module.exports = (db) => {
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT order_id FROM payments WHERE ${tf.where} AND status = 'APPROVED' AND UPPER(payment_method) = 'CASH' AND COALESCE(tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) = 'CASH' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND UPPER(payment_method) = 'CASH' AND COALESCE(amount, 0) > 0
         )
         `,
-        tf.params
+        [...tf.params, ...tf.params]
       );
       const cardTipsCnt = await dbGet(
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT order_id FROM payments WHERE ${tf.where} AND status = 'APPROVED' AND UPPER(payment_method) != 'CASH' AND UPPER(payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND UPPER(payment_method) != 'CASH' AND COALESCE(amount, 0) > 0
         )
         `,
-        tf.params
+        [...tf.params, ...tf.params]
       );
       const totalTipsCnt = await dbGet(
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT order_id FROM payments WHERE ${tf.where} AND status = 'APPROVED' AND UPPER(payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND COALESCE(amount, 0) > 0
         )
         `,
-        tf.params
+        [...tf.params, ...tf.params]
       );
       cashTipOrderCount = Number(cashTipsCnt?.cnt || 0);
       cardTipOrderCount = Number(cardTipsCnt?.cnt || 0);
@@ -746,6 +819,41 @@ module.exports = (db) => {
       cashTipOrderCount = 0;
       cardTipOrderCount = 0;
       totalTipOrderCount = 0;
+    }
+
+    // Tips by server (Z-Report — shown only when select_server_on_entry is ON)
+    let tipsByServer = [];
+    try {
+      const tbsRows = await dbAll(`
+        SELECT server_name, SUM(tips) as tips FROM (
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+          UNION ALL
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(t.amount), 0) as tips
+          FROM tips t
+          JOIN orders o ON t.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+        ) combined
+        GROUP BY server_name
+        HAVING SUM(tips) > 0.0001
+        ORDER BY tips DESC
+      `, [...tf.params, ...tf.params]);
+      tipsByServer = (tbsRows || []).map(r => ({
+        server_name: r.server_name || 'Unknown',
+        tips: Number(Number(r.tips || 0).toFixed(2)),
+      }));
+    } catch (e) {
+      tipsByServer = [];
     }
 
     // Gift Card data
@@ -788,7 +896,7 @@ module.exports = (db) => {
     try {
       const nsData = await dbGet(`
         SELECT COUNT(*) as cnt, COALESCE(SUM(amount), 0) as total
-        FROM payments WHERE ${tf.where} AND payment_method = 'NO_SHOW_FORFEITED' AND status = 'APPROVED'
+        FROM payments WHERE ${tf.where} AND payment_method = 'NO_SHOW_FORFEITED' AND ${PAY_STATUSES_SOLO}
       `, tf.params);
       noShowForfeited = nsData?.total || 0;
       noShowForfeitedCount = nsData?.cnt || 0;
@@ -797,7 +905,7 @@ module.exports = (db) => {
     return {
       salesData, guestCount, gratuityTotal, paymentData, paymentMethods,
       refundData, cashRefundTotal, voidData, refundDetails, voidDetails,
-      discountData, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
+      discountData, discountDetails, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
       reservationFeeReceived, reservationFeeReceivedCount, reservationFeeApplied, reservationFeeAppliedCount,
       noShowForfeited, noShowForfeitedCount,
       gstTotal, pstTotal,
@@ -809,11 +917,23 @@ module.exports = (db) => {
       cashTipOrderCount,
       cardTipOrderCount,
       totalTipOrderCount,
+      tipsByServer,
       // Correct cash drawer values (change excluded)
       actualCashSales,   // = order totals - non-cash payments
       actualCashTips,    // = cash tips in drawer
       nonCashNet         // = total non-cash payment net
     };
+  };
+
+  const getSelectServerOnEntry = async () => {
+    try {
+      const row = await dbGet(`SELECT settings_data FROM layout_settings ORDER BY updated_at DESC LIMIT 1`);
+      if (row?.settings_data) {
+        const s = JSON.parse(row.settings_data);
+        return !!s.selectServerOnEntry;
+      }
+    } catch (e) { /* */ }
+    return false;
   };
 
   // ============ GET Z-REPORT DATA ============
@@ -846,8 +966,9 @@ module.exports = (db) => {
       } catch (e) { /* */ }
 
       const startTime = session.opened_at;
-      const endTime = session.closed_at || new Date().toISOString();
+      const endTime = session.closed_at || getLocalDatetimeString();
       const q = await querySalesData(startTime, endTime);
+      const selectServerOnEntry = await getSelectServerOnEntry();
 
       const openingCash = session.opening_cash || 0;
       // CORRECT: actual cash = order totals - non-cash payments (change excluded)
@@ -908,6 +1029,8 @@ module.exports = (db) => {
           mastercard_tips: q.paymentData?.mastercard_tips || 0,
           debit_tips: q.paymentData?.debit_tips || 0,
           other_card_tips: q.paymentData?.other_card_tips || 0,
+          tips_by_server: q.tipsByServer || [],
+          select_server_on_entry: selectServerOnEntry,
           // Dynamic payment methods
           payment_methods: (q.paymentMethods || []).map(pm => ({
             method: pm.payment_method, count: pm.count,
@@ -941,13 +1064,24 @@ module.exports = (db) => {
             id: r.id, order_id: r.order_id,
             order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
             type: r.refund_type || 'FULL', total: r.total || 0,
-            payment_method: r.payment_method || '', reason: r.reason || '', created_at: r.created_at
+            payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
           })),
           void_details: (q.voidDetails || []).map(v => ({
             id: v.id, order_id: v.order_id,
             order_number: v.order_number || `#${v.order_id}`,
             total: v.grand_total || 0, source: v.source || 'partial',
             reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+          })),
+          discount_details: (q.discountDetails || []).map(d => ({
+            id: d.id,
+            order_id: d.order_id,
+            order_number: d.order_number || `#${d.order_id}`,
+            kind: d.kind || '',
+            amount_applied: d.amount_applied || 0,
+            label: d.label || '',
+            applied_by_employee_id: d.applied_by_employee_id || '',
+            applied_by_name: d.applied_by_name || '',
+            created_at: d.created_at
           })),
           // Status
           status: session.status,
@@ -1002,7 +1136,8 @@ module.exports = (db) => {
           FROM orders o
           LEFT JOIN table_map_elements t ON o.table_id = t.element_id
           WHERE o.created_at >= ?
-          AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED')
+          AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED', 'REFUNDED')
+          AND NOT (o.firebase_order_id IS NOT NULL AND (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) = 0)
         `, [activeSession.opened_at]);
       }
 
@@ -1024,7 +1159,8 @@ module.exports = (db) => {
             FROM orders o
             LEFT JOIN table_map_elements t ON o.table_id = t.element_id
             WHERE o.id IN (${placeholders})
-            AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED')
+            AND UPPER(o.status) NOT IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED', 'CANCELLED', 'VOIDED', 'MERGED', 'REFUNDED')
+            AND NOT (o.firebase_order_id IS NOT NULL AND (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) = 0)
           `,
             tableOrderIds
           );
@@ -1074,15 +1210,112 @@ module.exports = (db) => {
     }
   });
 
+  // ============ CHECK SERVER UNPAID ORDERS ============
+  router.post('/check-server-unpaid', async (req, res) => {
+    try {
+      const { serverId } = req.body;
+      if (!serverId) return res.status(400).json({ success: false, error: 'serverId required' });
+
+      const unpaidOrders = await dbAll(`
+        SELECT id, order_number, order_type, total, status, table_id, server_id, server_name, created_at
+        FROM orders
+        WHERE COALESCE(server_id, '') = ?
+          AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+        ORDER BY created_at DESC
+      `, [String(serverId)]);
+
+      res.json({
+        success: true,
+        hasUnpaid: (unpaidOrders || []).length > 0,
+        count: (unpaidOrders || []).length,
+        orders: unpaidOrders || []
+      });
+    } catch (error) {
+      console.error('Check server unpaid error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ============ TRANSFER ORDERS (server → server) ============
+  router.post('/transfer-orders', async (req, res) => {
+    try {
+      const { fromServerId, fromServerName, toServerId, toServerName } = req.body;
+      if (!fromServerId || !toServerId) {
+        return res.status(400).json({ success: false, error: 'fromServerId and toServerId required' });
+      }
+
+      const unpaid = await dbAll(`
+        SELECT id FROM orders
+        WHERE COALESCE(server_id, '') = ?
+          AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+      `, [String(fromServerId)]);
+
+      if (!unpaid || unpaid.length === 0) {
+        return res.json({ success: true, transferred: 0, message: 'No unpaid orders to transfer' });
+      }
+
+      const orderIds = unpaid.map(o => o.id);
+      const placeholders = orderIds.map(() => '?').join(',');
+
+      // 단일 트랜잭션: 주문·결제·팁 소유를 A→B로 한 번에 이전 (부분 적용 방지)
+      await dbRun('BEGIN TRANSACTION');
+      try {
+        await dbRun(`
+          UPDATE orders SET server_id = ?, server_name = ? WHERE id IN (${placeholders})
+        `, [String(toServerId), toServerName || '', ...orderIds]);
+
+        await dbRun(`
+          UPDATE payments SET server_id = ? WHERE order_id IN (${placeholders}) AND UPPER(status) NOT IN ('REFUNDED','VOIDED')
+        `, [String(toServerId), ...orderIds]);
+
+        await dbRun(`
+          UPDATE tips SET employee_id = ? WHERE order_id IN (${placeholders})
+        `, [String(toServerId), ...orderIds]);
+
+        await dbRun('COMMIT');
+      } catch (txErr) {
+        await dbRun('ROLLBACK').catch(() => {});
+        throw txErr;
+      }
+
+      console.log(`[Transfer] ${orderIds.length} orders transferred: ${fromServerName}(${fromServerId}) → ${toServerName}(${toServerId})`);
+
+      res.json({
+        success: true,
+        transferred: orderIds.length,
+        orderIds,
+        message: `${orderIds.length} order(s) transferred from ${fromServerName || fromServerId} to ${toServerName || toServerId}`
+      });
+    } catch (error) {
+      console.error('Transfer orders error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // ============ SHIFT CLOSE ============
   router.post('/shift-close', async (req, res) => {
     try {
-      const { countedCash = 0, cashDetails = {}, closedBy = '' } = req.body;
-      const now = new Date().toISOString();
+      const { countedCash = 0, cashDetails = {}, closedBy = '', serverId = '', serverPin = '' } = req.body;
+      const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
         return res.status(400).json({ success: false, error: 'No active session found' });
+      }
+
+      // Block if server still has unpaid orders
+      if (serverId) {
+        const unpaidCheck = await dbGet(`
+          SELECT COUNT(*) as cnt FROM orders
+          WHERE COALESCE(server_id, '') = ?
+            AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+        `, [String(serverId)]);
+        if (unpaidCheck && unpaidCheck.cnt > 0) {
+          return res.status(400).json({
+            success: false,
+            error: `Server still has ${unpaidCheck.cnt} unpaid order(s). Transfer or complete them first.`
+          });
+        }
       }
 
       // Determine shift start time (after last shift close, or session open)
@@ -1098,6 +1331,8 @@ module.exports = (db) => {
       const endTime = now;
       const tf = { where: 'created_at >= ? AND created_at <= ?', params: [startTime, endTime] };
 
+      console.log(`[Shift-Close] server=${closedBy}(${serverId}), time range: ${startTime} ~ ${endTime}`);
+
       const salesDataOrders = await dbGet(`
         SELECT COUNT(*) as order_count FROM orders WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
       `, tf.params);
@@ -1110,14 +1345,82 @@ module.exports = (db) => {
       `, tf.params);
       const salesData = { order_count: salesDataOrders?.order_count || 0, total_sales: Number(salesDataPt?.total_sales || 0) };
 
+      console.log(`[Shift-Close] orders=${salesData.order_count}, total_sales=${salesData.total_sales}`);
+
       const paymentData = await dbGet(`
         SELECT 
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'CASH' AND UPPER(payment_method) != 'NO_SHOW_FORFEITED' THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as card_sales,
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) NOT IN ('CASH', 'VISA', 'MC', 'MASTERCARD', 'DEBIT', 'OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT', 'NO_SHOW_FORFEITED') THEN (amount - COALESCE(tip, 0)) ELSE 0 END), 0) as other_sales,
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) != 'NO_SHOW_FORFEITED' THEN COALESCE(tip, 0) ELSE 0 END), 0) as tip_total,
-          COALESCE(SUM(CASE WHEN UPPER(payment_method) = 'CASH' THEN COALESCE(tip, 0) ELSE 0 END), 0) as cash_tips
-        FROM payments WHERE ${tf.where} AND status = 'APPROVED'
+          COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as card_sales,
+          COALESCE(SUM(CASE WHEN UPPER(p.payment_method) NOT IN ('CASH', 'VISA', 'MC', 'MASTERCARD', 'DEBIT', 'OTHER_CARD', 'OTHER CARD', 'AMEX', 'DISCOVER', 'CARD', 'CREDIT', 'NO_SHOW_FORFEITED') THEN (p.amount - COALESCE(p.tip, 0)) ELSE 0 END), 0) as other_sales,
+          COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as tip_total,
+          COALESCE(SUM(CASE WHEN UPPER(p.payment_method) = 'CASH' THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as cash_tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
       `, tf.params);
+
+      // Channel sales (Sales by Type) — with tips
+      const channelRows = await dbAll(`
+        SELECT
+          CASE
+            WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER','FOR HERE','FORHERE') THEN 'DINE_IN'
+            WHEN UPPER(o.order_type) IN ('TOGO','PICKUP','TAKEOUT') THEN 'TOGO'
+            WHEN UPPER(o.order_type) IN ('ONLINE','WEB','QR') THEN 'ONLINE'
+            WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
+            ELSE 'OTHER'
+          END as ch,
+          COUNT(DISTINCT o.id) as cnt,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        GROUP BY ch
+      `, tf.params);
+      const chMap = {};
+      (channelRows || []).forEach(r => { chMap[r.ch] = { sales: Number(r.sales), count: Number(r.cnt), tips: Number(r.tips) }; });
+
+      // Payment method breakdown (amount, tips per method)
+      const paymentBreakdownRows = await dbAll(`
+        SELECT
+          UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as amount,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        GROUP BY method
+        ORDER BY amount DESC
+      `, tf.params);
+      const paymentBreakdown = (paymentBreakdownRows || []).map(r => ({
+        method: r.method, amount: Number(r.amount), tips: Number(r.tips)
+      }));
+
+      // Tip breakdown by payment method
+      const tipBreakdownRows = await dbAll(`
+        SELECT
+          UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          AND COALESCE(p.tip, 0) > 0
+        GROUP BY method
+        ORDER BY tips DESC
+      `, tf.params);
+      const tipBreakdown = (tipBreakdownRows || []).map(r => ({
+        method: r.method, tips: Number(r.tips)
+      }));
 
       // CORRECT: Actual cash = Order totals - Non-cash payments (change excluded automatically)
       const totalOrderSales = salesData?.total_sales || 0;
@@ -1126,7 +1429,6 @@ module.exports = (db) => {
       const cashTips = paymentData?.cash_tips || 0;
 
       // Opening cash for this shift
-      // If previous shift's counted_cash is 0 (user skipped counting), fallback to expected_cash
       const shiftOpeningCash = lastShift
         ? (lastShift.counted_cash > 0 ? lastShift.counted_cash : (lastShift.expected_cash || lastShift.counted_cash))
         : (activeSession.opening_cash || 0);
@@ -1135,11 +1437,10 @@ module.exports = (db) => {
         const crd = await dbGet(`SELECT COALESCE(SUM(total), 0) as t FROM refunds WHERE ${tf.where} AND UPPER(payment_method) = 'CASH'`, tf.params);
         cashRefundTotal = crd?.t || 0;
       } catch (e) { /* */ }
-      // Expected = Opening + Actual Cash Sales + Cash Tips - Cash Refunds
       const expectedCash = shiftOpeningCash + actualCashSales + cashTips - cashRefundTotal;
       const cashDifference = countedCash - expectedCash;
 
-      // Save shift record
+      // Save shift record with locked flag
       await dbRun(`
         INSERT INTO shift_closings (session_id, shift_number, shift_start, shift_end, closed_by,
           total_sales, order_count, cash_sales, card_sales, other_sales, tip_total,
@@ -1159,12 +1460,75 @@ module.exports = (db) => {
         [activeSession.session_id, shiftNumber]
       );
 
+      let serverTipTotal = null;
+      if (closedBy) {
+        const serverTipData = await dbGet(`
+          SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) as server_tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+            AND o.server_name = ?
+        `, [startTime, endTime, closedBy]);
+        serverTipTotal = Number(serverTipData?.server_tips || 0);
+      }
+
+      // Auto Clock-Out: reuse the server's PIN
+      let clockOutResult = null;
+      if (serverId && serverPin) {
+        try {
+          const today = now.substring(0, 10);
+          const emp = await dbGet('SELECT id FROM employees WHERE id = ? AND pin = ? AND status = "active"', [serverId, serverPin]);
+          if (emp) {
+            const clockRec = await dbGet(
+              'SELECT * FROM clock_records WHERE employee_id = ? AND date(clock_in_time) = ? AND clock_out_time IS NULL',
+              [serverId, today]
+            );
+            if (clockRec) {
+              const clockInTime = new Date(clockRec.clock_in_time);
+              const totalHours = ((new Date(now)) - clockInTime) / (1000 * 60 * 60);
+              await dbRun(`
+                UPDATE clock_records SET clock_out_time = ?, total_hours = ?, status = 'clocked_out', updated_at = datetime('now')
+                WHERE id = ?
+              `, [now, totalHours.toFixed(2), clockRec.id]);
+              await dbRun(`
+                UPDATE server_shifts SET clock_out_time = ?, status = 'closed', updated_at = datetime('now')
+                WHERE server_id = ? AND business_date = ? AND clock_record_id = ? AND status = 'open'
+              `, [now, serverId, today, clockRec.id]);
+              clockOutResult = { success: true, totalHours: totalHours.toFixed(2) };
+              console.log(`[Shift-Close] Auto clock-out: ${closedBy}(${serverId}), hours=${totalHours.toFixed(2)}`);
+            }
+          }
+        } catch (coErr) {
+          console.error('[Shift-Close] Auto clock-out failed:', coErr.message);
+          clockOutResult = { success: false, error: coErr.message };
+        }
+      }
+
       res.json({
         success: true,
         message: `Shift #${shiftNumber} closed successfully`,
         data: {
           ...shiftRecord,
-          session_opened_at: activeSession.opened_at
+          dine_in_sales: chMap['DINE_IN']?.sales || 0,
+          dine_in_count: chMap['DINE_IN']?.count || 0,
+          dine_in_tips: chMap['DINE_IN']?.tips || 0,
+          togo_sales: chMap['TOGO']?.sales || 0,
+          togo_count: chMap['TOGO']?.count || 0,
+          togo_tips: chMap['TOGO']?.tips || 0,
+          online_sales: chMap['ONLINE']?.sales || 0,
+          online_count: chMap['ONLINE']?.count || 0,
+          online_tips: chMap['ONLINE']?.tips || 0,
+          delivery_sales: chMap['DELIVERY']?.sales || 0,
+          delivery_count: chMap['DELIVERY']?.count || 0,
+          delivery_tips: chMap['DELIVERY']?.tips || 0,
+          payment_breakdown: paymentBreakdown,
+          tip_breakdown: tipBreakdown,
+          session_opened_at: activeSession.opened_at,
+          server_tip_total: serverTipTotal,
+          clock_out: clockOutResult
         }
       });
     } catch (error) {
@@ -1177,7 +1541,7 @@ module.exports = (db) => {
   router.post('/closing', async (req, res) => {
     try {
       const { closingCash = 0, closedBy = '', notes = '', cashBreakdown = {} } = req.body;
-      const now = new Date().toISOString();
+      const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
@@ -1301,175 +1665,91 @@ module.exports = (db) => {
     }
   });
 
-  // ============ PRINT OPENING REPORT ============
+  // ============ PRINT OPENING REPORT (이미지 그래픽 출력) ============
   router.post('/print-opening', async (req, res) => {
     try {
       const { openingCash = 0, cashBreakdown = {} } = req.body;
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-      const ESC = '\x1B'; const GS = '\x1D';
-      const BOLD_ON = ESC + 'E\x01'; const BOLD_OFF = ESC + 'E\x00';
-      const DOUBLE_SIZE_ON = GS + '!\x11'; const NORMAL_SIZE = GS + '!\x00';
-      const ALIGN_CENTER = ESC + 'a\x01'; const ALIGN_LEFT = ESC + 'a\x00';
-
-      const LINE_WIDTH = 42; const LINE_WIDTH_DOUBLE = 21;
-      const center = (text, width = LINE_WIDTH) => { const pad = Math.max(0, Math.floor((width - text.length) / 2)); return ' '.repeat(pad) + text; };
-      const leftRight = (l, r) => { const spaces = Math.max(1, LINE_WIDTH - l.length - r.length); return l + ' '.repeat(spaces) + r; };
-      const line = '='.repeat(LINE_WIDTH);
-      const dottedLine = '-'.repeat(LINE_WIDTH);
-
-      let p = '\n' + line + '\n';
-      p += ALIGN_CENTER + DOUBLE_SIZE_ON + BOLD_ON;
-      p += center('*** DAY OPENING ***', LINE_WIDTH_DOUBLE) + '\n';
-      p += NORMAL_SIZE + BOLD_OFF + ALIGN_LEFT;
-      p += line + '\n';
-      p += ALIGN_CENTER + BOLD_ON;
-      p += center(now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })) + '\n';
-      p += center(`Time: ${timeStr}`) + '\n';
-      p += BOLD_OFF + ALIGN_LEFT;
-      p += dottedLine + '\n\n';
-      p += BOLD_ON + center('STARTING CASH COUNT') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-
-      const denominations = [
-        { key: 'cent1', label: '1 Cent', value: 0.01 }, { key: 'cent5', label: '5 Cents', value: 0.05 },
-        { key: 'cent10', label: '10 Cents', value: 0.10 }, { key: 'cent25', label: '25 Cents', value: 0.25 },
-        { key: 'dollar1', label: '$1 Bills', value: 1 }, { key: 'dollar2', label: '$2 Bills', value: 2 },
-        { key: 'dollar5', label: '$5 Bills', value: 5 }, { key: 'dollar10', label: '$10 Bills', value: 10 },
-        { key: 'dollar20', label: '$20 Bills', value: 20 }, { key: 'dollar50', label: '$50 Bills', value: 50 },
-        { key: 'dollar100', label: '$100 Bills', value: 100 },
-      ];
-
-      denominations.forEach(d => {
-        const count = cashBreakdown[d.key] || 0;
-        if (count > 0) {
-          const subtotal = (count * d.value).toFixed(2);
-          const lbl = `${d.label} x ${count}`;
-          const spaces = Math.max(1, LINE_WIDTH - lbl.length - `$${subtotal}`.length);
-          p += lbl + ' '.repeat(spaces) + BOLD_ON + `$${subtotal}` + BOLD_OFF + '\n';
+      let printerOpts = {};
+      try {
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
         }
-      });
+      } catch (e) { /* layout settings may not exist */ }
 
-      p += dottedLine + '\n';
-      p += BOLD_ON + leftRight('TOTAL STARTING CASH:', `$${openingCash.toFixed(2)}`) + BOLD_OFF + '\n';
-      p += line + '\n\n\n';
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
+      if (!targetPrinter) {
+        const anyPrinter = await dbGet(
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+        );
+        targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
+      }
+      if (!targetPrinter) {
+        return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
+      }
 
-      // Opening report: do NOT require cash drawer. Allow fallback printer if Front is not configured.
-      const printer = await printEscPosTextToFront(p, { openDrawer: false });
-      res.json({ success: true, message: 'Opening report printed', printer });
+      const { buildGraphicOpeningReport } = require('../utils/graphicPrinterUtils');
+      const buf = buildGraphicOpeningReport(openingCash, cashBreakdown, printerOpts);
+
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      await sendRawToPrinter(targetPrinter, buf);
+
+      res.json({ success: true, message: 'Opening report printed', printer: targetPrinter });
     } catch (error) {
       console.error('Print opening error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
 
-  // ============ PRINT SHIFT REPORT ============
+  // ============ PRINT SHIFT REPORT (이미지 그래픽 출력) ============
   router.post('/print-shift-report', async (req, res) => {
     try {
       const { shiftData = {} } = req.body;
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-      const ESC = '\x1B'; const GS = '\x1D';
-      const BOLD_ON = ESC + 'E\x01'; const BOLD_OFF = ESC + 'E\x00';
-      const DOUBLE_SIZE_ON = GS + '!\x11'; const NORMAL_SIZE = GS + '!\x00';
-      const ALIGN_CENTER = ESC + 'a\x01'; const ALIGN_LEFT = ESC + 'a\x00';
-
-      const LINE_WIDTH = 42; const LINE_WIDTH_DOUBLE = 21;
-      const center = (text, width = LINE_WIDTH) => { const pad = Math.max(0, Math.floor((width - text.length) / 2)); return ' '.repeat(pad) + text; };
-      const leftRight = (l, r) => { const spaces = Math.max(1, LINE_WIDTH - l.length - r.length); return l + ' '.repeat(spaces) + r; };
-      const leftRightBold = (l, r) => { const spaces = Math.max(1, LINE_WIDTH - l.length - r.length); return l + ' '.repeat(spaces) + BOLD_ON + r + BOLD_OFF; };
-      const line = '='.repeat(LINE_WIDTH);
-      const dottedLine = '-'.repeat(LINE_WIDTH);
-      const formatMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
-
-      const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
-
-      let p = '\n' + line + '\n';
-      p += ALIGN_CENTER + DOUBLE_SIZE_ON + BOLD_ON;
-      p += center('SHIFT REPORT', LINE_WIDTH_DOUBLE) + '\n';
-      p += NORMAL_SIZE + BOLD_OFF + ALIGN_LEFT;
-      p += line + '\n';
-      p += ALIGN_CENTER + BOLD_ON;
-      p += center(now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })) + '\n';
-      p += center(`Shift #${shiftData.shift_number || 1}  (${fmtTime(shiftData.shift_start)} ~ ${fmtTime(shiftData.shift_end)})`) + '\n';
-      if (shiftData.closed_by) p += center(`Closed by: ${shiftData.closed_by}`) + '\n';
-      p += BOLD_OFF + ALIGN_LEFT;
-      p += dottedLine + '\n';
-
-      // Sales Summary
-      p += '\n' + BOLD_ON + center('SALES SUMMARY') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-      p += leftRightBold('Total Sales:', formatMoney(shiftData.total_sales)) + '\n';
-      p += leftRightBold('Order Count:', `${shiftData.order_count || 0}`) + '\n';
-      p += dottedLine + '\n';
-
-      // Payments
-      p += '\n' + BOLD_ON + center('PAYMENTS') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-      p += leftRightBold('Cash:', formatMoney(shiftData.cash_sales)) + '\n';
-      p += leftRightBold('Card:', formatMoney(shiftData.card_sales)) + '\n';
-      if ((shiftData.other_sales || 0) > 0) {
-        p += leftRightBold('Other:', formatMoney(shiftData.other_sales)) + '\n';
-      }
-      p += dottedLine + '\n';
-
-      // Tips
-      p += '\n' + BOLD_ON + center('TIPS') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-      p += leftRightBold('Total Tips:', formatMoney(shiftData.tip_total)) + '\n';
-      p += dottedLine + '\n';
-
-      // Cash Drawer
-      p += '\n' + BOLD_ON + center('CASH DRAWER') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-      p += leftRightBold('Opening Cash:', formatMoney(shiftData.opening_cash)) + '\n';
-      p += leftRightBold('Cash Sales:', formatMoney(shiftData.cash_sales)) + '\n';
-      p += leftRightBold('Expected Cash:', formatMoney(shiftData.expected_cash)) + '\n';
-      p += dottedLine + '\n';
-
-      // Cash Count Breakdown
-      let cashBreakdown = {};
+      let printerOpts = {};
       try {
-        if (shiftData.cash_details) {
-          cashBreakdown = typeof shiftData.cash_details === 'string' ? JSON.parse(shiftData.cash_details) : shiftData.cash_details;
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
         }
-      } catch (e) { /* ignore parse error */ }
+      } catch (e) { /* layout settings may not exist */ }
 
-      const denominations = [
-        { key: 'cent1', label: '1 Cent', value: 0.01 },
-        { key: 'cent5', label: '5 Cents', value: 0.05 },
-        { key: 'cent10', label: '10 Cents', value: 0.10 },
-        { key: 'cent25', label: '25 Cents', value: 0.25 },
-        { key: 'dollar1', label: '$1 Bills', value: 1 },
-        { key: 'dollar2', label: '$2 Bills', value: 2 },
-        { key: 'dollar5', label: '$5 Bills', value: 5 },
-        { key: 'dollar10', label: '$10 Bills', value: 10 },
-        { key: 'dollar20', label: '$20 Bills', value: 20 },
-        { key: 'dollar50', label: '$50 Bills', value: 50 },
-        { key: 'dollar100', label: '$100 Bills', value: 100 },
-      ];
-      const hasBreakdown = denominations.some(d => (cashBreakdown[d.key] || 0) > 0);
-      if (hasBreakdown) {
-        p += BOLD_ON + center('CASH COUNT BREAKDOWN') + BOLD_OFF + '\n';
-        denominations.forEach(d => {
-          const count = cashBreakdown[d.key] || 0;
-          if (count > 0) {
-            p += leftRightBold(`${d.label} x ${count}`, formatMoney(count * d.value)) + '\n';
-          }
-        });
-        p += dottedLine + '\n';
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
+      if (!targetPrinter) {
+        const anyPrinter = await dbGet(
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+        );
+        targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
+      }
+      if (!targetPrinter) {
+        return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
       }
 
-      p += leftRightBold('Counted Cash:', formatMoney(shiftData.counted_cash)) + '\n';
-      const diff = (shiftData.counted_cash || 0) - (shiftData.expected_cash || 0);
-      const diffStr = diff >= 0 ? `+${formatMoney(diff)}` : formatMoney(diff);
-      p += BOLD_ON + leftRight('OVER/SHORT:', diffStr) + BOLD_OFF + '\n';
-      p += line + '\n\n\n';
+      console.log(`📃 [Shift-Report] printerOpts: paperWidth=${printerOpts.paperWidth}, rightPaddingPx=${printerOpts.rightPaddingPx}, graphicScale=${printerOpts.graphicScale}`);
+      const { buildGraphicShiftReport } = require('../utils/graphicPrinterUtils');
+      const buf = buildGraphicShiftReport(shiftData, printerOpts);
 
-      const printer = await printEscPosTextToFront(p, { openDrawer: true });
-      res.json({ success: true, message: 'Shift report printed', printer });
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      await sendRawToPrinter(targetPrinter, buf);
+
+      res.json({ success: true, message: 'Shift report printed', printer: targetPrinter });
     } catch (error) {
       console.error('Print shift report error:', error);
       res.status(500).json({ success: false, error: error.message });
@@ -1482,20 +1762,38 @@ module.exports = (db) => {
       const { zReportData, closingCash = 0, cashBreakdown = {}, copies: rawCopies } = req.body;
       const copies = Math.max(1, Math.min(5, parseInt(rawCopies) || 1));
 
-      const { buildGraphicZReport } = require('../utils/graphicPrinterUtils');
-      const singleCopyBuffer = buildGraphicZReport(zReportData, closingCash, cashBreakdown);
+      // Read printer layout settings (paperWidth, rightPadding) same as Receipt/Bill
+      let printerOpts = {};
+      try {
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
+        }
+      } catch (e) { /* layout settings may not exist */ }
 
-      const frontPrinter = await dbGet("SELECT selected_printer FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      // Read per-device graphicScale from printers table
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
       let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
       if (!targetPrinter) {
         const anyPrinter = await dbGet(
-          "SELECT selected_printer FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
         );
         targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
       }
       if (!targetPrinter) {
         return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
       }
+
+      console.log(`📃 [Z-Report] printerOpts: paperWidth=${printerOpts.paperWidth}, rightPaddingPx=${printerOpts.rightPaddingPx}, graphicScale=${printerOpts.graphicScale}`);
+      const { buildGraphicZReport } = require('../utils/graphicPrinterUtils');
+      const singleCopyBuffer = buildGraphicZReport(zReportData, closingCash, cashBreakdown, printerOpts);
 
       const { sendRawToPrinter } = require('../utils/printerUtils');
       const fullBuffer = copies > 1 ? Buffer.concat(Array(copies).fill(singleCopyBuffer)) : singleCopyBuffer;
@@ -1541,33 +1839,153 @@ module.exports = (db) => {
       const dateFilterO = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
       const dateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
-      // 1) Overall summary - payments 기반 실결제 매출
-      const overallPayments = await dbGet(`
-        SELECT
-          COUNT(DISTINCT p.order_id) as order_count,
-          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales,
-          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as total_tips
-        FROM payments p
-        JOIN orders o ON p.order_id = o.id
-        WHERE ${dateFilterO} AND ${paidStatuses}
-          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
-          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
-      `, [startDate, endDate]);
-
-      const overallOrders = await dbGet(`
+      // 1) Overall summary - Paid 주문만 (Subtotal + Tax + Tip = Total 정확히 일치)
+      const paidOrders = await dbGet(`
         SELECT
           COUNT(*) as order_count,
           COALESCE(SUM(subtotal), 0) as subtotal,
           COALESCE(SUM(tax), 0) as tax_total,
-          COALESCE(SUM(total), 0) as total_from_orders
+          COALESCE(SUM(total), 0) as total,
+          COALESCE(SUM(COALESCE(service_charge, 0)), 0) as service_charge_total
         FROM orders
         WHERE ${dateFilter} AND ${paidStatusesNoAlias}
       `, [startDate, endDate]);
 
-      const paidOrderCount = overallPayments?.order_count || 0;
-      const paidTotalSales = Number(overallPayments?.total_sales || 0);
+      // 1a) Tip 합산 (payments.tip + tips 테이블 모두)
+      const tipData = await dbGet(`
+        SELECT COALESCE(
+          (SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) FROM payments p JOIN orders o ON p.order_id = o.id
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+             AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID'))
+          +
+          (SELECT COALESCE(SUM(t.amount), 0) FROM tips t JOIN orders o ON t.order_id = o.id
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+             AND ${paidStatuses})
+        , 0) as total_tip
+      `, [startDate, endDate, startDate, endDate]);
 
-      // 2) Channel breakdown - payments 기반
+      // 1a-2) Tip breakdown by server (payments.tip + tips table)
+      const tipByServer = await dbAll(`
+        SELECT server_name, SUM(tips) as tips, SUM(order_count) as order_count FROM (
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips,
+            COUNT(DISTINCT o.id) as order_count
+          FROM payments p JOIN orders o ON p.order_id = o.id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+          UNION ALL
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(t.amount), 0) as tips,
+            COUNT(DISTINCT o.id) as order_count
+          FROM tips t JOIN orders o ON t.order_id = o.id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses}
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+        ) combined
+        GROUP BY server_name
+        HAVING tips > 0
+        ORDER BY tips DESC
+      `, [startDate, endDate, startDate, endDate]);
+
+      // 1a-3) Tip breakdown by payment method (payments.tip + tips table)
+      const tipByPaymentMethod = await dbAll(`
+        SELECT payment_method, SUM(tips) as tips, SUM(cnt) as count FROM (
+          SELECT p.payment_method, COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips, COUNT(*) as cnt
+          FROM payments p JOIN orders o ON p.order_id = o.id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND COALESCE(p.tip, 0) > 0
+          GROUP BY p.payment_method
+          UNION ALL
+          SELECT t.payment_method, COALESCE(SUM(t.amount), 0) as tips, COUNT(*) as cnt
+          FROM tips t JOIN orders o ON t.order_id = o.id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses}
+          GROUP BY t.payment_method
+        ) combined
+        GROUP BY payment_method
+        ORDER BY tips DESC
+      `, [startDate, endDate, startDate, endDate]);
+
+      // 1b) 개별 세금 항목 (GST, PST 등 동적 조회)
+      let taxDetails = [];
+      try {
+        const taxRows = await dbAll(`
+          SELECT t.name as tax_name,
+            t.rate as tax_rate,
+            COALESCE(SUM(oi.price * oi.quantity * t.rate / 100), 0) as tax_amount
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
+          JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses}
+          GROUP BY t.tax_id, t.name, t.rate
+          ORDER BY t.name
+        `, [startDate, endDate]);
+        taxDetails = (taxRows || []).filter(r => r.tax_name && Number(r.tax_amount) > 0).map(r => ({
+          name: r.tax_name,
+          rate: Number(r.tax_rate || 0),
+          amount: Number(Number(r.tax_amount || 0).toFixed(2)),
+        }));
+      } catch (e) { /* tax_group_links may not exist */ }
+
+      // Fallback: tax_group_id가 없는 경우 orders.tax를 세금 비율로 분배
+      if (taxDetails.length === 0) {
+        try {
+          const activeTaxes = await dbAll(`
+            SELECT DISTINCT t.name, t.rate 
+            FROM taxes t 
+            JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+            JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+            WHERE COALESCE(t.is_deleted, 0) = 0
+            ORDER BY t.rate ASC
+          `, []);
+          const uniqueTaxes = [];
+          const seenRates = new Set();
+          (activeTaxes || []).forEach(t => {
+            const key = `${t.name}_${t.rate}`;
+            if (!seenRates.has(key)) { seenRates.add(key); uniqueTaxes.push({ name: t.name, rate: Number(t.rate) }); }
+          });
+
+          if (uniqueTaxes.length > 0) {
+            const orders = await dbAll(`
+              SELECT o.subtotal, o.tax
+              FROM orders o
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+                AND ${paidStatuses} AND COALESCE(o.tax, 0) > 0
+            `, [startDate, endDate]);
+
+            const taxMap = {};
+            uniqueTaxes.forEach(t => { taxMap[t.name] = { name: t.name, rate: t.rate, amount: 0 }; });
+
+            (orders || []).forEach(o => {
+              const sub = Number(o.subtotal || 0);
+              const totalTax = Number(o.tax || 0);
+              if (sub <= 0 || totalTax <= 0) return;
+              const effRate = (totalTax / sub) * 100;
+
+              const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
+              const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
+              if (matchedRateSum <= 0) return;
+
+              matchedTaxes.forEach(t => {
+                const portion = (t.rate / matchedRateSum) * totalTax;
+                taxMap[t.name].amount += portion;
+              });
+            });
+
+            taxDetails = Object.values(taxMap)
+              .filter(t => t.amount > 0.001)
+              .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
+          }
+        } catch (e) { /* taxes table may not exist */ }
+      }
+
+      const paidOrderCount = paidOrders?.order_count || 0;
+
+      // 2) Channel breakdown - orders 기반 + payments에서 tip 합산
       const channelRows = await dbAll(`
         SELECT
           CASE
@@ -1577,18 +1995,25 @@ module.exports = (db) => {
             WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
             ELSE 'OTHER'
           END as ch,
-          COUNT(DISTINCT o.id) as cnt,
-          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales
-        FROM payments p
-        JOIN orders o ON p.order_id = o.id
+          COUNT(*) as cnt,
+          COALESCE(SUM(o.subtotal), 0) as subtotal,
+          COALESCE(SUM(o.tax), 0) as tax,
+          COALESCE(SUM(o.total), 0) as sales,
+          COALESCE(SUM(
+            (SELECT COALESCE(SUM(p.tip), 0) FROM payments p WHERE p.order_id = o.id AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID'))
+            + (SELECT COALESCE(SUM(t.amount), 0) FROM tips t WHERE t.order_id = o.id)
+          ), 0) as tips
+        FROM orders o
         WHERE ${dateFilterO} AND ${paidStatuses}
-          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
-          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         GROUP BY ch ORDER BY sales DESC
       `, [startDate, endDate]);
 
       const channelMap = {};
-      (channelRows || []).forEach(r => { channelMap[r.ch] = { count: r.cnt, sales: Number(r.sales) }; });
+      (channelRows || []).forEach(r => {
+        const sub = Number(r.subtotal);
+        const tx = Number(r.tax);
+        channelMap[r.ch] = { count: r.cnt, subtotal: sub, tax: tx, sales: Number((sub + tx).toFixed(2)), tips: Number(r.tips) };
+      });
 
       // Dine-in table stats - payments 기반 avg
       const dineInTableStats = await dbGet(`
@@ -1684,7 +2109,9 @@ module.exports = (db) => {
       const unpaidStatuses = "UPPER(status) IN ('OPEN','PENDING','IN_PROGRESS','READY')";
       const unpaidOverall = await dbGet(`
         SELECT COUNT(*) as order_count,
-               COALESCE(SUM(total),0) as total_amount
+               COALESCE(SUM(total),0) as total_amount,
+               COALESCE(SUM(subtotal),0) as subtotal,
+               COALESCE(SUM(tax),0) as tax_total
         FROM orders WHERE ${dateFilter} AND ${unpaidStatuses}
       `, [startDate, endDate]);
 
@@ -1706,21 +2133,218 @@ module.exports = (db) => {
       const unpaidChannelMap = {};
       (unpaidByChannel || []).forEach(r => { unpaidChannelMap[r.ch] = { count: r.cnt, amount: Number(r.amount) }; });
 
+      // Unpaid individual tax breakdown
+      let unpaidTaxDetails = [];
+      try {
+        const unpaidTaxRows = await dbAll(`
+          SELECT t.name as tax_name,
+            t.rate as tax_rate,
+            COALESCE(SUM(oi.price * oi.quantity * t.rate / 100), 0) as tax_amount
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
+          JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${unpaidStatuses}
+          GROUP BY t.tax_id, t.name, t.rate
+          ORDER BY t.name
+        `, [startDate, endDate]);
+        unpaidTaxDetails = (unpaidTaxRows || []).filter(r => r.tax_name && Number(r.tax_amount) > 0).map(r => ({
+          name: r.tax_name,
+          rate: Number(r.tax_rate || 0),
+          amount: Number(Number(r.tax_amount || 0).toFixed(2)),
+        }));
+      } catch (e) { /* tax_group_links may not exist */ }
+
+      if (unpaidTaxDetails.length === 0) {
+        try {
+          const activeTaxes = await dbAll(`
+            SELECT DISTINCT t.name, t.rate 
+            FROM taxes t 
+            JOIN tax_group_links tgl ON tgl.tax_id = t.tax_id
+            JOIN tax_groups tg ON tg.tax_group_id = tgl.tax_group_id AND COALESCE(tg.is_deleted, 0) = 0
+            WHERE COALESCE(t.is_deleted, 0) = 0
+            ORDER BY t.rate ASC
+          `, []);
+          const uniqueTaxes = [];
+          const seenRates = new Set();
+          (activeTaxes || []).forEach(t => {
+            const key = `${t.name}_${t.rate}`;
+            if (!seenRates.has(key)) { seenRates.add(key); uniqueTaxes.push({ name: t.name, rate: Number(t.rate) }); }
+          });
+
+          if (uniqueTaxes.length > 0) {
+            const orders = await dbAll(`
+              SELECT o.subtotal, o.tax
+              FROM orders o
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+                AND ${unpaidStatuses} AND COALESCE(o.tax, 0) > 0
+            `, [startDate, endDate]);
+
+            const taxMap = {};
+            uniqueTaxes.forEach(t => { taxMap[t.name] = { name: t.name, rate: t.rate, amount: 0 }; });
+
+            (orders || []).forEach(o => {
+              const sub = Number(o.subtotal || 0);
+              const totalTax = Number(o.tax || 0);
+              if (sub <= 0 || totalTax <= 0) return;
+              const effRate = (totalTax / sub) * 100;
+              const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
+              const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
+              if (matchedRateSum <= 0) return;
+              matchedTaxes.forEach(t => {
+                taxMap[t.name].amount += (t.rate / matchedRateSum) * totalTax;
+              });
+            });
+
+            unpaidTaxDetails = Object.values(taxMap)
+              .filter(t => t.amount > 0.001)
+              .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
+          }
+        } catch (e) { /* taxes table may not exist */ }
+      }
+
+      // 7) Hourly sales
+      const hourlySales = await dbAll(`
+        SELECT strftime('%H', o.created_at) as hour,
+          COUNT(DISTINCT o.id) as order_count,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+          AND ${paidStatuses}
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        GROUP BY strftime('%H', o.created_at)
+        ORDER BY hour
+      `, [startDate, endDate]);
+
+      // 8) Payment breakdown
+      const paymentBreakdown = await dbAll(`
+        SELECT p.payment_method,
+          COUNT(*) as count,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as net_amount,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND ${paidStatuses}
+        GROUP BY p.payment_method
+      `, [startDate, endDate]);
+
+      // 9) Table turnover (JOIN table_map_elements for table_name)
+      const tableTurnover = await dbAll(`
+        SELECT COALESCE(t.name, o.table_id) as table_name,
+          COUNT(*) as order_count,
+          COALESCE(AVG(
+            CASE WHEN o.closed_at IS NOT NULL AND o.created_at IS NOT NULL
+            THEN (julianday(o.closed_at) - julianday(o.created_at)) * 24 * 60
+            END
+          ), 0) as avg_duration_min
+        FROM orders o
+        LEFT JOIN table_map_elements t ON o.table_id = t.element_id
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+          AND ${paidStatuses}
+          AND o.table_id IS NOT NULL AND o.table_id != ''
+        GROUP BY COALESCE(t.name, o.table_id)
+        ORDER BY order_count DESC
+      `, [startDate, endDate]);
+
+      // 10) Employee sales
+      const employeeSales = await dbAll(`
+        SELECT COALESCE(o.server_name, 'Unknown') as employee,
+          COUNT(DISTINCT o.id) as order_count,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+          AND ${paidStatuses}
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        GROUP BY COALESCE(o.server_name, 'Unknown')
+        ORDER BY revenue DESC
+      `, [startDate, endDate]);
+
+      // 11) Refunds & Voids
+      const refundsVoids = await dbAll(`
+        SELECT 'refund' as type, COUNT(*) as count, COALESCE(SUM(total), 0) as total
+        FROM refunds WHERE date(created_at) >= ? AND date(created_at) <= ?
+        UNION ALL
+        SELECT 'void' as type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
+        FROM voids WHERE date(created_at) >= ? AND date(created_at) <= ?
+      `, [startDate, endDate, startDate, endDate]);
+
+      // 12) Category Sales
+      let categorySales = [];
+      try {
+        categorySales = await dbAll(`
+          SELECT COALESCE(c.name, 'Uncategorized') as category,
+            COALESCE(SUM(oi.quantity), 0) as quantity,
+            COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
+          LEFT JOIN menu_categories c ON mi.category_id = c.category_id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses}
+            AND COALESCE(oi.is_voided, 0) = 0
+          GROUP BY c.category_id
+          ORDER BY revenue DESC
+        `, [startDate, endDate]);
+      } catch (e) { /* menu_items/menu_categories may not exist */ }
+
+      // 13) Per-channel tax breakdown
+      let channelTaxDetails = {};
+      try {
+        const ctRows = await dbAll(`
+          SELECT
+            CASE
+              WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER','FOR HERE','FORHERE','EAT IN','EATIN') THEN 'DINE-IN'
+              WHEN UPPER(o.order_type) IN ('TOGO','TAKEOUT','TO GO','TO-GO','PICKUP') THEN 'TOGO'
+              WHEN UPPER(o.order_type) = 'ONLINE' THEN 'ONLINE'
+              WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
+              ELSE 'OTHER'
+            END as ch,
+            t.name as tax_name,
+            t.rate as tax_rate,
+            COALESCE(SUM(oi.price * oi.quantity * t.rate / 100), 0) as tax_amount
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
+          JOIN taxes t ON t.tax_id = tgl.tax_id
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses}
+            AND COALESCE(oi.is_voided, 0) = 0
+            AND COALESCE(t.is_deleted, 0) = 0
+          GROUP BY ch, t.tax_id, t.name, t.rate
+          ORDER BY ch, t.name
+        `, [startDate, endDate]);
+        (ctRows || []).forEach(r => {
+          if (!channelTaxDetails[r.ch]) channelTaxDetails[r.ch] = [];
+          channelTaxDetails[r.ch].push({ name: r.tax_name, rate: Number(r.tax_rate || 0), amount: Number(r.tax_amount || 0) });
+        });
+      } catch (e) { /* taxes/tax_group_links may not exist */ }
+
       res.json({
         success: true,
         period: { startDate, endDate },
         overall: {
           orderCount: paidOrderCount,
-          subtotal: Number(overallOrders?.subtotal || 0),
-          taxTotal: Number(overallOrders?.tax_total || 0),
-          totalSales: paidTotalSales,
+          subtotal: Number(paidOrders?.subtotal || 0),
+          taxTotal: Number(paidOrders?.tax_total || 0),
+          totalSales: Number((Number(paidOrders?.subtotal || 0) + Number(paidOrders?.tax_total || 0)).toFixed(2)),
+          totalTip: Number(tipData?.total_tip || 0),
+          serviceCharge: Number(paidOrders?.service_charge_total || 0),
         },
+        taxDetails,
         channels: {
-          'DINE-IN': channelMap['DINE-IN'] || { count: 0, sales: 0 },
-          'TOGO': channelMap['TOGO'] || { count: 0, sales: 0 },
-          'ONLINE': channelMap['ONLINE'] || { count: 0, sales: 0 },
-          'DELIVERY': channelMap['DELIVERY'] || { count: 0, sales: 0 },
-          'OTHER': channelMap['OTHER'] || { count: 0, sales: 0 },
+          'DINE-IN': channelMap['DINE-IN'] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 },
+          'TOGO': channelMap['TOGO'] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 },
+          'ONLINE': channelMap['ONLINE'] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 },
+          'DELIVERY': channelMap['DELIVERY'] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 },
+          'OTHER': channelMap['OTHER'] || { count: 0, subtotal: 0, tax: 0, sales: 0, tips: 0 },
         },
         dineInTableStats: {
           tableOrderCount: dineInTableStats?.table_order_count || 0,
@@ -1745,7 +2369,10 @@ module.exports = (db) => {
         },
         unpaid: {
           orderCount: unpaidOverall?.order_count || 0,
-          totalAmount: Number(unpaidOverall?.total_amount || 0),
+          totalAmount: Number((Number(unpaidOverall?.subtotal || 0) + Number(unpaidOverall?.tax_total || 0)).toFixed(2)),
+          subtotal: Number(unpaidOverall?.subtotal || 0),
+          taxTotal: Number(unpaidOverall?.tax_total || 0),
+          taxDetails: unpaidTaxDetails,
           channels: {
             'DINE-IN': unpaidChannelMap['DINE-IN'] || { count: 0, amount: 0 },
             'TOGO': unpaidChannelMap['TOGO'] || { count: 0, amount: 0 },
@@ -1753,9 +2380,103 @@ module.exports = (db) => {
             'DELIVERY': unpaidChannelMap['DELIVERY'] || { count: 0, amount: 0 },
           },
         },
+        hourlySales: hourlySales || [],
+        paymentBreakdown: paymentBreakdown || [],
+        tableTurnover: tableTurnover || [],
+        employeeSales: employeeSales || [],
+        refundsVoids: refundsVoids || [],
+        tipBreakdown: {
+          total: Number(tipData?.total_tip || 0),
+          byServer: (tipByServer || []).map(r => ({ server: r.server_name, tips: Number(r.tips), orderCount: r.order_count })),
+          byChannel: Object.entries(channelMap).filter(([, v]) => v.tips > 0).map(([k, v]) => ({ channel: k, tips: v.tips, orderCount: v.count })),
+          byPaymentMethod: (tipByPaymentMethod || []).map(r => ({ method: r.payment_method, tips: Number(r.tips), count: r.count })),
+        },
+        categorySales: (categorySales || []).map(r => ({ category: r.category, quantity: r.quantity || 0, revenue: Number(r.revenue || 0) })),
+        channelTaxDetails,
       });
     } catch (error) {
       console.error('Sales report error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ============================================================
+  // Item Trend Data - top/bottom items across time periods
+  // ============================================================
+  router.get('/item-trend', async (req, res) => {
+    try {
+      const { type = 'top' } = req.query;
+      const today = new Date();
+      const f = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const todayStr = f(today);
+
+      const d7 = new Date(today); d7.setDate(d7.getDate() - 7);
+      const d30 = new Date(today); d30.setDate(d30.getDate() - 30);
+      const d180 = new Date(today); d180.setDate(d180.getDate() - 180);
+      const d365 = new Date(today); d365.setDate(d365.getDate() - 365);
+
+      const periods = [
+        { label: 'Today', start: todayStr, end: todayStr },
+        { label: 'Last 7d', start: f(d7), end: todayStr },
+        { label: 'Last 30d', start: f(d30), end: todayStr },
+        { label: 'Last 6mo', start: f(d180), end: todayStr },
+        { label: 'Last 1yr', start: f(d365), end: todayStr },
+      ];
+
+      const paidStatuses = `UPPER(o.status) IN ('PAID','COMPLETED','CLOSED','SETTLED')`;
+
+      const topItems = await dbAll(`
+        SELECT oi.item_id, COALESCE(oi.name, 'Unknown') as name,
+          COALESCE(SUM(oi.quantity), 0) as qty,
+          COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.id
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
+          AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
+        GROUP BY oi.item_id
+        ORDER BY ${type === 'bottom' ? 'revenue ASC' : 'revenue DESC'}
+        LIMIT 15
+      `, [f(d365), todayStr]);
+
+      const itemIds = topItems.map(i => i.item_id);
+      if (itemIds.length === 0) {
+        return res.json({ success: true, items: [], periods: periods.map(p => p.label) });
+      }
+
+      const placeholders = itemIds.map(() => '?').join(',');
+      const trendData = {};
+
+      for (const p of periods) {
+        const rows = await dbAll(`
+          SELECT oi.item_id,
+            COALESCE(SUM(oi.quantity), 0) as qty,
+            COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          WHERE oi.item_id IN (${placeholders})
+            AND date(o.created_at) >= ? AND date(o.created_at) <= ?
+            AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
+          GROUP BY oi.item_id
+        `, [...itemIds, p.start, p.end]);
+
+        const rowMap = {};
+        (rows || []).forEach(r => { rowMap[r.item_id] = r; });
+        trendData[p.label] = rowMap;
+      }
+
+      const items = topItems.map(item => ({
+        item_id: item.item_id,
+        name: item.name,
+        trend: periods.map(p => ({
+          period: p.label,
+          qty: Number(trendData[p.label]?.[item.item_id]?.qty || 0),
+          revenue: Number(trendData[p.label]?.[item.item_id]?.revenue || 0),
+        }))
+      }));
+
+      res.json({ success: true, items, periods: periods.map(p => p.label) });
+    } catch (error) {
+      console.error('Item trend error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -1778,7 +2499,7 @@ module.exports = (db) => {
         }
         const session = sessions[0];
         const startTime = session.opened_at;
-        const endTime = session.closed_at || new Date().toISOString();
+        const endTime = session.closed_at || getLocalDatetimeString();
 
         let storeName = 'Restaurant';
         let serviceMode = 'FSR';
@@ -1788,6 +2509,7 @@ module.exports = (db) => {
         } catch (e) { /* */ }
 
         const q = await querySalesData(startTime, endTime);
+        const selectServerOnEntry = await getSelectServerOnEntry();
         const openingCash = session.opening_cash || 0;
         const actualCash = q.actualCashSales || 0;
         const actualCashTips = q.actualCashTips || 0;
@@ -1813,6 +2535,8 @@ module.exports = (db) => {
             expected_cash: expectedCash,
             closing_cash: closingCash,
             cash_breakdown: cashBreakdown,
+            tips_by_server: q.tipsByServer || [],
+            select_server_on_entry: selectServerOnEntry,
             total_sales: q.salesData?.total_sales || 0,
             subtotal: q.salesData?.subtotal || 0,
             order_count: q.salesData?.order_count || 0,
@@ -1863,8 +2587,29 @@ module.exports = (db) => {
             gift_card_sold_count: q.giftCardSoldCount,
             gift_card_payment: q.giftCardPayment,
             gift_card_payment_count: q.giftCardPaymentCount,
-            refund_details: q.refundDetails || [],
-            void_details: q.voidDetails || [],
+            refund_details: (q.refundDetails || []).map(r => ({
+              id: r.id, order_id: r.order_id,
+              order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
+              type: r.refund_type || 'FULL', total: r.total || 0,
+              payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
+            })),
+            void_details: (q.voidDetails || []).map(v => ({
+              id: v.id, order_id: v.order_id,
+              order_number: v.order_number || `#${v.order_id}`,
+              total: v.grand_total || 0, source: v.source || 'partial',
+              reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+            })),
+            discount_details: (q.discountDetails || []).map(d => ({
+              id: d.id,
+              order_id: d.order_id,
+              order_number: d.order_number || `#${d.order_id}`,
+              kind: d.kind || '',
+              amount_applied: d.amount_applied || 0,
+              label: d.label || '',
+              applied_by_employee_id: d.applied_by_employee_id || '',
+              applied_by_name: d.applied_by_name || '',
+              created_at: d.created_at
+            })),
             status: session.status,
             opened_at: session.opened_at,
             closed_at: session.closed_at,
@@ -2136,6 +2881,24 @@ module.exports = (db) => {
         totalSales: Number(r.total_sales),
       }));
 
+      // 5) Category Sales
+      let categorySales = [];
+      try {
+        categorySales = await dbAll(`
+          SELECT COALESCE(c.name, 'Uncategorized') as category,
+            COALESCE(SUM(oi.quantity), 0) as quantity,
+            COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
+          FROM order_items oi
+          JOIN orders o ON oi.order_id = o.id
+          LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
+          LEFT JOIN menu_categories c ON mi.category_id = c.category_id
+          WHERE ${dateFilter} AND ${paidStatuses}
+            AND COALESCE(oi.is_voided, 0) = 0
+          GROUP BY c.category_id
+          ORDER BY revenue DESC
+        `, [startDate, endDate]);
+      } catch (e) { /* tables may not exist */ }
+
       res.json({
         success: true,
         period: { startDate, endDate },
@@ -2159,6 +2922,7 @@ module.exports = (db) => {
           netAmount: totalNetAmount,
         },
         dailyBreakdown,
+        categorySales: (categorySales || []).map(r => ({ category: r.category, quantity: r.quantity || 0, revenue: Number(r.revenue || 0) })),
       });
     } catch (error) {
       console.error('Item report error:', error);
@@ -2175,85 +2939,93 @@ module.exports = (db) => {
       if (!reportData) return res.status(400).json({ success: false, error: 'reportData is required' });
       const copies = Math.max(1, Math.min(5, parseInt(rawCopies) || 1));
 
-      const ESC = '\x1B'; const GS = '\x1D';
-      const BOLD_ON = ESC + 'E\x01'; const BOLD_OFF = ESC + 'E\x00';
-      const DOUBLE_SIZE_ON = GS + '!\x11'; const NORMAL_SIZE = GS + '!\x00';
-      const ALIGN_CENTER = ESC + 'a\x01'; const ALIGN_LEFT = ESC + 'a\x00';
-      const LINE_WIDTH = 42; const LINE_WIDTH_DOUBLE = 21;
-      const center = (text, width = LINE_WIDTH) => { const pad = Math.max(0, Math.floor((width - text.length) / 2)); return ' '.repeat(pad) + text; };
-      const leftRight = (l, r) => { const spaces = Math.max(1, LINE_WIDTH - l.length - r.length); return l + ' '.repeat(spaces) + r; };
-      const leftRightBold = (l, r) => { const spaces = Math.max(1, LINE_WIDTH - l.length - r.length); return l + ' '.repeat(spaces) + BOLD_ON + r + BOLD_OFF; };
-      const line = '='.repeat(LINE_WIDTH);
-      const dottedLine = '-'.repeat(LINE_WIDTH);
-      const fmtMoney = (amt) => `$${(amt || 0).toFixed(2)}`;
-
-      let p = '\n' + line + '\n';
-      p += ALIGN_CENTER + DOUBLE_SIZE_ON + BOLD_ON;
-      p += center('ITEM REPORT', LINE_WIDTH_DOUBLE) + '\n';
-      p += NORMAL_SIZE + BOLD_OFF;
-      p += center(`${reportData.period?.startDate || ''} ~ ${reportData.period?.endDate || ''}`) + '\n';
-      p += ALIGN_LEFT + line + '\n';
-
-      // Summary
-      p += '\n' + BOLD_ON + center('-- SUMMARY --') + BOLD_OFF + '\n';
-      p += dottedLine + '\n';
-      p += leftRightBold('Total Orders:', `${reportData.summary?.totalOrders || 0}`) + '\n';
-      p += leftRightBold('Total Sales:', fmtMoney(reportData.summary?.totalSales)) + '\n';
-      p += leftRightBold('Avg/Order:', fmtMoney(reportData.summary?.avgPerOrder)) + '\n';
-
-      // Channel Breakdown
-      if (reportData.channels && reportData.channels.length > 0) {
-        p += '\n' + BOLD_ON + center('-- BY CHANNEL --') + BOLD_OFF + '\n';
-        p += dottedLine + '\n';
-        for (const ch of reportData.channels) {
-          p += leftRightBold(`${ch.channel} (${ch.orderCount}):`, fmtMoney(ch.totalSales)) + '\n';
-          p += leftRight('  Avg/Order:', fmtMoney(ch.avgPerOrder)) + '\n';
+      let printerOpts = {};
+      try {
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
         }
+      } catch (e) { /* layout settings may not exist */ }
+
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
+      if (!targetPrinter) {
+        const anyPrinter = await dbGet(
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+        );
+        targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
+      }
+      if (!targetPrinter) {
+        return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
       }
 
-      // Payment Methods
-      if (reportData.paymentMethods && reportData.paymentMethods.length > 0) {
-        p += '\n' + BOLD_ON + center('-- BY PAYMENT --') + BOLD_OFF + '\n';
-        p += dottedLine + '\n';
-        for (const pm of reportData.paymentMethods) {
-          p += leftRightBold(`${pm.method} (${pm.orderCount}):`, fmtMoney(pm.totalAmount)) + '\n';
-          if (pm.totalTip > 0) p += leftRight('  Tips:', fmtMoney(pm.totalTip)) + '\n';
-        }
-      }
+      const { buildGraphicItemReport } = require('../utils/graphicPrinterUtils');
+      const singleCopyBuffer = buildGraphicItemReport(reportData, printerOpts);
 
-      // Items
-      if (reportData.items && reportData.items.length > 0) {
-        p += '\n' + BOLD_ON + center('-- ITEM SALES (S/R/V/NET) --') + BOLD_OFF + '\n';
-        p += dottedLine + '\n';
-        p += leftRight('Item', 'S  R  V    NET') + '\n';
-        p += dottedLine + '\n';
-        for (const item of reportData.items) {
-          const soldQty = String(item.soldQty ?? item.quantity ?? 0).padStart(2);
-          const refQty = String(item.refundQty ?? 0).padStart(2);
-          const voidQty = String(item.voidQty ?? 0).padStart(2);
-          const net = fmtMoney(item.netAmount ?? ((item.revenue || 0) - (item.refundAmount || 0) - (item.voidAmount || 0)));
-          p += leftRight(String(item.name || '').substring(0, 24), `${soldQty} ${refQty} ${voidQty}  ${net}`) + '\n';
-        }
-        p += dottedLine + '\n';
-        const netTotal = fmtMoney(reportData.itemTotals?.netAmount ?? ((reportData.itemTotals?.totalRevenue || 0) - (reportData.itemTotals?.refundAmount || 0) - (reportData.itemTotals?.voidAmount || 0)));
-        p += BOLD_ON + leftRight('NET TOTAL:', `${netTotal}`) + BOLD_OFF + '\n';
-        p += leftRight('Sold:', fmtMoney(reportData.itemTotals?.totalRevenue || 0)) + '\n';
-        if ((reportData.itemTotals?.refundAmount || 0) > 0) p += leftRight('Refunds:', `-${fmtMoney(reportData.itemTotals?.refundAmount || 0)}`) + '\n';
-        if ((reportData.itemTotals?.voidAmount || 0) > 0) p += leftRight('Voids:', `-${fmtMoney(reportData.itemTotals?.voidAmount || 0)}`) + '\n';
-        p += leftRight('Unique Items:', `${reportData.itemTotals?.uniqueItems || 0}`) + '\n';
-      }
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      const fullBuffer = copies > 1 ? Buffer.concat(Array(copies).fill(singleCopyBuffer)) : singleCopyBuffer;
+      await sendRawToPrinter(targetPrinter, fullBuffer);
 
-      p += '\n' + line + '\n';
-      p += ALIGN_CENTER + `Printed: ${new Date().toLocaleString('en-US')}` + '\n';
-      p += ALIGN_LEFT + '\n\n\n';
-
-      let printer;
-      for (let i = 0; i < copies; i++) {
-        printer = await printEscPosTextToFront(p, { openDrawer: false });
-      }
-      res.json({ success: true, message: `Item Report printed (${copies} copies)`, printer, copies });
+      res.json({ success: true, message: `Item Report printed (${copies} copies)`, printer: targetPrinter, copies });
     } catch (error) {
       console.error('Print Item Report error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ============================================================
+  // Print Report Dashboard (sales-report payload) — graphic receipt
+  // ============================================================
+  router.post('/print-sales-report', async (req, res) => {
+    try {
+      const { reportData, copies: rawCopies = 1 } = req.body;
+      if (!reportData) return res.status(400).json({ success: false, error: 'reportData is required' });
+      const copies = Math.max(1, Math.min(5, parseInt(rawCopies) || 1));
+
+      let printerOpts = {};
+      try {
+        const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+        if (layoutRow && layoutRow.settings) {
+          const ls = JSON.parse(layoutRow.settings);
+          const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+          printerOpts.paperWidth = pw;
+          const rp = ls.billLayout?.rightPaddingPx ?? ls.billLayout?.rightPadding ?? ls.bill?.rightPaddingPx ?? ls.bill?.rightPadding ?? ls.rightPaddingPx ?? ls.rightPadding ?? null;
+          const rpn = Number(rp);
+          if (Number.isFinite(rpn) && rpn >= 0) printerOpts.rightPaddingPx = rpn;
+        }
+      } catch (e) { /* layout settings may not exist */ }
+
+      const frontPrinter = await dbGet("SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1");
+      let targetPrinter = frontPrinter?.selected_printer;
+      if (frontPrinter?.graphic_scale) printerOpts.graphicScale = Number(frontPrinter.graphic_scale);
+      if (!targetPrinter) {
+        const anyPrinter = await dbGet(
+          "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+        );
+        targetPrinter = anyPrinter?.selected_printer;
+        if (anyPrinter?.graphic_scale) printerOpts.graphicScale = Number(anyPrinter.graphic_scale);
+      }
+      if (!targetPrinter) {
+        return res.status(400).json({ success: false, error: 'No printer configured. Please set up the Front printer in Back Office → Printers.' });
+      }
+
+      const { buildGraphicSalesReport } = require('../utils/graphicPrinterUtils');
+      const singleCopyBuffer = buildGraphicSalesReport(reportData, printerOpts);
+
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      const fullBuffer = copies > 1 ? Buffer.concat(Array(copies).fill(singleCopyBuffer)) : singleCopyBuffer;
+      await sendRawToPrinter(targetPrinter, fullBuffer);
+
+      res.json({ success: true, message: `Report Dashboard printed (${copies} copies)`, printer: targetPrinter, copies });
+    } catch (error) {
+      console.error('Print sales report error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });

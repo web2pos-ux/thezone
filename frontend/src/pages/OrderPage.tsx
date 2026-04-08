@@ -6337,6 +6337,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             total: adjustedTotal,
             items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), 
             adjustments,
+            adjustmentAppliedByEmployeeId: selectedServer?.id != null ? String(selectedServer.id) : null,
+            adjustmentAppliedByName: selectedServer?.name != null ? String(selectedServer.name) : null,
             tableId: tableIdForMap,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
@@ -6400,6 +6402,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             total: adjustedTotal,
             items: itemsWithLineId.map((it:any)=> ({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: it.orderLineId, togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })),
             adjustments,
+            adjustmentAppliedByEmployeeId: selectedServer?.id != null ? String(selectedServer.id) : null,
+            adjustmentAppliedByName: selectedServer?.name != null ? String(selectedServer.name) : null,
             serverId: selectedServer?.id || null,
             serverName: selectedServer?.name || null,
             customerName: getPersistableCustomerName(),
@@ -12260,7 +12264,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       {/* Modifier Extra 1 Settings Modal */}
       {showModifierExtra1SettingsModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowModifierExtra1SettingsModal(false)}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModifierExtra1SettingsModal(false)}>
           <div className="bg-white rounded-2xl overflow-hidden shadow-2xl" style={{ width: '96%', maxWidth: '1200px', height: '96vh', transform: 'translateY(-50px)' }} onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div className="flex justify-between items-center px-5 py-3 bg-gradient-to-r from-blue-600 to-blue-500">
@@ -12460,7 +12464,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       {/* Modifier Extra 2 Settings Modal */}
       {showModifierExtra2SettingsModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowModifierExtra2SettingsModal(false)}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowModifierExtra2SettingsModal(false)}>
           <div className="bg-white rounded-2xl overflow-hidden shadow-2xl" style={{ width: '96%', maxWidth: '1200px', height: '96vh', transform: 'translateY(-50px)' }} onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div className="flex justify-between items-center px-5 py-3 bg-gradient-to-r from-emerald-600 to-emerald-500">

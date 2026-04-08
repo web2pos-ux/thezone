@@ -3,7 +3,7 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
 const salesSyncService = require('../services/salesSyncService');
-const { getLocalDatetimeString } = require('../backend/utils/datetimeUtils');
+const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 /**
  * Orders API Routes
@@ -57,6 +57,16 @@ module.exports = (db) => {
 		}
 		return false;
 	};
+
+	function resolveAdjustmentAppliedBy(adj, reqBody) {
+		const body = reqBody && typeof reqBody === 'object' ? reqBody : {};
+		const a = adj && typeof adj === 'object' ? adj : {};
+		const rawId = a.appliedByEmployeeId ?? a.applied_by_employee_id ?? body.adjustmentAppliedByEmployeeId ?? body.adjustment_applied_by_employee_id;
+		const rawName = a.appliedByName ?? a.applied_by_name ?? body.adjustmentAppliedByName ?? body.adjustment_applied_by_name;
+		const appliedByEmployeeId = rawId != null && String(rawId).trim() !== '' ? String(rawId).trim() : null;
+		const appliedByName = rawName != null && String(rawName).trim() !== '' ? String(rawName).trim() : null;
+		return { appliedByEmployeeId, appliedByName };
+	}
 
 	// one-time init: ensure tables and indexes exist (sequential)
 	(async () => {
@@ -136,6 +146,9 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN order_line_id TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax_rate REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_items ADD COLUMN togo_label INTEGER DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_items ADD COLUMN tax_group_id INTEGER`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_items ADD COLUMN printer_group_id INTEGER`); } catch (e) { /* ignore if exists */ }
 			await dbRun(`CREATE TABLE IF NOT EXISTS order_adjustments (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				order_id INTEGER,
@@ -144,10 +157,14 @@ module.exports = (db) => {
 				value REAL,
 				amount_applied REAL,
 				label TEXT,
+				applied_by_employee_id TEXT,
+				applied_by_name TEXT,
 				created_at TEXT DEFAULT (datetime('now')),
 				FOREIGN KEY(order_id) REFERENCES orders(id)
 			)`);
 			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN label TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN applied_by_employee_id TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN applied_by_name TEXT`); } catch (e) { /* ignore if exists */ }
             await dbRun(`CREATE INDEX IF NOT EXISTS idx_orders_type_status_created ON orders(UPPER(order_type), status, created_at)`);
             await dbRun(`CREATE INDEX IF NOT EXISTS idx_adjustments_order_kind ON order_adjustments(order_id, kind)`);
             // Guest status persistence (paid/partial/unpaid + lock)
@@ -232,50 +249,87 @@ module.exports = (db) => {
 		try {
 			const orderId = Number(req.params.id);
 			const closedAt = getLocalDatetimeString();
-			await dbRun(`UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ? WHERE id = ?`, [closedAt, orderId]);
+			const { discount } = req.body || {};
+
+			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ?`;
+			const updateParams = [closedAt];
+
+			if (discount && typeof discount === 'object' && discount.percent > 0) {
+				const discountedTotal = Number(((discount.discountedSubtotal || 0) + (discount.taxesTotal || 0)).toFixed(2));
+				updateSql += `, subtotal = ?, tax = ?, total = ?, adjustments_json = ?`;
+				updateParams.push(
+					Number((discount.discountedSubtotal || 0).toFixed(2)),
+					Number((discount.taxesTotal || 0).toFixed(2)),
+					discountedTotal,
+					JSON.stringify([{
+						label: `Discount (${discount.percent}%)`,
+						amount: -Number((discount.amount || 0).toFixed(2)),
+						percent: discount.percent,
+						originalSubtotal: discount.originalSubtotal
+					}])
+				);
+			}
+
+			updateSql += ` WHERE id = ?`;
+			updateParams.push(orderId);
+			await dbRun(updateSql, updateParams);
 			// Atomically release any table linked to this order
-			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Preparing' WHERE current_order_id = ?`, [orderId]);
+			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
 			
-			// Firebase 실시간 매출 동기화
+			// Firebase 주문/매출 동기화 (POS → Firebase orders → aggregateDailySalesOnOrderWrite)
 			try {
-				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || 
-					require('fs').existsSync(require('path').join(__dirname, '..', '.env')) 
-						? process.env.FIREBASE_RESTAURANT_ID 
-						: null;
-				
+				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || null;
 				if (restaurantId) {
-					// 주문 정보 조회
 					const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [orderId]);
-					// 결제 정보 조회
 					const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [orderId]);
-					// 주문 아이템 조회
-					const items = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
-					
+					const orderItems = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
 					if (orderData && payments.length > 0) {
-						// 총 결제 금액 계산
 						const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 						const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
-						const paymentMethod = payments[0]?.method || 'CASH';
-						
-						// Firebase 동기화 (비동기, 실패해도 결제는 성공)
+						const paymentMethod = (payments[0]?.method || 'CASH').toLowerCase().replace(/\s+/g, '_');
+						const firebaseOrderId = orderData.firebase_order_id;
+						if (firebaseOrderId) {
+							await firebaseService.updateOrderStatus(firebaseOrderId, 'completed', restaurantId);
+							await firebaseService.updateOrderAsPaid(restaurantId, firebaseOrderId, {
+								paymentMethod,
+								tip: totalTips
+							});
+						} else {
+							const items = orderItems.map(oi => ({
+								name: oi.name,
+								quantity: oi.quantity || 1,
+								price: oi.price || 0,
+								subtotal: (oi.quantity || 1) * (oi.price || 0),
+								menuItemId: oi.item_id
+							}));
+							const payload = {
+								...orderData,
+								items,
+								status: 'completed',
+								paymentStatus: 'paid',
+								paymentMethod,
+								tip: totalTips,
+								paidAt: orderData.closed_at || orderData.created_at,
+								source: 'POS'
+							};
+							firebaseService.uploadOrder(restaurantId, payload).catch(err => console.warn('[Firebase] Order upload error:', err.message));
+						}
 						salesSyncService.syncPaymentToFirebase(
-							{ ...orderData, items },
-							{ amount: totalPayment, tip: totalTips, method: paymentMethod },
-							restaurantId
+							{ ...orderData, items: orderItems },
+							{ amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
+							restaurantId,
+							{ skipDailySales: true }
 						).catch(err => console.warn('[SalesSync] Background sync error:', err.message));
-						
-						// 아이템별 매출 동기화
-						if (items.length > 0) {
+						if (orderItems.length > 0) {
 							salesSyncService.syncOrderItemsToFirebase(
-								{ ...orderData, items },
+								{ ...orderData, items: orderItems },
 								restaurantId
 							).catch(err => console.warn('[SalesSync] Item sync error:', err.message));
 						}
 					}
 				}
 			} catch (syncErr) {
-				// Firebase 동기화 실패해도 결제는 성공 처리
-				console.warn('[SalesSync] Sync skipped:', syncErr.message);
+				console.warn('[Firebase] Sync skipped:', syncErr.message);
 			}
 			
 			res.json({ success: true, closedAt });
@@ -376,8 +430,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			
 			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
 			
-			if (type) { clauses.push('UPPER(o.order_type) = ?'); params.push(String(type).toUpperCase()); }
-			if (status) { clauses.push('o.status = ?'); params.push(String(status).toUpperCase()); }
+			if (type) {
+				const types = String(type).split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+				if (types.length === 1) {
+					clauses.push('UPPER(o.order_type) = ?');
+					params.push(types[0]);
+				} else if (types.length > 1) {
+					clauses.push(`UPPER(o.order_type) IN (${types.map(() => '?').join(',')})`);
+					params.push(...types);
+				}
+			}
+			if (status) {
+				const statuses = String(status).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+				if (statuses.length === 1) {
+					clauses.push('o.status = ?');
+					params.push(statuses[0]);
+				} else if (statuses.length > 1) {
+					clauses.push(`o.status IN (${statuses.map(() => '?').join(',')})`);
+					params.push(...statuses);
+				}
+			}
 			const pickupPending = q.pickup_pending === '1';
 			if (pickupPending) {
 				clauses.push(`UPPER(o.status) NOT IN ('PICKED_UP','VOIDED','VOID','REFUNDED')`);
@@ -419,7 +491,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				console.log('[GET /orders] Order mode filter applied:', orderMode);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, t.name AS table_name FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -551,14 +623,52 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		}
 	});
 
+	// PATCH /api/orders/delivery-orders/:id/status - Update delivery_orders status (e.g., PICKED_UP)
+	router.patch('/delivery-orders/:id/status', async (req, res) => {
+		try {
+			const deliveryOrderIdRaw = req.params.id;
+			const deliveryOrderId = String(deliveryOrderIdRaw || '').trim();
+			const next = (req.body && req.body.status) ? String(req.body.status).toUpperCase() : '';
+			if (!deliveryOrderId) return res.status(400).json({ success: false, error: 'id is required' });
+			if (!next) return res.status(400).json({ success: false, error: 'status is required' });
+
+			await dbRun(`UPDATE delivery_orders SET status = ? WHERE id = ?`, [next, deliveryOrderId]);
+
+			// Best-effort Firebase sync (do not block response)
+			try {
+				const restaurantId = remoteSyncService.getRestaurantId();
+				if (restaurantId) {
+					await firebaseService.uploadOrder(restaurantId, {
+						orderNumber: `DL${deliveryOrderId}`,
+						orderType: 'DELIVERY',
+						status: String(next).toLowerCase(),
+						items: [],
+						total: 0,
+						tableId: `DL${deliveryOrderId}`,
+						customerName: '',
+						customerPhone: '',
+						source: 'POS',
+					});
+				}
+			} catch (fbErr) {
+				console.warn('[Delivery-Orders] Firebase status update failed:', fbErr?.message);
+			}
+
+			res.json({ success: true });
+		} catch (e) {
+			console.error('Failed to update delivery order status:', e);
+			res.status(500).json({ success: false, error: 'Failed to update delivery order status' });
+		}
+	});
+
 	// Get order with items by id
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
-			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
-			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
+			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source, togo_label, tax_group_id, printer_group_id FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
+			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			
 			// Backfill missing order_line_id for legacy rows (makes memo targeting stable)
 			for (const row of (Array.isArray(items) ? items : [])) {
@@ -575,29 +685,35 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// 각 아이템의 세금 정보 조회
 			for (const item of items) {
 				try {
-					// 1. menu_tax_links에서 아이템별 세금 그룹 ID 조회
 					let taxGroupIds = [];
-					try {
-						const taxLinks = await dbAll(
-							'SELECT tax_group_id FROM menu_tax_links WHERE item_id = ?',
-							[item.item_id]
-						);
-						taxGroupIds = taxLinks.map(r => r.tax_group_id);
-					} catch (e) {
-						// menu_item_tax_links 테이블 시도
+
+					// 0. order_items에 직접 설정된 tax_group_id 우선 사용 (Extra 버튼 아이템)
+					if (item.tax_group_id) {
+						taxGroupIds = [item.tax_group_id];
+					}
+
+					// 1. menu_tax_links에서 아이템별 세금 그룹 ID 조회
+					if (taxGroupIds.length === 0) {
 						try {
 							const taxLinks = await dbAll(
-								'SELECT menu_tax_group_id as tax_group_id FROM menu_item_tax_links WHERE item_id = ?',
+								'SELECT tax_group_id FROM menu_tax_links WHERE item_id = ?',
 								[item.item_id]
 							);
 							taxGroupIds = taxLinks.map(r => r.tax_group_id);
-						} catch (e2) {}
+						} catch (e) {
+							try {
+								const taxLinks = await dbAll(
+									'SELECT menu_tax_group_id as tax_group_id FROM menu_item_tax_links WHERE item_id = ?',
+									[item.item_id]
+								);
+								taxGroupIds = taxLinks.map(r => r.tax_group_id);
+							} catch (e2) {}
+						}
 					}
 					
 					// 2. 아이템별 세금 없으면 카테고리 세금 조회
 					if (taxGroupIds.length === 0) {
 						try {
-							// 아이템의 카테고리 ID 조회
 							const menuItem = await dbGet(
 								'SELECT category_id FROM menu_items WHERE item_id = ?',
 								[item.item_id]
@@ -614,7 +730,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					
 					// 3. 카테고리 세금도 없으면 기본 세금 그룹 (id=1, Food) 사용
 					if (taxGroupIds.length === 0) {
-						taxGroupIds = [1]; // 기본 Food 세금 그룹
+						taxGroupIds = [1];
 					}
 					
 					// 세금 그룹에 연결된 세금 정보 조회
@@ -649,6 +765,100 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					item.taxDetails = [{ name: 'GST', rate: 5 }];
 				}
 			}
+
+			// 각 아이템의 프린터 그룹 정보 조회 (Reprint 라우팅용)
+			// - menu_printer_links (item-level) 우선
+			// - 없으면 category_printer_links (category-level)
+			// - 없으면 빈 배열 (print-order에서 Kitchen fallback 처리)
+			try {
+				const normalizeItemId = (raw) => {
+					const s = raw == null ? '' : String(raw).trim();
+					if (!s) return null;
+					if (/^(bagfee-|svc-|extra2-|extra3-|openprice-)/i.test(s)) return null;
+					const n = Number(s);
+					if (!Number.isFinite(n) || isNaN(n) || n <= 0) return null;
+					return n;
+				};
+
+				const numericItemIds = Array.from(new Set((items || []).map(it => normalizeItemId(it.item_id)).filter(Boolean)));
+				if (numericItemIds.length > 0) {
+					const placeholders = numericItemIds.map(() => '?').join(',');
+
+					// 1) item -> printer groups
+					const itemPrinterRows = await dbAll(
+						`SELECT item_id, printer_group_id FROM menu_printer_links WHERE item_id IN (${placeholders})`,
+						numericItemIds
+					);
+					const itemToGroups = new Map();
+					(itemPrinterRows || []).forEach(r => {
+						const iid = Number(r.item_id);
+						const gid = Number(r.printer_group_id);
+						if (!iid || !gid) return;
+						if (!itemToGroups.has(iid)) itemToGroups.set(iid, []);
+						itemToGroups.get(iid).push(gid);
+					});
+
+					// 2) item -> category
+					const itemCatRows = await dbAll(
+						`SELECT item_id, category_id FROM menu_items WHERE item_id IN (${placeholders})`,
+						numericItemIds
+					);
+					const itemToCategory = new Map();
+					const categoryIds = new Set();
+					(itemCatRows || []).forEach(r => {
+						const iid = Number(r.item_id);
+						const cid = Number(r.category_id);
+						if (!iid || !cid) return;
+						itemToCategory.set(iid, cid);
+						categoryIds.add(cid);
+					});
+
+					// 3) category -> printer groups
+					const catToGroups = new Map();
+					if (categoryIds.size > 0) {
+						const catIdsArr = Array.from(categoryIds);
+						const catPlaceholders = catIdsArr.map(() => '?').join(',');
+						const catPrinterRows = await dbAll(
+							`SELECT category_id, printer_group_id FROM category_printer_links WHERE category_id IN (${catPlaceholders})`,
+							catIdsArr
+						);
+						(catPrinterRows || []).forEach(r => {
+							const cid = Number(r.category_id);
+							const gid = Number(r.printer_group_id);
+							if (!cid || !gid) return;
+							if (!catToGroups.has(cid)) catToGroups.set(cid, []);
+							catToGroups.get(cid).push(gid);
+						});
+					}
+
+					// Attach to item rows
+					(items || []).forEach(it => {
+						// Use directly stored printer_group_id first (Extra button items)
+						if (it.printer_group_id) {
+							it.printerGroupIds = [Number(it.printer_group_id)];
+							return;
+						}
+						const iid = normalizeItemId(it.item_id);
+						if (!iid) {
+							it.printerGroupIds = [];
+							return;
+						}
+						const direct = itemToGroups.get(iid) || [];
+						if (direct.length > 0) {
+							it.printerGroupIds = Array.from(new Set(direct.map(Number)));
+							return;
+						}
+						const cid = itemToCategory.get(iid);
+						const fromCat = cid ? (catToGroups.get(cid) || []) : [];
+						it.printerGroupIds = Array.from(new Set(fromCat.map(Number)));
+					});
+				} else {
+					(items || []).forEach(it => { it.printerGroupIds = []; });
+				}
+			} catch (pgErr) {
+				try { console.warn('[Orders] Printer group lookup skipped:', pgErr?.message || pgErr); } catch {}
+				try { (items || []).forEach(it => { it.printerGroupIds = []; }); } catch {}
+			}
 			
 			// 아이템을 프론트엔드 형식으로 변환
 			const formattedItems = items.map(item => ({
@@ -674,8 +884,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				order_line_id: item.order_line_id,
 				taxRate: item.taxRate,
 				taxDetails: item.taxDetails,
+				printerGroupIds: Array.isArray(item.printerGroupIds) ? item.printerGroupIds : [],
 				itemSource: item.item_source,
 				item_source: item.item_source,
+				togo_label: item.togo_label,
+				togoLabel: !!(item.togo_label),
+				taxGroupId: item.tax_group_id || null,
+				printerGroupId: item.printer_group_id || null,
 				type: 'item'
 			}));
 			
@@ -697,7 +912,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// voids/void_lines 테이블 없을 수 있음
 		}
 		
-		res.json({ success:true, order, items: mergedItems, adjustments, voidLines });
+		let refundedTotal = 0;
+		try {
+			const refundRow = await dbGet(`SELECT COALESCE(SUM(total), 0) AS refunded_total FROM refunds WHERE order_id = ?`, [orderId]);
+			refundedTotal = Number(refundRow?.refunded_total || 0);
+		} catch {}
+		
+		res.json({ success:true, order: { ...order, refunded_total: refundedTotal }, items: mergedItems, adjustments, voidLines });
 		} catch (e) {
 			console.error('Failed to fetch order:', e);
 			res.status(500).json({ success:false, error:'Failed to fetch order' });
@@ -732,7 +953,9 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
 			const { items = [], adjustments = [], total = 0, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
+			const reqBodyForAdj = req.body || {};
 			
+			// Ensure every line has orderLineId, then merge identical (memo-aware) lines.
 			const itemsWithLineId = (Array.isArray(items) ? items : []).map((it, idx) => ({
 				...it,
 				orderLineId: ensureOrderLineId(it, idx),
@@ -743,7 +966,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// Replace items
 			await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [orderId]);
 			for (const it of mergedItems) {
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, tax, tax_rate, togo_label, tax_group_id, printer_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
@@ -757,19 +980,25 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					(it.splitNumerator || it.split_numerator || null),
 					ensureOrderLineId(it, it.id || 0),
 					Number(it.tax || 0),
-					Number(it.taxRate || it.tax_rate || 0)
+					Number(it.taxRate || it.tax_rate || 0),
+					it.togoLabel || it.togo_label ? 1 : 0,
+					it.taxGroupId || it.tax_group_id || null,
+					it.printerGroupId || it.printer_group_id || null
 				]);
 			}
 			// Replace adjustments
 			await dbRun(`DELETE FROM order_adjustments WHERE order_id = ?`, [orderId]);
 			for (const adj of (Array.isArray(adjustments) ? adjustments : [])) {
-				await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label) VALUES (?, ?, ?, ?, ?, ?)`, [
+				const { appliedByEmployeeId, appliedByName } = resolveAdjustmentAppliedBy(adj, reqBodyForAdj);
+				await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(adj.kind||''),
 					String(adj.mode||''),
 					Number(adj.value||0),
 					Number(adj.amountApplied||adj.amount_applied||0),
-					adj.label != null ? String(adj.label) : null
+					adj.label != null ? String(adj.label) : null,
+					appliedByEmployeeId,
+					appliedByName
 				]);
 			}
 			// Update order total
@@ -807,6 +1036,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				updateFields.push('kitchen_note = ?');
 				updateParams.push(kitchenNote || null);
 			}
+			if (Object.prototype.hasOwnProperty.call(req.body || {}, 'orderSource')) {
+				updateFields.push('order_source = ?');
+				updateParams.push(req.body.orderSource || null);
+			}
+			if (Object.prototype.hasOwnProperty.call(req.body || {}, 'onlineOrderNumber')) {
+				updateFields.push('online_order_number = ?');
+				updateParams.push(req.body.onlineOrderNumber ? String(req.body.onlineOrderNumber).trim() : null);
+			}
 			updateParams.push(orderId);
 			await dbRun(`UPDATE orders SET ${updateFields.join(', ')} WHERE id = ?`, updateParams);
 			await dbRun('COMMIT');
@@ -827,11 +1064,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		const mergeMap = new Map(); // signature → index in result
 		const normalizeMemoPayload = (it) => {
 			try {
+				// memo can arrive as memo/note/specialInstructions in various formats.
 				const raw = it?.memo ?? it?.note ?? it?.specialInstructions ?? '';
 				if (!raw) return { text: '', price: 0 };
+				// string: keep as text (do NOT JSON.parse unless it's actually JSON)
 				if (typeof raw === 'string') {
 					const s = raw.trim();
 					if (!s) return { text: '', price: 0 };
+					// If it looks like JSON, try parse; otherwise treat as plain memo text.
 					if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
 						try {
 							const parsed = JSON.parse(s);
@@ -839,10 +1079,13 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 							const text = txt.replace(/\s+/g, ' ').trim();
 							const price = Number(parsed?.price || parsed?.amount || 0) || 0;
 							return { text, price: Number(price.toFixed(2)) };
-						} catch {}
+						} catch {
+							// fall through to plain text
+						}
 					}
 					return { text: s.replace(/\s+/g, ' ').trim(), price: 0 };
 				}
+				// object
 				if (typeof raw === 'object') {
 					const txt = (raw.text ?? raw.note ?? raw.name ?? raw.specialInstructions ?? '').toString();
 					const text = txt.replace(/\s+/g, ' ').trim();
@@ -906,7 +1149,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				const discountKey = JSON.stringify(discount || null);
 				
 				const guestNumber = item.guestNumber || item.guest_number || 1;
-				const key = `${item.id}|${guestNumber}|${modKey}|${memoKey}|${discountKey}`;
+				const togoFlag = (item.togoLabel || item.togo_label) ? '1' : '0';
+				const key = `${item.id}|${guestNumber}|${modKey}|${memoKey}|${discountKey}|${togoFlag}`;
 
 				if (mergeMap.has(key)) {
 					const existingIdx = mergeMap.get(key);
@@ -930,6 +1174,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		return result;
 	}
 
+	// Ensure each order item line has a stable identifier.
+	// This prevents memo/modifier edits from accidentally targeting the wrong line.
 	function ensureOrderLineId(item, fallbackIndex = 0) {
 		try {
 			const existing = item?.orderLineId ?? item?.order_line_id ?? item?.order_lineId ?? null;
@@ -944,16 +1190,24 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	async function calculateOrderTaxFromDB(orderId) {
 		try {
 			// Get all applicable taxes for each order item via:
-			// 1) item-level tax links (menu_tax_links)
-			// 2) category-level tax links (category_tax_links)
+			// 1) direct tax_group_id on order_items (Extra buttons)
+			// 2) item-level tax links (menu_tax_links)
+			// 3) category-level tax links (category_tax_links)
 			const taxRows = await dbAll(`
+				SELECT oi.id as oi_id, oi.item_id, oi.price, oi.quantity,
+				       t.tax_id, t.name as tax_name, t.rate as tax_rate, 'direct' as source
+				FROM order_items oi
+				JOIN tax_group_links tgl ON oi.tax_group_id = tgl.tax_group_id
+				JOIN taxes t ON tgl.tax_id = t.tax_id
+				WHERE oi.order_id = ? AND oi.tax_group_id IS NOT NULL AND t.is_deleted = 0
+				UNION
 				SELECT oi.id as oi_id, oi.item_id, oi.price, oi.quantity,
 				       t.tax_id, t.name as tax_name, t.rate as tax_rate, 'item' as source
 				FROM order_items oi
 				JOIN menu_tax_links mtl ON CAST(oi.item_id AS TEXT) = CAST(mtl.item_id AS TEXT)
 				JOIN tax_group_links tgl ON mtl.tax_group_id = tgl.tax_group_id
 				JOIN taxes t ON tgl.tax_id = t.tax_id
-				WHERE oi.order_id = ? AND t.is_deleted = 0
+				WHERE oi.order_id = ? AND (oi.tax_group_id IS NULL) AND t.is_deleted = 0
 				UNION
 				SELECT oi.id as oi_id, oi.item_id, oi.price, oi.quantity,
 				       t.tax_id, t.name as tax_name, t.rate as tax_rate, 'category' as source
@@ -962,8 +1216,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				JOIN category_tax_links ctl ON mi.category_id = ctl.category_id
 				JOIN tax_group_links tgl ON ctl.tax_group_id = tgl.tax_group_id
 				JOIN taxes t ON tgl.tax_id = t.tax_id
-				WHERE oi.order_id = ? AND t.is_deleted = 0
-			`, [orderId, orderId]);
+				WHERE oi.order_id = ? AND (oi.tax_group_id IS NULL) AND t.is_deleted = 0
+			`, [orderId, orderId, orderId]);
 
 			// Deduplicate: same order_item + same tax_id should only be counted once
 			const seen = new Set();
@@ -996,6 +1250,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.post('/', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid, onlineOrderNumber } = req.body || {};
+			const reqBodyForAdj = req.body || {};
 			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const isPrepaidOnline = !!isPrepaid;
@@ -1003,6 +1258,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const statusToSave = (isDelivery || isPrepaidOnline) ? 'PAID' : 'PENDING';
 			const closedAtToSave = (isDelivery || isPrepaidOnline) ? createdAt : null;
 			
+			// Ensure every line has orderLineId, then merge identical (memo-aware) lines.
 			const itemsWithLineId = (Array.isArray(items) ? items : []).map((it, idx) => ({
 				...it,
 				orderLineId: ensureOrderLineId(it, idx),
@@ -1037,7 +1293,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			);
 			const orderId = result.lastID;
 			for (const it of mergedItems) {
-				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, tax, tax_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+				await dbRun(`INSERT INTO order_items(order_id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, tax, tax_rate, togo_label, tax_group_id, printer_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(it.id||''),
 					it.name||'',
@@ -1051,7 +1307,10 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					(it.splitNumerator || it.split_numerator || null),
 					ensureOrderLineId(it, it.id || 0),
 					Number(it.tax || 0),
-					Number(it.taxRate || it.tax_rate || 0)
+					Number(it.taxRate || it.tax_rate || 0),
+					it.togoLabel || it.togo_label ? 1 : 0,
+					it.taxGroupId || it.tax_group_id || null,
+					it.printerGroupId || it.printer_group_id || null
 				]);
 			}
 
@@ -1076,8 +1335,9 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			}
 			if (Array.isArray(adjustments)) {
 				for (const adj of adjustments) {
-					await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label) VALUES (?, ?, ?, ?, ?, ?)`,
-						[orderId, String(adj.kind||''), String(adj.mode||''), Number(adj.value||0), Number(adj.amountApplied||adj.amount_applied||0), adj.label != null ? String(adj.label) : null]);
+					const { appliedByEmployeeId, appliedByName } = resolveAdjustmentAppliedBy(adj, reqBodyForAdj);
+					await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						[orderId, String(adj.kind||''), String(adj.mode||''), Number(adj.value||0), Number(adj.amountApplied||adj.amount_applied||0), adj.label != null ? String(adj.label) : null, appliedByEmployeeId, appliedByName]);
 				}
 			}
 
@@ -1170,7 +1430,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				console.error('[Orders] Failed to upload to Firebase:', firebaseErr.message);
 			}
 
-			res.json({ success: true, orderId, dailyNumber, createdAt });
+			res.json({ success: true, orderId, dailyNumber, order_number: String(dailyNumber).padStart(3, '0'), createdAt });
 		} catch (e) {
 			console.error('Failed to save order:', e);
 			res.status(500).json({ success:false, error: 'Failed to save order' });

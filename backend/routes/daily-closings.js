@@ -650,7 +650,7 @@ module.exports = (db) => {
     // Refund details
     const rTf = tfPrefixed('r');
     const refundDetails = await dbAll(`
-      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.created_at,
+      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.refunded_by, r.created_at,
              o.order_number
       FROM refunds r LEFT JOIN orders o ON r.order_id = o.id
       WHERE ${rTf.where}
@@ -722,6 +722,26 @@ module.exports = (db) => {
       discountOrderCount = Number(adjCnt?.cnt || 0) + Number(jsonCnt?.cnt || 0);
     } catch (e) {
       discountOrderCount = 0;
+    }
+
+    let discountDetails = [];
+    try {
+      const oAdjTf = tfPrefixed('o');
+      discountDetails = await dbAll(`
+        SELECT oa.id, oa.order_id, oa.kind, oa.amount_applied, oa.label, oa.created_at,
+               o.order_number,
+               COALESCE(oa.applied_by_employee_id, '') AS applied_by_employee_id,
+               COALESCE(oa.applied_by_name, '') AS applied_by_name
+        FROM order_adjustments oa
+        JOIN orders o ON oa.order_id = o.id
+        WHERE ${oAdjTf.where}
+          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          AND COALESCE(oa.amount_applied, 0) > 0
+          AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
+        ORDER BY oa.created_at ASC
+      `, oAdjTf.params);
+    } catch (e) {
+      discountDetails = [];
     }
 
     // Payment order counts (Cash/Card/Other) for PAYMENT BREAKDOWN aligned counts
@@ -885,7 +905,7 @@ module.exports = (db) => {
     return {
       salesData, guestCount, gratuityTotal, paymentData, paymentMethods,
       refundData, cashRefundTotal, voidData, refundDetails, voidDetails,
-      discountData, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
+      discountData, discountDetails, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
       reservationFeeReceived, reservationFeeReceivedCount, reservationFeeApplied, reservationFeeAppliedCount,
       noShowForfeited, noShowForfeitedCount,
       gstTotal, pstTotal,
@@ -1044,13 +1064,24 @@ module.exports = (db) => {
             id: r.id, order_id: r.order_id,
             order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
             type: r.refund_type || 'FULL', total: r.total || 0,
-            payment_method: r.payment_method || '', reason: r.reason || '', created_at: r.created_at
+            payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
           })),
           void_details: (q.voidDetails || []).map(v => ({
             id: v.id, order_id: v.order_id,
             order_number: v.order_number || `#${v.order_id}`,
             total: v.grand_total || 0, source: v.source || 'partial',
             reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+          })),
+          discount_details: (q.discountDetails || []).map(d => ({
+            id: d.id,
+            order_id: d.order_id,
+            order_number: d.order_number || `#${d.order_id}`,
+            kind: d.kind || '',
+            amount_applied: d.amount_applied || 0,
+            label: d.label || '',
+            applied_by_employee_id: d.applied_by_employee_id || '',
+            applied_by_name: d.applied_by_name || '',
+            created_at: d.created_at
           })),
           // Status
           status: session.status,
@@ -2559,8 +2590,29 @@ module.exports = (db) => {
             gift_card_sold_count: q.giftCardSoldCount,
             gift_card_payment: q.giftCardPayment,
             gift_card_payment_count: q.giftCardPaymentCount,
-            refund_details: q.refundDetails || [],
-            void_details: q.voidDetails || [],
+            refund_details: (q.refundDetails || []).map(r => ({
+              id: r.id, order_id: r.order_id,
+              order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
+              type: r.refund_type || 'FULL', total: r.total || 0,
+              payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
+            })),
+            void_details: (q.voidDetails || []).map(v => ({
+              id: v.id, order_id: v.order_id,
+              order_number: v.order_number || `#${v.order_id}`,
+              total: v.grand_total || 0, source: v.source || 'partial',
+              reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+            })),
+            discount_details: (q.discountDetails || []).map(d => ({
+              id: d.id,
+              order_id: d.order_id,
+              order_number: d.order_number || `#${d.order_id}`,
+              kind: d.kind || '',
+              amount_applied: d.amount_applied || 0,
+              label: d.label || '',
+              applied_by_employee_id: d.applied_by_employee_id || '',
+              applied_by_name: d.applied_by_name || '',
+              created_at: d.created_at
+            })),
             status: session.status,
             opened_at: session.opened_at,
             closed_at: session.closed_at,

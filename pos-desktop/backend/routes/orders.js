@@ -58,6 +58,16 @@ module.exports = (db) => {
 		return false;
 	};
 
+	function resolveAdjustmentAppliedBy(adj, reqBody) {
+		const body = reqBody && typeof reqBody === 'object' ? reqBody : {};
+		const a = adj && typeof adj === 'object' ? adj : {};
+		const rawId = a.appliedByEmployeeId ?? a.applied_by_employee_id ?? body.adjustmentAppliedByEmployeeId ?? body.adjustment_applied_by_employee_id;
+		const rawName = a.appliedByName ?? a.applied_by_name ?? body.adjustmentAppliedByName ?? body.adjustment_applied_by_name;
+		const appliedByEmployeeId = rawId != null && String(rawId).trim() !== '' ? String(rawId).trim() : null;
+		const appliedByName = rawName != null && String(rawName).trim() !== '' ? String(rawName).trim() : null;
+		return { appliedByEmployeeId, appliedByName };
+	}
+
 	// one-time init: ensure tables and indexes exist (sequential)
 	(async () => {
 		try {
@@ -147,10 +157,14 @@ module.exports = (db) => {
 				value REAL,
 				amount_applied REAL,
 				label TEXT,
+				applied_by_employee_id TEXT,
+				applied_by_name TEXT,
 				created_at TEXT DEFAULT (datetime('now')),
 				FOREIGN KEY(order_id) REFERENCES orders(id)
 			)`);
 			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN label TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN applied_by_employee_id TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE order_adjustments ADD COLUMN applied_by_name TEXT`); } catch (e) { /* ignore if exists */ }
             await dbRun(`CREATE INDEX IF NOT EXISTS idx_orders_type_status_created ON orders(UPPER(order_type), status, created_at)`);
             await dbRun(`CREATE INDEX IF NOT EXISTS idx_adjustments_order_kind ON order_adjustments(order_id, kind)`);
             // Guest status persistence (paid/partial/unpaid + lock)
@@ -654,7 +668,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source, togo_label, tax_group_id, printer_group_id FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
-			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
+			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			
 			// Backfill missing order_line_id for legacy rows (makes memo targeting stable)
 			for (const row of (Array.isArray(items) ? items : [])) {
@@ -939,6 +953,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
 			const { items = [], adjustments = [], total = 0, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote } = req.body || {};
+			const reqBodyForAdj = req.body || {};
 			
 			// Ensure every line has orderLineId, then merge identical (memo-aware) lines.
 			const itemsWithLineId = (Array.isArray(items) ? items : []).map((it, idx) => ({
@@ -974,13 +989,16 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			// Replace adjustments
 			await dbRun(`DELETE FROM order_adjustments WHERE order_id = ?`, [orderId]);
 			for (const adj of (Array.isArray(adjustments) ? adjustments : [])) {
-				await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label) VALUES (?, ?, ?, ?, ?, ?)`, [
+				const { appliedByEmployeeId, appliedByName } = resolveAdjustmentAppliedBy(adj, reqBodyForAdj);
+				await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
 					orderId,
 					String(adj.kind||''),
 					String(adj.mode||''),
 					Number(adj.value||0),
 					Number(adj.amountApplied||adj.amount_applied||0),
-					adj.label != null ? String(adj.label) : null
+					adj.label != null ? String(adj.label) : null,
+					appliedByEmployeeId,
+					appliedByName
 				]);
 			}
 			// Update order total
@@ -1232,6 +1250,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.post('/', async (req, res) => {
 		try {
 			const { orderNumber, orderType, total, subtotal, tax, items = [], adjustments = [], tableId, serverId, serverName, customerPhone, customerName, readyTime, pickupMinutes, fulfillmentMode, kitchenNote, orderMode, orderSource, isPrepaid, onlineOrderNumber } = req.body || {};
+			const reqBodyForAdj = req.body || {};
 			const createdAt = getLocalDatetimeString();
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const isPrepaidOnline = !!isPrepaid;
@@ -1316,8 +1335,9 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			}
 			if (Array.isArray(adjustments)) {
 				for (const adj of adjustments) {
-					await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label) VALUES (?, ?, ?, ?, ?, ?)`,
-						[orderId, String(adj.kind||''), String(adj.mode||''), Number(adj.value||0), Number(adj.amountApplied||adj.amount_applied||0), adj.label != null ? String(adj.label) : null]);
+					const { appliedByEmployeeId, appliedByName } = resolveAdjustmentAppliedBy(adj, reqBodyForAdj);
+					await dbRun(`INSERT INTO order_adjustments(order_id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						[orderId, String(adj.kind||''), String(adj.mode||''), Number(adj.value||0), Number(adj.amountApplied||adj.amount_applied||0), adj.label != null ? String(adj.label) : null, appliedByEmployeeId, appliedByName]);
 				}
 			}
 

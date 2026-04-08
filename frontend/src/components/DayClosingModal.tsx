@@ -62,6 +62,7 @@ interface ZReportData {
   void_total: number;
   void_count: number;
   discount_total: number;
+  discount_order_count?: number;
   gift_card_sold: number;
   gift_card_sold_count: number;
   gift_card_payment: number;
@@ -74,11 +75,16 @@ interface ZReportData {
   no_show_forfeited_count: number;
   refund_details?: Array<{
     id: number; order_id: number; order_number: string; type: string;
-    total: number; payment_method: string; reason: string; created_at: string;
+    total: number; payment_method: string; reason: string; refunded_by?: string; created_at: string;
   }>;
   void_details?: Array<{
     id: number; order_id: number; order_number: string; total: number;
     source: string; reason: string; created_by: string; created_at: string;
+  }>;
+  discount_details?: Array<{
+    id: number; order_id: number; order_number: string; kind: string;
+    amount_applied: number; label: string;
+    applied_by_employee_id?: string; applied_by_name?: string; created_at: string;
   }>;
   status: string;
   opened_at?: string;
@@ -192,8 +198,9 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [isClosing, setIsClosing] = useState(false);
   const [isShiftClosing, setIsShiftClosing] = useState(false);
   const [showShiftCloseCashOk, setShowShiftCloseCashOk] = useState(false);
-  const [shiftCloseServerName, setShiftCloseServerName] = useState<string>('');
-  const [shiftEmployeeList, setShiftEmployeeList] = useState<any[]>([]);
+  /** Day Close 접근에 사용한 직원 — Shift Close는 본인만 (서버 선택 없음) */
+  const [closingAccessEmployeeName, setClosingAccessEmployeeName] = useState<string>('');
+  const [closingAccessEmployeeId, setClosingAccessEmployeeId] = useState<string>('');
   const [dayCloseMinLevel, setDayCloseMinLevel] = useState<number>(4);
   const [accessPin, setAccessPin] = useState<string>('');
   const [accessError, setAccessError] = useState<string>('');
@@ -753,6 +760,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       // Access gate: require employee PIN at open
       setAccessGranted(false);
       setAccessEmployeeLabel('');
+      setClosingAccessEmployeeName('');
+      setClosingAccessEmployeeId('');
       setAccessPin('');
       setAccessError('');
       setIsVerifyingAccess(false);
@@ -880,7 +889,9 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         body: JSON.stringify({
           countedCash: closingCashTotal,
           cashDetails: cashCounts,
-          closedBy: shiftCloseServerName || ''
+          closedBy: closingAccessEmployeeName || '',
+          serverId: closingAccessEmployeeId || '',
+          serverPin: accessPin || ''
         })
       });
       const result = await response.json();
@@ -1038,6 +1049,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           return;
         }
         setAccessEmployeeLabel(`${emp?.name || 'Employee'} (Level ${level})`);
+        setClosingAccessEmployeeName(String(emp?.name || '').trim());
+        setClosingAccessEmployeeId(String(emp?.id ?? '').trim());
         setAccessGranted(true);
       } catch (e) {
         console.error('Day Close access verify failed:', e);
@@ -1108,7 +1121,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
         {/* Access Gate Overlay */}
         {!accessGranted && (
-          <div className="absolute inset-0 z-30 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+          <div className="absolute inset-0 z-30 bg-black/60 flex items-center justify-center">
             <div className="w-[420px] max-w-[92vw] bg-white rounded-2xl shadow-2xl overflow-hidden border border-gray-200">
               <div className="px-5 py-4 bg-slate-900 text-white relative">
                 <div className="text-lg font-extrabold">Day Close Access</div>
@@ -1276,16 +1289,13 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
                       L(''); L(C('-- SALES SUMMARY --')); L(DOT());
                       const col3 = (l: any, c: any, r: any) => {
-                        const LW = 17;
-                        const CW = 6;
-                        const RW = W - LW - CW;
-                        const Lc = String(l ?? '').slice(0, LW).padEnd(LW, ' ');
-                        const Cc = String(c ?? '').slice(0, CW);
-                        const CpadL = Math.floor((CW - Cc.length) / 2);
-                        const CpadR = CW - Cc.length - CpadL;
+                        const Lc = String(l ?? '').slice(0, 20).padEnd(20, ' ');
+                        const Cc = String(c ?? '').slice(0, 6);
+                        const CpadL = Math.floor((6 - Cc.length) / 2);
+                        const CpadR = 6 - Cc.length - CpadL;
                         const Cm = ' '.repeat(Math.max(0, CpadL)) + Cc + ' '.repeat(Math.max(0, CpadR));
                         const Rc = String(r ?? '');
-                        const Rm = Rc.length > RW ? Rc.slice(0, RW) : Rc.padStart(RW, ' ');
+                        const Rm = Rc.length > 22 ? Rc.slice(0, 22) : Rc.padStart(22, ' ');
                         return Lc + Cm + Rm;
                       };
                       const salesSubtotal = Number((Number((d as any).subtotal || 0) + Number((d as any).tax_total || 0)).toFixed(2));
@@ -1321,8 +1331,34 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
                       L(''); L(C('-- ADJUSTMENTS --')); L(DOT());
                       L(col3('Refunds', `${d.refund_count || 0}`, `-${formatMoney(d.refund_total || 0)}`));
+                      if ((d as any).refund_details?.length) {
+                        for (const r of (d as any).refund_details) {
+                          const on = r.order_number || `#${r.order_id}`;
+                          L(LR(`  Order ${on}`, `-${formatMoney(r.total)}`));
+                          const rb = (r.refunded_by && String(r.refunded_by).trim()) ? String(r.refunded_by).trim() : '';
+                          if (rb) L(`    Refund by: ${rb.slice(0, 40)}`);
+                        }
+                      }
                       L(col3('Voids', `${d.void_count || 0}`, `-${formatMoney(d.void_total || 0)}`));
+                      if ((d as any).void_details?.length) {
+                        for (const v of (d as any).void_details) {
+                          const on = v.order_number || `#${v.order_id}`;
+                          L(LR(`  Order ${on}`, `-${formatMoney(v.total)}`));
+                          const vb = (v.created_by && String(v.created_by).trim()) ? String(v.created_by).trim() : '';
+                          if (vb) L(`    Void by: ${vb.slice(0, 40)}`);
+                        }
+                      }
                       L(col3('Discounts', `${(d as any).discount_order_count || 0}`, `-${formatMoney(d.discount_total || 0)}`));
+                      if ((d as any).discount_details?.length) {
+                        for (const x of (d as any).discount_details) {
+                          const on = x.order_number || `#${x.order_id}`;
+                          const lb = (x.label && String(x.label).trim()) ? String(x.label).trim().slice(0, 18) : String(x.kind || '').slice(0, 18);
+                          L(LR(`  ${on} ${lb}`, `-${formatMoney(x.amount_applied)}`));
+                          const dbn = (x.applied_by_name && String(x.applied_by_name).trim()) ? String(x.applied_by_name).trim()
+                            : (x.applied_by_employee_id && String(x.applied_by_employee_id).trim() ? String(x.applied_by_employee_id).trim() : '');
+                          if (dbn) L(`    Discount by: ${dbn.slice(0, 40)}`);
+                        }
+                      }
 
                       L(''); L(C('-- CASH DRAWER --')); L(DOT());
                       L(col3('Opening Cash', '', formatMoney(d.opening_cash || 0)));
@@ -1974,17 +2010,9 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   Cancel
                 </button>
                 <button
-                  onClick={async () => {
+                  onClick={() => {
                     setActiveTab('closing');
                     setViewMode('cash-count');
-                    setShiftCloseServerName('');
-                    try {
-                      const res = await fetch(`${API_URL}/work-schedule/employees`);
-                      if (res.ok) {
-                        const data = await res.json();
-                        setShiftEmployeeList(Array.isArray(data) ? data : (data.employees || []));
-                      }
-                    } catch (e) { /* ignore */ }
                     setShowShiftCloseCashOk(true);
                   }}
                   disabled={isLoading || isShiftClosing}
@@ -2018,40 +2046,25 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   </div>
 
                   <div className="p-5 flex-1 overflow-y-auto">
-                    {/* Server Selection */}
-                    {shiftEmployeeList.length > 0 && (
-                      <div className="mb-4">
-                        <div className="text-xs font-bold text-gray-600 mb-2">Select Server</div>
-                        <div className="flex flex-wrap gap-2">
-                          {shiftEmployeeList.map((emp: any) => (
-                            <button
-                              key={emp.id}
-                              type="button"
-                              onClick={() => setShiftCloseServerName(shiftCloseServerName === emp.name ? '' : emp.name)}
-                              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${
-                                shiftCloseServerName === emp.name
-                                  ? 'bg-orange-500 text-white shadow-md'
-                                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'
-                              }`}
-                            >
-                              {emp.name}
-                            </button>
-                          ))}
-                        </div>
+                    <div className="mb-4 rounded-xl border border-orange-200 bg-orange-50/80 px-4 py-3">
+                      <div className="text-xs font-bold text-orange-800 mb-1">Shift Close (this device)</div>
+                      <div className="text-sm text-gray-800">
+                        Closing PIN으로 들어온 직원만 적용됩니다:{' '}
+                        <span className="font-extrabold">{closingAccessEmployeeName || '—'}</span>
                       </div>
-                    )}
+                      <div className="text-[11px] text-gray-600 mt-1">
+                        리포트의 서버 팁 합계는 위 이름과 주문의 Server 이름이 일치할 때 집계됩니다.
+                      </div>
+                    </div>
                     <div className="grid grid-cols-4 gap-2 mb-4">
                       <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-200 col-span-2">
                         <div className="text-xs text-blue-700 font-bold">Counted Cash</div>
                         <div className="text-2xl font-extrabold text-blue-900">{formatCurrency(closingCashTotal)}</div>
                       </div>
                       <div className="bg-white rounded-xl p-3 border border-gray-200 col-span-2">
-                        <div className="text-xs text-gray-600 font-bold">{shiftCloseServerName ? `Server: ${shiftCloseServerName}` : 'Note'}</div>
+                        <div className="text-xs text-gray-600 font-bold">Cash count</div>
                         <div className="text-[12px] text-gray-700 leading-snug">
-                          {shiftCloseServerName
-                            ? <span>Shift report will show <span className="font-bold">{shiftCloseServerName}</span>'s tips only.</span>
-                            : <span>Enter cash counts the same as closing. Press <span className="font-bold">OK</span> to proceed.</span>
-                          }
+                          <span>Enter cash counts the same as closing. Press <span className="font-bold">OK</span> to proceed.</span>
                         </div>
                       </div>
                     </div>
@@ -2444,16 +2457,30 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     for (const r of d.refund_details) {
       L(`  Order ${r.order_number || `#${r.order_id}`}${r.reason ? ` (${r.reason})` : ''}`);
       L(LR(`    ${r.type || 'FULL'} / ${r.payment_method || 'N/A'}`, `-${formatMoney(r.total)}`));
+      const rb = (r.refunded_by && String(r.refunded_by).trim()) ? String(r.refunded_by).trim() : '';
+      if (rb) L(`    Refund by: ${rb.slice(0, 44)}`);
     }
   }
   L(LR(`Voids (${d?.void_count || 0}):`, `-${formatMoney(d?.void_total || 0)}`));
   if (d?.void_details && d.void_details.length > 0) {
     for (const v of d.void_details) {
       L(`  Order ${v.order_number || `#${v.order_id}`} [${v.source === 'entire' ? 'Entire' : 'Partial'}]${v.reason ? ` (${v.reason})` : ''}`);
-      L(LR(`    ${v.created_by || ''}`, `-${formatMoney(v.total)}`));
+      L(LR(`    Amount`, `-${formatMoney(v.total)}`));
+      const vb = (v.created_by && String(v.created_by).trim()) ? String(v.created_by).trim() : '';
+      if (vb) L(`    Void by: ${vb.slice(0, 44)}`);
     }
   }
-  L(LR('Discounts:', `-${formatMoney(d?.discount_total || 0)}`));
+  L(LR(`Discounts (${d?.discount_order_count || 0}):`, `-${formatMoney(d?.discount_total || 0)}`));
+  if (d?.discount_details && d.discount_details.length > 0) {
+    for (const x of d.discount_details) {
+      const on = x.order_number || `#${x.order_id}`;
+      const lb = (x.label && String(x.label).trim()) ? String(x.label).trim().slice(0, 24) : String(x.kind || '').slice(0, 24);
+      L(LR(`  ${on} ${lb}`, `-${formatMoney(x.amount_applied)}`));
+      const dbn = (x.applied_by_name && String(x.applied_by_name).trim()) ? String(x.applied_by_name).trim()
+        : (x.applied_by_employee_id && String(x.applied_by_employee_id).trim() ? String(x.applied_by_employee_id).trim() : '');
+      if (dbn) L(`    Discount by: ${dbn.slice(0, 44)}`);
+    }
+  }
   L('');
 
   // CASH DRAWER

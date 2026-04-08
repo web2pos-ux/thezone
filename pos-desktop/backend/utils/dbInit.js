@@ -610,6 +610,9 @@ async function initDatabase(db) {
     if (!paymentsColNames.includes('change_amount')) {
       try { await dbRun("ALTER TABLE payments ADD COLUMN change_amount REAL DEFAULT 0"); console.log('[dbInit] Added change_amount to payments'); } catch (e) { console.error('[dbInit] payments.change_amount:', e.message); }
     }
+    if (!paymentsColNames.includes('server_id')) {
+      try { await dbRun("ALTER TABLE payments ADD COLUMN server_id TEXT"); console.log('[dbInit] Added server_id to payments'); } catch (e) { console.error('[dbInit] payments.server_id:', e.message); }
+    }
 
     // Tips are NOT part of sales revenue; store them separately
     await dbRun(`CREATE TABLE IF NOT EXISTS tips (
@@ -631,6 +634,8 @@ async function initDatabase(db) {
       value REAL DEFAULT 0,
       amount_applied REAL DEFAULT 0,
       label TEXT,
+      applied_by_employee_id TEXT,
+      applied_by_name TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
     )`);
@@ -646,6 +651,12 @@ async function initDatabase(db) {
     }
     if (!oaColNames.includes('label')) {
       try { await dbRun("ALTER TABLE order_adjustments ADD COLUMN label TEXT"); console.log('[dbInit] Added label to order_adjustments'); } catch (e) { console.error(e.message); }
+    }
+    if (!oaColNames.includes('applied_by_employee_id')) {
+      try { await dbRun("ALTER TABLE order_adjustments ADD COLUMN applied_by_employee_id TEXT"); console.log('[dbInit] Added applied_by_employee_id to order_adjustments'); } catch (e) { console.error(e.message); }
+    }
+    if (!oaColNames.includes('applied_by_name')) {
+      try { await dbRun("ALTER TABLE order_adjustments ADD COLUMN applied_by_name TEXT"); console.log('[dbInit] Added applied_by_name to order_adjustments'); } catch (e) { console.error(e.message); }
     }
 
     await dbRun(`CREATE TABLE IF NOT EXISTS order_guest_status (
@@ -1060,22 +1071,21 @@ async function initDatabase(db) {
     }
 
     // 16. SYSTEM PINS
-    // Standardize on: backoffice_pin + sales_pin (both 0000 by default for this deployment).
-    // Keep compatibility with older installs by adding missing columns if needed.
+    // Default backoffice + sales PIN: 1126 (new installs). Do not overwrite existing rows on every boot.
     await dbRun(`CREATE TABLE IF NOT EXISTS system_pins (
       id INTEGER PRIMARY KEY CHECK(id=1),
-      backoffice_pin TEXT DEFAULT '0000',
-      sales_pin TEXT DEFAULT '0000',
+      backoffice_pin TEXT DEFAULT '1126',
+      sales_pin TEXT DEFAULT '1126',
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     try {
       const cols = await dbAll("PRAGMA table_info(system_pins)");
       const names = (cols || []).map(c => String(c.name));
       if (!names.includes('backoffice_pin')) {
-        await dbRun("ALTER TABLE system_pins ADD COLUMN backoffice_pin TEXT DEFAULT '0000'");
+        await dbRun("ALTER TABLE system_pins ADD COLUMN backoffice_pin TEXT DEFAULT '1126'");
       }
       if (!names.includes('sales_pin')) {
-        await dbRun("ALTER TABLE system_pins ADD COLUMN sales_pin TEXT DEFAULT '0000'");
+        await dbRun("ALTER TABLE system_pins ADD COLUMN sales_pin TEXT DEFAULT '1126'");
       }
       if (!names.includes('updated_at')) {
         await dbRun("ALTER TABLE system_pins ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP");
@@ -1084,13 +1094,8 @@ async function initDatabase(db) {
 
     const pinRow = await dbGet('SELECT id FROM system_pins WHERE id = 1');
     if (!pinRow) {
-      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0000', '0000')");
+      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '1126', '1126')");
       console.log('[dbInit] system_pins singleton row created');
-    } else {
-      // Force pins to 0000 as requested (delivery build behavior).
-      try {
-        await dbRun("UPDATE system_pins SET backoffice_pin = '0000', sales_pin = '0000', updated_at = CURRENT_TIMESTAMP WHERE id = 1");
-      } catch {}
     }
 
     // 17. VOIDS & REFUNDS
@@ -1238,20 +1243,19 @@ async function initDatabase(db) {
       console.log('[dbInit] employees table created');
     }
 
-    // Ensure an always-available Admin PIN for delivery builds (0000).
+    // Bootstrap Admin (id 5200) with default PIN 1126 if missing; migrate legacy 0000 → 1126 for that row only.
     try {
-      const has0000 = await dbGet("SELECT id FROM employees WHERE pin = '0000' AND (status IS NULL OR LOWER(status) = 'active') LIMIT 1");
-      if (!has0000) {
+      const adminRow = await dbGet("SELECT id, pin FROM employees WHERE id = '5200' LIMIT 1");
+      if (!adminRow) {
         await dbRun(
           `INSERT OR IGNORE INTO employees (id, name, role, department, pin, permit_level, status)
-           VALUES ('5200', 'Admin', 'Admin', 'Hall', '0000', 9, 'active')`
+           VALUES ('5200', 'Admin', 'Admin', 'Hall', '1126', 9, 'active')`
+        );
+      } else if (String(adminRow.pin || '') === '0000') {
+        await dbRun(
+          `UPDATE employees SET pin = '1126', status = COALESCE(status, 'active') WHERE id = '5200'`
         );
       }
-      // If the Admin record exists but has a different PIN, force it to 0000 (as requested).
-      await dbRun(
-        `UPDATE employees SET pin = '0000', status = COALESCE(status, 'active')
-         WHERE (id = '5200' OR LOWER(name) = 'admin')`
-      );
     } catch {}
 
     // Work Schedules Table
