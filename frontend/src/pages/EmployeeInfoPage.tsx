@@ -366,8 +366,8 @@ const EmployeeInfoPage = () => {
       const fullName = `${formattedFirstName} ${formattedLastName}`.trim();
       
       // Validation
-      if (!formattedFirstName || !formattedLastName) {
-        showNotification('warning', 'First Name and Last Name are required.');
+      if (!formattedFirstName) {
+        showNotification('warning', 'First Name is required.');
         return;
       }
       if (!formData.pin) {
@@ -1130,7 +1130,7 @@ const EmployeeInfoPage = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-0.5">Last Name *</label>
+                  <label className="block text-xs font-semibold text-gray-700 mb-0.5">Last Name</label>
                   <input
                     type="text"
                     value={formData.lastName || ''}
@@ -1383,7 +1383,7 @@ const EmployeeInfoPage = () => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-gray-700 mb-0.5">Last Name *</label>
+                    <label className="block text-xs font-semibold text-gray-700 mb-0.5">Last Name</label>
                     <input
                       type="text"
                       value={formData.lastName || ''}
