@@ -31,6 +31,19 @@ import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
+import { PAY_NEO } from '../utils/softNeumorphic';
+import {
+  applyModifierLayoutTemplate,
+  resolveCategoryModifierTemplateForOrderScreen,
+  parseCategoryIdFromModifierCatLayoutKey,
+} from '../utils/modifierLayoutTemplate';
+import { orderModifierEntriesByCategoryTemplate } from '../utils/orderModifierEntriesByCategoryTemplate';
+import { mergeCategoryAndDirectModifierGroupIds } from '../utils/mergeModifierGroupIds';
+import {
+  loadModifierLayoutExplicitItemIdsFromStorage,
+  persistModifierLayoutExplicitItemIds,
+  MODIFIER_LAYOUT_EXPLICIT_ITEM_IDS_LS_KEY,
+} from '../utils/modifierLayoutExplicit';
 import { PrintBillModal } from '../components/PrintBillModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
@@ -3274,6 +3287,52 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
     };
   }, [modifierLayoutByItem, modifierLayoutLoaded, saveModifierLayoutDirect]);
 
+  /** 주문 화면에서 모디파이어를 직접 옮긴 키만 per-item 레이아웃을 유지. 카테고리 템플릿이 우선. */
+  const [modifierLayoutExplicitItemIds, setModifierLayoutExplicitItemIds] = useState<Set<string>>(() =>
+    loadModifierLayoutExplicitItemIdsFromStorage()
+  );
+  const prevModifierLayoutByCategorySerializedForExplicitRef = useRef<string | null>(null);
+  useEffect(() => {
+    const serialized = JSON.stringify(layoutSettings.modifierLayoutByCategory ?? {});
+    const prev = prevModifierLayoutByCategorySerializedForExplicitRef.current;
+    if (prev !== null && prev !== serialized) {
+      setModifierLayoutExplicitItemIds(new Set());
+      try {
+        localStorage.removeItem(MODIFIER_LAYOUT_EXPLICIT_ITEM_IDS_LS_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    prevModifierLayoutByCategorySerializedForExplicitRef.current = serialized;
+  }, [layoutSettings.modifierLayoutByCategory]);
+
+  const markModifierLayoutKeyExplicit = useCallback((layoutKey: string) => {
+    const k = String(layoutKey);
+    setModifierLayoutExplicitItemIds(prev => {
+      if (prev.has(k)) return prev;
+      const next = new Set(prev);
+      next.add(k);
+      persistModifierLayoutExplicitItemIds(next);
+      return next;
+    });
+  }, []);
+
+  /** 카테고리만 선택한 채 바꾼 순서를 modifierLayoutByCategory에도 맞춰 아이템 클릭 시 동일하게 쓴다. */
+  const persistCategoryModifierTemplateFromCatLayoutKey = useCallback(
+    (layoutKey: string, reordered: string[]) => {
+      const cid = parseCategoryIdFromModifierCatLayoutKey(layoutKey, categories as any);
+      if (cid == null) return;
+      const ids = reordered.map(String);
+      const nextMap = {
+        ...((layoutSettings as any).modifierLayoutByCategory || {}),
+        [String(cid)]: ids,
+      };
+      setLayoutSettings(prev => ({ ...prev, modifierLayoutByCategory: nextMap } as any));
+      void saveLayoutSettings({ modifierLayoutByCategory: nextMap });
+    },
+    [categories, layoutSettings, setLayoutSettings, saveLayoutSettings]
+  );
+
   // 레이아웃 매니저 탭 접기/펼침 상태
   const [panelWidthExpanded, setPanelWidthExpanded] = useState(true);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
@@ -3841,16 +3900,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         ? catModsData.map((r: any) => Number(r.modifier_group_id)).filter((n: number) => !Number.isNaN(n))
         : [];
 
-      // 5) 시나리오 2 적용: 아이템에 직접 연결된 모디파이어가 있으면 그것만 표시, 없으면 카테고리 모디파이어만 표시 (병합 X)
+      // 5) 카테고리 연결 그룹 + 아이템 직접 연결 그룹 병합 (카테고리 순서 우선, 중복 그룹 ID 제거)
       const groupById: { [id: number]: any } = {};
       (allGroupsData || []).forEach((g: any) => { groupById[Number(g.id || g.group_id)] = g; });
 
-      // 직접 연결이 있으면 직접 연결만, 없으면 상속만 사용
-      const usedGroupIds: number[] = directGroupIds.length > 0 
-        ? directGroupIds 
-        : inheritedGroupIds;
+      const usedGroupIds: number[] = mergeCategoryAndDirectModifierGroupIds(
+        inheritedGroupIds,
+        directGroupIds
+      );
       
-      console.log('📂 [Item Modifier] Direct:', directGroupIds.length, 'Inherited:', inheritedGroupIds.length, '→ Using:', usedGroupIds.length);
+      console.log('📂 [Item Modifier] Direct:', directGroupIds.length, 'Inherited:', inheritedGroupIds.length, '→ merged groups:', usedGroupIds.length);
 
       const processedModifiers = usedGroupIds.map((gid) => {
         const g = groupById[gid];
@@ -5245,7 +5304,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const entries: Array<{ id: string; label: string; groupId: string; selectionType?: string; price?: number; }> = [];
     selectedItemModifiers.forEach((modifierLink: any) => {
       (modifierLink.modifiers || []).forEach((modifier: any) => {
-        const id = modifier.option_id?.toString() || modifier.modifier_id?.toString() || modifier.id?.toString();
+        const id = String(modifier.modifier_id ?? modifier.option_id ?? modifier.id ?? '');
         if (!id) return;
         entries.push({
           id,
@@ -5274,19 +5333,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   const sanitizeExistingLayout = (existing: string[] | undefined, entries: Array<{id:string}>, capacity: number) => {
     const availableIds = new Set(entries.map(e => e.id));
     const result: string[] = [];
+    const modifiersNotLoadedYet = entries.length === 0;
     if (existing && Array.isArray(existing)) {
       for (const val of existing) {
         if (val.startsWith('EMPTY:')) {
           result.push(val);
         } else if (availableIds.has(val)) {
           result.push(val);
+        } else if (modifiersNotLoadedYet) {
+          result.push(val);
         }
       }
-      Array.from(availableIds).forEach((id) => {
+      for (const id of entries.map(e => e.id)) {
         if (!result.includes(id) && result.length < capacity) {
           result.push(id);
         }
-      });
+      }
       if (result.length > capacity) {
         result.length = capacity;
       }
@@ -5303,44 +5365,135 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   // derive slot ids for current item
   const capacity = Math.max(1, layoutSettings.modifierColumns * layoutSettings.modifierRows);
   // const bagFeeActive = (tableBagFeeEnabled || isTogo);
-  let combinedEntries = getCombinedModifierEntries();
-  // Bag Fee is no longer injected into the modifier panel
-  const entryMap = new Map(combinedEntries.map(e => [e.id, e]));
   const modLayoutKey = selectedMenuItemId || (() => {
     const cat = categories.find(c => c.name === selectedCategory);
     return cat ? `__cat_${cat.category_id}` : (selectedCategory ? `__cat_${selectedCategory}` : undefined);
   })();
-  const currentItemLayout = modLayoutKey ? modifierLayoutByItem[modLayoutKey] : undefined;
+  const resolvedCategoryIdForModifierLayout =
+    selectedMenuItemId != null
+      ? (() => {
+          const it = menuItems.find(m => String(m.id) === String(selectedMenuItemId));
+          if (it && it.category_id != null) return Number(it.category_id);
+          const name = (it as any)?.category;
+          if (name) {
+            const c = categories.find(x => x.name === name);
+            if (c) return Number(c.category_id);
+          }
+          return undefined;
+        })()
+      : undefined;
+  const categoryForModifierTemplate =
+    resolvedCategoryIdForModifierLayout != null
+      ? resolvedCategoryIdForModifierLayout
+      : categories.find(c => c.name === selectedCategory)?.category_id;
+  const categoryModifierTemplate = resolveCategoryModifierTemplateForOrderScreen(
+    categoryForModifierTemplate ?? undefined,
+    selectedCategory,
+    layoutSettings.modifierLayoutByCategory,
+    modifierLayoutByItem
+  );
+  let combinedEntries = getCombinedModifierEntries();
+  combinedEntries = orderModifierEntriesByCategoryTemplate(combinedEntries, categoryModifierTemplate);
+  // Bag Fee is no longer injected into the modifier panel
+  const entryMap = new Map(combinedEntries.map(e => [e.id, e]));
+  const templateApplied = applyModifierLayoutTemplate(categoryModifierTemplate, combinedEntries);
+  const hasCategoryModifierTemplate = !!(categoryModifierTemplate && categoryModifierTemplate.length > 0);
+  const explicitModifierLayoutForKey = !!(modLayoutKey && modifierLayoutExplicitItemIds.has(String(modLayoutKey)));
+  const currentItemLayout = !modLayoutKey
+    ? undefined
+    : explicitModifierLayoutForKey
+      ? (modifierLayoutByItem[modLayoutKey] ?? templateApplied)
+      : hasCategoryModifierTemplate
+        ? (templateApplied ?? modifierLayoutByItem[modLayoutKey])
+        : (modifierLayoutByItem[modLayoutKey] ?? templateApplied);
   let slotItemIds = sanitizeExistingLayout(currentItemLayout, combinedEntries, capacity);
 
   // persist layout when dependencies change (only after DB load completes)
   useEffect(() => {
     if (!selectedMenuItemId) return;
     if (!modifierLayoutLoaded) return;
-    const sanitized = sanitizeExistingLayout(modifierLayoutByItem[selectedMenuItemId], combinedEntries, capacity);
-    const existing = (modifierLayoutByItem[selectedMenuItemId] || []).join('|');
-    const sanitizedStr = sanitized.join('|');
-    if (!modifierLayoutByItem[selectedMenuItemId] || sanitizedStr !== existing) {
-      setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: sanitized }));
-      try { localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(sanitized)); } catch {}
+    const itemStored = modifierLayoutByItem[selectedMenuItemId];
+    const categoryId = resolvedCategoryIdForModifierLayout;
+    const catTmpl = resolveCategoryModifierTemplateForOrderScreen(
+      categoryId ?? undefined,
+      selectedCategory,
+      layoutSettings.modifierLayoutByCategory,
+      modifierLayoutByItem
+    );
+    const hasCatTemplate = !!(catTmpl && catTmpl.length > 0);
+    const itemExplicit = modifierLayoutExplicitItemIds.has(String(selectedMenuItemId));
+    if (itemStored && hasCatTemplate && !itemExplicit) {
+      setModifierLayoutByItem(prev => {
+        if (!prev[selectedMenuItemId]) return prev;
+        const next = { ...prev };
+        delete next[selectedMenuItemId];
+        return next;
+      });
+      try {
+        localStorage.removeItem(getLayoutKey(selectedMenuItemId));
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    const fromTemplate = applyModifierLayoutTemplate(catTmpl, combinedEntries);
+    const baseForSanitize = itemStored ?? fromTemplate;
+    const sanitized = sanitizeExistingLayout(baseForSanitize, combinedEntries, capacity);
+    if (itemStored && (itemExplicit || !hasCatTemplate)) {
+      const existing = (itemStored || []).join('|');
+      const sanitizedStr = sanitized.join('|');
+      if (sanitizedStr !== existing) {
+        setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: sanitized }));
+        try {
+          localStorage.setItem(getLayoutKey(selectedMenuItemId), JSON.stringify(sanitized));
+        } catch {
+          // ignore
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMenuItemId, modifierLayoutLoaded, layoutSettings.modifierColumns, layoutSettings.modifierRows, selectedItemModifiers]);
+  }, [
+    selectedMenuItemId,
+    modifierLayoutLoaded,
+    layoutSettings.modifierColumns,
+    layoutSettings.modifierRows,
+    selectedItemModifiers,
+    layoutSettings.modifierLayoutByCategory,
+    modifierLayoutByItem,
+    selectedCategory,
+    modifierLayoutExplicitItemIds,
+  ]);
 
   // initialize modifier layout on item change: prefer hook state (from DB), fallback to localStorage
   useEffect(() => {
     if (!selectedMenuItemId) return;
     if (modifierLayoutByItem[selectedMenuItemId]) return;
+    const categoryId = resolvedCategoryIdForModifierLayout;
+    const catTmpl = resolveCategoryModifierTemplateForOrderScreen(
+      categoryId ?? undefined,
+      selectedCategory,
+      layoutSettings.modifierLayoutByCategory,
+      modifierLayoutByItem
+    );
+    if (catTmpl && catTmpl.length > 0) return;
     try {
       const raw = localStorage.getItem(getLayoutKey(selectedMenuItemId));
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
           setModifierLayoutByItem(prev => ({ ...prev, [selectedMenuItemId]: parsed }));
+          markModifierLayoutKeyExplicit(selectedMenuItemId);
         }
       }
     } catch {}
-  }, [selectedMenuItemId, modifierLayoutByItem]);
+  }, [
+    selectedMenuItemId,
+    modifierLayoutByItem,
+    menuItems,
+    layoutSettings.modifierLayoutByCategory,
+    selectedCategory,
+    markModifierLayoutKeyExplicit,
+  ]);
 
   const handleModifierDragEnd = (event: any) => {
     const { active, over } = event;
@@ -5364,8 +5517,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (newPos >= 0) setBagFeeSlotIndex(newPos);
     }
 
+    markModifierLayoutKeyExplicit(itemId!);
     setModifierLayoutByItem(prev => ({ ...prev, [itemId!]: reordered }));
     try { localStorage.setItem(getLayoutKey(itemId!), JSON.stringify(reordered)); } catch {}
+    if (String(itemId).startsWith('__cat_')) {
+      persistCategoryModifierTemplateFromCatLayoutKey(String(itemId), reordered);
+    }
     modDragItemIdRef.current = null;
   };
 
@@ -8905,8 +9062,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           while (cursor < ordered.length && nextIds.length < capacity) nextIds.push(ordered[cursor++]);
                           while (nextIds.length < capacity) nextIds.push(`EMPTY:${targetKey}:tail:${emptySeq++}`);
 
+                          markModifierLayoutKeyExplicit(targetKey);
                           setModifierLayoutByItem((prev: any) => ({ ...(prev || {}), [targetKey]: nextIds }));
                           try { localStorage.setItem(getLayoutKey(targetKey), JSON.stringify(nextIds)); } catch {}
+                          if (String(targetKey).startsWith('__cat_')) {
+                            persistCategoryModifierTemplateFromCatLayoutKey(String(targetKey), nextIds);
+                          }
                         } catch (err: any) {
                           console.warn('Failed to apply modifier row pattern:', err);
                           alert('Failed to apply modifier row pattern.');
@@ -10641,8 +10802,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       itemId = cat ? `__cat_${cat.category_id}` : (selectedCategory ? `__cat_${selectedCategory}` : null);
                     }
                     if (!itemId) return;
+                    markModifierLayoutKeyExplicit(itemId);
                     setModifierLayoutByItem(prev => ({ ...prev, [itemId!]: reordered }));
                     try { localStorage.setItem(getLayoutKey(itemId), JSON.stringify(reordered)); } catch {}
+                    if (String(itemId).startsWith('__cat_')) {
+                      persistCategoryModifierTemplateFromCatLayoutKey(String(itemId), reordered);
+                    }
                     modDragItemIdRef.current = null;
                   }}
                   setSelectedModifierIdForColor={(id: string) => setSelectedModifierIdForColor(id)}
@@ -10980,15 +11145,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       if (e.key === 'Escape') { e.stopPropagation(); setShowVoidModal(false); }
       if (e.key === 'Enter' && canConfirmVoid) { e.preventDefault(); handleConfirmVoid(); }
     }}>
-      <div ref={voidModalRef as any} className="bg-white rounded-xl shadow-2xl w-full max-w-[720px] p-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-lg font-bold text-gray-900">Void Items</div>
-          <button className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-11 h-11 flex items-center justify-center rounded hover:bg-gray-100 active:bg-gray-200" onClick={()=>setShowVoidModal(false)} title="Close">×</button>
+      <div
+        ref={voidModalRef as any}
+        className="w-full max-w-[720px] max-h-[90vh] overflow-y-auto rounded-2xl border-0 p-4"
+        style={PAY_NEO.modalShell}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-bold text-gray-800">Void Items</div>
+          <button
+            type="button"
+            className="flex h-11 w-11 items-center justify-center text-2xl font-bold text-gray-700 transition-[filter] active:brightness-95 touch-manipulation border-0"
+            style={PAY_NEO.raised}
+            onClick={()=>setShowVoidModal(false)}
+            title="Close"
+          >
+            ×
+          </button>
         </div>
         <div className="flex flex-col lg:flex-row gap-4">
           <div className="w-full lg:max-w-[400px] lg:flex-none space-y-3">
-            <div className="space-y-0">
-          <div className="flex items-center justify-between pb-1.5 border-b-2 border-gray-300">
+            <div className="space-y-0 rounded-[14px] p-2.5" style={PAY_NEO.inset}>
+          <div className="flex items-center justify-between pb-2 mb-1">
             <div className="text-sm font-bold text-gray-800">Select Items</div>
             <label className="text-sm flex items-center gap-2 cursor-pointer">
               <input ref={voidSelectAllRef as any} type="checkbox" className="w-5 h-5 cursor-pointer" onChange={e=>{
@@ -11017,13 +11195,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             const sel = (voidSelections as any)[key] || { checked:false, qty: Math.max(1, Number(it.quantity||1)) };
             const maxQty = Math.max(1, Number(it.quantity||1));
             return (
-                  <div key={key} className="flex items-center gap-2 py-0 px-2 hover:bg-gray-50 rounded">
+                  <div key={key} className="flex items-center gap-2 rounded-lg py-0.5 px-2 transition-[filter] hover:brightness-[0.99]">
                     <input type="checkbox" className="w-5 h-5 cursor-pointer flex-shrink-0" checked={!!sel.checked} onChange={e=>setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), checked: e.target.checked } }))} />
                     <div className="flex-1 truncate text-sm font-medium">{it.name}</div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
                         type="button"
-                        className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-2xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.max(1, sel.qty - 1);
                           setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), qty: newQty, checked: true } }));
@@ -11033,7 +11212,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                       <button
                         type="button"
-                        className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-2xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.min(maxQty, sel.qty + 1);
                           setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), qty: newQty, checked: true } }));
@@ -11073,13 +11253,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const sel = (voidSelections as any)[key] || { checked:false, qty: Math.max(1, Number(it.quantity||1)) };
                         const maxQty = Math.max(1, Number(it.quantity||1));
                         return (
-                          <div key={key} className="flex items-center gap-2 py-0 px-2 hover:bg-gray-50 rounded">
+                          <div key={key} className="flex items-center gap-2 rounded-lg py-0.5 px-2 transition-[filter] hover:brightness-[0.99]">
                             <input type="checkbox" className="w-5 h-5 cursor-pointer flex-shrink-0" checked={!!sel.checked} onChange={e=>setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), checked: e.target.checked } }))} />
                             <div className="flex-1 truncate text-sm font-medium">{it.name}</div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               <button
                                 type="button"
-                                className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-2xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.max(1, sel.qty - 1);
                                   setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), qty: newQty, checked: true } }));
@@ -11089,7 +11270,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                               <button
                                 type="button"
-                                className="w-11 h-11 flex items-center justify-center border-2 border-gray-300 rounded-lg bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 font-bold text-2xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.min(maxQty, sel.qty + 1);
                                   setVoidSelections((prev:any)=>({ ...prev, [key]: { ...(prev?.[key]||{}), qty: newQty, checked: true } }));
@@ -11111,7 +11293,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="text-sm font-semibold text-gray-800 block mb-1">Reason</label>
-                <select className="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 text-sm" value={voidReasonPreset} onChange={e=>{ setVoidReasonPreset(e.target.value); if (e.target.value !== 'Other') setVoidReason(e.target.value); }}>
+                <select
+                  className="w-full rounded-[14px] border-0 px-3 py-2.5 text-sm text-gray-800 outline-none transition-[filter] active:brightness-[0.98]"
+                  style={PAY_NEO.inset}
+                  value={voidReasonPreset}
+                  onChange={e=>{ setVoidReasonPreset(e.target.value); if (e.target.value !== 'Other') setVoidReason(e.target.value); }}
+                >
                   <option value="">Select a reason</option>
                   <option>Customer Cancel</option>
                   <option>Wrong Item</option>
@@ -11120,7 +11307,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <option>Other</option>
                 </select>
                 {voidReasonPreset === 'Other' && (
-                  <input className="mt-1.5 w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 text-sm" value={voidReason} onChange={e=>setVoidReason(e.target.value)} placeholder="Enter reason" />
+                  <input
+                    className="mt-1.5 w-full rounded-[14px] border-0 px-3 py-2.5 text-sm text-gray-800 outline-none transition-[filter] active:brightness-[0.98]"
+                    style={PAY_NEO.inset}
+                    value={voidReason}
+                    onChange={e=>setVoidReason(e.target.value)}
+                    placeholder="Enter reason"
+                  />
                 )}
               </div>
               <div>
@@ -11128,7 +11321,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <div className="relative">
                   <input 
                     ref={voidNoteInputRef}
-                    className="w-full border-2 border-gray-300 rounded-lg px-3 py-2.5 pr-12 text-sm" 
+                    className="w-full rounded-[14px] border-0 px-3 py-2.5 pr-12 text-sm text-gray-800 outline-none transition-[filter] active:brightness-[0.98]"
+                    style={PAY_NEO.inset}
                     value={voidNote} 
                     onChange={e=>setVoidNote(e.target.value)} 
                     placeholder="Note (optional)"
@@ -11138,7 +11332,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   />
                   <button
                     type="button"
-                    className="absolute inset-y-0 right-1 w-10 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                    className="absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 transition-[filter] active:brightness-95"
+                    style={PAY_NEO.key}
                     onClick={() => {
                       try {
                         voidNoteInputRef.current?.focus();
@@ -11153,18 +11348,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               </div>
             </div>
-            <div className="text-sm font-bold text-gray-900">
+            <div className="text-sm font-bold text-gray-800">
               Selected: {voidSelectionCount} • Subtotal: ${voidTotals.subtotal.toFixed(2)} • Total: ${voidTotals.total.toFixed(2)}
             </div>
           </div>
           <div className="w-full lg:w-[280px] flex-shrink-0">
-            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 shadow-inner h-full">
+            <div className="h-full rounded-[14px] border-0 p-4" style={PAY_NEO.inset}>
               <p className="text-sm font-semibold text-gray-800 mb-2">Void Authorization PIN</p>
               {requireManagerPin ? (
                 <div className="flex flex-col gap-3 items-start w-full">
                   <input
                     ref={voidPinInputRef as any}
-                    className={`w-full border-2 rounded-lg px-3 py-2.5 text-sm font-medium ${voidPinError ? 'border-red-500' : 'border-gray-300'}`}
+                    className={`w-full rounded-[14px] border-0 px-3 py-2.5 text-sm font-medium text-gray-800 outline-none ring-offset-2 transition-[filter] active:brightness-[0.98] ${voidPinError ? 'ring-2 ring-red-500 ring-offset-[#e0e5ec]' : ''}`}
+                    style={PAY_NEO.inset}
                     placeholder="Authorization PIN"
                     value={voidPin}
                     onChange={e=>{ setVoidPinError(''); setVoidPin(e.target.value.replace(/[^0-9]/g,'')); }}
@@ -11178,7 +11374,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <button
                         key={`void-pin-${num}`}
                         type="button"
-                        className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                        className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+                        style={PAY_NEO.keyPad}
                         onClick={() => handleVoidPinDigit(String(num))}
                       >
                         {num}
@@ -11186,21 +11383,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     ))}
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+                      style={PAY_NEO.keyPad}
                       onClick={handleVoidPinClear}
                     >
                       Clear
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+                      style={PAY_NEO.keyPad}
                       onClick={() => handleVoidPinDigit('0')}
                     >
                       0
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+                      style={PAY_NEO.keyPad}
                       onClick={handleVoidPinBackspace}
                     >
                       ←
@@ -11214,8 +11414,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           </div>
         </div>
         <div className="mt-3 flex items-center justify-end gap-3">
-          <button className="px-5 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-sm font-bold transition-colors min-w-[110px]" onClick={()=>setShowVoidModal(false)}>Cancel</button>
-          <button className="px-5 py-2.5 rounded-lg bg-red-600 text-white hover:bg-red-700 active:bg-red-800 disabled:bg-gray-300 disabled:text-gray-600 text-sm font-bold transition-colors min-w-[110px]" disabled={!canConfirmVoid} onClick={handleConfirmVoid}>Void</button>
+          <button
+            type="button"
+            className="min-w-[110px] rounded-[10px] border-0 px-5 py-2.5 text-sm font-bold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+            style={PAY_NEO.key}
+            onClick={()=>setShowVoidModal(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="min-w-[110px] rounded-xl border-0 px-5 py-2.5 text-sm font-bold text-white transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-40"
+            style={{
+              background: 'linear-gradient(145deg, #ef4444, #dc2626)',
+              boxShadow: '5px 5px 12px rgba(127,29,29,0.45), -3px -3px 10px rgba(255,255,255,0.22)',
+              borderRadius: 12,
+            }}
+            disabled={!canConfirmVoid}
+            onClick={handleConfirmVoid}
+          >
+            Void
+          </button>
         </div>
       </div>
     </div>

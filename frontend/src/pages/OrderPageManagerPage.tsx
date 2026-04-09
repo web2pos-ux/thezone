@@ -4,6 +4,8 @@ import { SortableContext, rectSortingStrategy, useSortable, arrayMove } from '@d
 import { CSS } from '@dnd-kit/utilities';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import { API_URL } from '../config/constants';
+import { getModifierLayoutForCategory } from '../utils/modifierLayoutTemplate';
+import { fetchComposedModifierEntries } from '../utils/composedModifierEntries';
 
 interface Category { category_id: number; name: string; }
 interface MenuItem { id: string; name: string; price: number; category_id?: number; }
@@ -232,29 +234,47 @@ const OrderPageManagerPage: React.FC = () => {
   }, [selectedCategoryId]);
 
   useEffect(() => {
-    if (!selectedItemId) { setItemModifiers([]); return; }
+    if (!selectedItemId) {
+      setItemModifiers([]);
+      return;
+    }
+    const row = menuItems.find(m => String(m.id) === String(selectedItemId));
+    const categoryIdForItem = row?.category_id ?? selectedCategoryId ?? null;
+    if (categoryIdForItem == null) {
+      setItemModifiers([]);
+      return;
+    }
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/menu/items/${selectedItemId}/options/modifier`);
-        if (res.ok) {
-          const data = await res.json();
-          const entries: ModifierEntry[] = [];
-          (Array.isArray(data) ? data : []).forEach((link: any) => {
-            (link.modifiers || []).forEach((mod: any) => {
-              const id = String(mod.option_id ?? mod.modifier_id ?? mod.id);
-              entries.push({ id, label: mod.name || mod.option_name || '', groupId: String(link.modifier_group_id), price: mod.price_delta ?? mod.price_adjustment ?? 0 });
-            });
-          });
-          setItemModifiers(entries);
-        }
-      } catch (e) { console.error(e); }
+        const catTmpl = getModifierLayoutForCategory(
+          (layoutSettings as any).modifierLayoutByCategory,
+          Number(categoryIdForItem)
+        );
+        const composed = await fetchComposedModifierEntries(
+          API_URL,
+          selectedItemId,
+          Number(categoryIdForItem),
+          catTmpl
+        );
+        const entries: ModifierEntry[] = composed.map(c => ({
+          id: c.id,
+          label: c.label,
+          groupId: c.groupId,
+          price: c.price,
+        }));
+        setItemModifiers(entries);
+      } catch (e) {
+        console.error(e);
+        setItemModifiers([]);
+      }
     })();
-  }, [selectedItemId]);
+  }, [selectedItemId, selectedCategoryId, menuItems, layoutSettings]);
 
   const mergedGroups: MergedGroup[] = (layoutSettings.mergedGroups || []) as MergedGroup[];
   const savedCategoryBarOrder = (((layoutSettings as any).categoryBarOrder || []) as string[]);
   const menuItemOrderByCategory = (((layoutSettings as any).menuItemOrderByCategory || {}) as Record<number, string[]>);
   const modifierLayoutByItemFromSettings = (((layoutSettings as any).modifierLayoutByItem || {}) as Record<string, string[]>);
+  const modifierLayoutByCategoryFromSettings = (layoutSettings as any).modifierLayoutByCategory;
 
   // 실제 Order Screen의 열 수를 그대로 사용
   const gridCols: number = useMemo(() => {
@@ -281,9 +301,18 @@ const OrderPageManagerPage: React.FC = () => {
     return menuItemOrderByCategory[catId] || [];
   }, [menuItemOrderByCategory]);
 
-  const getModifierOrder = useCallback((itemId: string): string[] => {
-    return modifierLayoutByItemFromSettings[itemId] || [];
-  }, [modifierLayoutByItemFromSettings]);
+  const getModifierOrder = useCallback(
+    (itemId: string): string[] => {
+      if (selectedCategoryId != null) {
+        const fromCat = getModifierLayoutForCategory(modifierLayoutByCategoryFromSettings, selectedCategoryId);
+        if (fromCat && fromCat.length > 0) return fromCat;
+      }
+      const fromItem = modifierLayoutByItemFromSettings[itemId];
+      if (fromItem && fromItem.length > 0) return fromItem;
+      return [];
+    },
+    [modifierLayoutByItemFromSettings, modifierLayoutByCategoryFromSettings, selectedCategoryId]
+  );
 
   const orderedCategoryRows: SortableRow[] = useMemo(() => {
     if (selectedCategoryId == null) return [];
@@ -373,34 +402,85 @@ const OrderPageManagerPage: React.FC = () => {
     setLayoutSettings(prev => ({ ...prev, menuItemOrderByCategory: map } as any));
   }, [selectedCategoryId, orderedCategoryRows, layoutSettings, setLayoutSettings]);
 
+  const stripModifierLayoutsForCurrentCategoryItems = useCallback(() => {
+    const prevMap = { ...((layoutSettings as any).modifierLayoutByItem || {}) };
+    for (const it of menuItems) {
+      delete prevMap[String(it.id)];
+    }
+    return prevMap;
+  }, [layoutSettings, menuItems]);
+
+  /** modifierLayoutByCategory는 자동 저장 시 undefined로 덮여 DB에서 사라질 수 있어, 변경 직후 명시 인자로 POST */
+  const persistModifierCategoryLayout = useCallback(
+    async (map: Record<string, string[]>, catMap: Record<string, string[]>) => {
+      try {
+        await saveLayoutSettings({
+          modifierLayoutByItem: map,
+          modifierLayoutByCategory: catMap,
+          menuItemOrderByCategory: (layoutSettings as any).menuItemOrderByCategory || {},
+        });
+      } catch (e) {
+        console.error('[OrderScreenManager] persist modifier category layout failed', e);
+      }
+    },
+    [saveLayoutSettings, layoutSettings]
+  );
+
   const insertBlankIntoModifiers = useCallback(() => {
-    if (!selectedItemId) return;
+    if (!selectedItemId || selectedCategoryId == null) return;
     const currentIds = orderedModifierRows.map(r => r.id);
     const blankId = createBlankId('modifiers');
     const insertAfter = selectedModifierRowId ? currentIds.indexOf(selectedModifierRowId) : -1;
     const next = currentIds.slice();
     if (insertAfter >= 0) next.splice(insertAfter + 1, 0, blankId);
     else next.push(blankId);
-    const map = { ...((layoutSettings as any).modifierLayoutByItem || {}) };
-    map[selectedItemId] = next;
-    setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map } as any));
-  }, [selectedItemId, orderedModifierRows, createBlankId, selectedModifierRowId, layoutSettings, setLayoutSettings]);
+    const map = stripModifierLayoutsForCurrentCategoryItems();
+    const catMap = { ...((layoutSettings as any).modifierLayoutByCategory || {}) };
+    catMap[String(selectedCategoryId)] = next;
+    setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map, modifierLayoutByCategory: catMap } as any));
+    void persistModifierCategoryLayout(map, catMap);
+  }, [
+    selectedItemId,
+    selectedCategoryId,
+    orderedModifierRows,
+    createBlankId,
+    selectedModifierRowId,
+    layoutSettings,
+    setLayoutSettings,
+    stripModifierLayoutsForCurrentCategoryItems,
+    persistModifierCategoryLayout,
+  ]);
 
-  const removeBlankFromModifiers = useCallback((blankId: string) => {
-    if (!selectedItemId) return;
-    const current = orderedModifierRows.map(r => r.id).filter(id => id !== blankId);
-    const map = { ...((layoutSettings as any).modifierLayoutByItem || {}) };
-    map[selectedItemId] = current;
-    setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map } as any));
-  }, [selectedItemId, orderedModifierRows, layoutSettings, setLayoutSettings]);
+  const removeBlankFromModifiers = useCallback(
+    (blankId: string) => {
+      if (!selectedItemId || selectedCategoryId == null) return;
+      const current = orderedModifierRows.map(r => r.id).filter(id => id !== blankId);
+      const map = stripModifierLayoutsForCurrentCategoryItems();
+      const catMap = { ...((layoutSettings as any).modifierLayoutByCategory || {}) };
+      catMap[String(selectedCategoryId)] = current;
+      setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map, modifierLayoutByCategory: catMap } as any));
+      void persistModifierCategoryLayout(map, catMap);
+    },
+    [
+      selectedItemId,
+      selectedCategoryId,
+      orderedModifierRows,
+      layoutSettings,
+      setLayoutSettings,
+      stripModifierLayoutsForCurrentCategoryItems,
+      persistModifierCategoryLayout,
+    ]
+  );
 
   const handleSave = async () => {
     setSaving(true);
     setSaveMsg('');
     try {
+      const modByCat = (layoutSettings as any).modifierLayoutByCategory;
       await saveLayoutSettings({
         modifierLayoutByItem: (layoutSettings as any).modifierLayoutByItem || {},
         menuItemOrderByCategory: (layoutSettings as any).menuItemOrderByCategory || {},
+        ...(modByCat != null ? { modifierLayoutByCategory: modByCat } : {}),
       });
       setSaveMsg('Saved successfully!');
       setTimeout(() => setSaveMsg(''), 3000);
@@ -477,16 +557,25 @@ const OrderPageManagerPage: React.FC = () => {
 
   const handleModifierDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (!over || active.id === over.id || !selectedItemId) return;
+    if (!over || active.id === over.id || !selectedItemId || selectedCategoryId == null) return;
     const ids = orderedModifierRows.map(r => r.id);
     const oldIndex = ids.indexOf(String(active.id));
     const newIndex = ids.indexOf(String(over.id));
     if (oldIndex === -1 || newIndex === -1) return;
     const newIds = arrayMove(ids, oldIndex, newIndex);
-    const map = { ...((layoutSettings as any).modifierLayoutByItem || {}) };
-    map[selectedItemId] = newIds;
-    setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map } as any));
-    console.log('[OrderScreenManager] modifier reorder', { itemId: selectedItemId, active: String(active.id), over: String(over.id), oldIndex, newIndex });
+    const map = stripModifierLayoutsForCurrentCategoryItems();
+    const catMap = { ...((layoutSettings as any).modifierLayoutByCategory || {}) };
+    catMap[String(selectedCategoryId)] = newIds;
+    setLayoutSettings(prev => ({ ...prev, modifierLayoutByItem: map, modifierLayoutByCategory: catMap } as any));
+    void persistModifierCategoryLayout(map, catMap);
+    console.log('[OrderScreenManager] modifier reorder → category template', {
+      categoryId: selectedCategoryId,
+      itemId: selectedItemId,
+      active: String(active.id),
+      over: String(over.id),
+      oldIndex,
+      newIndex,
+    });
   };
 
   const catMap = useMemo(() => new Map(categories.map(c => [String(c.category_id), c])), [categories]);

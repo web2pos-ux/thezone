@@ -130,6 +130,8 @@ export interface LayoutSettings {
   showAllCategoriesGrouped?: boolean;
   // Modifier layout by item (drag order)
   modifierLayoutByItem?: Record<string, string[]>;
+  /** Category-level modifier slot order (Order Screen Manager); merged per item when item has no override */
+  modifierLayoutByCategory?: Record<number, string[]> | Record<string, string[]>;
   // Modifier Extra Button 1 settings
   modExtra1Enabled?: boolean;
   modExtra1Name?: string;

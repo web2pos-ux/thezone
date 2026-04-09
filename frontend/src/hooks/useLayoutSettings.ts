@@ -11,6 +11,7 @@ export interface UseLayoutSettingsResult {
     itemColors?: Record<string, string>;
     modifierColors?: Record<string, string>;
     modifierLayoutByItem?: Record<string, string[]>;
+    modifierLayoutByCategory?: Record<number, string[]> | Record<string, string[]>;
     categoryOrder?: number[];
     menuItemOrderByCategory?: Record<number, string[]>;
     selectServerOnEntry?: boolean;
@@ -122,6 +123,7 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     itemColors?: Record<string, string>;
     modifierColors?: Record<string, string>;
     modifierLayoutByItem?: Record<string, string[]>;
+    modifierLayoutByCategory?: Record<number, string[]> | Record<string, string[]>;
     categoryOrder?: number[];
     menuItemOrderByCategory?: Record<number, string[]>;
     selectServerOnEntry?: boolean;
@@ -139,13 +141,25 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
     const currentModLayout = modifierLayoutRef.current;
     const modLayoutToSave = args?.modifierLayoutByItem || (Object.keys(currentModLayout).length > 0 ? currentModLayout : existing.modifierLayoutByItem);
     const { modifierColors: _mc, modifierLayoutByItem: _ml, ...safeLayoutSettings } = layoutSettings as any;
-    const payload = {
+    const payload: Record<string, any> = {
       ...existing,
       ...safeLayoutSettings,
       ...(args || {}),
       ...(modColorsToSave ? { modifierColors: modColorsToSave } : {}),
       ...(modLayoutToSave ? { modifierLayoutByItem: modLayoutToSave } : {}),
     };
+    // JSON.stringify는 value가 undefined인 키를 제거함 → 레이아웃 전체 교체 저장 시 DB에서 필드가 사라질 수 있음
+    const preserveIfUndefined = [
+      'modifierLayoutByCategory',
+      'menuItemOrderByCategory',
+      'mergedGroups',
+      'categoryBarOrder',
+    ] as const;
+    for (const key of preserveIfUndefined) {
+      if (payload[key] === undefined && existing[key] !== undefined) {
+        payload[key] = existing[key];
+      }
+    }
     const response = await fetch(`${API_URL}/layout-settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -164,8 +178,11 @@ export function useLayoutSettings(initial?: Partial<LayoutSettings>): UseLayoutS
       if (loadedModColors && typeof loadedModColors === 'object' && Object.keys(loadedModColors).length > 0) {
         setModifierColors(loadedModColors);
       }
-      if (loadedModLayout && typeof loadedModLayout === 'object' && Object.keys(loadedModLayout).length > 0) {
+      // 빈 객체도 반드시 반영 — 서버에서 per-item 레이아웃이 비워진 경우(카테고리 템플릿만 쓸 때) stale 방지
+      if (loadedModLayout && typeof loadedModLayout === 'object') {
         setModifierLayoutByItem(loadedModLayout);
+      } else {
+        setModifierLayoutByItem({});
       }
       setModifierColorsLoaded(true);
       setModifierLayoutLoaded(true);
