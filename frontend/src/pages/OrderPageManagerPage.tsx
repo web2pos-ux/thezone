@@ -5,6 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import { API_URL } from '../config/constants';
 import { getModifierLayoutForCategory } from '../utils/modifierLayoutTemplate';
+import { reorderModifierSlotIds } from '../utils/modifierSlotReorder';
 import { fetchComposedModifierEntries } from '../utils/composedModifierEntries';
 
 interface Category { category_id: number; name: string; }
@@ -562,7 +563,7 @@ const OrderPageManagerPage: React.FC = () => {
     const oldIndex = ids.indexOf(String(active.id));
     const newIndex = ids.indexOf(String(over.id));
     if (oldIndex === -1 || newIndex === -1) return;
-    const newIds = arrayMove(ids, oldIndex, newIndex);
+    const newIds = reorderModifierSlotIds(ids, oldIndex, newIndex);
     const map = stripModifierLayoutsForCurrentCategoryItems();
     const catMap = { ...((layoutSettings as any).modifierLayoutByCategory || {}) };
     catMap[String(selectedCategoryId)] = newIds;

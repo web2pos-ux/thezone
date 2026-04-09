@@ -2,6 +2,7 @@ import React from 'react';
 import { DndContext, closestCenter } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { getContrastingTextColor, isHexColor } from '../../utils/colorUtils';
+import { reorderModifierSlotIds } from '../../utils/modifierSlotReorder';
 
 const tailwindBgToHex: Record<string, string> = {
   'bg-slate-300':'#cbd5e1','bg-slate-400':'#94a3b8','bg-slate-500':'#64748b','bg-slate-600':'#475569','bg-slate-700':'#334155',
@@ -203,16 +204,7 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                   const oldIdx = current.indexOf(activeId);
                   const newIdx = current.indexOf(overId);
                   if (oldIdx !== -1 && newIdx !== -1) {
-                    const next = current.slice();
-                    const emptyToken = `EMPTY:mod:${oldIdx}:${Date.now()}`;
-                    next[oldIdx] = emptyToken;
-                    const insertIdx = next.indexOf(overId);
-                    if (insertIdx !== -1) {
-                      next.splice(insertIdx, 0, activeId);
-                    }
-                    if (next.length > current.length && next[next.length - 1].startsWith('EMPTY:') && next[next.length - 1] !== emptyToken) {
-                      next.pop();
-                    }
+                    const next = reorderModifierSlotIds(current, oldIdx, newIdx);
                     onModifierReorder(next);
                   } else {
                     handleModifierDragEnd(e);

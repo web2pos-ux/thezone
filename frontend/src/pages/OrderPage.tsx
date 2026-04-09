@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 // import { X } from 'lucide-react';
 import '../styles/scrollbar.css';
 import { PointerSensor, useSensor, useSensors, closestCenter, pointerWithin } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
+import { reorderModifierSlotIds } from '../utils/modifierSlotReorder';
 // import { CSS } from '@dnd-kit/utilities';
 import { LibraryTaxGroup, LibraryPrinterGroup } from '../types';
 import { OrderItem, MenuItem, Category, LayoutSettings } from './order/orderTypes';
@@ -5509,7 +5509,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const oldIndex = current.indexOf(activeId);
     const newIndex = current.indexOf(overId);
     if (oldIndex === -1 || newIndex === -1) return;
-    const reordered = arrayMove(current, oldIndex, newIndex);
+    const reordered = reorderModifierSlotIds(current, oldIndex, newIndex);
 
     // Persist Bag Fee global position
     if (activeId === BAG_FEE_ID || overId === BAG_FEE_ID) {
