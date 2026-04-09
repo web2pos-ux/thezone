@@ -7543,7 +7543,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     const oldIndex = current.indexOf(activeId);
     const newIndex = current.indexOf(overId);
     if (oldIndex === -1 || newIndex === -1) return;
-    const reordered = reorderModifierSlotIds(current, oldIndex, newIndex);
+    const reordered = reorderModifierSlotIds(current, oldIndex, newIndex, {
+      modifierColumns: Math.max(1, Number(layoutSettings.modifierColumns) || 1),
+      modifierRows: Math.max(1, Number(layoutSettings.modifierRows) || 1),
+    });
 
     // Persist Bag Fee global position
     if (activeId === BAG_FEE_ID || overId === BAG_FEE_ID) {

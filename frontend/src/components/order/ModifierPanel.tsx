@@ -204,7 +204,10 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                   const oldIdx = current.indexOf(activeId);
                   const newIdx = current.indexOf(overId);
                   if (oldIdx !== -1 && newIdx !== -1) {
-                    const next = reorderModifierSlotIds(current, oldIdx, newIdx);
+                    const next = reorderModifierSlotIds(current, oldIdx, newIdx, {
+                      modifierColumns: Math.max(1, Number(layoutSettings.modifierColumns) || 1),
+                      modifierRows: Math.max(1, Number(layoutSettings.modifierRows) || 1),
+                    });
                     onModifierReorder(next);
                   } else {
                     handleModifierDragEnd(e);
