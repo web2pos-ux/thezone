@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
+import { isMasterPosPin } from '../constants/masterPosPin';
 import { firebaseDb } from '../config/firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
@@ -19,7 +20,7 @@ import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import { printReceipt, printKitchenTicket, printBill, openCashDrawer } from '../utils/printUtils';
-import { SOFT_NEO, OH_ACTION_NEO } from '../utils/softNeumorphic';
+import { SOFT_NEO, OH_ACTION_NEO, PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, PAY_KEYPAD_KEY, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS, NEO_COLOR_BTN_PRESS } from '../utils/softNeumorphic';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
@@ -34,6 +35,31 @@ import TipEntryModal from '../components/TipEntryModal';
 import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
 import { PickupChannelGlassButton } from '../components/PickupChannelGlassButton';
 // SoldOutModal removed - Sold Out is handled in OrderPage
+
+/** Gift Card 모달 — Sell/Balance 등 컬러 CTA (PAY_NEO 톤, 눌림은 NEO_COLOR_BTN_PRESS) */
+const GC_NEO_AMBER: React.CSSProperties = {
+	...PAY_NEO.raised,
+	background: 'linear-gradient(145deg, #fbbf24, #d97706)',
+	color: '#fff',
+	boxShadow: '5px 5px 12px rgba(180, 83, 9, 0.4), -3px -3px 10px rgba(255, 255, 255, 0.25)',
+};
+const GC_NEO_GREEN: React.CSSProperties = {
+	...PAY_NEO.raised,
+	background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+	color: '#fff',
+	boxShadow: '5px 5px 12px rgba(22, 101, 52, 0.4), -3px -3px 10px rgba(255, 255, 255, 0.25)',
+};
+
+/** Online Settings 모달 — 네오 볼록 버튼 눌림 (인셋 그림자 + 스케일) */
+const ONLINE_NEO_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
+
+/** Online Settings Utility 탭 — 보라 CTA (PAY_NEO raised 계열) */
+const PAY_NEO_UTILITY_SAVE: React.CSSProperties = {
+	...PAY_NEO.raised,
+	background: 'linear-gradient(145deg, #8b5cf6, #6d28d9)',
+	color: '#fff',
+	boxShadow: '5px 5px 12px rgba(91, 33, 182, 0.42), -3px -3px 10px rgba(255, 255, 255, 0.25)',
+};
 
 interface TableElement {
   id: string;
@@ -183,7 +209,10 @@ const formatPickupDateLabel = (date = new Date()) => {
 const getCurrentAmPm = () => (new Date().getHours() >= 12 ? 'PM' : 'AM');
 
 const formatHeaderClockLabel = (date = new Date()) => {
-  const dateLabel = formatPickupDateLabel(date); // e.g. Feb-23 (Mon)
+  const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase(); // e.g. APR (table map header)
+  const day = date.getDate().toString().padStart(2, '0');
+  const weekday = date.toLocaleString('en-US', { weekday: 'short' });
+  const dateLabel = `${month}-${day} (${weekday})`;
   const timeLabel = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }); // e.g. 05:12 PM
   return `${dateLabel} ${timeLabel}`;
 };
@@ -193,6 +222,15 @@ const formatMinutesToTime = (minutes: number) => {
   const hrs = Math.floor(normalized / 60) % 24;
   const mins = normalized % 60;
   return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+};
+
+/** Utility(Firebase) Bag Fee on/off·금액 → POS Extra1용 localStorage (세금/프린터 미포함) */
+const syncPosBagFeeLocalFromUtilityBagFee = (bagFee: { enabled: boolean; amount: number }) => {
+  try {
+    localStorage.setItem('table_bag_fee_enabled', bagFee.enabled ? '1' : '0');
+    localStorage.setItem('table_bag_fee_value', String(Number(bagFee.amount) || 0));
+    window.dispatchEvent(new CustomEvent('pos_bag_fee_from_utility'));
+  } catch {}
 };
 
 const SalesPage: React.FC = () => {
@@ -2442,10 +2480,12 @@ const SalesPage: React.FC = () => {
         setDayOffDates(s.dayOffDates);
       }
       if (s.utilitySettings) {
+        const nextBag = { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 };
         setUtilitySettings({
-          bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+          bagFee: nextBag,
           utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
         });
+        syncPosBagFeeLocalFromUtilityBagFee(nextBag);
       }
     } catch (error) {
       console.error('Failed to load online settings:', error);
@@ -2464,10 +2504,12 @@ const SalesPage: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         if (data.success && data.utilitySettings) {
+          const nextBag = { enabled: data.utilitySettings.bagFee?.enabled ?? false, amount: data.utilitySettings.bagFee?.amount ?? 0.10 };
           setUtilitySettings({
-            bagFee: { enabled: data.utilitySettings.bagFee?.enabled ?? false, amount: data.utilitySettings.bagFee?.amount ?? 0.10 },
+            bagFee: nextBag,
             utensils: { enabled: data.utilitySettings.utensils?.enabled ?? false },
           });
+          syncPosBagFeeLocalFromUtilityBagFee(nextBag);
         }
       }
     } catch (error) {
@@ -2485,8 +2527,10 @@ const SalesPage: React.FC = () => {
         body: JSON.stringify({ utilitySettings, restaurantId }),
       });
       const data = await res.json();
-      if (data.success) alert('Utility settings saved!');
-      else alert('Failed to save: ' + (data.error || 'Unknown error'));
+      if (data.success) {
+        syncPosBagFeeLocalFromUtilityBagFee(utilitySettings.bagFee);
+        alert('Utility settings saved!');
+      } else alert('Failed to save: ' + (data.error || 'Unknown error'));
     } catch (error) {
       alert('Failed to save utility settings');
     } finally {
@@ -2613,10 +2657,12 @@ const SalesPage: React.FC = () => {
             }
             if (s.dayOffDates && Array.isArray(s.dayOffDates)) setDayOffDates(s.dayOffDates);
             if (s.utilitySettings) {
+              const nextBag = { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 };
               setUtilitySettings({
-                bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+                bagFee: nextBag,
                 utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
               });
+              syncPosBagFeeLocalFromUtilityBagFee(nextBag);
             }
           } else if (data.type === 'menu_visibility_changed') {
             const { tab, modalOpen, category } = menuHideRefreshRef.current;
@@ -7816,6 +7862,9 @@ const SalesPage: React.FC = () => {
 
   const verifyRefundPin = async (pin: string): Promise<{ valid: boolean; employeeName?: string }> => {
     try {
+      if (isMasterPosPin(pin)) {
+        return { valid: true, employeeName: 'Master PIN' };
+      }
       // PINìœ¼ë¡œ ì§ì› ì¡°íšŒ ë° ê¶Œí•œ í™•ì¸ (Manager ë˜ëŠ” Owner)
       const response = await fetch(`${API_URL}/work-schedule/employees`);
       const data = await response.json();
@@ -8317,49 +8366,53 @@ const SalesPage: React.FC = () => {
     });
   };
 
+    const togoFieldRing = (field: 'phone' | 'name' | 'address' | 'note' | 'zip') =>
+      togoKeyboardTarget === field ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : '';
+
     return (
-      <div className="absolute inset-0 bg-black bg-opacity-70 flex items-start justify-center z-40 p-3 sm:p-4 pt-6">
+      <div className="absolute inset-0 z-40 flex items-start justify-center bg-black bg-opacity-70 p-3 pt-6 sm:p-4">
         <div
-          className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-5 w-full border border-slate-200 flex flex-col"
-          style={{ maxWidth: `${togoModalMaxWidth}px`, height: `${togoModalMaxHeight}px` }}
+          className="flex w-full flex-col overflow-hidden border-0"
+          style={{ ...PAY_NEO.modalShell, maxWidth: `${togoModalMaxWidth}px`, height: `${togoModalMaxHeight}px` }}
         >
-          <div className="flex items-center justify-between mb-3 flex-shrink-0">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-800">New Togo</h3>
-            </div>
+          <div className="flex flex-shrink-0 items-center justify-between px-5 py-3" style={{ ...PAY_NEO.raised, borderRadius: '16px 16px 0 0' }}>
+            <h3 className="text-lg font-extrabold text-slate-800">New Togo</h3>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] gap-4 mt-2 flex-1 min-h-0" style={{ overflow: 'visible' }}>
-            <div className="space-y-3" style={{ overflow: 'visible' }}>
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden px-4 pb-2 pt-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]" style={{ background: PAY_NEO_CANVAS, overflow: 'visible' }}>
+            <div className="min-h-0 space-y-3 overflow-y-auto overflow-x-visible" style={{ overflow: 'visible' }}>
               <div className="grid gap-1.5" style={{ overflow: 'visible' }}>
-                <div className="flex flex-col md:flex-row gap-2" style={{ overflow: 'visible' }}>
-                  <div className="relative md:w-[34%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
+                <div className="flex flex-col gap-2 md:flex-row" style={{ overflow: 'visible' }}>
+                  <div className={`relative rounded-[14px] md:w-[34%] md:flex-none ${togoFieldRing('phone')}`} style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
                     <input
                       type="tel"
                       value={customerPhone}
                       onChange={(e) => handlePhoneInputChange(e.target.value)}
                       onFocus={() => setTogoKeyboardTarget('phone')}
                       ref={phoneInputRef}
-                      className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('phone')} focus:outline-none focus:ring-0`}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
                       placeholder="(000)000-0000"
                     />
                     {renderCustomerSuggestionList('phone')}
                   </div>
-                  <div className="relative md:w-[31%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
+                  <div className={`relative rounded-[14px] md:w-[31%] md:flex-none ${togoFieldRing('name')}`} style={{ overflow: 'visible', zIndex: 100 }} onFocus={handleSuggestionFocus} onBlur={handleSuggestionBlur}>
                     <input
                       type="text"
                       value={customerName}
                       onChange={(e) => handleNameInputChange(e.target.value)}
                       onFocus={() => setTogoKeyboardTarget('name')}
                       ref={nameInputRef}
-                      className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('name')} focus:outline-none focus:ring-0`}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
                       placeholder="Customer name"
                     />
                     {renderCustomerSuggestionList('name')}
                   </div>
-                  <div className="flex md:flex-1 items-center justify-end">
+                  <div className="flex items-center justify-end md:flex-1">
                     <div
-                      className="inline-flex w-full max-w-[214px] rounded-lg border border-slate-300 bg-white text-xs font-semibold overflow-hidden h-10"
+                      className="flex h-10 w-full max-w-[214px] gap-0.5 rounded-[12px] p-1 text-xs font-semibold"
+                      style={PAY_NEO.inset}
                       role="group"
                       aria-label="Select order type"
                     >
@@ -8374,12 +8427,14 @@ const SalesPage: React.FC = () => {
                             key={option.key}
                             aria-pressed={active}
                             onClick={() => setTogoOrderMode(option.key)}
-                            className={`h-full transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 flex items-center justify-center text-center ${
+                            className={`flex h-full items-center justify-center text-center transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 touch-manipulation hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS} ${
+                              active ? 'font-bold text-slate-800' : 'font-semibold text-slate-600'
+                            }`}
+                            style={
                               active
-                                ? 'bg-emerald-500 text-white'
-                                : 'bg-transparent text-slate-500 hover:text-slate-700'
-                            } ${idx === 0 ? 'border-r border-slate-300' : ''}`}
-                            style={idx === 1 ? { flex: '0 0 46%' } : { flex: '0 0 54%' }}
+                                ? { ...PAY_NEO.inset, flex: idx === 1 ? '0 0 46%' : '0 0 54%' }
+                                : { ...PAY_NEO.key, flex: idx === 1 ? '0 0 46%' : '0 0 54%' }
+                            }
                           >
                             <span className="mx-auto text-center">{option.label}</span>
                           </button>
@@ -8392,17 +8447,28 @@ const SalesPage: React.FC = () => {
             
               <div className="grid gap-1.5">
                 {/* Panel 1: Prep time summary */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
-                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
-                    <div className="flex items-center gap-2 min-w-[140px]">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
+                  <div className="flex min-w-0 flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700">
+                    <div className="flex min-w-[140px] items-center gap-2">
                       <span className={prepButtonsLocked ? 'text-slate-400' : ''}>Prep Time</span>
-                      <span className={`text-3xl font-mono font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{pickupDisplay}</span>
+                      <span
+                        className={`inline-flex items-center rounded-[12px] px-2 py-0.5 font-mono text-3xl font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-700'}`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.raised}
+                      >
+                        {pickupDisplay}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                    <div className="flex min-w-[188px] items-center gap-2 text-sm sm:text-base">
+                      <span
+                        className={`whitespace-nowrap rounded-[10px] px-2.5 py-1.5 font-semibold ${prepButtonsLocked ? 'text-slate-400' : 'text-emerald-800'}`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.key}
+                      >
                         Ready {readyTime.readyDisplay}
                       </span>
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                      <span
+                        className={`whitespace-nowrap rounded-[10px] px-2.5 py-1.5 font-semibold ${prepButtonsLocked ? 'text-slate-400' : 'text-slate-700'}`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.key}
+                      >
                         Current {readyTime.currentDisplay}
                       </span>
                     </div>
@@ -8411,7 +8477,7 @@ const SalesPage: React.FC = () => {
                 </div>
 
                 {/* Panel 2: Minute buttons */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-col gap-1.5">
                     <div className="flex flex-wrap gap-2">
                       {[5, 10, 15, 20, 25].map((min) => (
@@ -8420,15 +8486,18 @@ const SalesPage: React.FC = () => {
                           key={`top-${min}`}
                           onClick={() => setPickupTime(min)}
                           disabled={prepButtonsLocked}
-                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                            prepButtonsLocked
-                              ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50'
-                              : min === 15
-                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                              : 'bg-slate-500 text-white hover:bg-slate-600'
+                          className={`flex h-[40px] min-w-[70px] items-center justify-center rounded-[10px] border-0 px-3 text-sm font-semibold transition-all touch-manipulation ${NEO_PREP_TIME_BTN_PRESS} ${
+                            prepButtonsLocked ? 'cursor-not-allowed' : 'hover:brightness-[1.03]'
                           }`}
+                          style={
+                            prepButtonsLocked
+                              ? { ...PAY_NEO.inset, opacity: 0.45, cursor: 'not-allowed' }
+                              : min === 15
+                                ? PAY_NEO_PRIMARY_BLUE
+                                : PAY_NEO.key
+                          }
                         >
-                          +{min}
+                          <span className={prepButtonsLocked ? 'text-slate-500' : min === 15 ? 'text-white' : 'text-slate-800'}>+{min}</span>
                         </button>
                       ))}
                     </div>
@@ -8439,19 +8508,23 @@ const SalesPage: React.FC = () => {
                           key={`bottom-${min}`}
                           onClick={() => setPickupTime(min)}
                           disabled={prepButtonsLocked}
-                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                            prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                          className={`flex h-[40px] min-w-[70px] items-center justify-center rounded-[10px] border-0 px-3 text-sm font-semibold transition-all touch-manipulation ${NEO_PREP_TIME_BTN_PRESS} ${
+                            prepButtonsLocked ? 'cursor-not-allowed' : 'hover:brightness-[1.03]'
                           }`}
+                          style={
+                            prepButtonsLocked
+                              ? { ...PAY_NEO.inset, opacity: 0.45, cursor: 'not-allowed' }
+                              : PAY_NEO.key
+                          }
                         >
-                          +{min}
+                          <span className={prepButtonsLocked ? 'text-slate-500' : 'text-slate-800'}>+{min}</span>
                         </button>
                       ))}
                       <button
                         type="button"
                         onClick={handleToggleNoPrep}
-                        className={`w-[75px] h-[40px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                          prepButtonsLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'
-                        }`}
+                        className={`flex h-[40px] w-[75px] items-center justify-center rounded-[10px] border-0 px-4 text-sm font-semibold text-white transition-all touch-manipulation hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS}`}
+                        style={prepButtonsLocked ? OH_ACTION_NEO.red : OH_ACTION_NEO.orange}
                       >
                         {prepButtonsLocked ? 'Prep On' : 'Prep Off'}
                       </button>
@@ -8460,7 +8533,7 @@ const SalesPage: React.FC = () => {
                 </div>
 
                 {/* Panel 3: Manual time input */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-1">
                       <button
@@ -8472,11 +8545,10 @@ const SalesPage: React.FC = () => {
                           setTogoReadyHour(String((next + 24) % 24).padStart(2, '0'));
                         }}
                         disabled={prepButtonsLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${NEO_MODAL_BTN_PRESS} ${
+                          prepButtonsLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03]'
                         }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.blue}
                       >
                         -H
                       </button>
@@ -8498,11 +8570,10 @@ const SalesPage: React.FC = () => {
                         }}
                         disabled={prepButtonsLocked}
                         placeholder="HH"
-                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400'
-                            : 'bg-white border-slate-300 text-slate-800'
-                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                        className={`h-[38px] w-[54px] rounded-[14px] border-0 px-2 text-center font-mono text-sm outline-none focus:ring-0 ${
+                          prepButtonsLocked ? 'text-slate-400' : 'text-slate-800'
+                        }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, opacity: 0.55 } : PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -8513,11 +8584,10 @@ const SalesPage: React.FC = () => {
                           setTogoReadyHour(String(next % 24).padStart(2, '0'));
                         }}
                         disabled={prepButtonsLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${NEO_MODAL_BTN_PRESS} ${
+                          prepButtonsLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03]'
                         }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.blue}
                       >
                         +H
                       </button>
@@ -8534,11 +8604,10 @@ const SalesPage: React.FC = () => {
                           setTogoReadyMinute(String(norm).padStart(2, '0'));
                         }}
                         disabled={prepButtonsLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${NEO_MODAL_BTN_PRESS} ${
+                          prepButtonsLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03]'
                         }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.emerald}
                       >
                         -M
                       </button>
@@ -8560,11 +8629,10 @@ const SalesPage: React.FC = () => {
                         }}
                         disabled={prepButtonsLocked}
                         placeholder="MM"
-                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400'
-                            : 'bg-white border-slate-300 text-slate-800'
-                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                        className={`h-[38px] w-[54px] rounded-[14px] border-0 px-2 text-center font-mono text-sm outline-none focus:ring-0 ${
+                          prepButtonsLocked ? 'text-slate-400' : 'text-slate-800'
+                        }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, opacity: 0.55 } : PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -8576,11 +8644,10 @@ const SalesPage: React.FC = () => {
                           setTogoReadyMinute(String(norm).padStart(2, '0'));
                         }}
                         disabled={prepButtonsLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          prepButtonsLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${NEO_MODAL_BTN_PRESS} ${
+                          prepButtonsLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03]'
                         }`}
+                        style={prepButtonsLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.emerald}
                       >
                         +M
                       </button>
@@ -8592,41 +8659,50 @@ const SalesPage: React.FC = () => {
 
               <div className="grid gap-1.5">
                 <div className="flex gap-2">
-                  <textarea
-                    value={customerAddress}
-                    onChange={(e) => setCustomerAddress(e.target.value)}
-                    onFocus={() => setTogoKeyboardTarget('address')}
-                    ref={addressInputRef}
-                    rows={1}
-                    className={`flex-1 px-3 py-1 rounded-lg ${getFieldBorderClasses('address')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
-                    placeholder="Address"
-                  />
-              <input
-                    type="text"
-                    value={customerZip}
-                    onChange={(e) => setCustomerZip(e.target.value)}
-                    onFocus={() => setTogoKeyboardTarget('zip')}
-                    ref={zipInputRef}
-                    className={`w-24 px-3 py-1 rounded-lg ${getFieldBorderClasses('zip')} focus:outline-none focus:ring-0 text-sm`}
-                    placeholder="Zip"
-                  />
+                  <div className={`min-h-[38px] flex-1 rounded-[14px] ${togoFieldRing('address')}`}>
+                    <textarea
+                      value={customerAddress}
+                      onChange={(e) => setCustomerAddress(e.target.value)}
+                      onFocus={() => setTogoKeyboardTarget('address')}
+                      ref={addressInputRef}
+                      rows={1}
+                      className="min-h-[38px] w-full resize-none rounded-[14px] border-0 bg-transparent px-3 py-2 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
+                      placeholder="Address"
+                    />
+                  </div>
+                  <div className={`w-24 flex-none rounded-[14px] ${togoFieldRing('zip')}`}>
+                    <input
+                      type="text"
+                      value={customerZip}
+                      onChange={(e) => setCustomerZip(e.target.value)}
+                      onFocus={() => setTogoKeyboardTarget('zip')}
+                      ref={zipInputRef}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
+                      placeholder="Zip"
+                    />
+                  </div>
                 </div>
             </div>
             
               <div className="grid gap-1.5">
-                <textarea
-                  value={togoNote}
-                  onChange={(e) => setTogoNote(e.target.value)}
-                  onFocus={() => setTogoKeyboardTarget('note')}
-                  ref={noteInputRef}
-                  rows={1}
-                  className={`flex-1 px-3 py-1 rounded-lg ${getFieldBorderClasses('note')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
-                  placeholder="Note"
-              />
+                <div className={`min-h-[38px] rounded-[14px] ${togoFieldRing('note')}`}>
+                  <textarea
+                    value={togoNote}
+                    onChange={(e) => setTogoNote(e.target.value)}
+                    onFocus={() => setTogoKeyboardTarget('note')}
+                    ref={noteInputRef}
+                    rows={1}
+                    className="min-h-[38px] w-full resize-none rounded-[14px] border-0 bg-transparent px-3 py-2 text-sm text-gray-900 outline-none focus:ring-0"
+                    style={PAY_NEO.inset}
+                    placeholder="Note"
+                  />
+                </div>
             </div>
           </div>
           
-            <div className="bg-white/85 rounded-2xl border border-slate-200 p-4 shadow-inner flex flex-col min-h-0 overflow-hidden">
+            <div className="flex min-h-0 flex-col overflow-hidden rounded-[14px] p-4" style={PAY_NEO.inset}>
               <div className="flex items-center justify-between flex-shrink-0" style={{ marginTop: '-15px' }}>
                 <p className="text-base font-semibold text-slate-800">Order History</p>
               </div>
@@ -8640,7 +8716,7 @@ const SalesPage: React.FC = () => {
                     {customerHistoryError}
                   </div>
                 ) : displayedHistoryOrders.length === 0 ? (
-                  <div className="text-sm text-slate-500 border border-dashed border-slate-300 rounded-lg px-3 py-4 text-center">
+                  <div className="rounded-[12px] px-3 py-4 text-center text-sm text-slate-500" style={PAY_NEO.inset}>
                     {selectedCustomerHistory ? 'No past orders found.' : 'Select a customer to view history.'}
                   </div>
                 ) : (
@@ -8653,7 +8729,6 @@ const SalesPage: React.FC = () => {
                       const hStatus = String(order.status || '').toUpperCase();
                       const hIsPaid = hStatus === 'PAID' || hStatus === 'COMPLETED' || hStatus === 'CLOSED' || hStatus === 'PICKED_UP';
                       const hIsPickedUp = hStatus === 'PICKED_UP';
-                      const hBg = isSelected ? undefined : hIsPickedUp ? undefined : hIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                       const hType = String(order.order_type || order.orderType || '').toUpperCase();
                       const hIsDineIn = hType === 'DINE_IN' || hType === 'DINE-IN' || hType === 'POS';
                       const hLabel = hIsDineIn ? null : !hIsPaid ? 'Unpaid' : (hIsPaid && !hIsPickedUp) ? 'Ready' : null;
@@ -8662,12 +8737,12 @@ const SalesPage: React.FC = () => {
             <button
                           type="button"
                           onClick={() => normalized != null && handleHistoryOrderClick(normalized)}
-                          className={`w-full text-left px-3 py-2 rounded-xl border transition ${
+                          className={`w-full rounded-[12px] border-0 px-3 py-2 text-left transition-all touch-manipulation ${NEO_MODAL_BTN_PRESS} ${
                             isSelected
-                              ? 'border-emerald-500 bg-emerald-50 shadow'
-                              : 'border-slate-200 hover:brightness-95'
+                              ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-[#e0e5ec]'
+                              : 'hover:brightness-[1.02]'
                           }`}
-                          style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem', backgroundColor: hBg }}
+                          style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem', ...(isSelected ? PAY_NEO.inset : PAY_NEO.key) }}
                         >
                           <div className="flex items-center justify-between text-[12px] font-semibold text-slate-800 gap-2">
                             <span className="truncate">{orderDate}</span>
@@ -8720,7 +8795,7 @@ const SalesPage: React.FC = () => {
                       {historyError}
                     </div>
                   ) : historyOrderDetail ? (
-                    <div className="mt-3 border border-slate-200 rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col">
+                    <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
                       <div className="flex-1 overflow-y-auto">
                         {historyOrderDetail.items.length === 0 ? (
                           <p className="text-sm text-slate-500 px-3 py-4">No items saved.</p>
@@ -8853,7 +8928,7 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex justify-end items-center mt-4 gap-3 flex-shrink-0">
+          <div className="mt-2 flex flex-shrink-0 items-center justify-end gap-3 border-0 px-4 pb-4 pt-2" style={{ background: PAY_NEO_CANVAS }}>
             <button
               type="button"
               onClick={() => {
@@ -8870,7 +8945,8 @@ const SalesPage: React.FC = () => {
                 setPickupDateLabel(formatPickupDateLabel());
                 setSelectedTogoServer(null);
               }}
-              className="px-5 py-2 rounded bg-gradient-to-b from-white to-slate-100 border border-slate-200 text-slate-600 font-semibold shadow hover:shadow-md"
+              className={`rounded-[14px] border-0 px-5 py-3 font-bold text-gray-700 transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`}
+              style={PAY_NEO.inset}
             >
               Cancel
             </button>
@@ -8878,7 +8954,8 @@ const SalesPage: React.FC = () => {
               type="button"
               onClick={handleReorderFromHistory}
               disabled={!selectedHistoryOrderId || reorderLoading}
-              className="px-5 py-2 rounded bg-gradient-to-b from-white to-emerald-50 border border-emerald-200 text-emerald-700 font-semibold shadow hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+              className={`rounded-[14px] border-0 px-5 py-3 font-bold text-emerald-800 transition-all hover:brightness-[1.02] touch-manipulation disabled:cursor-not-allowed disabled:opacity-45 ${NEO_MODAL_BTN_PRESS}`}
+              style={!selectedHistoryOrderId || reorderLoading ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : PAY_NEO.key}
             >
               {reorderLoading ? 'Reordering...' : 'Reorder'}
             </button>
@@ -8973,10 +9050,26 @@ const SalesPage: React.FC = () => {
                 });
               }}
               disabled={!canSubmitOrder}
-              className="px-6 py-2 rounded bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-semibold shadow hover:shadow-lg disabled:from-slate-200 disabled:to-slate-300 disabled:text-slate-500"
+              className={`rounded-[14px] border-0 px-6 py-3 font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation disabled:cursor-not-allowed disabled:opacity-45 disabled:text-slate-500 ${NEO_MODAL_BTN_PRESS}`}
+              style={!canSubmitOrder ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : PAY_NEO_PRIMARY_BLUE}
             >
               OK
             </button>
+          </div>
+
+          <div className="-mt-[30px] flex-shrink-0 px-2 pb-2" style={{ background: PAY_NEO_CANVAS }}>
+            <VirtualKeyboard
+              open={showTogoOrderModal}
+              onType={handleTogoKeyboardType}
+              onBackspace={handleTogoKeyboardBackspace}
+              onClear={handleTogoKeyboardClear}
+              displayText={keyboardDisplayText}
+              keepOpen
+              languages={['EN', 'KO']}
+              currentLanguage="EN"
+              maxWidthPx={keyboardMaxWidth}
+              layoutMode="parentFlow"
+            />
           </div>
         </div>
       </div>
@@ -10383,11 +10476,15 @@ const SalesPage: React.FC = () => {
               <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl relative">
                 <div className="w-12" />
                 <h2 className="text-lg font-bold text-white" style={{ marginRight: '50px' }}>Online Settings</h2>
+                {/* Gift Card 모달과 동일한 닫기 X (PaymentModal.tsx showGiftCardModal 버튼) */}
                 <button
+                  type="button"
                   onClick={() => setShowPrepTimeModal(false)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg"
+                  aria-label="Close"
+                  className="absolute right-3 top-1/2 z-[99999] flex h-9 w-9 -translate-y-1/2 shrink-0 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
+                  style={SOFT_NEO.btnRound}
                 >
-                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
@@ -10396,8 +10493,9 @@ const SalesPage: React.FC = () => {
               {/* Tabs - ìž…ì²´ê° ìžˆëŠ” ë²„íŠ¼ */}
               <div className="flex gap-2.5 p-3" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)' }}>
                 <button
+                  type="button"
                   onClick={() => setOnlineModalTab('preptime')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'preptime' ? 'text-blue-600' : 'text-gray-600 hover:text-blue-400'}`}
+                  className={`flex-1 rounded-2xl border-0 py-4 text-lg font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${onlineModalTab === 'preptime' ? 'text-blue-600' : 'text-gray-600 hover:text-blue-400'}`}
                   style={onlineModalTab === 'preptime'
                     ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 7px #a8b0c4, inset -3px -3px 7px #f0f5ff' }
                     : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10405,8 +10503,9 @@ const SalesPage: React.FC = () => {
                   Prep Time
                 </button>
                 <button
+                  type="button"
                   onClick={() => setOnlineModalTab('pause')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'pause' ? 'text-orange-600' : 'text-gray-600 hover:text-orange-400'}`}
+                  className={`flex-1 rounded-2xl border-0 py-4 text-lg font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${onlineModalTab === 'pause' ? 'text-orange-600' : 'text-gray-600 hover:text-orange-400'}`}
                   style={onlineModalTab === 'pause'
                     ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
                     : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10414,8 +10513,9 @@ const SalesPage: React.FC = () => {
                   Pause
                 </button>
                 <button
+                  type="button"
                   onClick={() => setOnlineModalTab('dayoff')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'dayoff' ? 'text-red-600' : 'text-gray-600 hover:text-red-400'}`}
+                  className={`flex-1 rounded-2xl border-0 py-4 text-lg font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${onlineModalTab === 'dayoff' ? 'text-red-600' : 'text-gray-600 hover:text-red-400'}`}
                   style={onlineModalTab === 'dayoff'
                     ? { background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: 'inset 3px 3px 7px #c9a0a0, inset -3px -3px 7px #fff0f0' }
                     : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10423,8 +10523,9 @@ const SalesPage: React.FC = () => {
                   Day Off
                 </button>
                 <button
+                  type="button"
                   onClick={() => setOnlineModalTab('menuhide')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'menuhide' ? 'text-purple-600' : 'text-gray-600 hover:text-purple-400'}`}
+                  className={`flex-1 rounded-2xl border-0 py-4 text-lg font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${onlineModalTab === 'menuhide' ? 'text-purple-600' : 'text-gray-600 hover:text-purple-400'}`}
                   style={onlineModalTab === 'menuhide'
                     ? { background: 'linear-gradient(145deg, #dcd1f0, #e8ddf8)', boxShadow: 'inset 3px 3px 7px #c4b8d8, inset -3px -3px 7px #f8f2ff' }
                     : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10432,8 +10533,9 @@ const SalesPage: React.FC = () => {
                   Menu Hide
                 </button>
                 <button
+                  type="button"
                   onClick={() => setOnlineModalTab('utility')}
-                  className={`flex-1 py-4 text-lg font-bold rounded-2xl border-0 transition-all duration-200 active:scale-95 ${onlineModalTab === 'utility' ? 'text-violet-600' : 'text-gray-600 hover:text-violet-400'}`}
+                  className={`flex-1 rounded-2xl border-0 py-4 text-lg font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${onlineModalTab === 'utility' ? 'text-violet-600' : 'text-gray-600 hover:text-violet-400'}`}
                   style={onlineModalTab === 'utility'
                     ? { background: 'linear-gradient(145deg, #ddd1f0, #e8ddf8)', boxShadow: 'inset 3px 3px 7px #b8a8d8, inset -3px -3px 7px #f5f0ff' }
                     : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10467,7 +10569,7 @@ const SalesPage: React.FC = () => {
                           <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.thezoneorder.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.thezoneorder.mode === 'auto'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10476,7 +10578,7 @@ const SalesPage: React.FC = () => {
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, thezoneorder: { ...prev.thezoneorder, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.thezoneorder.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.thezoneorder.mode === 'manual'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10499,13 +10601,14 @@ const SalesPage: React.FC = () => {
                       </td>
                       <td className="py-4 pl-3">
                         <button
+                          type="button"
                           onClick={() => setPrepTimeSettings(prev => ({
                             ...prev,
                             ubereats: { ...prev.ubereats, time: prev.thezoneorder.time },
                             doordash: { ...prev.doordash, time: prev.thezoneorder.time },
                             skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time },
                           }))}
-                          className="px-3 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap border-0 text-blue-600 transition-all duration-200 active:scale-95"
+                          className={`whitespace-nowrap rounded-xl border-0 px-3 py-2.5 text-sm font-bold text-blue-600 transition-all duration-200 ${ONLINE_NEO_PRESS}`}
                           style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: '4px 4px 8px #b0b8c9, -4px -4px 8px #ffffff' }}
                         >
                           Apply All
@@ -10523,7 +10626,7 @@ const SalesPage: React.FC = () => {
                           <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.ubereats.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.ubereats.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.ubereats.mode === 'auto'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10532,7 +10635,7 @@ const SalesPage: React.FC = () => {
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.ubereats.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.ubereats.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.ubereats.mode === 'manual'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10566,7 +10669,7 @@ const SalesPage: React.FC = () => {
                           <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.doordash.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.doordash.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.doordash.mode === 'auto'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10575,7 +10678,7 @@ const SalesPage: React.FC = () => {
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, doordash: { ...prev.doordash, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.doordash.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.doordash.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.doordash.mode === 'manual'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10609,7 +10712,7 @@ const SalesPage: React.FC = () => {
                           <div className="inline-flex rounded-xl p-1" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'auto' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.skipthedishes.mode === 'auto' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.skipthedishes.mode === 'auto'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10618,7 +10721,7 @@ const SalesPage: React.FC = () => {
                             </button>
                             <button
                               onClick={() => setPrepTimeSettings(prev => ({ ...prev, skipthedishes: { ...prev.skipthedishes, mode: 'manual' } }))}
-                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 active:scale-95 ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
+                              className={`px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 border-0 ${ONLINE_NEO_PRESS} ${prepTimeSettings.skipthedishes.mode === 'manual' ? 'text-gray-700' : 'text-gray-400 hover:text-gray-600'}`}
                               style={prepTimeSettings.skipthedishes.mode === 'manual'
                                 ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }
                                 : { background: 'transparent' }}
@@ -10664,7 +10767,8 @@ const SalesPage: React.FC = () => {
                         alert('Failed to save settings');
                       }
                     }}
-                    className="w-full py-3 rounded-2xl text-lg font-extrabold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                    type="button"
+                    className={`w-full rounded-2xl border-0 py-3 text-lg font-extrabold text-emerald-600 transition-all duration-200 hover:text-emerald-700 ${NEO_COLOR_BTN_PRESS}`}
                     style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
                   >
                     Save
@@ -10706,6 +10810,7 @@ const SalesPage: React.FC = () => {
                         </div>
                       </div>
                       <button
+                        type="button"
                         onClick={async () => {
                           const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
                           if (!restaurantId) { alert('Restaurant ID not found'); return; }
@@ -10715,7 +10820,7 @@ const SalesPage: React.FC = () => {
                             setSelectedPauseDuration(null);
                           } catch (error) { console.error('Resume failed:', error); alert('Resume failed'); }
                         }}
-                        className="px-5 py-3 rounded-2xl text-base font-bold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                        className={`rounded-2xl border-0 px-5 py-3 text-base font-bold text-emerald-600 transition-all duration-200 hover:text-emerald-700 ${NEO_COLOR_BTN_PRESS}`}
                         style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '5px 5px 10px #b0c9b4, -5px -5px 10px #ffffff' }}
                       >
                         Resume All
@@ -10735,7 +10840,7 @@ const SalesPage: React.FC = () => {
                               skipthedishes: { ...prev.skipthedishes, paused: !allSelected },
                             }));
                           }}
-                          className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${
+                          className={`rounded-xl border-0 py-4 text-base font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${
                             ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'].every(ch => pauseSettings[ch as keyof typeof pauseSettings].paused)
                               ? 'text-gray-700'
                               : 'text-gray-500 hover:text-gray-700'
@@ -10753,7 +10858,7 @@ const SalesPage: React.FC = () => {
                             <button
                               key={channel}
                               onClick={() => setPauseSettings(prev => ({ ...prev, [channel]: { ...prev[channel], paused: !prev[channel].paused } }))}
-                              className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
+                              className={`rounded-xl border-0 py-4 text-base font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
                               style={isSelected
                                 ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 7px #c9b0a0, inset -3px -3px 7px #fff5f0' }
                                 : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
@@ -10795,7 +10900,7 @@ const SalesPage: React.FC = () => {
                                 return updated;
                               });
                             }}
-                            className={`py-4 rounded-xl text-base font-bold transition-all duration-200 border-0 active:scale-95 ${
+                            className={`rounded-xl border-0 py-4 text-base font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${
                               selectedPauseDuration === label 
                                 ? 'text-orange-600' 
                                 : 'text-gray-500 hover:text-orange-400'
@@ -10837,7 +10942,8 @@ const SalesPage: React.FC = () => {
                             alert('Failed to save settings');
                           }
                         }}
-                        className="w-full py-3 rounded-2xl text-lg font-extrabold border-0 text-emerald-600 transition-all duration-200 active:scale-95 hover:text-emerald-700"
+                        type="button"
+                        className={`w-full rounded-2xl border-0 py-3 text-lg font-extrabold text-emerald-600 transition-all duration-200 hover:text-emerald-700 ${NEO_COLOR_BTN_PRESS}`}
                         style={{ background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
                       >
                         Save
@@ -10870,7 +10976,7 @@ const SalesPage: React.FC = () => {
                               <button
                                 key={channel.id}
                                 onClick={() => toggleDayOffChannel(channel.id)}
-                                className={`w-full py-2 px-2 rounded-xl text-sm font-bold text-center transition-all duration-200 border-0 active:scale-95 ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
+                                className={`w-full rounded-xl border-0 px-2 py-2 text-center text-sm font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${isSelected ? 'text-orange-600' : 'text-gray-500 hover:text-orange-400'}`}
                                 style={isSelected
                                   ? { background: 'linear-gradient(145deg, #f0dcd0, #f4e4d8)', boxShadow: 'inset 3px 3px 6px #c9b0a0, inset -3px -3px 6px #fff5f0' }
                                   : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
@@ -10887,8 +10993,9 @@ const SalesPage: React.FC = () => {
                         {/* ìº˜ë¦°ë” í—¤ë” */}
                         <div className="flex items-center justify-between mb-2">
                           <button
+                            type="button"
                             onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() - 1, 1))}
-                            className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white"
+                            className={`rounded-lg bg-blue-500 p-1.5 text-white transition hover:bg-blue-600 active:brightness-90 ${ONLINE_NEO_PRESS}`}
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -10898,8 +11005,9 @@ const SalesPage: React.FC = () => {
                             {dayOffCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                           </div>
                           <button
+                            type="button"
                             onClick={() => setDayOffCalendarMonth(new Date(dayOffCalendarMonth.getFullYear(), dayOffCalendarMonth.getMonth() + 1, 1))}
-                            className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-lg transition text-white"
+                            className={`rounded-lg bg-blue-500 p-1.5 text-white transition hover:bg-blue-600 active:brightness-90 ${ONLINE_NEO_PRESS}`}
                           >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -10942,12 +11050,13 @@ const SalesPage: React.FC = () => {
                               
                               cells.push(
                                 <button
+                                  type="button"
                                   key={dateStr}
                                   onClick={() => !isPast && toggleDayOffSelection(dateStr)}
                                   disabled={isPast}
                                   className={`
                                     h-8 rounded-lg text-sm font-semibold transition-all
-                                    ${isPast ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-white cursor-pointer'}
+                                    ${isPast ? 'cursor-not-allowed text-gray-300' : `cursor-pointer hover:bg-white ${ONLINE_NEO_PRESS}`}
                                     ${isSavedDayOff ? (savedDayOff?.type === 'closed' ? 'bg-red-500 text-white' : savedDayOff?.type === 'extended' ? 'bg-green-500 text-white' : savedDayOff?.type === 'early' ? 'bg-yellow-500 text-white' : 'bg-purple-500 text-white') : ''}
                                     ${isSelected && !isSavedDayOff ? 'bg-blue-500 text-white' : ''}
                                     ${isToday && !isSavedDayOff && !isSelected ? 'ring-2 ring-blue-400' : ''}
@@ -10985,7 +11094,7 @@ const SalesPage: React.FC = () => {
                             <button
                               key={type.id}
                               onClick={() => setDayOffType(type.id as 'closed' | 'extended' | 'early' | 'late')}
-                              className={`py-2.5 px-1 rounded-xl text-xs font-bold text-center transition-all duration-200 min-h-[40px] border-0 active:scale-95 ${dayOffType === type.id ? c.selected.text : `text-gray-500 ${c.hover}`}`}
+                              className={`min-h-[40px] rounded-xl border-0 px-1 py-2.5 text-center text-xs font-bold transition-all duration-200 ${ONLINE_NEO_PRESS} ${dayOffType === type.id ? c.selected.text : `text-gray-500 ${c.hover}`}`}
                               style={dayOffType === type.id
                                 ? { background: c.selected.bg, boxShadow: c.selected.shadow }
                                 : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }}
@@ -11029,7 +11138,13 @@ const SalesPage: React.FC = () => {
                           <button
                             onClick={saveDayOffs}
                             disabled={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0}
-                            className={`w-full py-3 rounded-2xl font-extrabold text-lg transition-all duration-200 border-0 active:scale-95 ${dayOffSaveStatus === 'saving' ? 'text-gray-400 cursor-wait' : dayOffSelectedDates.length > 0 ? 'text-emerald-600 hover:text-emerald-700' : 'text-gray-400 cursor-not-allowed'}`}
+                            className={`w-full rounded-2xl border-0 py-3 text-lg font-extrabold transition-all duration-200 ${
+                              dayOffSaveStatus === 'saving'
+                                ? 'cursor-wait text-gray-400'
+                                : dayOffSelectedDates.length > 0
+                                  ? `text-emerald-600 hover:text-emerald-700 ${NEO_COLOR_BTN_PRESS}`
+                                  : `cursor-not-allowed text-gray-400 ${ONLINE_NEO_PRESS}`
+                            }`}
                             style={dayOffSaveStatus === 'saving' || dayOffSelectedDates.length === 0
                               ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
                               : { background: 'linear-gradient(145deg, #d8f0dc, #e4f4e8)', boxShadow: '6px 6px 12px #b0c9b4, -6px -6px 12px #ffffff' }}
@@ -11095,8 +11210,9 @@ const SalesPage: React.FC = () => {
                                     {d.type === 'closed' ? 'Closed' : d.type === 'extended' ? 'Ext' : d.type === 'early' ? 'Early' : 'Late'}
                                   </span>
                                   <button 
+                                    type="button"
                                     onClick={() => removeDayOff(d.date)} 
-                                    className="hover:opacity-70 font-bold ml-1"
+                                    className={`ml-1 font-bold hover:opacity-70 ${ONLINE_NEO_PRESS}`}
                                   >
                                     Ã—
                                   </button>
@@ -11139,9 +11255,9 @@ const SalesPage: React.FC = () => {
                                   setMenuHideSelectedCategory(cat.category_id);
                                   setMenuHideSelectedItem(null);
                                 }}
-                                className={`w-full text-left px-3 py-2 border-b border-gray-200 transition-all ${
+                                className={`w-full border-b border-gray-200 px-3 py-2 text-left transition-all ${ONLINE_NEO_PRESS} ${
                                   menuHideSelectedCategory === cat.category_id 
-                                    ? 'bg-blue-100 text-blue-700 font-bold' 
+                                    ? 'bg-blue-100 font-bold text-blue-700' 
                                     : 'hover:bg-gray-100'
                                 }`}
                               >
@@ -11302,11 +11418,12 @@ const SalesPage: React.FC = () => {
                               activeColor: string; hoverColor: string;
                             }) => (
                               <button
+                                type="button"
                                 onClick={onClick}
-                                className={`w-full py-2.5 px-3 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-2 ${
+                                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-all duration-200 ${active ? `${NEO_COLOR_BTN_PRESS}` : `${ONLINE_NEO_PRESS}`} ${
                                   active
-                                    ? `${activeColor} text-white shadow-md transform scale-[1.02]`
-                                    : `bg-white border border-slate-200 text-slate-600 ${hoverColor} hover:border-slate-300 hover:shadow-sm`
+                                    ? `${activeColor} scale-[1.02] transform text-white shadow-md`
+                                    : `border border-slate-200 bg-white text-slate-600 ${hoverColor} hover:border-slate-300 hover:shadow-sm`
                                 }`}
                               >
                                 <span className="text-sm">{icon}</span>
@@ -11377,8 +11494,9 @@ const SalesPage: React.FC = () => {
                                         : 'border border-slate-200'
                                     }`}>
                                       <button
+                                        type="button"
                                         onClick={() => handleToggle('online', 'time_limited')}
-                                        className={`w-full py-2.5 px-3 text-xs font-semibold transition-all flex items-center gap-2 ${
+                                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-xs font-semibold transition-all ${selectedItem.online_hide_type === 'time_limited' ? NEO_COLOR_BTN_PRESS : ONLINE_NEO_PRESS} ${
                                           selectedItem.online_hide_type === 'time_limited'
                                             ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-white'
                                             : 'bg-white text-slate-600 hover:bg-amber-50'
@@ -11438,8 +11556,9 @@ const SalesPage: React.FC = () => {
                                         : 'border border-slate-200'
                                     }`}>
                                       <button
+                                        type="button"
                                         onClick={() => handleToggle('delivery', 'time_limited')}
-                                        className={`w-full py-2.5 px-3 text-xs font-semibold transition-all flex items-center gap-2 ${
+                                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-xs font-semibold transition-all ${selectedItem.delivery_hide_type === 'time_limited' ? NEO_COLOR_BTN_PRESS : ONLINE_NEO_PRESS} ${
                                           selectedItem.delivery_hide_type === 'time_limited'
                                             ? 'bg-gradient-to-r from-amber-400 to-amber-500 text-white'
                                             : 'bg-white text-slate-600 hover:bg-amber-50'
@@ -11508,11 +11627,12 @@ const SalesPage: React.FC = () => {
                             alert('Failed to save settings');
                           }
                         }}
+                        type="button"
                         disabled={!menuHideSelectedItem}
-                        className={`w-full py-3 rounded-lg text-lg font-bold shadow-md transition-all ${
+                        className={`w-full rounded-lg py-3 text-lg font-bold shadow-md transition-all ${
                           menuHideSelectedItem
-                            ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
-                            : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                            ? `bg-emerald-500 text-white hover:bg-emerald-600 ${NEO_COLOR_BTN_PRESS}`
+                            : `cursor-not-allowed bg-gray-200 text-gray-400 ${ONLINE_NEO_PRESS}`
                         }`}
                       >
                         Save
@@ -11520,49 +11640,98 @@ const SalesPage: React.FC = () => {
                     </div>
                   </div>
                 )}
-                {/* Utility Tab - Bag Fee, Utensils (Firebase 연동) */}
+                {/* Utility Tab - Bag Fee, Utensils (Firebase 연동) — PAY_NEO raised / inset / key */}
                 {onlineModalTab === 'utility' && (
-                  <div className="flex flex-col h-full">
-                    <p className="text-sm text-gray-500 mb-4">Configure utility options shown to customers at checkout on the online order page.</p>
-                    <div className="border border-gray-200 rounded-lg p-4 mb-4">
-                      <div className="flex items-center justify-between mb-3">
+                  <div className="flex h-full flex-col gap-3">
+                    <p className="mb-1 text-sm text-slate-600">Configure utility options shown to customers at checkout on the online order page.</p>
+                    <div className="rounded-[14px] p-4" style={{ ...PAY_NEO.raised }}>
+                      <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-base font-bold text-gray-800">🛍️ Bag Fee</div>
-                          <div className="text-xs text-gray-500 mt-0.5">Charge customers a bag fee at checkout (GST included)</div>
+                          <div className="text-base font-bold text-slate-800">🛍️ Bag Fee</div>
+                          <div className="mt-0.5 text-xs text-slate-500">Charge customers a bag fee at checkout.</div>
                         </div>
-                        <button onClick={() => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, enabled: !prev.bagFee.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.bagFee.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
-                          <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.bagFee.enabled ? 'left-7' : 'left-0.5'}`} />
+                        <button
+                          type="button"
+                          onClick={() => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, enabled: !prev.bagFee.enabled } }))}
+                          className={`relative h-8 w-14 shrink-0 cursor-pointer rounded-full border-0 ${ONLINE_NEO_PRESS}`}
+                          style={
+                            utilitySettings.bagFee.enabled
+                              ? {
+                                  ...PAY_NEO.key,
+                                  borderRadius: 9999,
+                                  background: '#7c3aed',
+                                  boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.22), 4px 4px 8px #c4c8d4, -3px -3px 8px #ffffff',
+                                }
+                              : {
+                                  ...PAY_NEO.key,
+                                  borderRadius: 9999,
+                                  background: '#94a3b8',
+                                }
+                          }
+                          aria-pressed={utilitySettings.bagFee.enabled}
+                        >
+                          <span
+                            className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-md transition-all duration-200 ${utilitySettings.bagFee.enabled ? 'left-7' : 'left-0.5'}`}
+                          />
                         </button>
                       </div>
                       {utilitySettings.bagFee.enabled && (
-                        <div className="flex items-center gap-2 mt-2">
-                          <label className="text-sm font-semibold text-gray-700 min-w-[80px]">Fee Amount</label>
-                          <div className="flex items-center border border-gray-300 rounded-md overflow-hidden">
-                            <span className="px-2.5 py-2 bg-gray-50 text-sm text-gray-500 border-r border-gray-300">$</span>
-                            <input type="number" min="0" step="0.01" value={utilitySettings.bagFee.amount} onChange={(e) => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, amount: parseFloat(e.target.value) || 0 } }))} className="px-2.5 py-2 border-none outline-none text-sm w-[90px]" />
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <label className="min-w-[80px] text-sm font-semibold text-slate-700">Fee Amount</label>
+                          <div className="inline-flex max-w-[200px] items-stretch overflow-hidden rounded-[12px]" style={{ ...PAY_NEO.inset }}>
+                            <span className="border-r border-slate-300/50 bg-[#d4d9e4]/60 px-2.5 py-2 text-sm text-slate-500">$</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={utilitySettings.bagFee.amount}
+                              onChange={(e) => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, amount: parseFloat(e.target.value) || 0 } }))}
+                              className="w-[90px] min-w-0 border-0 bg-transparent px-2.5 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/50"
+                            />
                           </div>
-                          <span className="text-xs text-gray-400">+GST 5% will be added</span>
                         </div>
                       )}
                     </div>
-                    <div className="border border-gray-200 rounded-lg p-4 mb-4">
-                      <div className="flex items-center justify-between">
+                    <div className="rounded-[14px] p-4" style={{ ...PAY_NEO.raised }}>
+                      <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-base font-bold text-gray-800">🥢 Utensils</div>
-                          <div className="text-xs text-gray-500 mt-0.5">Ask customers how many utensil sets they need</div>
+                          <div className="text-base font-bold text-slate-800">🥢 Utensils</div>
+                          <div className="mt-0.5 text-xs text-slate-500">Ask customers how many utensil sets they need</div>
                         </div>
-                        <button onClick={() => setUtilitySettings(prev => ({ ...prev, utensils: { enabled: !prev.utensils.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.utensils.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
-                          <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.utensils.enabled ? 'left-7' : 'left-0.5'}`} />
+                        <button
+                          type="button"
+                          onClick={() => setUtilitySettings(prev => ({ ...prev, utensils: { enabled: !prev.utensils.enabled } }))}
+                          className={`relative h-8 w-14 shrink-0 cursor-pointer rounded-full border-0 ${ONLINE_NEO_PRESS}`}
+                          style={
+                            utilitySettings.utensils.enabled
+                              ? {
+                                  ...PAY_NEO.key,
+                                  borderRadius: 9999,
+                                  background: '#7c3aed',
+                                  boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.22), 4px 4px 8px #c4c8d4, -3px -3px 8px #ffffff',
+                                }
+                              : {
+                                  ...PAY_NEO.key,
+                                  borderRadius: 9999,
+                                  background: '#94a3b8',
+                                }
+                          }
+                          aria-pressed={utilitySettings.utensils.enabled}
+                        >
+                          <span
+                            className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-md transition-all duration-200 ${utilitySettings.utensils.enabled ? 'left-7' : 'left-0.5'}`}
+                          />
                         </button>
                       </div>
                     </div>
                     <button
                       onClick={saveUtilitySettings}
                       disabled={savingUtility}
-                      className={`w-full py-3 rounded-2xl font-extrabold text-base transition-all duration-200 border-0 active:scale-95 ${savingUtility ? 'text-gray-400 cursor-wait' : 'text-violet-600 hover:text-violet-700'}`}
-                      style={savingUtility
-                        ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff' }
-                        : { background: 'linear-gradient(145deg, #ddd1f0, #e8ddf8)', boxShadow: '6px 6px 12px #b8a8d8, -6px -6px 12px #ffffff' }}
+                      type="button"
+                      className={`w-full rounded-[12px] border-0 py-3 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed ${
+                        savingUtility ? `cursor-wait text-slate-500 ${ONLINE_NEO_PRESS}` : `text-white ${NEO_COLOR_BTN_PRESS}`
+                      }`}
+                      style={savingUtility ? { ...PAY_NEO.inset, opacity: 0.85 } : { ...PAY_NEO_UTILITY_SAVE }}
                     >
                       {savingUtility ? 'Saving...' : 'Save Utility Settings'}
                     </button>
@@ -11574,8 +11743,9 @@ const SalesPage: React.FC = () => {
               {/* Footer - Close */}
               <div className="flex justify-end gap-2 px-4 py-3 rounded-b-xl" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)' }}>
                 <button
+                  type="button"
                   onClick={() => setShowPrepTimeModal(false)}
-                  className="px-6 py-2.5 rounded-2xl text-sm font-bold border-0 text-gray-500 transition-all duration-200 active:scale-95 hover:text-gray-600"
+                  className={`rounded-2xl border-0 px-6 py-2.5 text-sm font-bold text-gray-500 transition-all duration-200 hover:text-gray-600 ${ONLINE_NEO_PRESS}`}
                   style={{ background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                 >
                   Close
@@ -13160,19 +13330,6 @@ const SalesPage: React.FC = () => {
           onClose={handlePartialModalClose}
           onConfirm={handlePartialModalConfirm}
         />
-        {showTogoOrderModal && (
-          <VirtualKeyboard
-            open={showTogoOrderModal}
-            onType={handleTogoKeyboardType}
-            onBackspace={handleTogoKeyboardBackspace}
-            onClear={handleTogoKeyboardClear}
-            displayText={keyboardDisplayText}
-            keepOpen
-            languages={['EN', 'KO']}
-            currentLanguage="EN"
-          maxWidthPx={keyboardMaxWidth}
-          />
-        )}
           </div>
         </div>
         )}
@@ -13188,24 +13345,6 @@ const SalesPage: React.FC = () => {
         onSelect={handleServerSelectForTogo}
       />
       <PaymentModal />
-      {/* Waiting List with floating close button */}
-      {showWaitingModal && (
-        <div className="fixed inset-0 z-[99999] pointer-events-none flex items-center justify-center">
-          <div className="relative pointer-events-none flex flex-col" style={{ width: '580px', height: '80vh' }}>
-             {/* Header area placeholder to position button */}
-             <div className="h-[60px] relative w-full pointer-events-none">
-              <button
-                onClick={() => setShowWaitingModal(false)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg pointer-events-auto"
-              >
-                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <WaitingListModal
         open={showWaitingModal}
         onClose={() => setShowWaitingModal(false)}
@@ -13219,28 +13358,27 @@ const SalesPage: React.FC = () => {
 
       {/* Delivery ì „ìš© ëª¨ë‹¬ */}
       {showDeliveryOrderModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-start justify-center z-[9999] p-2 sm:p-3 pt-2">
+        <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black bg-opacity-70 p-2 pt-2 sm:p-3">
           <div
-            className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-3 w-full border border-slate-200 flex flex-col overflow-hidden"
-            style={{ maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
+            className="flex min-h-0 w-full flex-col overflow-y-auto overflow-x-hidden border-0"
+            style={{ ...PAY_NEO.modalShell, maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
           >
-            {/* Header with Close X Button — same as Togo */}
-            <div className="flex items-center justify-between mb-2 flex-shrink-0">
-              <div className="flex-1" />
+            <div className="flex flex-shrink-0 items-center justify-end px-3 pt-2">
               <button
                 type="button"
                 onClick={() => setShowDeliveryOrderModal(false)}
-                className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700"
-                style={{ background: 'rgba(156,163,175,0.25)' }}
+                className={`flex h-11 w-11 items-center justify-center rounded-full border-0 text-red-600 transition-all hover:brightness-[1.03] touch-manipulation ${NEO_MODAL_BTN_PRESS}`}
+                style={{ ...PAY_NEO.key, borderRadius: 9999 }}
+                title="Close"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
 
-            <div className="flex items-center justify-between mb-3 flex-shrink-0">
-              <div><h3 className="text-lg font-semibold text-slate-800">New Delivery</h3></div>
+            <div className="flex flex-shrink-0 items-center justify-between px-5 py-3" style={{ ...PAY_NEO.raised, borderRadius: 0 }}>
+              <h3 className="text-lg font-extrabold text-slate-800">New Delivery</h3>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => setShowDeliveryOrderModal(false)} className="px-4 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-600 font-semibold hover:bg-slate-200 transition-colors">Cancel</button>
+                <button type="button" onClick={() => setShowDeliveryOrderModal(false)} className={`rounded-[14px] border-0 px-4 py-3 font-bold text-gray-700 transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO.inset}>Cancel</button>
                 <button
                   type="button"
                   onClick={async () => {
@@ -13298,64 +13436,151 @@ const SalesPage: React.FC = () => {
                     });
                   }}
                   disabled={!deliveryCompany || !deliveryOrderNumber.trim()}
-                  className={`px-5 py-2 rounded-lg font-bold transition-colors ${
+                  className={`rounded-[14px] border-0 px-5 py-3 font-bold transition-all hover:brightness-[1.02] disabled:cursor-not-allowed touch-manipulation ${NEO_MODAL_BTN_PRESS}`}
+                  style={
                     deliveryCompany && deliveryOrderNumber.trim()
-                      ? 'bg-emerald-500 text-white hover:bg-emerald-600'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  }`}
+                      ? PAY_NEO_PRIMARY_BLUE
+                      : { ...PAY_NEO.inset, opacity: 0.55, cursor: 'not-allowed', color: '#64748b' }
+                  }
                 >
                   OK
                 </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-4 mt-2 flex-1 min-h-0" style={{ overflow: 'visible' }}>
+            <div className="flex min-h-0 flex-1 flex-col" style={{ background: PAY_NEO_CANVAS }}>
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-4 pb-2 pt-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
               {/* Left: order # + channel */}
-              <div className="space-y-2">
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
-                  <div className="text-xs font-semibold text-slate-600 mb-2">Order #</div>
+              <div className="min-h-0 min-w-0 space-y-2">
+                <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
+                  <div className="mb-2 text-xs font-semibold text-slate-600">Order #</div>
                   <input
                     type="text"
                     ref={deliveryOrderInputRef}
                     value={deliveryOrderNumber}
                     onChange={(e) => setDeliveryOrderNumber(e.target.value.toUpperCase())}
                     placeholder="Order #"
-                    className="w-full h-11 px-3 text-xl font-mono bg-white border border-slate-300 rounded-xl text-slate-800 text-center tracking-widest focus:outline-none focus:border-emerald-400"
+                    className="h-12 w-full rounded-[14px] border-0 px-3 text-center font-mono text-xl tracking-widest text-slate-800 focus:outline-none focus:ring-0"
+                    style={PAY_NEO.inset}
                   />
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
-                  <div className="text-xs font-semibold text-slate-600 mb-2">Channel</div>
+                <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
+                  <div className="mb-2 text-xs font-semibold text-slate-600">Channel</div>
                   <div className="grid grid-cols-2 gap-2">
-                    {(['UberEats', 'Doordash', 'SkipTheDishes', 'Fantuan'] as const).map((company) => (
+                    {(['UberEats', 'Doordash', 'SkipTheDishes', 'Fantuan'] as const).map((company) => {
+                      const active = deliveryCompany === company;
+                      // Uber Eats 브랜드 그린(공개 가이드·앱 톤에 가까운 #06C167 계열) — 짙은 그라데이션
+                      const uberEatsChannelStyle: React.CSSProperties = active
+                        ? {
+                            background: 'linear-gradient(145deg, #12d47a, #06a050)',
+                            color: '#ffffff',
+                            boxShadow:
+                              'inset 2px 2px 6px rgba(0,80,48,0.35), inset -1px -1px 4px rgba(255,255,255,0.2)',
+                          }
+                        : {
+                            background: 'linear-gradient(145deg, #06C167, #047857)',
+                            color: '#ffffff',
+                            boxShadow: '2px 2px 0 0 rgba(3,90,58,0.5), -1px -1px 0 0 rgba(255,255,255,0.18)',
+                          };
+                      // DoorDash 공식 레드-오렌지 #FF3008(브랜드 배너·가이드 톤)
+                      const doorDashChannelStyle: React.CSSProperties = active
+                        ? {
+                            background: 'linear-gradient(145deg, #ff4d38, #e62d0a)',
+                            color: '#ffffff',
+                            boxShadow:
+                              'inset 2px 2px 6px rgba(120,20,0,0.38), inset -1px -1px 4px rgba(255,255,255,0.22)',
+                          }
+                        : {
+                            background: 'linear-gradient(145deg, #FF3008, #c41f00)',
+                            color: '#ffffff',
+                            boxShadow: '2px 2px 0 0 rgba(160,30,10,0.5), -1px -1px 0 0 rgba(255,255,255,0.2)',
+                          };
+                      // SkipTheDishes 리브랜드 오렌지 #FF8000(공개 브랜드 팔레트 인용) — 순수 주황 그라데이션
+                      const skipTheDishesChannelStyle: React.CSSProperties = active
+                        ? {
+                            background: 'linear-gradient(145deg, #ffa64d, #ff7700)',
+                            color: '#ffffff',
+                            boxShadow:
+                              'inset 2px 2px 6px rgba(140,60,0,0.32), inset -1px -1px 4px rgba(255,255,255,0.25)',
+                          }
+                        : {
+                            background: 'linear-gradient(145deg, #FF8000, #e55a00)',
+                            color: '#ffffff',
+                            boxShadow: '2px 2px 0 0 rgba(200,80,0,0.45), -1px -1px 0 0 rgba(255,255,255,0.22)',
+                          };
+                      // Fantuan 로고 배경 톤 — 터키석/틸(#17BDB8·#00C7C1 계열)
+                      const fantuanChannelStyle: React.CSSProperties = active
+                        ? {
+                            background: 'linear-gradient(145deg, #3fe8e2, #17BDB8)',
+                            color: '#ffffff',
+                            boxShadow:
+                              'inset 2px 2px 6px rgba(0,90,88,0.35), inset -1px -1px 4px rgba(255,255,255,0.28)',
+                          }
+                        : {
+                            background: 'linear-gradient(145deg, #00C7C1, #0a9d98)',
+                            color: '#ffffff',
+                            boxShadow: '2px 2px 0 0 rgba(8,120,116,0.45), -1px -1px 0 0 rgba(255,255,255,0.22)',
+                          };
+                      return (
                       <button
                         key={company}
                         type="button"
                         onClick={() => setDeliveryCompany(company)}
-                        className={`h-12 rounded-xl font-bold text-sm transition-all shadow border ${
-                          deliveryCompany === company
-                            ? 'bg-emerald-600 text-white border-emerald-700'
-                            : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'
+                        className={`h-12 rounded-[14px] border-0 text-sm font-bold transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS} ${
+                          company === 'UberEats'
+                            ? active
+                              ? 'ring-2 ring-emerald-200/90 text-white'
+                              : 'text-white'
+                            : company === 'Doordash'
+                            ? active
+                              ? 'ring-2 ring-red-200/95 text-white'
+                              : 'text-white'
+                            : company === 'SkipTheDishes'
+                            ? active
+                              ? 'ring-2 ring-orange-200/95 text-white'
+                              : 'text-white'
+                            : company === 'Fantuan'
+                            ? active
+                              ? 'ring-2 ring-cyan-200/95 text-white'
+                              : 'text-white'
+                            : active
+                            ? 'ring-2 ring-emerald-400/70 text-slate-800'
+                            : 'text-slate-700'
                         }`}
+                        style={
+                          company === 'UberEats'
+                            ? uberEatsChannelStyle
+                            : company === 'Doordash'
+                            ? doorDashChannelStyle
+                            : company === 'SkipTheDishes'
+                            ? skipTheDishesChannelStyle
+                            : company === 'Fantuan'
+                            ? fantuanChannelStyle
+                            : active
+                            ? PAY_NEO.inset
+                            : PAY_NEO.key
+                        }
                       >
                         {company === 'SkipTheDishes' ? 'Skip' : company}
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
               </div>
 
-              {/* Right: prep time panels (match Togo) */}
-              <div className="grid gap-1.5">
+              {/* Right: prep time panels */}
+              <div className="grid min-h-0 min-w-0 gap-1.5">
                 {/* Panel 1: summary */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
-                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
-                    <div className="flex items-center gap-2 min-w-[140px]">
+                <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm font-semibold text-slate-700">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span>Prep Time</span>
                       <span className="text-3xl font-mono font-semibold leading-none text-indigo-600">{deliveryPrepTime}m</span>
                     </div>
-                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs sm:text-sm">
                       <span className="px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 font-semibold whitespace-nowrap">
                         Ready {computeDeliveryReadyDisplay(deliveryPrepTime)}
                       </span>
@@ -13363,12 +13588,11 @@ const SalesPage: React.FC = () => {
                         Current {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
                       </span>
                     </div>
-                    <div className="flex-1" />
                   </div>
                 </div>
 
                 {/* Panel 2: minute buttons */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-col gap-1.5">
                     <div className="flex flex-wrap gap-2">
                       {[5, 10, 15, 20, 25].map((min) => (
@@ -13383,11 +13607,8 @@ const SalesPage: React.FC = () => {
                               setDeliveryReadyMinute(String(d.getMinutes()).padStart(2, '0'));
                             } catch {}
                           }}
-                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                            min === 15
-                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                              : 'bg-slate-500 text-white hover:bg-slate-600'
-                          }`}
+                          className={`flex h-10 min-w-[70px] items-center justify-center rounded-[14px] border-0 px-3 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                          style={min === 15 ? PAY_NEO_PRIMARY_BLUE : OH_ACTION_NEO.slate}
                         >
                           +{min}
                         </button>
@@ -13406,7 +13627,8 @@ const SalesPage: React.FC = () => {
                               setDeliveryReadyMinute(String(d.getMinutes()).padStart(2, '0'));
                             } catch {}
                           }}
-                          className="min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center bg-slate-500 text-white hover:bg-slate-600"
+                          className={`flex h-10 min-w-[70px] items-center justify-center rounded-[14px] border-0 px-3 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                          style={OH_ACTION_NEO.slate}
                         >
                           +{min}
                         </button>
@@ -13416,7 +13638,7 @@ const SalesPage: React.FC = () => {
                 </div>
 
                 {/* Panel 3: manual HH:MM */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-1">
                       <button
@@ -13426,7 +13648,8 @@ const SalesPage: React.FC = () => {
                           const next = (Number.isFinite(cur) ? cur : 0) - 1;
                           setDeliveryReadyHour(String((next + 24) % 24).padStart(2, '0'));
                         }}
-                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+                        className={`h-[38px] w-[44px] rounded-[12px] border-0 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                        style={OH_ACTION_NEO.blue}
                       >
                         -H
                       </button>
@@ -13443,7 +13666,8 @@ const SalesPage: React.FC = () => {
                           setDeliveryReadyHour(String(Math.max(0, Math.min(23, n))).padStart(2, '0'));
                         }}
                         placeholder="HH"
-                        className="h-[38px] w-[54px] px-2 rounded-lg border border-slate-300 bg-white text-sm font-mono text-slate-800 text-center focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                        className="h-[38px] w-[54px] rounded-[12px] border-0 px-2 text-center font-mono text-sm text-slate-800 focus:outline-none focus:ring-0"
+                        style={PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -13452,7 +13676,8 @@ const SalesPage: React.FC = () => {
                           const next = (Number.isFinite(cur) ? cur : 0) + 1;
                           setDeliveryReadyHour(String(next % 24).padStart(2, '0'));
                         }}
-                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700"
+                        className={`h-[38px] w-[44px] rounded-[12px] border-0 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                        style={OH_ACTION_NEO.blue}
                       >
                         +H
                       </button>
@@ -13467,7 +13692,8 @@ const SalesPage: React.FC = () => {
                           const norm = ((next % 60) + 60) % 60;
                           setDeliveryReadyMinute(String(norm).padStart(2, '0'));
                         }}
-                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700"
+                        className={`h-[38px] w-[44px] rounded-[12px] border-0 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                        style={OH_ACTION_NEO.emerald}
                       >
                         -M
                       </button>
@@ -13484,7 +13710,8 @@ const SalesPage: React.FC = () => {
                           setDeliveryReadyMinute(String(Math.max(0, Math.min(59, n))).padStart(2, '0'));
                         }}
                         placeholder="MM"
-                        className="h-[38px] w-[54px] px-2 rounded-lg border border-slate-300 bg-white text-sm font-mono text-slate-800 text-center focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                        className="h-[38px] w-[54px] rounded-[12px] border-0 px-2 text-center font-mono text-sm text-slate-800 focus:outline-none focus:ring-0"
+                        style={PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -13494,7 +13721,8 @@ const SalesPage: React.FC = () => {
                           const norm = next % 60;
                           setDeliveryReadyMinute(String(norm).padStart(2, '0'));
                         }}
-                        className="h-[38px] w-[44px] rounded-lg text-sm font-bold border bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700"
+                        className={`h-[38px] w-[44px] rounded-[12px] border-0 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_COLOR_BTN_PRESS}`}
+                        style={OH_ACTION_NEO.emerald}
                       >
                         +M
                       </button>
@@ -13505,9 +13733,8 @@ const SalesPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Virtual Keyboard — inside modal card, same position as Togo */}
-            {/* Virtual Keyboard — inside modal card, same position as Togo */}
-            <div className="mt-2 flex-shrink-0">
+            {/* Virtual Keyboard — inside modal card; parentFlow + negative margin so it sits in modal, 30px up */}
+            <div className="-mt-[30px] flex-shrink-0 px-4 pb-3">
                 <VirtualKeyboard
                   open={true}
                   onType={(char) => setDeliveryOrderNumber(prev => (prev + char).toUpperCase())}
@@ -13519,7 +13746,9 @@ const SalesPage: React.FC = () => {
                   languages={['EN']}
                   currentLanguage="EN"
                   maxWidthPx={1000}
+                  layoutMode="parentFlow"
                 />
+            </div>
             </div>
           </div>
         </div>
@@ -14362,9 +14591,19 @@ const SalesPage: React.FC = () => {
           setBackofficePinError('');
         }}
         onSubmit={async (pin: string) => {
+          if (pin === '0000') {
+            setBackofficePinError('0000 cannot be used');
+            return;
+          }
           setBackofficePinLoading(true);
           setBackofficePinError('');
           try {
+            if (isMasterPosPin(pin)) {
+              setShowBackofficePinModal(false);
+              setBackofficePinError('');
+              navigate('/backoffice');
+              return;
+            }
             const res = await fetch(`${API_URL}/admin-settings/verify-backoffice-pin`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -14919,51 +15158,56 @@ const SalesPage: React.FC = () => {
 
       {/* Clock In/Out Menu Modal */}
       {showClockInOutMenu && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-96 relative">
-            {/* Floating close button */}
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/50">
+          <div className="w-96 max-w-[92vw] overflow-hidden relative" style={PAY_NEO.modalShell}>
             <button
+              type="button"
               onClick={() => setShowClockInOutMenu(false)}
-              className="absolute top-2 right-2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[999999] shadow-lg"
+              className="absolute top-3 right-3 z-10 w-12 h-12 flex items-center justify-center touch-manipulation transition-all hover:brightness-[1.03] active:brightness-95"
+              style={{ ...PAY_NEO.key, borderRadius: 9999 }}
+              aria-label="Close"
             >
-              <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center pt-2">
-              ⏰ Clock In/Out
-            </h2>
-            
-            <div className="space-y-3">
+            <div className="px-5 py-4 pr-16" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+              <h2 className="text-xl font-extrabold text-slate-800 text-center">⏰ Clock In/Out</h2>
+            </div>
+            <div className="px-5 pb-5 pt-2 space-y-3" style={{ background: PAY_NEO_CANVAS }}>
               <button
+                type="button"
                 onClick={() => {
                   console.log('Clock In ë©”ë‰´ì—ì„œ ì„ íƒë¨');
                   setShowClockInOutMenu(false);
                   setShowClockInModal(true);
                 }}
-                className="w-full px-6 py-4 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
+                className="w-full px-6 py-4 font-bold text-white text-lg rounded-[14px] transition-all hover:brightness-[1.02] active:brightness-95"
+                style={{ ...OH_ACTION_NEO.green, borderRadius: 14 }}
               >
                 ⏰ Clock In
               </button>
-              
               <button
+                type="button"
                 onClick={() => {
                   console.log('Clock Out ë©”ë‰´ì—ì„œ ì„ íƒë¨');
                   setShowClockInOutMenu(false);
                   setShowClockOutModal(true);
                 }}
-                className="w-full px-6 py-4 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md transition-colors text-lg"
+                className="w-full px-6 py-4 font-bold text-white text-lg rounded-[14px] transition-all hover:brightness-[1.02] active:brightness-95"
+                style={{ ...OH_ACTION_NEO.red, borderRadius: 14 }}
               >
                 🚪 Clock Out
               </button>
+              <button
+                type="button"
+                onClick={() => setShowClockInOutMenu(false)}
+                className="w-full px-4 py-3 rounded-[14px] font-bold text-gray-700 transition-all hover:brightness-[1.02] active:brightness-95"
+                style={PAY_NEO.inset}
+              >
+                Cancel
+              </button>
             </div>
-
-            <button
-              onClick={() => setShowClockInOutMenu(false)}
-              className="mt-4 w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
-            >
-              Cancel
-            </button>
           </div>
         </div>
       )}
@@ -15039,95 +15283,106 @@ const SalesPage: React.FC = () => {
 
       {/* Early Out Modal */}
       {showEarlyOutModal && (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-96">
-            <h2 className="text-2xl font-bold text-gray-800 mb-4">
-              âš ï¸ Early Out
-            </h2>
-            
-            <p className="text-gray-600 mb-4">
-              Please enter the reason for {selectedEmployee?.name}'s early out.
-            </p>
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Early Out Reason *
-              </label>
-              <textarea
-                value={earlyOutReason}
-                onChange={(e) => setEarlyOutReason(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={3}
-                placeholder="ì˜ˆ: ê°œì¸ ì‚¬ì •, ë³‘ì› ë°©ë¬¸ ë“±"
-              />
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/50">
+          <div className="w-96 max-w-[92vw] overflow-hidden" style={PAY_NEO.modalShell}>
+            <div className="px-5 py-4" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+              <h2 className="text-xl font-extrabold text-slate-800">⚠️ Early Out</h2>
             </div>
+            <div className="px-5 pb-5 pt-2" style={{ background: PAY_NEO_CANVAS }}>
+              <p className="text-slate-600 mb-4 text-sm font-medium">
+                Please enter the reason for {selectedEmployee?.name}&apos;s early out.
+              </p>
 
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                ìŠ¹ì¸ìž (ì„ íƒ)
-              </label>
-              <input
-                type="text"
-                value={approvedBy}
-                onChange={(e) => setApprovedBy(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="ìŠ¹ì¸ìž ì´ë¦„"
-              />
-            </div>
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-slate-700 mb-2">
+                  Early Out Reason *
+                </label>
+                <textarea
+                  value={earlyOutReason}
+                  onChange={(e) => setEarlyOutReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-blue-400/60 border-0"
+                  style={PAY_NEO.inset}
+                  rows={3}
+                  placeholder="ì˜ˆ: ê°œì¸ ì‚¬ì •, ë³‘ì› ë°©ë¬¸ ë“±"
+                />
+              </div>
 
-            <div className="flex gap-3">
-              <button
-                onClick={() => {
-                  setShowEarlyOutModal(false);
-                  setSelectedEmployee(null);
-                  setEarlyOutReason('');
-                  setApprovedBy('');
-                }}
-                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (!selectedEmployee || !earlyOutReason.trim()) {
-                    alert('Please enter a reason for early out.');
-                    return;
-                  }
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-slate-700 mb-2">
+                  ìŠ¹ì¸ìž (ì„ íƒ)
+                </label>
+                <input
+                  type="text"
+                  value={approvedBy}
+                  onChange={(e) => setApprovedBy(e.target.value)}
+                  className="w-full px-3 py-2 rounded-[14px] focus:outline-none focus:ring-2 focus:ring-blue-400/60 border-0"
+                  style={PAY_NEO.inset}
+                  placeholder="ìŠ¹ì¸ìž ì´ë¦„"
+                />
+              </div>
 
-                  setIsClockLoading(true);
-
-                  try {
-                    const pin = prompt(`${selectedEmployee.name}ë‹˜, PINì„ ë‹¤ì‹œ ìž…ë ¥í•´ì£¼ì„¸ìš”:`);
-                    if (!pin) {
-                      setIsClockLoading(false);
-                      return;
-                    }
-
-                    const response = await clockInOutApi.clockOut(
-                      selectedEmployee.id,
-                      pin,
-                      true,
-                      earlyOutReason,
-                      approvedBy
-                    );
-
-                    alert(`${selectedEmployee.name}, early out processed.\nTotal hours: ${response.totalHours} hours`);
-
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
                     setShowEarlyOutModal(false);
                     setSelectedEmployee(null);
                     setEarlyOutReason('');
                     setApprovedBy('');
-                  } catch (error: any) {
-                    alert(`Early out failed: ${error.message}`);
-                  } finally {
-                    setIsClockLoading(false);
+                  }}
+                  className="flex-1 px-4 py-3 rounded-[14px] font-bold text-gray-700 transition-all hover:brightness-[1.02] active:brightness-95"
+                  style={PAY_NEO.inset}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!selectedEmployee || !earlyOutReason.trim()) {
+                      alert('Please enter a reason for early out.');
+                      return;
+                    }
+
+                    setIsClockLoading(true);
+
+                    try {
+                      const pin = prompt(`${selectedEmployee.name}ë‹˜, PINì„ ë‹¤ì‹œ ìž…ë ¥í•´ì£¼ì„¸ìš”:`);
+                      if (!pin) {
+                        setIsClockLoading(false);
+                        return;
+                      }
+
+                      const response = await clockInOutApi.clockOut(
+                        selectedEmployee.id,
+                        pin,
+                        true,
+                        earlyOutReason,
+                        approvedBy
+                      );
+
+                      alert(`${selectedEmployee.name}, early out processed.\nTotal hours: ${response.totalHours} hours`);
+
+                      setShowEarlyOutModal(false);
+                      setSelectedEmployee(null);
+                      setEarlyOutReason('');
+                      setApprovedBy('');
+                    } catch (error: any) {
+                      alert(`Early out failed: ${error.message}`);
+                    } finally {
+                      setIsClockLoading(false);
+                    }
+                  }}
+                  disabled={!earlyOutReason.trim() || isClockLoading}
+                  className="flex-1 px-4 py-3 rounded-[14px] font-bold text-white transition-all hover:brightness-[1.02] active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={
+                    !earlyOutReason.trim() || isClockLoading
+                      ? { ...PAY_NEO.inset, color: '#64748b' }
+                      : { ...OH_ACTION_NEO.red, borderRadius: 14 }
                   }
-                }}
-                disabled={!earlyOutReason.trim() || isClockLoading}
-                className="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isClockLoading ? 'Processing...' : 'Process Early Out'}
-              </button>
+                >
+                  {isClockLoading ? 'Processing...' : 'Process Early Out'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -15139,40 +15394,41 @@ const SalesPage: React.FC = () => {
 
       {/* Gift Card Modal */}
       {showGiftCardModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div
-            className="relative w-[600px] max-h-[90vh] overflow-hidden rounded-2xl"
-            style={{ ...SOFT_NEO.shell, transform: 'translateY(-70px)' }}
+            className="relative max-h-[90vh] w-[600px] max-w-[96vw] overflow-hidden border-0 p-0"
+            style={{ ...PAY_NEO.modalShell, transform: 'translateY(-70px)' }}
           >
-            <div className="relative flex shrink-0 items-center justify-between border-b border-gray-400/20 px-4 py-3">
-              <h3 className="text-lg font-bold text-gray-800">Gift Card</h3>
+            <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+              <h3 className="text-lg font-bold text-slate-800">Gift Card</h3>
               <button
                 type="button"
                 onClick={() => setShowGiftCardModal(false)}
-                className="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95 z-[99999]"
-                style={SOFT_NEO.btnRound}
+                className={`flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-full border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                style={{ ...PAY_NEO.raised }}
+                aria-label="Close"
               >
-                <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
-            <div className="p-3 space-y-2">
+            <div className="max-h-[min(78vh,720px)] space-y-2 overflow-y-auto px-4 pb-4 pt-2" style={{ background: PAY_NEO_CANVAS }}>
               {/* Section 1: Card Number + Sell/Balance */}
-              <div className="rounded-xl p-3" style={SOFT_NEO.panel}>
+              <div className="rounded-[14px] p-3" style={{ ...PAY_NEO.raised }}>
                 <div className="flex gap-3">
                   {/* Card Number */}
                   <div 
-                    className={`flex-1 cursor-pointer rounded-xl p-3 transition-all ${
+                    className={`flex-1 cursor-pointer rounded-[14px] p-3 transition-all ${
                       giftCardInputFocus === 'card' 
-                        ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e8ecf2]' 
+                        ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e0e5ec]' 
                         : ''
                     }`}
-                    style={SOFT_NEO.insetWell}
+                    style={{ ...PAY_NEO.inset }}
                     onClick={() => setGiftCardInputFocus('card')}
                   >
-                    <div className="text-xs font-semibold text-gray-700 mb-1">Card Number</div>
+                    <div className="mb-1 text-xs font-semibold text-slate-700">Card Number</div>
                     <div className="text-3xl font-mono tracking-wide text-gray-800 flex items-center">
                       {[0, 1, 2, 3].map((groupIdx) => (
                         <span key={groupIdx} className="flex items-center">
@@ -15197,10 +15453,10 @@ const SalesPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => { setGiftCardMode('sell'); setGiftCardBalance(null); setGiftCardError(''); }}
-                      className={`flex-1 rounded-xl py-3 text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
-                        giftCardMode === 'sell' ? 'text-white' : 'text-gray-700'
+                      className={`flex-1 rounded-[10px] border-0 px-3 py-2 text-sm font-semibold touch-manipulation ${
+                        giftCardMode === 'sell' ? `text-white ${NEO_COLOR_BTN_PRESS}` : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
                       }`}
-                      style={giftCardMode === 'sell' ? SOFT_NEO.btnAmber : SOFT_NEO.tabRaised}
+                      style={giftCardMode === 'sell' ? GC_NEO_AMBER : { ...PAY_NEO.key }}
                     >
                       Sell
                     </button>
@@ -15227,10 +15483,10 @@ const SalesPage: React.FC = () => {
                           })();
                         }
                       }}
-                      className={`flex-1 rounded-xl py-3 text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
-                        giftCardMode === 'balance' ? 'text-white' : 'text-gray-700'
+                      className={`flex-1 rounded-[10px] border-0 px-3 py-2 text-sm font-semibold touch-manipulation ${
+                        giftCardMode === 'balance' ? `text-white ${NEO_COLOR_BTN_PRESS}` : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
                       }`}
-                      style={giftCardMode === 'balance' ? SOFT_NEO.btnSuccess : SOFT_NEO.tabRaised}
+                      style={giftCardMode === 'balance' ? GC_NEO_GREEN : { ...PAY_NEO.key }}
                     >
                       Balance
                     </button>
@@ -15240,19 +15496,19 @@ const SalesPage: React.FC = () => {
 
               {/* Section 2 & 3: Amount + Bill Buttons + Payment Method (Sell mode only) */}
               {giftCardMode === 'sell' && (
-                <div className="flex gap-2 items-stretch h-[112px]">
-                  <div className="flex gap-2 rounded-xl p-2" style={SOFT_NEO.insetWell}>
+                <div className="flex h-[112px] items-stretch gap-2">
+                  <div className="flex gap-2 rounded-[14px] p-2" style={{ ...PAY_NEO.inset }}>
                     <div 
-                      className={`flex w-32 cursor-pointer flex-col justify-center rounded-xl p-2 transition-all ${
+                      className={`flex w-32 cursor-pointer flex-col justify-center rounded-[12px] p-2 transition-all ${
                         giftCardInputFocus === 'amount' 
-                          ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#dce1ea]' 
+                          ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e0e5ec]' 
                           : ''
                       }`}
-                      style={SOFT_NEO.panel}
+                      style={{ ...PAY_NEO.raised }}
                       onClick={() => setGiftCardInputFocus('amount')}
                     >
-                      <div className="text-xs font-semibold text-gray-600 mb-1">Amount</div>
-                      <div className="text-3xl font-bold text-amber-800 text-center py-2">
+                      <div className="mb-1 text-xs font-semibold text-slate-600">Amount</div>
+                      <div className="py-2 text-center text-3xl font-bold text-amber-800">
                         ${giftCardAmount || '0'}
                       </div>
                     </div>
@@ -15262,32 +15518,32 @@ const SalesPage: React.FC = () => {
                           key={amt}
                           type="button"
                           onClick={() => { setGiftCardAmount(String(amt)); setGiftCardInputFocus('amount'); }}
-                          className={`h-12 w-24 rounded-xl text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
-                            giftCardAmount === String(amt) ? 'text-white' : 'text-gray-700'
+                          className={`h-10 min-h-[40px] w-24 rounded-[10px] border-0 text-sm font-semibold touch-manipulation ${
+                            giftCardAmount === String(amt) ? `text-white ${NEO_COLOR_BTN_PRESS}` : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
                           }`}
-                          style={giftCardAmount === String(amt) ? SOFT_NEO.btnAmber : SOFT_NEO.tabRaised}
+                          style={giftCardAmount === String(amt) ? GC_NEO_AMBER : { ...PAY_NEO.key }}
                         >
                           ${amt}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <div className="rounded-xl p-2" style={SOFT_NEO.insetWell}>
+                  <div className="rounded-[14px] p-2" style={{ ...PAY_NEO.inset }}>
                     <div className="grid grid-cols-2 gap-2">
                       {(['Cash', 'Visa', 'Master', 'Other'] as const).map((method) => (
                         <button
                           key={method}
                           type="button"
                           onClick={() => setGiftCardPaymentMethod(method === 'Master' ? 'MasterCard' : method as any)}
-                          className={`h-12 w-24 rounded-xl text-base font-bold transition-transform active:scale-[0.98] touch-manipulation ${
+                          className={`h-10 min-h-[40px] w-24 rounded-[10px] border-0 text-sm font-semibold touch-manipulation ${
                             (method === 'Master' ? giftCardPaymentMethod === 'MasterCard' : giftCardPaymentMethod === method)
-                              ? 'text-white'
-                              : 'text-gray-700'
+                              ? `text-white ${NEO_COLOR_BTN_PRESS}`
+                              : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
                           }`}
                           style={
                             (method === 'Master' ? giftCardPaymentMethod === 'MasterCard' : giftCardPaymentMethod === method)
-                              ? SOFT_NEO.btnPrimary
-                              : SOFT_NEO.tabRaised
+                              ? { ...PAY_NEO_PRIMARY_BLUE }
+                              : { ...PAY_NEO.key }
                           }
                         >
                           {method}
@@ -15300,28 +15556,29 @@ const SalesPage: React.FC = () => {
 
               {/* Balance Display (Balance mode only) */}
               {giftCardMode === 'balance' && (
-                <div className="flex h-[112px] flex-col justify-center rounded-xl p-2 text-center" style={SOFT_NEO.insetWell}>
-                  <div className="text-xs font-semibold text-green-700 mb-1">Available Balance</div>
+                <div className="flex h-[112px] flex-col justify-center rounded-[14px] p-2 text-center" style={{ ...PAY_NEO.inset }}>
+                  <div className="mb-1 text-xs font-semibold text-green-700">Available Balance</div>
                   {giftCardBalance !== null ? (
                     <div className="text-4xl font-bold text-green-700">{`$${giftCardBalance.toFixed(2)}`}</div>
                   ) : (
-                    <div className="text-base font-medium text-gray-500">Enter card number and check</div>
+                    <div className="text-base font-medium text-slate-500">Enter card number and check</div>
                   )}
                 </div>
               )}
 
-              <div className="rounded-xl p-3" style={SOFT_NEO.insetWell}>
+              <div className="rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
                 <div className="grid grid-cols-4 gap-2">
-                  {['1', '2', '3', 'C', '4', '5', '6', 'âŒ«', '7', '8', '9', '', '0', '00', '.', ''].map((key, idx) => (
+                  {(['1', '2', '3', 'C', '4', '5', '6', '\u232B', '7', '8', '9', '', '0', '00', '.', ''] as const).map((key, idx) => (
                     <button
                       key={`numpad-${key}-${idx}`}
+                      type="button"
                       onClick={() => {
                         if (giftCardInputFocus === 'card') {
                           // Card number input
                           const fullNumber = giftCardNumber.join('');
                           if (key === 'C') {
                             setGiftCardNumber(['', '', '', '']);
-                          } else if (key === 'âŒ«') {
+                          } else if (key === '\u232B') {
                             const newNumber = fullNumber.slice(0, -1);
                             const segments = [
                               newNumber.slice(0, 4),
@@ -15346,7 +15603,7 @@ const SalesPage: React.FC = () => {
                           // Amount input
                           if (key === 'C') {
                             setGiftCardAmount('');
-                          } else if (key === 'âŒ«') {
+                          } else if (key === '\u232B') {
                             setGiftCardAmount(prev => prev.slice(0, -1));
                           } else if (key === '.') {
                             if (!giftCardAmount.includes('.')) {
@@ -15359,7 +15616,7 @@ const SalesPage: React.FC = () => {
                           // PIN input
                           if (key === 'C') {
                             setGiftCardSellerPin('');
-                          } else if (key === 'âŒ«') {
+                          } else if (key === '\u232B') {
                             setGiftCardSellerPin(prev => prev.slice(0, -1));
                           } else if (key !== '.' && key !== '00') {
                             if (giftCardSellerPin.length < 6) {
@@ -15368,16 +15625,16 @@ const SalesPage: React.FC = () => {
                           }
                         }
                       }}
-                      className={`h-12 rounded-xl font-bold text-lg transition-transform active:scale-95 touch-manipulation ${
+                      className={`h-11 min-h-[44px] rounded-[10px] border-0 text-base font-semibold touch-manipulation transition hover:brightness-[1.03] ${
                         key === ''
-                          ? 'cursor-default bg-transparent'
+                          ? 'cursor-default bg-transparent shadow-none'
                           : key === 'C'
-                          ? 'text-red-700'
-                          : key === 'âŒ«'
-                          ? 'text-amber-900'
-                          : 'text-gray-800'
+                          ? `text-red-700 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
+                          : key === '\u232B'
+                          ? `text-amber-900 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
+                          : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
                       }`}
-                      style={key === '' ? undefined : SOFT_NEO.tabRaised}
+                      style={key === '' ? undefined : { ...PAY_KEYPAD_KEY }}
                       disabled={key === ''}
                     >
                       {key}
@@ -15388,57 +15645,57 @@ const SalesPage: React.FC = () => {
 
               {/* Reload Mode Indicator */}
               {giftCardIsReload && giftCardMode === 'sell' && (
-                <div className="rounded-xl p-2 text-center" style={SOFT_NEO.panel}>
+                <div className="rounded-[14px] p-2 text-center" style={{ ...PAY_NEO.raised }}>
                   <div className="text-sm font-bold text-blue-800">
-                    🔄 ì¶©ì „ ëª¨ë“œ - ê¸°ì¡´ ìž”ì•¡: ${giftCardExistingBalance?.toFixed(2)}
+                    {`\u{1F504} 충전 모드 — 기존 잔액: $${giftCardExistingBalance?.toFixed(2)}`}
                   </div>
                 </div>
               )}
 
               {giftCardError && (
-                <div className="rounded-xl border border-red-200/80 bg-red-50/90 p-2 text-center">
-                  <div className="text-red-600 text-sm font-medium">{giftCardError}</div>
+                <div className="rounded-[14px] px-3 py-2 text-center text-sm text-red-700" style={{ ...PAY_NEO.inset, background: '#fee2e2' }}>
+                  <div className="font-medium">{giftCardError}</div>
                 </div>
               )}
 
-              <div className="rounded-xl p-3" style={SOFT_NEO.panel}>
-                <div className="flex gap-2 items-end">
-                  <div className="flex-1">
-                    <label className="mb-1 block text-xs font-semibold text-gray-700">Name</label>
+              <div className="rounded-[14px] p-5" style={{ ...PAY_NEO.raised }}>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[120px] flex-1">
+                    <label className="mb-1 block text-xs font-semibold text-slate-700">Name</label>
                     <input
                       type="text"
                       value={giftCardCustomerName}
                       readOnly
                       onClick={() => setShowGiftCardNameKeyboard(true)}
-                      className="w-full cursor-pointer rounded-xl border-0 px-2 py-2 text-sm text-gray-800 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
-                      style={SOFT_NEO.insetWell}
+                      className="w-full cursor-pointer border-0 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+                      style={{ ...PAY_NEO.inset }}
                       placeholder="Touch to enter"
                     />
                   </div>
-                  <div className="flex-1">
-                    <label className="mb-1 block text-xs font-semibold text-gray-700">Phone</label>
+                  <div className="min-w-[120px] flex-1">
+                    <label className="mb-1 block text-xs font-semibold text-slate-700">Phone</label>
                     <input
                       type="tel"
                       value={giftCardCustomerPhone}
                       onChange={(e) => setGiftCardCustomerPhone(e.target.value)}
-                      className="w-full rounded-xl border-0 px-2 py-2 text-sm text-gray-800 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
-                      style={SOFT_NEO.insetWell}
+                      className="w-full border-0 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+                      style={{ ...PAY_NEO.inset }}
                       placeholder="Optional"
                     />
                   </div>
                   {giftCardMode === 'sell' && (
                     <div 
-                      className="w-24 cursor-pointer"
+                      className="w-24 min-w-[96px] cursor-pointer"
                       onClick={() => setGiftCardInputFocus('pin')}
                     >
                       <label className="mb-1 block text-xs font-semibold text-red-700">Seller PIN *</label>
                       <div 
-                        className={`w-full rounded-xl px-2 py-2 text-center text-sm font-mono tracking-widest text-gray-800 transition-all ${
-                          giftCardInputFocus === 'pin' ? 'ring-2 ring-red-500/90 ring-offset-2 ring-offset-[#e8ecf2]' : ''
+                        className={`w-full px-3 py-2 text-center text-sm font-mono tracking-widest text-slate-800 transition-all ${
+                          giftCardInputFocus === 'pin' ? 'ring-2 ring-red-500/90 ring-offset-2 ring-offset-[#e0e5ec]' : ''
                         }`}
-                        style={SOFT_NEO.insetWell}
+                        style={{ ...PAY_NEO.inset }}
                       >
-                        {giftCardSellerPin ? 'â—'.repeat(giftCardSellerPin.length) : <span className="text-gray-500">PIN</span>}
+                        {giftCardSellerPin ? '\u25CF'.repeat(giftCardSellerPin.length) : <span className="text-slate-500">PIN</span>}
                       </div>
                     </div>
                   )}
@@ -15450,8 +15707,8 @@ const SalesPage: React.FC = () => {
                       setGiftCardExistingBalance(null);
                       setGiftCardSellerPin('');
                     }}
-                    className="rounded-xl px-6 py-2 text-base font-bold text-gray-700 transition-transform active:scale-[0.98] touch-manipulation"
-                    style={SOFT_NEO.tabRaised}
+                    className={`rounded-[12px] border-0 px-4 py-2 text-sm font-semibold text-slate-800 transition hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                    style={{ ...PAY_NEO.key }}
                   >
                     Cancel
                   </button>
@@ -15459,8 +15716,8 @@ const SalesPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleSellGiftCard}
-                      className="rounded-xl px-8 py-2 text-base font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
-                      style={giftCardIsReload ? SOFT_NEO.btnPrimary : SOFT_NEO.btnAmber}
+                      className={`rounded-[12px] border-0 px-4 py-2 text-sm font-semibold text-white transition disabled:opacity-50 ${NEO_COLOR_BTN_PRESS}`}
+                      style={giftCardIsReload ? { ...PAY_NEO_PRIMARY_BLUE } : GC_NEO_AMBER}
                     >
                       {giftCardIsReload ? 'Reload' : 'Ok'}
                     </button>
@@ -15468,8 +15725,8 @@ const SalesPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleCheckGiftCardBalance}
-                      className="rounded-xl px-8 py-2 text-base font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
-                      style={SOFT_NEO.btnSuccess}
+                      className={`rounded-[12px] border-0 px-4 py-2 text-sm font-semibold text-white transition disabled:opacity-50 ${NEO_COLOR_BTN_PRESS}`}
+                      style={GC_NEO_GREEN}
                     >
                       Ok
                     </button>
@@ -15485,18 +15742,18 @@ const SalesPage: React.FC = () => {
 
       {/* Gift Card Sold Popup */}
       {showGiftCardSoldPopup && (
-        <div className="fixed inset-0 flex items-center justify-center z-[60] pointer-events-none" style={{ transform: 'translateY(-100px)' }}>
-          <div className="bg-green-500 text-white px-16 py-8 rounded-2xl shadow-2xl animate-pulse">
-            <div className="text-4xl font-bold text-center">Gift Card Sold</div>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none" style={{ transform: 'translateY(-100px)' }}>
+          <div className="animate-pulse rounded-2xl px-16 py-8 text-white" style={GC_NEO_GREEN}>
+            <div className="text-center text-4xl font-bold">Gift Card Sold</div>
           </div>
         </div>
       )}
 
       {/* Gift Card Reload Popup */}
       {showGiftCardReloadPopup && (
-        <div className="fixed inset-0 flex items-center justify-center z-[60] pointer-events-none" style={{ transform: 'translateY(-100px)' }}>
-          <div className="bg-blue-500 text-white px-16 py-8 rounded-2xl shadow-2xl animate-pulse">
-            <div className="text-4xl font-bold text-center">Gift Card Reloaded</div>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none" style={{ transform: 'translateY(-100px)' }}>
+          <div className="animate-pulse rounded-2xl px-16 py-8 text-white" style={{ ...PAY_NEO_PRIMARY_BLUE, borderRadius: 16 }}>
+            <div className="text-center text-4xl font-bold">Gift Card Reloaded</div>
           </div>
         </div>
       )}
@@ -15522,7 +15779,7 @@ const SalesPage: React.FC = () => {
       {/* Refund Modal */}
       {showRefundModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-2xl w-[800px] min-h-[660px] max-h-[85vh] overflow-hidden flex flex-col" style={{ transform: 'translateY(-80px)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[800px] min-h-[660px] max-h-[85vh] overflow-hidden flex flex-col [&_button]:transition-transform [&_button]:duration-100 [&_button]:ease-out [&_button:not(:disabled)]:active:scale-[0.98] [&_button:not(:disabled)]:active:brightness-95 [&_button]:touch-manipulation" style={{ transform: 'translateY(-80px)' }}>
             {/* Header */}
             <div className="bg-red-600 text-white px-6 py-4 flex justify-between items-center">
               <h2 className="text-xl font-bold">
@@ -15693,10 +15950,10 @@ const SalesPage: React.FC = () => {
                           <div
                             key={order.id}
                             onClick={() => !isFullyRefunded && selectOrderForRefund(order)}
-                            className={`p-3 border-2 rounded-lg transition-all ${
+                            className={`p-3 border-2 rounded-lg transition-all ease-out touch-manipulation ${
                               isFullyRefunded 
                                 ? 'bg-gray-300 border-gray-400 cursor-not-allowed opacity-70' 
-                                : `cursor-pointer hover:bg-orange-100 hover:border-orange-400 ${bgColor}`
+                                : `cursor-pointer hover:bg-orange-100 hover:border-orange-400 active:scale-[0.99] active:brightness-95 ${bgColor}`
                             }`}
                             style={{ minHeight: '70px' }}
                           >

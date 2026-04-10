@@ -1,4 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  NEO_MODAL_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS,
+  PAY_NEO_PRIMARY_BLUE,
+  OH_ACTION_NEO,
+} from '../utils/softNeumorphic';
+
+const PCM_RX_ROUND: React.CSSProperties = { borderRadius: 12 };
 
 interface PaymentCompleteModalProps {
   isOpen: boolean;
@@ -83,13 +93,21 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
     };
     return (
       <div className="fixed inset-0 z-[9999] flex items-center justify-center">
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-        <div className="relative bg-white rounded-2xl shadow-2xl w-[504px] overflow-hidden animate-in zoom-in-95 duration-200">
-          <div className="bg-gradient-to-r from-green-500 to-green-600 px-8 py-6 text-center">
+        <div className="absolute inset-0 bg-black/60" />
+        <div className="relative w-[504px] overflow-hidden animate-in zoom-in-95 duration-200 border-0" style={PAY_NEO.modalShell}>
+          <div
+            className="px-8 py-6 text-center"
+            style={{
+              ...PAY_NEO.raised,
+              background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+              color: '#fff',
+              boxShadow: '5px 5px 12px rgba(22,101,52,0.4), -3px -3px 10px rgba(255,255,255,0.22)',
+            }}
+          >
             <div className="text-6xl mb-2">✓</div>
             <h2 className="text-3xl font-bold text-white">Payment Complete</h2>
           </div>
-          <div className="p-8">
+          <div className="p-8" style={{ background: PAY_NEO_CANVAS }}>
             {hasCashPayment && change > 0 && (
               <div className="text-center mb-6 py-4 bg-red-50 rounded-xl border-2 border-red-200">
                 <div className="text-xl font-bold text-red-700">Change</div>
@@ -101,29 +119,29 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
             </div>
             <div className="grid grid-cols-3 gap-4">
               <button
+                type="button"
                 onClick={() => handleReceiptSelect(0)}
                 disabled={isSubmittingReceipt}
-                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
-                  'bg-gray-600 hover:bg-gray-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
+                className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                style={{ ...OH_ACTION_NEO.slate, ...PCM_RX_ROUND }}
               >
                 No Receipt
               </button>
               <button
+                type="button"
                 onClick={() => handleReceiptSelect(1)}
                 disabled={isSubmittingReceipt}
-                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
-                  'bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
+                className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                style={{ ...PAY_NEO_PRIMARY_BLUE, ...PCM_RX_ROUND }}
               >
                 1 Receipt
               </button>
               <button
+                type="button"
                 onClick={() => handleReceiptSelect(2)}
                 disabled={isSubmittingReceipt}
-                className={`py-6 px-4 rounded-xl font-bold text-lg transition-all shadow-lg active:scale-95 ${
-                  'bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed'
-                }`}
+                className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                style={{ ...OH_ACTION_NEO.green, ...PCM_RX_ROUND }}
               >
                 2 Receipts
               </button>
@@ -162,18 +180,24 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
     return (
       <div className="fixed inset-0 z-[9999] flex items-center justify-center">
         {/* Backdrop */}
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+        <div className="absolute inset-0 bg-black/60" />
         
-        {/* Modal */}
-        <div className="relative bg-white rounded-2xl shadow-2xl w-[504px] overflow-hidden animate-in zoom-in-95 duration-200">
-          {/* Header */}
-          <div className="bg-gradient-to-r from-green-500 to-green-600 px-8 py-6 text-center">
+        {/* Modal shell / header — PAY_NEO (Change·영수증 블록은 payment-lock 유지) */}
+        <div className="relative w-[504px] overflow-hidden animate-in zoom-in-95 duration-200 border-0" style={PAY_NEO.modalShell}>
+          <div
+            className="px-8 py-6 text-center"
+            style={{
+              ...PAY_NEO.raised,
+              background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+              color: '#fff',
+              boxShadow: '5px 5px 12px rgba(22,101,52,0.4), -3px -3px 10px rgba(255,255,255,0.22)',
+            }}
+          >
             <div className="text-6xl mb-2">✓</div>
             <h2 className="text-3xl font-bold text-white">Payment Complete</h2>
           </div>
-          
-          {/* Content */}
-          <div className="p-8">
+
+          <div className="p-8" style={{ background: PAY_NEO_CANVAS }}>
             {/* Change Display */}
             {hasCashPayment && change > 0 && (
               <div className="mb-8 p-6 bg-red-50 border-2 border-red-300 rounded-xl text-center">
@@ -200,7 +224,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
             )}
             
             {/* Payment Summary */}
-            <div className="mb-6 p-5 bg-gray-50 border border-gray-200 rounded-xl">
+            <div className="mb-6 p-5 rounded-xl" style={PAY_NEO.inset}>
               <div className="flex justify-between items-center mb-4 pb-4 border-b border-gray-300">
                 <span className="text-xl font-semibold text-gray-700">Total</span>
                 <span className="text-3xl font-bold text-gray-900">${formatMoney(total)}</span>
@@ -231,7 +255,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
 
             {/* Cash Tip 입력 (시나리오 4: 카드 정확 결제 후 별도 현금 팁) */}
             {!cashTipAdded && onAddCashTip && (
-              <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-xl">
+              <div className="mb-6 p-4 rounded-xl" style={{ ...PAY_NEO.inset, background: '#ecfdf5' }}>
                 <div className="text-sm font-semibold text-green-700 mb-2">Add Cash Tip</div>
                 <div className="flex items-center gap-2">
                   <span className="text-lg font-medium text-gray-600">$</span>
@@ -242,13 +266,21 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
                     value={cashTipInput}
                     onChange={e => setCashTipInput(e.target.value)}
                     placeholder="0.00"
-                    className="flex-1 h-12 px-3 text-xl font-semibold text-right border border-green-300 rounded-lg outline-none focus:ring-2 focus:ring-green-400 bg-white"
+                    className="flex-1 h-12 px-3 text-xl font-semibold text-right border-0 outline-none focus:ring-2 focus:ring-green-400/80"
+                    style={PAY_NEO.inset}
                     onKeyDown={e => { if (e.key === 'Enter') handleAddCashTip(); }}
                   />
                   <button
+                    type="button"
                     onClick={handleAddCashTip}
                     disabled={!cashTipInput || parseFloat(cashTipInput) <= 0}
-                    className="h-12 px-5 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all active:scale-95"
+                    className={`h-12 shrink-0 px-5 rounded-lg font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${NEO_COLOR_BTN_PRESS}`}
+                    style={{
+                      ...PAY_NEO.raised,
+                      background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+                      color: '#fff',
+                      boxShadow: '5px 5px 12px rgba(22,101,52,0.45), -3px -3px 10px rgba(255,255,255,0.25)',
+                    }}
                   >
                     Add
                   </button>
@@ -263,20 +295,26 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
               </div>
               <div className="grid grid-cols-3 gap-4">
                 <button
+                  type="button"
                   onClick={() => onClose(0)}
-                  className="py-6 px-4 rounded-xl font-bold text-lg transition-all bg-gray-600 hover:bg-gray-700 text-white shadow-lg active:scale-95"
+                  className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS}`}
+                  style={{ ...OH_ACTION_NEO.slate, ...PCM_RX_ROUND }}
                 >
                   No Receipt
                 </button>
                 <button
+                  type="button"
                   onClick={() => onClose(1)}
-                  className="py-6 px-4 rounded-xl font-bold text-lg transition-all bg-blue-600 hover:bg-blue-700 text-white shadow-lg active:scale-95"
+                  className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS}`}
+                  style={{ ...PAY_NEO_PRIMARY_BLUE, ...PCM_RX_ROUND }}
                 >
                   1 Receipt
                 </button>
                 <button
+                  type="button"
                   onClick={() => onClose(2)}
-                  className="py-6 px-4 rounded-xl font-bold text-lg transition-all bg-green-600 hover:bg-green-700 text-white shadow-lg active:scale-95"
+                  className={`border-0 py-6 px-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS}`}
+                  style={{ ...OH_ACTION_NEO.green, ...PCM_RX_ROUND }}
                 >
                   2 Receipts
                 </button>
@@ -339,18 +377,24 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-black/60" />
       
       {/* Modal - wider for 2-column layout */}
-      <div className="relative bg-white rounded-2xl shadow-2xl w-[700px] overflow-hidden animate-in zoom-in-95 duration-200">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-green-500 to-green-600 px-8 py-5 text-center">
+      <div className="relative w-[700px] overflow-hidden animate-in zoom-in-95 duration-200 border-0" style={PAY_NEO.modalShell}>
+        <div
+          className="px-8 py-5 text-center"
+          style={{
+            ...PAY_NEO.raised,
+            background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+            color: '#fff',
+            boxShadow: '5px 5px 12px rgba(22,101,52,0.4), -3px -3px 10px rgba(255,255,255,0.22)',
+          }}
+        >
           <div className="text-5xl mb-1">✓</div>
           <h2 className="text-2xl font-bold text-white">Guest {currentGuestNumber} Payment Complete</h2>
         </div>
 
-        {/* 2-column content */}
-        <div className="flex p-6 gap-6" style={{ minHeight: '340px' }}>
+        <div className="flex p-6 gap-6 rounded-b-2xl" style={{ minHeight: '340px', background: PAY_NEO_CANVAS }}>
           {/* ── Left: Payment Info + Receipt Options ── */}
           <div className="flex-1 flex flex-col">
             {/* Change */}
@@ -378,7 +422,7 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
             )}
 
             {/* Payment Summary */}
-            <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-xl">
+            <div className="mb-4 p-4 rounded-xl" style={PAY_NEO.inset}>
               <div className="flex justify-between items-center mb-3 pb-3 border-b border-gray-300">
                 <span className="text-lg font-semibold text-gray-700">Guest {currentGuestNumber} Total</span>
                 <span className="text-2xl font-bold text-gray-900">${formatMoney(total)}</span>
@@ -407,32 +451,41 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <button
+                  type="button"
+                  disabled={isSubmittingReceipt}
                   onClick={() => handlePartialReceiptClick(0)}
-                  className={`py-4 px-2 rounded-xl font-bold text-sm transition-all active:scale-95 ${
+                  className={`border-0 py-4 px-2 text-sm font-bold text-white ${selectedReceipt === 0 ? NEO_MODAL_BTN_PRESS : NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                  style={
                     selectedReceipt === 0
-                      ? 'bg-gray-800 text-white ring-2 ring-gray-900'
-                      : 'bg-gray-600 hover:bg-gray-700 text-white shadow-md'
-                  }`}
+                      ? { ...PAY_NEO.inset, ...PCM_RX_ROUND, background: '#1f2937', color: '#fff' }
+                      : { ...OH_ACTION_NEO.slate, ...PCM_RX_ROUND }
+                  }
                 >
                   {selectedReceipt === 0 ? '✓ No Receipt' : 'No Receipt'}
                 </button>
                 <button
+                  type="button"
+                  disabled={isSubmittingReceipt}
                   onClick={() => handlePartialReceiptClick(1)}
-                  className={`py-4 px-2 rounded-xl font-bold text-sm transition-all active:scale-95 ${
+                  className={`border-0 py-4 px-2 text-sm font-bold text-white ${selectedReceipt === 1 ? NEO_MODAL_BTN_PRESS : NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                  style={
                     selectedReceipt === 1
-                      ? 'bg-blue-800 text-white ring-2 ring-blue-900'
-                      : 'bg-blue-600 hover:bg-blue-700 text-white shadow-md'
-                  }`}
+                      ? { ...PAY_NEO.inset, ...PCM_RX_ROUND, background: '#1e3a8a', color: '#fff' }
+                      : { ...PAY_NEO_PRIMARY_BLUE, ...PCM_RX_ROUND }
+                  }
                 >
                   {selectedReceipt === 1 ? '✓ 1 Receipt' : '1 Receipt'}
                 </button>
                 <button
+                  type="button"
+                  disabled={isSubmittingReceipt}
                   onClick={() => handlePartialReceiptClick(2)}
-                  className={`py-4 px-2 rounded-xl font-bold text-sm transition-all active:scale-95 ${
+                  className={`border-0 py-4 px-2 text-sm font-bold text-white ${selectedReceipt === 2 ? NEO_MODAL_BTN_PRESS : NEO_COLOR_BTN_PRESS} disabled:cursor-not-allowed disabled:opacity-50`}
+                  style={
                     selectedReceipt === 2
-                      ? 'bg-green-800 text-white ring-2 ring-green-900'
-                      : 'bg-green-600 hover:bg-green-700 text-white shadow-md'
-                  }`}
+                      ? { ...PAY_NEO.inset, ...PCM_RX_ROUND, background: '#14532d', color: '#fff' }
+                      : { ...OH_ACTION_NEO.green, ...PCM_RX_ROUND }
+                  }
                 >
                   {selectedReceipt === 2 ? '✓ 2 Receipts' : '2 Receipts'}
                 </button>
@@ -440,28 +493,24 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
             </div>
           </div>
 
-          {/* ── Right: Guest List ── */}
-          <div className="w-[180px] flex flex-col">
-            <div className="text-center mb-3">
+          {/* ── Right: Guest List (영수증 그리드는 payment-lock 유지) ── */}
+          <div className="flex w-[180px] flex-col rounded-xl p-2" style={PAY_NEO.inset}>
+            <div className="mb-3 text-center">
               <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Guests</span>
             </div>
 
             {/* Guest buttons - vertical list */}
-            <div className="flex-1 flex flex-col gap-2 overflow-y-auto">
+            <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
               {allGuests.map((g) => {
                 const isPaid = paidGuests.includes(g);
                 return (
                   <button
                     key={`guest-btn-${g}`}
+                    type="button"
                     disabled={isPaid}
                     onClick={() => handleGuestClick(g)}
-                    className={`
-                      w-full min-h-[56px] px-4 rounded-xl text-base font-semibold transition-all
-                      ${isPaid
-                        ? 'bg-gray-50 border border-gray-200 text-gray-400 cursor-not-allowed'
-                        : 'bg-white/80 backdrop-blur-sm border border-gray-200/80 shadow-sm hover:bg-white hover:shadow-md hover:border-blue-300 text-gray-700 active:scale-[0.97] cursor-pointer'
-                      }
-                    `}
+                    className={`w-full min-h-[56px] rounded-xl border-0 px-4 text-base font-semibold ${isPaid ? 'cursor-not-allowed text-gray-400' : `cursor-pointer text-gray-700 ${NEO_MODAL_BTN_PRESS}`}`}
+                    style={isPaid ? { ...PAY_NEO.inset, opacity: 0.72 } : PAY_NEO.key}
                   >
                     <div className="flex items-center justify-between">
                       <span>Guest {g}</span>
@@ -483,8 +532,10 @@ const PaymentCompleteModal: React.FC<PaymentCompleteModalProps> = ({
 
             {/* Back to Order */}
             <button
+              type="button"
               onClick={handleBackClick}
-              className="mt-3 w-full min-h-[56px] px-4 rounded-xl text-base font-semibold bg-white/80 backdrop-blur-sm border border-gray-300/80 shadow-sm hover:bg-gray-50 hover:shadow-md text-gray-500 active:scale-[0.97] transition-all"
+              className={`mt-3 w-full min-h-[56px] rounded-xl border-0 px-4 text-base font-semibold text-gray-600 ${NEO_MODAL_BTN_PRESS}`}
+              style={PAY_NEO.key}
             >
               ← Back to Order
             </button>

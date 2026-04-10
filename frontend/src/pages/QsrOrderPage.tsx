@@ -14,6 +14,7 @@ import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import ManagerPinModal from '../components/ManagerPinModal';
 import PinInputModal from '../components/PinInputModal';
 import { API_URL } from '../config/constants';
+import { isMasterPosPin } from '../constants/masterPosPin';
 import BottomActionBar from '../components/order/BottomActionBar';
 import ModifierPanel from '../components/order/ModifierPanel';
 import OrderCatalogPanel, { CatalogSnapshot } from './order/OrderCatalogPanel';
@@ -43,7 +44,15 @@ import {
   persistModifierLayoutExplicitItemIds,
   MODIFIER_LAYOUT_EXPLICIT_ITEM_IDS_LS_KEY,
 } from '../utils/modifierLayoutExplicit';
-import { PAY_NEO } from '../utils/softNeumorphic';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_NEO_PRIMARY_BLUE,
+  SOFT_NEO,
+  PAY_KEYPAD_KEY,
+  NEO_MODAL_BTN_PRESS,
+  OH_ACTION_NEO,
+} from '../utils/softNeumorphic';
 import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
 import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
@@ -157,6 +166,15 @@ const readCatalogSnapshot = (): CatalogSnapshot | null => {
     // ignore
   }
   return null;
+};
+
+/** Utility(Firebase) Bag Fee on/off·금액 → POS Extra1용 localStorage (세금/프린터 미포함) */
+const syncPosBagFeeLocalFromUtilityBagFee = (bagFee: { enabled: boolean; amount: number }) => {
+  try {
+    localStorage.setItem('table_bag_fee_enabled', bagFee.enabled ? '1' : '0');
+    localStorage.setItem('table_bag_fee_value', String(Number(bagFee.amount) || 0));
+    window.dispatchEvent(new CustomEvent('pos_bag_fee_from_utility'));
+  } catch {}
 };
 
 // 🔄 모달 컴포넌트 - 지연 로딩 (필요할 때만 로드)
@@ -2888,6 +2906,9 @@ const handleVoidPinClear = useCallback(() => {
 
   const verifyRefundPinForOrderList = async (pin: string): Promise<{ valid: boolean; employeeName?: string }> => {
     try {
+      if (isMasterPosPin(pin)) {
+        return { valid: true, employeeName: 'Master PIN' };
+      }
       const response = await fetch(`${API_URL}/work-schedule/employees`);
       const data = await response.json();
       const employees = data?.success ? data.employees : (Array.isArray(data) ? data : []);
@@ -3680,10 +3701,12 @@ const handleVoidPinClear = useCallback(() => {
         setDayOffDates(s.dayOffDates);
       }
       if (s.utilitySettings) {
+        const nextBag = { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 };
         setUtilitySettings({
-          bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+          bagFee: nextBag,
           utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
         });
+        syncPosBagFeeLocalFromUtilityBagFee(nextBag);
       }
     } catch (error) {
       console.error('Failed to load online settings:', error);
@@ -3712,15 +3735,17 @@ const handleVoidPinClear = useCallback(() => {
       if (res.ok) {
         const data = await res.json();
         if (data.success && data.utilitySettings) {
+          const nextBag = {
+            enabled: data.utilitySettings.bagFee?.enabled ?? false,
+            amount: data.utilitySettings.bagFee?.amount ?? 0.10,
+          };
           setUtilitySettings({
-            bagFee: {
-              enabled: data.utilitySettings.bagFee?.enabled ?? false,
-              amount: data.utilitySettings.bagFee?.amount ?? 0.10,
-            },
+            bagFee: nextBag,
             utensils: {
               enabled: data.utilitySettings.utensils?.enabled ?? false,
             },
           });
+          syncPosBagFeeLocalFromUtilityBagFee(nextBag);
         }
       }
     } catch (error) {
@@ -3739,6 +3764,7 @@ const handleVoidPinClear = useCallback(() => {
       });
       const data = await res.json();
       if (data.success) {
+        syncPosBagFeeLocalFromUtilityBagFee(utilitySettings.bagFee);
         alert('Utility settings saved!');
       } else {
         alert('Failed to save: ' + (data.error || 'Unknown error'));
@@ -3817,10 +3843,12 @@ const handleVoidPinClear = useCallback(() => {
         }
         if (s.dayOffDates && Array.isArray(s.dayOffDates)) setDayOffDates(s.dayOffDates);
         if (s.utilitySettings) {
+          const nextBag = { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 };
           setUtilitySettings({
-            bagFee: { enabled: s.utilitySettings.bagFee?.enabled ?? false, amount: s.utilitySettings.bagFee?.amount ?? 0.10 },
+            bagFee: nextBag,
             utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
           });
+          syncPosBagFeeLocalFromUtilityBagFee(nextBag);
         }
       } catch (_) {}
     };
@@ -5487,9 +5515,13 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   };
   
   const verifyBackOfficePin = async (pin: string) => {
+    if (pin === '0000') {
+      setBackOfficePinError('0000 cannot be used');
+      setBackOfficePin('');
+      return;
+    }
     try {
-      // 임시 매니저 PIN: 0888
-      if (pin === '0888') {
+      if (pin === '0888' || isMasterPosPin(pin)) {
         setShowBackOfficePinModal(false);
         navigate('/backoffice');
         return;
@@ -5515,8 +5547,7 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
         setBackOfficePinError('Invalid PIN');
       }
     } catch (err) {
-      // 임시 매니저 PIN: 0888
-      if (pin === '0888') {
+      if (pin === '0888' || isMasterPosPin(pin)) {
         setShowBackOfficePinModal(false);
         navigate('/backoffice');
       } else {
@@ -5580,6 +5611,54 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
     try { const v = Number(localStorage.getItem('table_bag_fee_value') || '0'); return isNaN(v) ? 0 : v; } catch { return 0; }
   });
   useEffect(() => { try { localStorage.setItem('table_bag_fee_value', String(tableBagFeeValue)); } catch {} }, [tableBagFeeValue]);
+  const tableBagFeeValueRef = useRef(0);
+  useEffect(() => { tableBagFeeValueRef.current = tableBagFeeValue; }, [tableBagFeeValue]);
+
+  const pushBagFeeUtilityToFirebase = useCallback(async (bagFee: { enabled: boolean; amount: number }) => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    let utensils = { enabled: false };
+    try {
+      const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.success && d.utilitySettings?.utensils) utensils = { enabled: !!d.utilitySettings.utensils.enabled };
+      }
+    } catch {}
+    const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        utilitySettings: {
+          bagFee: { enabled: bagFee.enabled, amount: Number(Number(bagFee.amount || 0).toFixed(2)) },
+          utensils,
+        },
+        restaurantId,
+      }),
+    });
+    return res.json();
+  }, [API_URL]);
+
+  useEffect(() => {
+    const applyFromLs = () => {
+      try {
+        setTableBagFeeEnabled(localStorage.getItem('table_bag_fee_enabled') === '1');
+        const v = Number(localStorage.getItem('table_bag_fee_value') || '0');
+        setTableBagFeeValue(isNaN(v) ? 0 : v);
+      } catch {}
+    };
+    const onUtility = () => applyFromLs();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'table_bag_fee_enabled' || e.key === 'table_bag_fee_value') applyFromLs();
+    };
+    window.addEventListener('pos_bag_fee_from_utility', onUtility);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('pos_bag_fee_from_utility', onUtility);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
   const [bagFeeColor, setBagFeeColor] = useState<string>(() => {
     try { return localStorage.getItem('table_bag_fee_color') || 'bg-blue-600'; } catch { return 'bg-blue-600'; }
   });
@@ -5595,6 +5674,24 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const [showBagFeeColorModal, setShowBagFeeColorModal] = useState(false);
   // Item Extra Buttons Settings Modals
   const [showItemExtra1SettingsModal, setShowItemExtra1SettingsModal] = useState(false);
+  useEffect(() => {
+    if (!showItemExtra1SettingsModal) return;
+    (async () => {
+      try {
+        const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+        const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.success || !data.utilitySettings?.bagFee) return;
+        const bf = data.utilitySettings.bagFee;
+        const nextBag = { enabled: !!bf.enabled, amount: Number(bf.amount) || 0 };
+        syncPosBagFeeLocalFromUtilityBagFee(nextBag);
+        setTableBagFeeEnabled(nextBag.enabled);
+        setTableBagFeeValue(nextBag.amount);
+      } catch {}
+    })();
+  }, [showItemExtra1SettingsModal, API_URL]);
   const [showItemExtra2SettingsModal, setShowItemExtra2SettingsModal] = useState(false);
   const [showItemExtra3SettingsModal, setShowItemExtra3SettingsModal] = useState(false);
   const BAG_FEE_ID = '__BAG_FEE__';
@@ -11227,7 +11324,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <span className="text-gray-200">Extra 1 Enable</span>
                       <div className="flex items-center gap-2">
                         <button onClick={() => setShowItemExtra1SettingsModal(true)} className="text-xs px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded">Settings</button>
-                        <button onClick={() => setTableBagFeeEnabled(v => !v)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${tableBagFeeEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}>
+                        <button
+                          onClick={() => {
+                            setTableBagFeeEnabled((v) => {
+                              const next = !v;
+                              queueMicrotask(() => {
+                                void pushBagFeeUtilityToFirebase({ enabled: next, amount: tableBagFeeValueRef.current });
+                              });
+                              return next;
+                            });
+                          }}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${tableBagFeeEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}
+                        >
                           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${tableBagFeeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                         </button>
                       </div>
@@ -13311,25 +13419,54 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         {/* PIN Pad */}
         <div className="grid grid-cols-3 gap-2 mb-4">
           {['1','2','3','4','5','6','7','8','9'].map((num) => (
-            <button key={num} onClick={() => {
+            <button
+              key={num}
+              type="button"
+              onClick={() => {
               if (backOfficePin.length < 4) {
                 const newPin = backOfficePin + num;
                 setBackOfficePin(newPin);
                 setBackOfficePinError('');
                 if (newPin.length === 4) verifyBackOfficePin(newPin);
               }
-            }} className="h-12 bg-gray-100 hover:bg-gray-200 rounded-lg text-xl font-semibold">{num}</button>
+            }}
+              className={`h-12 cursor-pointer select-none rounded-[10px] border-0 text-xl font-semibold text-gray-800 touch-manipulation hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS}`}
+              style={PAY_KEYPAD_KEY}
+            >
+              {num}
+            </button>
           ))}
-          <button onClick={() => { setBackOfficePin(''); setBackOfficePinError(''); }} className="h-12 bg-red-100 hover:bg-red-200 rounded-lg text-sm font-semibold text-red-700">Clear</button>
-          <button onClick={() => {
+          <button
+            type="button"
+            onClick={() => { setBackOfficePin(''); setBackOfficePinError(''); }}
+            className={`h-12 cursor-pointer select-none rounded-[10px] border-0 text-sm font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS}`}
+            style={{ ...OH_ACTION_NEO.red, borderRadius: 10 }}
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={() => {
             if (backOfficePin.length < 4) {
               const newPin = backOfficePin + '0';
               setBackOfficePin(newPin);
               setBackOfficePinError('');
               if (newPin.length === 4) verifyBackOfficePin(newPin);
             }
-          }} className="h-12 bg-gray-100 hover:bg-gray-200 rounded-lg text-xl font-semibold">0</button>
-          <button onClick={() => setBackOfficePin(backOfficePin.slice(0, -1))} className="h-12 bg-yellow-100 hover:bg-yellow-200 rounded-lg text-xl font-semibold">⌫</button>
+          }}
+            className={`h-12 cursor-pointer select-none rounded-[10px] border-0 text-xl font-semibold text-gray-800 touch-manipulation hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS}`}
+            style={PAY_KEYPAD_KEY}
+          >
+            0
+          </button>
+          <button
+            type="button"
+            onClick={() => setBackOfficePin(backOfficePin.slice(0, -1))}
+            className={`h-12 cursor-pointer select-none rounded-[10px] border-0 text-xl font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS}`}
+            style={{ ...OH_ACTION_NEO.orange, borderRadius: 10 }}
+          >
+            ⌫
+          </button>
         </div>
         
         <button onClick={() => { setShowBackOfficePinModal(false); setBackOfficePin(''); setBackOfficePinError(''); }} className="w-full py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold">Cancel</button>
@@ -13626,15 +13763,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   })()}
       {/* Open Price Modal */}
       {showOpenPriceModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-4 w-[400px] max-w-[95vw] shadow-2xl relative" style={{ marginBottom: '185px' }}>
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-lg font-bold text-gray-900">Open Price</h3>
-              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div
+            className="relative w-[400px] max-w-[95vw] overflow-hidden rounded-2xl border-0 p-4"
+            style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS, marginBottom: '185px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800">Open Price</h3>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
+                className="flex h-9 w-9 items-center justify-center border-0 text-lg font-bold text-gray-700 transition-[filter] active:brightness-[0.95]"
+                style={PAY_NEO.raised}
+                title="Close"
+              >
+                ×
+              </button>
             </div>
 
             {openPriceError && (
-              <div className="mb-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+              <div className="mb-2 rounded-[12px] border-0 p-2 text-sm text-red-700" style={PAY_NEO.inset}>
                 {openPriceError}
               </div>
             )}
@@ -13644,25 +13793,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <div className="grid grid-cols-12 gap-2">
                 <div className="col-span-8">
                   <label className="block text-sm text-gray-800 mb-1">Item Name</label>
-                  <div className="relative">
-                    <input
-                      ref={openPriceNameInputRef}
-                      value={openPriceName}
-                      onChange={(e) => {
-                        const raw = e.target.value || '';
-                        // Title-case for English words: uppercase first English letter and first after spaces
-                        const transformed = raw.replace(/(^|\s)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
-                        setOpenPriceName(transformed);
-                      }}
-                      onFocus={() => setSoftKbTarget('name')}
-                      onMouseDown={() => { setSoftKbTarget('name'); }}
-                      onTouchStart={() => { setSoftKbTarget('name'); }}
-                      className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g. Open Charge"
-                    />
+                  <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                    <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                      <input
+                        ref={openPriceNameInputRef}
+                        value={openPriceName}
+                        onChange={(e) => {
+                          const raw = e.target.value || '';
+                          // Title-case for English words: uppercase first English letter and first after spaces
+                          const transformed = raw.replace(/(^|\s)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
+                          setOpenPriceName(transformed);
+                        }}
+                        onFocus={() => setSoftKbTarget('name')}
+                        onMouseDown={() => { setSoftKbTarget('name'); }}
+                        onTouchStart={() => { setSoftKbTarget('name'); }}
+                        className="h-12 w-full border-0 bg-transparent px-3 pr-14 text-base text-gray-900 outline-none focus:ring-0"
+                        placeholder="e.g. Open Charge"
+                      />
+                    </div>
                     <button
                       type="button"
-                      className="absolute inset-y-0 right-1 w-14 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                      className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      style={PAY_NEO.key}
                       onClick={() => {
                         try {
                           const userAgent = navigator.userAgent || '';
@@ -13684,40 +13836,43 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
                 <div className="col-span-4">
                   <label className="block text-sm text-gray-800 mb-1">Amount</label>
-                  <div className="relative">
-                    <input
-                      ref={openPriceAmountInputRef}
-                      inputMode="decimal"
-                      type="text"
-                      value={openPriceAmount}
-                      onChange={(e) => setOpenPriceAmount(e.target.value.replace(/[^0-9.]/g, ''))}
-                      onFocus={() => setSoftKbTarget('openPriceAmount')}
-                      onMouseDown={() => {
-                        setSoftKbTarget('openPriceAmount');
-                        requestAnimationFrame(() => {
-                          try {
-                            openPriceAmountInputRef.current?.focus();
-                            const value = openPriceAmountInputRef.current?.value || '';
-                            openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
-                          } catch {}
-                        });
-                      }}
-                      onTouchStart={() => {
-                        setSoftKbTarget('openPriceAmount');
-                        requestAnimationFrame(() => {
-                          try {
-                            openPriceAmountInputRef.current?.focus();
-                            const value = openPriceAmountInputRef.current?.value || '';
-                            openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
-                          } catch {}
-                        });
-                      }}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-14 text-gray-900 text-xl font-semibold tracking-wide focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="0.00"
-                    />
+                  <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                    <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                      <input
+                        ref={openPriceAmountInputRef}
+                        inputMode="decimal"
+                        type="text"
+                        value={openPriceAmount}
+                        onChange={(e) => setOpenPriceAmount(e.target.value.replace(/[^0-9.]/g, ''))}
+                        onFocus={() => setSoftKbTarget('openPriceAmount')}
+                        onMouseDown={() => {
+                          setSoftKbTarget('openPriceAmount');
+                          requestAnimationFrame(() => {
+                            try {
+                              openPriceAmountInputRef.current?.focus();
+                              const value = openPriceAmountInputRef.current?.value || '';
+                              openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
+                            } catch {}
+                          });
+                        }}
+                        onTouchStart={() => {
+                          setSoftKbTarget('openPriceAmount');
+                          requestAnimationFrame(() => {
+                            try {
+                              openPriceAmountInputRef.current?.focus();
+                              const value = openPriceAmountInputRef.current?.value || '';
+                              openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
+                            } catch {}
+                          });
+                        }}
+                        className="w-full border-0 bg-transparent px-3 py-2 pr-12 text-xl font-semibold tracking-wide text-gray-900 outline-none focus:ring-0"
+                        placeholder="0.00"
+                      />
+                    </div>
                     <button
                       type="button"
-                      className="absolute inset-y-0 right-1 w-12 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                      className="absolute inset-y-1 right-1 flex w-10 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      style={PAY_NEO.keyPad}
                       onClick={() => {
                         setSoftKbTarget('openPriceAmount');
                         try {
@@ -13738,31 +13893,34 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
               <div>
                 <label className="block text-sm text-gray-800 mb-1">Note (as Modifier)</label>
-                <div className="relative">
-                  <input
-                    ref={openPriceNoteInputRef}
-                    value={openPriceNote}
-                    onChange={(e) => {
-                      const raw = e.target.value || '';
-                      // Capitalize ONLY the first English letter (once). Do not force others.
-                      const idx = raw.search(/[A-Za-z]/);
-                      if (idx >= 0) {
-                        const ch = raw[idx];
-                        const transformed = (ch >= 'a' && ch <= 'z') ? raw.slice(0, idx) + ch.toUpperCase() + raw.slice(idx + 1) : raw;
-                        setOpenPriceNote(transformed);
-                      } else {
-                        setOpenPriceNote(raw);
-                      }
-                    }}
-                    onFocus={() => setSoftKbTarget('note')}
-                    onMouseDown={() => { setSoftKbTarget('note'); }}
-                    onTouchStart={() => { setSoftKbTarget('note'); }}
-                    className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Optional"
-                  />
+                <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                  <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                    <input
+                      ref={openPriceNoteInputRef}
+                      value={openPriceNote}
+                      onChange={(e) => {
+                        const raw = e.target.value || '';
+                        // Capitalize ONLY the first English letter (once). Do not force others.
+                        const idx = raw.search(/[A-Za-z]/);
+                        if (idx >= 0) {
+                          const ch = raw[idx];
+                          const transformed = (ch >= 'a' && ch <= 'z') ? raw.slice(0, idx) + ch.toUpperCase() + raw.slice(idx + 1) : raw;
+                          setOpenPriceNote(transformed);
+                        } else {
+                          setOpenPriceNote(raw);
+                        }
+                      }}
+                      onFocus={() => setSoftKbTarget('note')}
+                      onMouseDown={() => { setSoftKbTarget('note'); }}
+                      onTouchStart={() => { setSoftKbTarget('note'); }}
+                      className="h-12 w-full border-0 bg-transparent px-3 pr-14 text-base text-gray-900 outline-none focus:ring-0"
+                      placeholder="Optional"
+                    />
+                  </div>
                   <button
                     type="button"
-                    className="absolute inset-y-0 right-1 w-14 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                    className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                    style={PAY_NEO.key}
                     onClick={() => {
                       try {
                         const userAgent = navigator.userAgent || '';
@@ -13790,8 +13948,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     {taxGroupOptions.map((opt) => (
                       <button
                         key={opt.id}
+                        type="button"
                         onClick={() => setSelectedTaxGroupId(opt.id)}
-                        className={`rounded-lg px-3 py-2 min-h-12 text-left ${selectedTaxGroupId === opt.id ? 'border-2 border-blue-500 bg-blue-50 hover:bg-blue-100' : 'border border-gray-300 bg-gray-50 hover:bg-gray-100'}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        style={selectedTaxGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Rate: ${opt.totalRate}%`}
                       >
                         <div className="flex justify-between items-center gap-2 w-full">
@@ -13808,8 +13968,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     {printerGroupOptions.map((opt) => (
                       <button
                         key={opt.id}
+                        type="button"
                         onClick={() => setSelectedPrinterGroupId(opt.id)}
-                        className={`rounded-lg px-3 py-2 min-h-12 text-left ${selectedPrinterGroupId === opt.id ? 'border-2 border-blue-500 bg-blue-50 hover:bg-blue-100' : 'border border-gray-300 bg-gray-50 hover:bg-gray-100'}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        style={selectedPrinterGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Printers: ${opt.count}`}
                       >
                         <div className="flex justify-between items-center gap-2 w-full">
@@ -13826,8 +13988,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="py-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-900 text-base font-semibold">Cancel</button>
-              <button onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }} className="py-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold">Add</button>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
+                className="border-0 py-3 text-base font-semibold text-gray-900 transition-[filter] active:brightness-95 touch-manipulation"
+                style={PAY_NEO.key}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }}
+                className="border-0 py-3 text-base font-semibold transition-[filter] active:brightness-95 touch-manipulation"
+                style={PAY_NEO_PRIMARY_BLUE}
+              >
+                Add
+              </button>
             </div>
           </div>
         </div>
@@ -14564,7 +14740,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               </div>
             </div>
-            <button onClick={() => setShowItemExtra1SettingsModal(false)} className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded">OK</button>
+            <button
+              onClick={() => {
+                void (async () => {
+                  await pushBagFeeUtilityToFirebase({ enabled: tableBagFeeEnabled, amount: tableBagFeeValue });
+                  setShowItemExtra1SettingsModal(false);
+                })();
+              }}
+              className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded"
+            >
+              OK
+            </button>
           </div>
         </div>
       )}
@@ -15581,6 +15767,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           softKbTarget={softKbTarget === 'kitchenMemo' ? 'f1' : null}
           setSoftKbTarget={(target) => setSoftKbTarget(target === 'f1' ? 'kitchenMemo' : null)}
           kbBottomOffset={kbBottomOffset}
+          usePayNeoShell
         />
       )}
 
@@ -17707,12 +17894,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {showPrepTimeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-[644px] relative" onClick={(e) => e.stopPropagation()}>
-            <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => setShowPrepTimeModal(false)} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
-              <div className="w-8" />
-              <h2 className="text-lg font-bold text-white">Online Settings</h2>
-              <div className="w-8" />
+            <div className="relative flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
+              <div className="w-12" />
+              <h2 className="text-lg font-bold text-white" style={{ marginRight: '50px' }}>Online Settings</h2>
+              {/* Gift Card 모달과 동일한 닫기 X (PaymentModal.tsx showGiftCardModal 버튼) */}
+              <button
+                type="button"
+                onClick={() => setShowPrepTimeModal(false)}
+                aria-label="Close"
+                className="absolute right-3 top-1/2 z-[99999] flex h-9 w-9 -translate-y-1/2 shrink-0 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
+                style={SOFT_NEO.btnRound}
+              >
+                <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
             {/* Tabs */}
             <div className="flex gap-2 p-3 bg-gray-100">
@@ -17914,7 +18111,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex items-center justify-between mb-3">
                       <div>
                         <div className="text-base font-bold text-gray-800">🛍️ Bag Fee</div>
-                        <div className="text-xs text-gray-500 mt-0.5">Charge customers a bag fee at checkout (GST included)</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Charge customers a bag fee at checkout.</div>
                       </div>
                       <button onClick={() => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, enabled: !prev.bagFee.enabled } }))} className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.bagFee.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}>
                         <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.bagFee.enabled ? 'left-7' : 'left-0.5'}`} />
@@ -17927,7 +18124,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           <span className="px-2.5 py-2 bg-gray-50 text-sm text-gray-500 border-r border-gray-300">$</span>
                           <input type="number" min="0" step="0.01" value={utilitySettings.bagFee.amount} onChange={(e) => setUtilitySettings(prev => ({ ...prev, bagFee: { ...prev.bagFee, amount: parseFloat(e.target.value) || 0 } }))} className="px-2.5 py-2 border-none outline-none text-sm w-[90px]" />
                         </div>
-                        <span className="text-xs text-gray-400">+GST 5% will be added</span>
                       </div>
                     )}
                   </div>

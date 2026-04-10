@@ -3,6 +3,14 @@
 // Updated: 2026-01-20 v3
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_NEO_PRIMARY_BLUE,
+  NEO_COLOR_BTN_PRESS,
+  NEO_MODAL_BTN_PRESS,
+  SOFT_NEO,
+} from '../utils/softNeumorphic';
 
 // Order status labels
 const STATUS_LABELS: Record<string, { label: string; color: string; bgColor: string }> = {
@@ -356,47 +364,63 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
   };
 
   return (
-    <div 
-      className="fixed right-0 top-0 h-full w-96 bg-white shadow-2xl z-50 flex flex-col"
+    <div
+      className="fixed right-0 top-0 z-50 flex h-full w-96 flex-col overflow-hidden"
+      style={{
+        ...PAY_NEO.modalShell,
+        borderRadius: '16px 0 0 16px',
+      }}
       onClick={handlePanelClick}
     >
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 flex items-center justify-between">
+      <div
+        className="relative flex shrink-0 items-center justify-between p-4 pr-16 text-slate-800"
+        style={PAY_NEO.raised}
+      >
         <div className="flex items-center gap-2">
           <span className="text-xl">🌐</span>
           <h2 className="text-lg font-bold">Online Orders</h2>
           {connected && (
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" title="Connected" />
+            <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" title="Connected" />
           )}
           {soundEnabled && (
-            <span 
-              className={`text-sm ${audioUnlocked ? 'text-green-300' : 'text-yellow-300 animate-pulse cursor-pointer'}`}
+            <span
+              className={`text-sm ${audioUnlocked ? 'text-green-700' : 'text-amber-600 animate-pulse cursor-pointer'}`}
               title={audioUnlocked ? 'Sound enabled' : 'Click to enable sound'}
             >
               {audioUnlocked ? '🔔' : '🔕'}
             </span>
           )}
         </div>
-        <button 
-          onClick={onClose}
-          className="w-10 h-10 flex items-center justify-center rounded-full bg-transparent border-red-500 text-red-400 hover:bg-red-50 text-xl font-bold transition-colors"
-          style={{ borderWidth: '3px', borderStyle: 'solid' }}
+        {/* Gift Card 모달과 동일한 닫기 X (PaymentModal.tsx showGiftCardModal 버튼) */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          aria-label="Close"
+          className="absolute top-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
+          style={SOFT_NEO.btnRound}
         >
-          ✕
+          <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+          </svg>
         </button>
       </div>
 
       {/* 필터 탭 */}
-      <div className="flex border-b bg-gray-50">
-        {['pending', 'confirmed', 'preparing', 'ready'].map(status => (
+      <div
+        className="flex shrink-0 gap-1 border-b border-transparent p-1.5"
+        style={{ ...PAY_NEO.inset, borderRadius: 0, background: PAY_NEO_CANVAS }}
+      >
+        {['pending', 'confirmed', 'preparing', 'ready'].map((status) => (
           <button
             key={status}
+            type="button"
             onClick={() => setFilter(status)}
-            className={`flex-1 py-2 text-sm font-medium transition ${
-              filter === status 
-                ? 'bg-white text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
+            className={`flex-1 rounded-lg py-2 text-sm font-medium transition-colors ${filter === status ? 'text-blue-800' : 'text-slate-600 hover:text-slate-800'}`}
+            style={filter === status ? { ...PAY_NEO.inset } : { ...PAY_NEO.key }}
           >
             {STATUS_LABELS[status]?.label || status}
           </button>
@@ -404,7 +428,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       </div>
 
       {/* 주문 목록 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" style={{ background: PAY_NEO_CANVAS }}>
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
@@ -464,30 +488,38 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
 
       {/* 선택된 주문 상세 */}
       {selectedOrder && (
-        <div className="border-t bg-gray-50 p-4 max-h-80 overflow-y-auto">
-          <div className="flex justify-between items-start mb-3">
+        <div
+          className="max-h-80 overflow-y-auto border-t border-transparent p-4"
+          style={{ ...PAY_NEO.inset, borderRadius: 0, background: PAY_NEO_CANVAS }}
+        >
+          <div className="mb-3 flex items-start justify-between">
             <div>
-              <div className="font-bold text-lg">{selectedOrder.orderNumber}</div>
+              <div className="text-lg font-bold">{selectedOrder.orderNumber}</div>
               <div className="text-sm text-gray-600">
                 {ORDER_TYPE_LABELS[selectedOrder.orderType]?.label || selectedOrder.orderType}
               </div>
             </div>
             <button
+              type="button"
               onClick={() => setSelectedOrder(null)}
-              className="text-gray-400 hover:text-gray-600"
+              aria-label="Close"
+              className="flex h-9 w-9 shrink-0 touch-manipulation items-center justify-center rounded-full border-2 border-red-500 transition-transform active:scale-95"
+              style={SOFT_NEO.btnRound}
             >
-              ✕
+              <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
 
           {/* 고객 정보 */}
-          <div className="bg-white rounded-lg p-3 mb-3 text-sm">
+          <div className="mb-3 rounded-lg p-3 text-sm" style={PAY_NEO.inset}>
             <div className="font-medium">{selectedOrder.customerName}</div>
             <div className="text-gray-600">{selectedOrder.customerPhone}</div>
           </div>
 
           {/* 주문 아이템 */}
-          <div className="bg-white rounded-lg p-3 mb-3">
+          <div className="mb-3 rounded-lg p-3" style={PAY_NEO.inset}>
             {selectedOrder.items?.map((item: any, idx: number) => (
               <div key={idx} className="py-1 border-b last:border-0">
                 <div className="flex justify-between text-sm">
@@ -574,25 +606,29 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
 
           {/* Notes */}
           {selectedOrder.notes && (
-            <div className="bg-yellow-50 rounded-lg p-3 mb-3 text-sm">
+            <div className="mb-3 rounded-lg border border-amber-200/60 bg-amber-50/90 p-3 text-sm">
               <div className="font-medium text-yellow-800">Special Request</div>
               <div className="text-yellow-700">{selectedOrder.notes}</div>
             </div>
           )}
 
           {/* Action buttons */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {selectedOrder.status === 'pending' && (
               <>
                 <button
+                  type="button"
                   onClick={() => confirmOrder(selectedOrder.id)}
-                  className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition"
+                  className={`flex-1 min-w-[120px] rounded-lg py-2 font-medium text-white ${NEO_COLOR_BTN_PRESS}`}
+                  style={PAY_NEO_PRIMARY_BLUE}
                 >
                   ✓ Confirm
                 </button>
                 <button
+                  type="button"
                   onClick={() => updateOrderStatus(selectedOrder.id, 'cancelled')}
-                  className="px-4 bg-red-100 text-red-600 py-2 rounded-lg font-medium hover:bg-red-200 transition"
+                  className={`rounded-lg px-4 py-2 font-medium text-red-700 ${NEO_MODAL_BTN_PRESS}`}
+                  style={PAY_NEO.key}
                 >
                   Cancel
                 </button>
@@ -600,31 +636,54 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
             )}
             {selectedOrder.status === 'confirmed' && (
               <button
+                type="button"
                 onClick={() => updateOrderStatus(selectedOrder.id, 'preparing')}
-                className="flex-1 bg-orange-500 text-white py-2 rounded-lg font-medium hover:bg-orange-600 transition"
+                className={`flex-1 rounded-lg py-2 font-medium text-white ${NEO_COLOR_BTN_PRESS}`}
+                style={{
+                  ...PAY_NEO.raised,
+                  background: 'linear-gradient(145deg, #fb923c, #ea580c)',
+                  color: '#fff',
+                  boxShadow: '5px 5px 12px rgba(194,65,12,0.45), -3px -3px 10px rgba(255,255,255,0.25)',
+                }}
               >
                 🍳 Start Preparing
               </button>
             )}
             {selectedOrder.status === 'preparing' && (
               <button
+                type="button"
                 onClick={() => updateOrderStatus(selectedOrder.id, 'ready')}
-                className="flex-1 bg-green-500 text-white py-2 rounded-lg font-medium hover:bg-green-600 transition"
+                className={`flex-1 rounded-lg py-2 font-medium text-white ${NEO_COLOR_BTN_PRESS}`}
+                style={{
+                  ...PAY_NEO.raised,
+                  background: 'linear-gradient(145deg, #22c55e, #16a34a)',
+                  color: '#fff',
+                  boxShadow: '5px 5px 12px rgba(22,101,52,0.45), -3px -3px 10px rgba(255,255,255,0.25)',
+                }}
               >
                 ✓ Ready
               </button>
             )}
             {selectedOrder.status === 'ready' && (
               <button
+                type="button"
                 onClick={() => updateOrderStatus(selectedOrder.id, 'completed')}
-                className="flex-1 bg-gray-600 text-white py-2 rounded-lg font-medium hover:bg-gray-700 transition"
+                className={`flex-1 rounded-lg py-2 font-medium text-white ${NEO_COLOR_BTN_PRESS}`}
+                style={{
+                  ...PAY_NEO.raised,
+                  background: 'linear-gradient(145deg, #4b5563, #374151)',
+                  color: '#fff',
+                  boxShadow: '5px 5px 12px rgba(55,65,81,0.45), -3px -3px 10px rgba(255,255,255,0.25)',
+                }}
               >
                 ✓ Completed
               </button>
             )}
             <button
+              type="button"
               onClick={() => printOrder(selectedOrder.id)}
-              className="px-4 bg-gray-100 text-gray-700 py-2 rounded-lg font-medium hover:bg-gray-200 transition"
+              className={`rounded-lg px-4 py-2 font-medium text-slate-700 ${NEO_MODAL_BTN_PRESS}`}
+              style={PAY_NEO.key}
             >
               🖨️
             </button>
@@ -633,11 +692,13 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       )}
 
       {/* Refresh button */}
-      <div className="p-2 border-t bg-gray-50">
+      <div className="border-t border-transparent p-2" style={{ background: PAY_NEO_CANVAS }}>
         <button
+          type="button"
           onClick={fetchOrders}
           disabled={loading}
-          className="w-full py-2 text-sm text-gray-600 hover:text-blue-600 transition"
+          className={`w-full rounded-lg py-2 text-sm font-medium text-slate-700 disabled:opacity-50 ${NEO_MODAL_BTN_PRESS}`}
+          style={PAY_NEO.key}
         >
           {loading ? 'Loading...' : '🔄 Refresh'}
         </button>
