@@ -117,6 +117,31 @@ interface OnlineQueueCard {
   onlineOrderNumber?: string;
 }
 
+/** SQLite `orders.id` for GET /orders/:id and void API. Online queue cards use Firebase string `id` — do not use that for API. */
+function resolveSqliteOrderIdForVoid(
+  order: any,
+  orderType: OrderChannelType | string | null | undefined
+): string | number | null {
+  const t = String(orderType || '').toLowerCase();
+  if (t === 'delivery') {
+    const v = order?.order_id ?? order?.id;
+    return v != null && v !== '' ? v : null;
+  }
+  if (t === 'online') {
+    const a = order?.localOrderId ?? order?.fullOrder?.localOrderId ?? order?.order_id;
+    if (a != null && a !== '') return a;
+    const id = order?.id;
+    if (typeof id === 'number' && Number.isFinite(id)) return id;
+    if (typeof id === 'string' && /^\d+$/.test(id.trim())) return id.trim();
+    return null;
+  }
+  if (t === 'pos') {
+    return null;
+  }
+  const v = order?.id;
+  return v != null && v !== '' ? v : null;
+}
+
 const VIRTUAL_TABLE_POOL: Record<VirtualOrderChannel, { prefix: string; limit: number }> = {
   togo: { prefix: 'TG', limit: 500 },
   online: { prefix: 'OL', limit: 500 },
@@ -12045,7 +12070,11 @@ const SalesPage: React.FC = () => {
                         if (!items.length) { alert('No items to void.'); return; }
                         const sels: Record<string, { checked: boolean; qty: number }> = {};
                         items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
-                        const orderForVoid = { ...cdOrder, number: cdOrder.order_number || cdOrder.number || cdOrder.id };
+                        const orderForVoid = {
+                          ...cdOrder,
+                          id: cdOrderId,
+                          number: cdOrder.order_number || cdOrder.number || cdOrderId,
+                        };
                         setTogoVoidOrder(orderForVoid); setTogoVoidOrderType(voidType); setTogoVoidItems(items); setTogoVoidSelections(sels);
                         setTogoVoidPin(''); setTogoVoidPinError(''); setTogoVoidReason(''); setTogoVoidReasonPreset(''); setTogoVoidNote(''); setTogoVoidLoading(false);
                         setShowTogoVoidModal(true);
@@ -12514,7 +12543,12 @@ const SalesPage: React.FC = () => {
                                     if (!items.length) { alert('No items to void.'); return; }
                                     const sels: Record<string, { checked: boolean; qty: number }> = {};
                                     items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
-                                    const orderForVoid = { ...orderListSelectedOrder, number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || orderListSelectedOrder.id };
+                                    const sqliteVoidId = resolveSqliteOrderIdForVoid(orderListSelectedOrder, voidType);
+                                    const orderForVoid = {
+                                      ...orderListSelectedOrder,
+                                      id: sqliteVoidId ?? orderListSelectedOrder.id,
+                                      number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || sqliteVoidId || orderListSelectedOrder.id,
+                                    };
                                     setTogoVoidOrder(orderForVoid); setTogoVoidOrderType(voidType); setTogoVoidItems(items); setTogoVoidSelections(sels);
                                     setTogoVoidPin(''); setTogoVoidPinError(''); setTogoVoidReason(''); setTogoVoidReasonPreset(''); setTogoVoidNote(''); setTogoVoidLoading(false);
                                     setShowTogoVoidModal(true);
@@ -12717,7 +12751,12 @@ const SalesPage: React.FC = () => {
                                   sels[key] = { checked: true, qty: it.quantity || 1 };
                                 });
 
-                                const orderForVoid = { ...orderListSelectedOrder, number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || orderListSelectedOrder.id };
+                                const sqliteVoidId = resolveSqliteOrderIdForVoid(orderListSelectedOrder, voidType);
+                                const orderForVoid = {
+                                  ...orderListSelectedOrder,
+                                  id: sqliteVoidId ?? orderListSelectedOrder.id,
+                                  number: orderListSelectedOrder.order_number || orderListSelectedOrder.number || sqliteVoidId || orderListSelectedOrder.id,
+                                };
                                 setTogoVoidOrder(orderForVoid);
                                 setTogoVoidOrderType(voidType);
                                 setTogoVoidItems(items);
@@ -14774,14 +14813,18 @@ const SalesPage: React.FC = () => {
           loadTogoOrders();
         }}
         onVoid={async (order, orderType) => {
-          const orderId = orderType === 'delivery' ? (order.order_id || order.id) : order.id;
+          const sqliteOrderId = resolveSqliteOrderIdForVoid(order, orderType);
+          if (sqliteOrderId == null || sqliteOrderId === '') {
+            alert('Order not found (missing local order id).');
+            return;
+          }
           try {
             let items: any[] = [];
             const fullOrder = order.fullOrder;
             if (fullOrder?.items && Array.isArray(fullOrder.items)) {
               items = fullOrder.items;
             } else {
-              const res = await fetch(`${API_URL}/orders/${orderId}`);
+              const res = await fetch(`${API_URL}/orders/${sqliteOrderId}`);
               if (res.ok) {
                 const data = await res.json();
                 items = (data.items || []).map((it: any) => {
@@ -14797,7 +14840,11 @@ const SalesPage: React.FC = () => {
               const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
               sels[key] = { checked: true, qty: it.quantity || 1 };
             });
-            setTogoVoidOrder(order);
+            const orderForModal =
+              String(orderType).toLowerCase() === 'online'
+                ? { ...order, id: sqliteOrderId, localOrderId: order.localOrderId ?? sqliteOrderId }
+                : order;
+            setTogoVoidOrder(orderForModal);
             setTogoVoidOrderType(orderType);
             setTogoVoidItems(items);
             setTogoVoidSelections(sels);
@@ -14827,8 +14874,14 @@ const SalesPage: React.FC = () => {
           const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
           return s + (item ? (item.price || 0) * v.qty : 0);
         }, 0);
-        const canConfirm = selCount > 0 && togoVoidPin.length >= 4 && !togoVoidLoading;
-        const orderId = togoVoidOrderType === 'delivery' ? (togoVoidOrder?.order_id || togoVoidOrder?.id) : togoVoidOrder?.id;
+        const resolvedVoidOrderId = resolveSqliteOrderIdForVoid(togoVoidOrder, togoVoidOrderType);
+        const canConfirm =
+          selCount > 0 &&
+          togoVoidPin.length >= 4 &&
+          !togoVoidLoading &&
+          resolvedVoidOrderId != null &&
+          String(resolvedVoidOrderId) !== '';
+        const orderId = resolvedVoidOrderId;
         const orderLabel = togoVoidOrderType === 'delivery'
           ? `${togoVoidOrder?.deliveryCompany || 'Delivery'} #${togoVoidOrder?.deliveryOrderNumber || orderId}`
           : `#${(togoVoidOrderType === 'togo' || togoVoidOrderType === 'pickup') ? String(orderId).padStart(3, '0') : (togoVoidOrder?.number || orderId)}`;

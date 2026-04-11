@@ -16,13 +16,23 @@ const activeSettingsListeners = new Map();
 // 연결된 SSE 클라이언트들
 const sseClients = new Map();
 
-// orders 테이블에 adjustments_json 컬럼 추가 (마이그레이션)
+// orders 테이블 마이그레이션 (컬럼 추가)
 (async () => {
-  try {
-    await dbRun('ALTER TABLE orders ADD COLUMN adjustments_json TEXT');
-    console.log('✅ orders 테이블에 adjustments_json 컬럼 추가됨');
-  } catch (e) {
-    // 이미 존재하면 무시
+  const migrations = [
+    { col: 'adjustments_json', sql: 'ALTER TABLE orders ADD COLUMN adjustments_json TEXT' },
+    { col: 'payment_status', sql: "ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'pending'" },
+    { col: 'payment_method', sql: "ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT 'cash'" },
+    { col: 'payment_transaction_id', sql: 'ALTER TABLE orders ADD COLUMN payment_transaction_id TEXT' },
+    { col: 'card_last4', sql: 'ALTER TABLE orders ADD COLUMN card_last4 TEXT' },
+    { col: 'paid_at', sql: 'ALTER TABLE orders ADD COLUMN paid_at TEXT' },
+  ];
+  for (const m of migrations) {
+    try {
+      await dbRun(m.sql);
+      console.log(`✅ orders 테이블에 ${m.col} 컬럼 추가됨`);
+    } catch (e) {
+      // 이미 존재하면 무시
+    }
   }
 })();
 
@@ -111,6 +121,9 @@ function startOrderListener(restaurantId) {
     onNewOrder: async (order) => {
       const firebaseOrderId = order.id;
       let localOrder = null;
+
+      const pStatus = (order.paymentStatus || 'pending').toLowerCase();
+      const isPaid = pStatus === 'paid' || pStatus === 'completed' || order.paid === true;
       
       try {
         localOrder = await dbGet(
@@ -121,10 +134,11 @@ function startOrderListener(restaurantId) {
         if (!localOrder) {
           const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
           const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
+          const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
           
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, fulfillment_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderNumber,
               'ONLINE',
@@ -133,7 +147,13 @@ function startOrderListener(restaurantId) {
               typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
               order.customerPhone || null,
               order.customerName || null,
-              firebaseOrderId
+              firebaseOrderId,
+              isPaid ? 'paid' : pStatus,
+              order.paymentMethod || 'cash',
+              order.paymentTransactionId || null,
+              order.cardLast4 || null,
+              paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
+              'online'
             ]
           );
           localOrder = { id: result.lastID };
@@ -147,7 +167,7 @@ function startOrderListener(restaurantId) {
               );
             }
           }
-          console.log(`✅ 온라인 주문 SQLite 저장: #${localOrder.id}`);
+          console.log(`✅ 온라인 주문 SQLite 저장: #${localOrder.id} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'})`);
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -291,12 +311,17 @@ function formatOrderForFrontend(order) {
     order.firebaseOrderNumber ||
     null;
 
+  const paymentStatus = (order.paymentStatus || 'pending').toLowerCase();
+  const isPaid = paymentStatus === 'paid' || paymentStatus === 'completed' ||
+                 order.status === 'paid' || order.paid === true;
+
   return {
     id: order.id,
     orderNumber: resolvedOrderNumber,
     customerName: order.customerName,
     customerPhone: order.customerPhone,
-    orderType: order.orderType, // pickup, delivery, dine_in
+    customerEmail: order.customerEmail || null,
+    orderType: order.orderType,
     status: order.status,
     items: formattedItems,
     subtotal: order.subtotal,
@@ -306,6 +331,13 @@ function formatOrderForFrontend(order) {
     notes: order.notes,
     createdAt: order.createdAt?.toDate?.() || order.createdAt,
     updatedAt: order.updatedAt?.toDate?.() || order.updatedAt,
+    // 결제 정보
+    paymentStatus: isPaid ? 'paid' : paymentStatus,
+    paymentMethod: order.paymentMethod || 'cash',
+    paymentTransactionId: order.paymentTransactionId || null,
+    cardLast4: order.cardLast4 || null,
+    paidAt: order.paidAt?.toDate?.() || order.paidAt || null,
+    isPaid,
     // 프로모션 관련 필드
     discountAmount: order.discountAmount || 0,
     promotionId: order.promotionId || null,
@@ -531,8 +563,8 @@ router.get('/:restaurantId', async (req, res) => {
         
         try {
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, fulfillment_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               orderNumber,
               'ONLINE',
@@ -541,7 +573,8 @@ router.get('/:restaurantId', async (req, res) => {
               typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
               order.customerPhone || null,
               order.customerName || null,
-              firebaseOrderId
+              firebaseOrderId,
+              'online'
             ]
           );
           localOrder = { id: result.lastID };
@@ -980,11 +1013,12 @@ router.post('/order/:orderId/print', async (req, res) => {
     const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     
     // 결제 상태 확인 (Firebase에서 온라인 결제 완료 여부)
+    const pStatusLower = (order.paymentStatus || '').toLowerCase();
     const orderIsPaid = order.status === 'paid' || 
-                       order.paymentStatus === 'PAID' || 
-                       order.paymentStatus === 'completed' ||
-                       order.paymentStatus === 'COMPLETED' ||
-                       order.paid === true;
+                       pStatusLower === 'paid' || 
+                       pStatusLower === 'completed' ||
+                       order.paid === true ||
+                       order.isPaid === true;
     
     const printData = JSON.stringify({
       orderInfo: {
