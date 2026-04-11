@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { calculateOrderPricing } from '../utils/orderPricing';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
 import { getLocalDateString } from '../utils/datetimeUtils';
+import { isMasterPosPin, MASTER_POS_PIN } from '../constants/masterPosPin';
+import {
+  NEO_PRESS_INSET_ONLY_NO_SHIFT,
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_KEYPAD_KEY,
+} from '../utils/softNeumorphic';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend
 } from 'recharts';
@@ -207,16 +213,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [isVerifyingAccess, setIsVerifyingAccess] = useState<boolean>(false);
   const [accessGranted, setAccessGranted] = useState<boolean>(false);
   const [accessEmployeeLabel, setAccessEmployeeLabel] = useState<string>('');
-  const [hasUnpaidOrders, setHasUnpaidOrders] = useState(false);
-  const [unpaidOrderCount, setUnpaidOrderCount] = useState(0);
-  const [unpaidOrders, setUnpaidOrders] = useState<any[]>([]);
-  const [isEnrichingUnpaidOrders, setIsEnrichingUnpaidOrders] = useState(false);
-  const [tablesWithOrders, setTablesWithOrders] = useState<any[]>([]);
-  const [showUnpaidDetails, setShowUnpaidDetails] = useState(true);
   const [isPayLoading, setIsPayLoading] = useState<boolean>(false);
-
-  // Keep latest results only (avoid stale async updates)
-  const unpaidEnrichNonceRef = React.useRef(0);
 
   const [voidTarget, setVoidTarget] = useState<any | null>(null);
   const [showVoidPinModal, setShowVoidPinModal] = useState<boolean>(false);
@@ -518,108 +515,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     }
   };
 
-  const checkUnpaidOrders = async (opts?: { preserveShowUnpaidDetails?: boolean }) => {
-    try {
-      const response = await fetch(`${API_URL}/daily-closings/check-unpaid-orders`);
-      const result = await response.json();
-      if (result.success) {
-        setHasUnpaidOrders(result.hasUnpaidOrders);
-        setUnpaidOrderCount(result.count || 0);
-        const base = Array.isArray(result.unpaidOrders) ? result.unpaidOrders : [];
-        setUnpaidOrders(base);
-        setTablesWithOrders(Array.isArray(result.tablesWithOrders) ? result.tablesWithOrders : []);
-        if (!opts?.preserveShowUnpaidDetails) {
-          setShowUnpaidDetails(result.hasUnpaidOrders ? true : false);
-        }
-
-        // ✅ Enrich unpaid list with "togo modal" totals (computed ONCE per order)
-        // so Closing list + Pay modal use the exact same numbers.
-        if (result.hasUnpaidOrders && base.length > 0) {
-          const myNonce = ++unpaidEnrichNonceRef.current;
-          setIsEnrichingUnpaidOrders(true);
-          (async () => {
-            const computeTogoTotalsFromOrder = (order: any, items: any[]) => {
-              try {
-                const normalizedItems = (items || []).map((it: any) => {
-                  let discountObj: any = it.discount ?? null;
-                  if (!discountObj && it.discount_json) {
-                    try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
-                  }
-                  return {
-                    id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
-                    orderLineId: it.order_line_id ?? it.orderLineId,
-                    name: it.name,
-                    type: it.type,
-                    quantity: it.quantity,
-                    price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
-                    totalPrice: (it.total_price ?? it.totalPrice),
-                    modifiers: it.modifiers ?? it.options ?? [],
-                    memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
-                    discount: discountObj,
-                    guestNumber: it.guestNumber ?? it.guest_number,
-                    taxGroupId: it.taxGroupId ?? it.tax_group_id,
-                    void_id: it.void_id,
-                    voidId: it.voidId,
-                    is_void: it.is_void,
-                  };
-                });
-                const pricing = calculateOrderPricing(normalizedItems as any);
-                const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
-                const storedTotalRaw = Number(order?.total ?? pricing.totals.total ?? 0);
-                const storedTotal = Number.isFinite(storedTotalRaw) ? Number(storedTotalRaw.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
-                const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
-                const taxLines = derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [];
-                return { subtotal: netSubtotal, tax: derivedTax, taxLines, total: storedTotal };
-              } catch {
-                return null;
-              }
-            };
-
-            // Concurrency-limited enrichment to keep UI responsive
-            const rows = base.slice();
-            const out: any[] = [];
-            let idx = 0;
-            const limit = 4;
-            const workers = Array.from({ length: Math.min(limit, rows.length) }).map(async () => {
-              while (idx < rows.length) {
-                const cur = rows[idx++];
-                if (!cur?.orderId) { out.push(cur); continue; }
-                try {
-                  const res = await fetch(`${API_URL}/orders/${cur.orderId}`);
-                  const json = await res.json().catch(() => ({} as any));
-                  if (!res.ok || !json?.success) { out.push(cur); continue; }
-                  const order = json.order || {};
-                  const items = Array.isArray(json.items) ? json.items : [];
-                  const totals = computeTogoTotalsFromOrder(order, items);
-                  out.push({ ...cur, __togoTotals: totals });
-                } catch {
-                  out.push(cur);
-                }
-              }
-            });
-            await Promise.all(workers);
-            if (unpaidEnrichNonceRef.current !== myNonce) return;
-            setUnpaidOrders((prev) => {
-              // Merge by orderId to preserve any newer rows
-              const byId = new Map<string, any>();
-              (prev || []).forEach((p: any) => { if (p?.orderId != null) byId.set(String(p.orderId), p); });
-              out.forEach((p: any) => { if (p?.orderId != null) byId.set(String(p.orderId), { ...(byId.get(String(p.orderId)) || {}), ...p }); });
-              return Array.from(byId.values());
-            });
-          })().finally(() => {
-            if (unpaidEnrichNonceRef.current === myNonce) setIsEnrichingUnpaidOrders(false);
-          });
-        } else {
-          setIsEnrichingUnpaidOrders(false);
-        }
-        return result.hasUnpaidOrders;
-      }
-    } catch (error) {
-      console.error('Failed to check unpaid orders:', error);
-    }
-    return false;
-  };
-
   const openPayForOrder = async (row: any) => {
     try {
       setIsPayLoading(true);
@@ -745,7 +640,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       setShowVoidPinModal(false);
       setVoidTarget(null);
       setVoidPin('');
-      await checkUnpaidOrders();
       await fetchZReport();
     } catch (e: any) {
       console.error('Void confirm error:', e);
@@ -780,7 +674,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   useEffect(() => {
     if (isOpen && accessGranted) {
       fetchZReport();
-      checkUnpaidOrders();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, accessGranted]);
@@ -839,11 +732,6 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   };
 
   const handleShowPreview = async () => {
-    const stillHasUnpaid = await checkUnpaidOrders();
-    if (stillHasUnpaid) {
-      alert('There are unpaid orders remaining. Please complete all payments before closing the day.');
-      return;
-    }
     // Always refresh z-report data before showing preview
     await fetchZReport();
     setViewMode('print-preview');
@@ -1030,6 +918,13 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       setIsVerifyingAccess(true);
       setAccessError('');
       try {
+        if (isMasterPosPin(accessPin)) {
+          setAccessEmployeeLabel(`Master PIN (${MASTER_POS_PIN}) · Level 5`);
+          setClosingAccessEmployeeName('Master PIN');
+          setClosingAccessEmployeeId('');
+          setAccessGranted(true);
+          return;
+        }
         const res = await fetch(`${API_URL}/work-schedule/verify-pin`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1119,78 +1014,95 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           )}
         </div>
 
-        {/* Access Gate Overlay */}
+        {/* Access Gate Overlay — PAY canvas neumorphic (PrintBillModal 동일 토큰) */}
         {!accessGranted && (
-          <div className="absolute inset-0 z-30 bg-black/60 flex items-center justify-center">
-            <div className="w-[420px] max-w-[92vw] bg-white rounded-2xl shadow-2xl overflow-hidden border border-gray-200">
-              <div className="px-5 py-4 bg-slate-900 text-white relative">
-                <div className="text-lg font-extrabold">Day Close Access</div>
-                <div className="text-xs text-slate-300 mt-0.5">
-                  Requires Level {dayCloseMinLevel}+ (Employee Manager → Reports → Day Close)
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black bg-opacity-50">
+            <div
+              className="flex w-full max-w-xl max-w-[95vw] max-h-[85vh] flex-col overflow-hidden rounded-2xl border-0 p-4"
+              style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
+                <div className="min-w-0 pr-2">
+                  <h3 className="text-lg font-bold text-gray-800">Day Close Access</h3>
+                  <div className="text-xs font-medium text-gray-600 mt-0.5">
+                    Requires Level {dayCloseMinLevel}+ (Employee Manager → Reports → Day Close)
+                  </div>
                 </div>
                 <button
+                  type="button"
                   onClick={onClose}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full flex items-center justify-center touch-manipulation transition-colors backdrop-blur-sm"
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center border-0 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                  style={PAY_NEO.raised}
+                  aria-label="Close"
+                  title="Close"
                 >
-                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
-              <div className="p-5 space-y-4">
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
                 <div className="flex justify-center gap-3">
                   {[0, 1, 2, 3].map((i) => (
                     <div
                       key={i}
-                      className={`w-12 h-12 rounded-xl border-2 flex items-center justify-center text-2xl ${
-                        (accessPin.length > i) ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-50'
+                      style={PAY_NEO.inset}
+                      className={`flex h-12 w-12 items-center justify-center rounded-[14px] text-2xl ${
+                        accessPin.length > i ? 'text-blue-700' : 'text-gray-500'
                       }`}
                     >
-                      {(accessPin.length > i) ? '•' : ''}
+                      {accessPin.length > i ? '•' : ''}
                     </div>
                   ))}
                 </div>
                 {accessError && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm font-semibold text-center">
-                    {accessError}
+                  <div className="space-y-2 rounded-[14px] p-2.5" style={PAY_NEO.inset}>
+                    <div className="text-center text-sm font-semibold text-red-700">{accessError}</div>
                   </div>
                 )}
-                <div className="grid grid-cols-3 gap-2">
-                  {['1','2','3','4','5','6','7','8','9','CLEAR','0','BS'].map((k) => {
-                    const isClear = k === 'CLEAR';
-                    const isBs = k === 'BS';
-                    return (
-                      <button
-                        key={k}
-                        type="button"
-                        onClick={() => { void handleAccessKeypad(k); }}
-                        disabled={isVerifyingAccess}
-                        className={`h-14 rounded-xl font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                          isClear
-                            ? 'bg-red-100 text-red-700 hover:bg-red-200 active:bg-red-300'
-                            : isBs
-                              ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 active:bg-yellow-300'
-                              : 'bg-gray-100 text-gray-800 hover:bg-gray-200 active:bg-gray-300'
-                        }`}
-                      >
-                        {isClear ? 'Clear' : isBs ? '⌫' : k}
-                      </button>
-                    );
-                  })}
+                <div className="space-y-2 rounded-[14px] p-2.5" style={PAY_NEO.inset}>
+                  <div className="grid grid-cols-3 gap-2">
+                    {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'CLEAR', '0', 'BS'].map((k) => {
+                      const isClear = k === 'CLEAR';
+                      const isBs = k === 'BS';
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => {
+                            void handleAccessKeypad(k);
+                          }}
+                          disabled={isVerifyingAccess}
+                          className={`h-14 rounded-[10px] border-0 font-bold touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${NEO_PRESS_INSET_ONLY_NO_SHIFT} ${
+                            isClear ? 'text-sm text-red-700' : isBs ? 'text-xl text-amber-800' : 'text-xl text-gray-800'
+                          }`}
+                          style={isClear || isBs ? PAY_NEO.key : PAY_KEYPAD_KEY}
+                        >
+                          {isClear ? 'Clear' : isBs ? '⌫' : k}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="flex gap-2">
+              </div>
+
+              <div className="mt-4 flex shrink-0 flex-col items-stretch gap-2">
+                <div className="flex justify-end">
                   <button
                     type="button"
                     onClick={onClose}
                     disabled={isVerifyingAccess}
-                    className="flex-1 px-4 py-3 rounded-xl bg-gray-200 hover:bg-gray-300 font-bold text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className={`min-w-[110px] rounded-[10px] border-0 px-5 py-3 text-base font-semibold text-gray-900 touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                    style={PAY_NEO.key}
                   >
                     Cancel
                   </button>
                 </div>
                 {isVerifyingAccess && (
-                  <div className="flex items-center justify-center gap-2 text-sm text-gray-600">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500" />
+                  <div className="flex items-center justify-center gap-2 text-sm font-medium text-gray-600">
+                    <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-blue-600" />
                     Verifying...
                   </div>
                 )}
@@ -1857,77 +1769,12 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         ) : viewMode === 'cash-count' ? (
           /* ========== CASH COUNT VIEW ========== */
           <>
-            {/* Warning Alert Bar - 헤더 바로 아래 고정 40px */}
+            {/* Status bar — 미결제 건수로 마감 차단하지 않음 */}
             <div className="flex-shrink-0" style={{ height: '40px' }}>
-              {hasUnpaidOrders ? (
-                <div className="h-full px-4 bg-red-500 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-white text-sm">⚠️</span>
-                    <span className="text-white font-bold text-sm">
-                      {unpaidOrderCount} unpaid order{unpaidOrderCount !== 1 ? 's' : ''} — Cannot close day
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setShowUnpaidDetails(v => !v)}
-                      className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-white text-xs font-semibold">
-                      {showUnpaidDetails ? 'Hide' : 'Details'}
-                    </button>
-                    <button onClick={() => checkUnpaidOrders()}
-                      className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-white text-xs font-semibold">
-                      Refresh
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="h-full px-4 bg-green-500 flex items-center">
-                  <span className="text-white font-bold text-sm">✓ All orders are paid — Ready to close</span>
-                </div>
-              )}
-            </div>
-
-            {/* Unpaid Details (expandable) */}
-            {hasUnpaidOrders && showUnpaidDetails && (
-              <div className="flex-shrink-0 px-4 py-2 bg-red-50 border-b border-red-200 max-h-[200px] overflow-auto">
-                {(tablesWithOrders || []).length > 0 && (
-                  <div className="mb-2">
-                    <div className="text-[11px] font-semibold text-red-800 mb-1">Tables with orders</div>
-                    <div className="flex flex-wrap gap-1">
-                      {tablesWithOrders.map((t: any) => (
-                        <span key={`${t.tableId}-${t.orderId}`} className="text-[11px] bg-red-100 border border-red-200 rounded px-2 py-0.5 text-red-900 font-semibold">
-                          {t.floor ? `${t.floor}F ` : ''}{t.tableName ? `T${t.tableName}` : `T${t.tableId}`} #{t.orderId}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div className="space-y-1">
-                  {(unpaidOrders || []).map((o: any) => (
-                    <div key={String(o.orderId)} className="flex items-center gap-2 justify-between bg-white rounded-lg border border-red-100 px-2.5 py-1.5">
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-bold text-gray-800 truncate">
-                          Order #{o.orderId}{o.orderNumber ? ` (${o.orderNumber})` : ''}{(o.tableName || o.tableId) ? ` · ${o.tableName ? `Table ${o.tableName}` : `Table ${o.tableId}`}` : ''}{o.customerName ? ` · ${o.customerName}` : ''}
-                        </div>
-                        <div className="text-[11px] text-gray-500 truncate">
-                          {(() => {
-                            const t = o?.__togoTotals;
-                            const total = (t && typeof t.total === 'number') ? t.total : Number(o.total || 0);
-                            return `${String(o.status || '').toUpperCase()} · ${formatMoney(Number(total || 0))}`;
-                          })()}{o.createdAt ? ` · ${new Date(o.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}` : ''}{o.orderType ? ` · ${String(o.orderType).toUpperCase()}` : ''}{isEnrichingUnpaidOrders ? ' · ...' : ''}
-                        </div>
-                      </div>
-                      <div className="shrink-0 flex items-center gap-1.5">
-                        <button onClick={() => openVoidForOrder(o)}
-                          className="px-2.5 py-1 rounded bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold"
-                          disabled={isVoiding || isPayLoading}>Void</button>
-                        <button onClick={() => openPayForOrder(o)}
-                          className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold"
-                          disabled={isVoiding || isPayLoading}>Pay</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <div className="h-full px-4 bg-green-500 flex items-center">
+                <span className="text-white font-bold text-sm">✓ Ready to close</span>
               </div>
-            )}
+            </div>
 
             {/* Main Content - 모달에 꽉 차게 */}
             <div className="px-4 py-3 flex-1 flex flex-col min-h-0">
@@ -2019,11 +1866,9 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   className="w-[160px] px-3 py-3 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 disabled:bg-gray-300 rounded-xl font-bold text-white text-sm transition-all shadow-sm">
                   {isShiftClosing ? 'Processing...' : 'Shift Close'}
                 </button>
-                <button onClick={handleShowPreview} disabled={isLoading || hasUnpaidOrders}
-                  className={`flex-1 px-3 py-3 rounded-xl font-bold text-white text-sm transition-all shadow-sm ${
-                    hasUnpaidOrders ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-gray-300'
-                  }`}>
-                  {hasUnpaidOrders ? 'Complete Payments First' : 'Day Close & Z-Report →'}
+                <button onClick={handleShowPreview} disabled={isLoading}
+                  className="flex-1 px-3 py-3 rounded-xl font-bold text-white text-sm transition-all shadow-sm bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-gray-300">
+                  Day Close &amp; Z-Report →
                 </button>
               </div>
             </div>

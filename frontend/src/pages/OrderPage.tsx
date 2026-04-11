@@ -31,7 +31,14 @@ import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
-import { PAY_NEO } from '../utils/softNeumorphic';
+import {
+  NEO_PRESS_INSET_ONLY_NO_SHIFT,
+  OH_ACTION_NEO,
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_NEO_PRIMARY_AMBER,
+  PAY_NEO_PRIMARY_BLUE,
+} from '../utils/softNeumorphic';
 import {
   applyModifierLayoutTemplate,
   resolveCategoryModifierTemplateForOrderScreen,
@@ -81,6 +88,15 @@ const readCatalogSnapshot = (): CatalogSnapshot | null => {
     // ignore
   }
   return null;
+};
+
+/** Utility(Firebase) Bag Fee on/off·금액 → POS Extra1용 localStorage (세금/프린터 미포함) */
+const syncPosBagFeeLocalFromUtilityBagFee = (bagFee: { enabled: boolean; amount: number }) => {
+  try {
+    localStorage.setItem('table_bag_fee_enabled', bagFee.enabled ? '1' : '0');
+    localStorage.setItem('table_bag_fee_value', String(Number(bagFee.amount) || 0));
+    window.dispatchEvent(new CustomEvent('pos_bag_fee_from_utility'));
+  } catch {}
 };
 
 // 🔄 모달 컴포넌트 - 지연 로딩 (필요할 때만 로드)
@@ -1318,6 +1334,25 @@ const handleVoidPinClear = useCallback(() => {
     });
   }, [orderItems, guestCount, paymentsByGuest, persistedPaidGuests]);
 
+  /** 스플릿 N명 목록 — PaymentModal guestCount·handlePaymentComplete·onPaymentComplete 동일 기준 (guestIds만 쓰면 [1]로 뭉개짐 방지) */
+  const splitAllGuestsResolved = useMemo(() => {
+    const maxGFromSep = (orderItems || []).reduce((m, it) => {
+      if (it.type === 'separator' && typeof it.guestNumber === 'number') return Math.max(m, it.guestNumber);
+      return m;
+    }, 0);
+    const splitGuestCap = Math.max(
+      adhocSplitCount || 0,
+      guestCount || 1,
+      guestIds.length || 1,
+      maxGFromSep || 0,
+      (guestIds || []).length ? Math.max(...guestIds) : 1
+    );
+    if (adhocSplitCount > 0) {
+      return Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1);
+    }
+    return Array.from({ length: Math.max(splitGuestCap, 1) }, (_, i) => i + 1);
+  }, [adhocSplitCount, guestCount, guestIds, orderItems]);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // ✅ Single source of truth for all money calculations
   // Item unit price (Open/Edit applied) + modifiers + memo − discounts (item + order) + taxes
@@ -1974,11 +2009,9 @@ const handleVoidPinClear = useCallback(() => {
       // 또한 잔액이 미세한 오차(EPS) 이하면 전액 결제로 간주하고 테이블맵으로 이동
       if (outstanding > EPS) {
         // 스플릿 결제에서 D/C 적용 시: 모든 게스트가 이미 PAID 상태이면 outstanding 불일치를 무시하고 완료 처리
-        const hasSplit = ((guestIds || []).length > 1) || (orderItems || []).some(it => it.type === 'separator');
+        const hasSplit = splitAllGuestsResolved.length > 1 || (orderItems || []).some(it => it.type === 'separator');
         if (hasSplit && guestStatusMap) {
-          const splitAllGuests = (adhocSplitCount > 0)
-            ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
-            : Array.from(guestIds || []);
+          const splitAllGuests = splitAllGuestsResolved;
           const guestsWithItems = splitAllGuests.filter((g: number) =>
             (orderItems || []).some(it => it.type !== 'separator' && (it.guestNumber || 1) === g)
           );
@@ -2267,14 +2300,12 @@ const handleVoidPinClear = useCallback(() => {
       try { localStorage.removeItem(`pendingPayments_${orderId_confirm}`); } catch {}
     }
 
+    const splitAllGuestsUnified = splitAllGuestsResolved;
+
     // Equal Split(adhoc) / Split 결제에서 "마지막 게스트"까지 결제 완료된 경우:
     // - Receipt 선택 후 즉시 테이블맵으로 이동
     // - 테이블 상태/주문 close/current-order 해제는 백그라운드로 처리 (UX 개선)
     try {
-      const splitAllGuests: number[] =
-        (adhocSplitCount > 0)
-          ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
-          : Array.from(guestIds || []);
       const currentGuest = savedPaymentData?.currentGuestNumber;
       const latestPaid = persistedPaidGuestsRef.current;
       const paidSet = new Set<number>([
@@ -2287,15 +2318,15 @@ const handleVoidPinClear = useCallback(() => {
           if (st === 'PAID') paidSet.add(Number(g));
         });
       }
-      const unpaid = splitAllGuests.filter(g => !paidSet.has(g));
-      const isPayInFull = guestPaymentMode === 'ALL';
-      // isPartialPayment이 false이면 PaymentModal이 이미 "전액 결제 완료"로 판정한 것이므로 마지막 게스트로 간주
-      const isLastGuest = isPayInFull
-        || (unpaid.length === 0 && typeof currentGuest === 'number')
-        || (savedPaymentData?.isPartialPayment === false && typeof currentGuest === 'number');
-      const hasSplitContext = (adhocSplitCount > 0) || splitAllGuests.length > 1;
+      const unpaid = splitAllGuestsUnified.filter(g => !paidSet.has(g));
+      const hasSplitContext = splitAllGuestsUnified.length > 1;
+      // isPartialPayment 오판 + 미결제 게스트가 있어도 테이블맵으로 보내지 않음 (실제 unpaid 기준)
+      const shouldFinalizeSplitToTableMap =
+        hasSplitContext &&
+        !savedPaymentData?.isPartialPayment &&
+        (guestPaymentMode === 'ALL' || unpaid.length === 0);
 
-      if (hasSplitContext && isLastGuest) {
+      if (shouldFinalizeSplitToTableMap) {
           setShowPaymentModal(false);
           const pmDiscount = savedPaymentData?.discount || splitDiscountRef.current;
           const orderId = savedOrderIdRef.current;
@@ -2419,7 +2450,7 @@ const handleVoidPinClear = useCallback(() => {
       console.error('[handlePaymentCompleteClose] split path error:', splitErr);
     }
     // Split 결제인 경우: 위의 split 경로에서 이미 처리됨 (outstanding 불일치로 여기까지 온 경우에도 전체 영수증 출력 방지)
-    const hasSplitContextFallback = (adhocSplitCount > 0) || (guestIds || []).length > 1;
+    const hasSplitContextFallback = splitAllGuestsUnified.length > 1;
 
     // Non-split (single payment) completion:
     const orderId = savedOrderIdRef.current;
@@ -2580,6 +2611,30 @@ const handleVoidPinClear = useCallback(() => {
         console.log(`Receipt printed successfully (${receiptCount} copies) from PaymentCompleteClose`);
       } catch (printErr) {
         console.warn('Receipt print failed (ignored):', printErr);
+      }
+    }
+
+    // 스플릿: 미결제 게스트가 남았으면 테이블맵으로 가지 않고 결제 모달에서 다음 게스트 계속
+    if (hasSplitContextFallback || savedPaymentData?.isPartialPayment === true) {
+      const currentGuestNum = savedPaymentData?.currentGuestNumber;
+      const latestPaidR = persistedPaidGuestsRef.current;
+      const paidSetRemain = new Set<number>([
+        ...(Array.isArray(latestPaidR) ? latestPaidR : []),
+        ...(typeof currentGuestNum === 'number' ? [currentGuestNum] : []),
+      ]);
+      if (guestStatusMap) {
+        Object.entries(guestStatusMap).forEach(([g, st]) => {
+          if (st === 'PAID') paidSetRemain.add(Number(g));
+        });
+      }
+      const unpaidRemain = splitAllGuestsUnified.filter(g => !paidSetRemain.has(g));
+      const isPayInFullMode = guestPaymentMode === 'ALL';
+      if (!isPayInFullMode && unpaidRemain.length > 0) {
+        const nextGuest = [...unpaidRemain].sort((a, b) => a - b)[0];
+        setGuestPaymentMode(nextGuest);
+        setActiveGuestNumber(nextGuest);
+        setShowPaymentModal(true);
+        return;
       }
     }
 
@@ -2809,6 +2864,8 @@ const handleVoidPinClear = useCallback(() => {
       setActiveGuestNumber(guestNumber);
     }
     setPrefillDueNonce(n => n + 1);
+    // PaymentCompleteModal 부분 모드: 영수증 후 onSelectGuest만 호출되므로 결제 모달을 다시 연다 (onClose 미호출)
+    setShowPaymentModal(true);
   };
 
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -3463,6 +3520,54 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
     try { const v = Number(localStorage.getItem('table_bag_fee_value') || '0'); return isNaN(v) ? 0 : v; } catch { return 0; }
   });
   useEffect(() => { try { localStorage.setItem('table_bag_fee_value', String(tableBagFeeValue)); } catch {} }, [tableBagFeeValue]);
+  const tableBagFeeValueRef = useRef(0);
+  useEffect(() => { tableBagFeeValueRef.current = tableBagFeeValue; }, [tableBagFeeValue]);
+
+  const pushBagFeeUtilityToFirebase = useCallback(async (bagFee: { enabled: boolean; amount: number }) => {
+    const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    let utensils = { enabled: false };
+    try {
+      const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.success && d.utilitySettings?.utensils) utensils = { enabled: !!d.utilitySettings.utensils.enabled };
+      }
+    } catch {}
+    const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        utilitySettings: {
+          bagFee: { enabled: bagFee.enabled, amount: Number(Number(bagFee.amount || 0).toFixed(2)) },
+          utensils,
+        },
+        restaurantId,
+      }),
+    });
+    return res.json();
+  }, [API_URL]);
+
+  useEffect(() => {
+    const applyFromLs = () => {
+      try {
+        setTableBagFeeEnabled(localStorage.getItem('table_bag_fee_enabled') === '1');
+        const v = Number(localStorage.getItem('table_bag_fee_value') || '0');
+        setTableBagFeeValue(isNaN(v) ? 0 : v);
+      } catch {}
+    };
+    const onUtility = () => applyFromLs();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'table_bag_fee_enabled' || e.key === 'table_bag_fee_value') applyFromLs();
+    };
+    window.addEventListener('pos_bag_fee_from_utility', onUtility);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('pos_bag_fee_from_utility', onUtility);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
   const [bagFeeColor, setBagFeeColor] = useState<string>(() => {
     try { return localStorage.getItem('table_bag_fee_color') || 'bg-blue-600'; } catch { return 'bg-blue-600'; }
   });
@@ -3478,6 +3583,24 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const [showBagFeeColorModal, setShowBagFeeColorModal] = useState(false);
   // Item Extra Buttons Settings Modals
   const [showItemExtra1SettingsModal, setShowItemExtra1SettingsModal] = useState(false);
+  useEffect(() => {
+    if (!showItemExtra1SettingsModal) return;
+    (async () => {
+      try {
+        const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+        const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.success || !data.utilitySettings?.bagFee) return;
+        const bf = data.utilitySettings.bagFee;
+        const nextBag = { enabled: !!bf.enabled, amount: Number(bf.amount) || 0 };
+        syncPosBagFeeLocalFromUtilityBagFee(nextBag);
+        setTableBagFeeEnabled(nextBag.enabled);
+        setTableBagFeeValue(nextBag.amount);
+      } catch {}
+    })();
+  }, [showItemExtra1SettingsModal, API_URL]);
   const [showItemExtra2SettingsModal, setShowItemExtra2SettingsModal] = useState(false);
   const [showItemExtra3SettingsModal, setShowItemExtra3SettingsModal] = useState(false);
   const BAG_FEE_ID = '__BAG_FEE__';
@@ -6867,6 +6990,38 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
   };
 
+  /** 투고 정보 모달에서 Pay/OK — 고객·픽업 정보 반영 후 결제(또는 스플릿) 모달로 연결 (executeOkFlow는 호출하지 않음) */
+  const handleTogoInfoAfterPayOk = () => {
+    const name = togoInfoAfterName.trim();
+    const phone = togoInfoAfterPhone.trim();
+    pendingTogoInfoRef.current = { name, phone };
+    setOrderCustomerInfo({ name, phone });
+
+    const now = new Date();
+    const readyDate = new Date(now.getTime() + togoInfoAfterPickupMinutes * 60000);
+    const readyLabel = readyDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    setOrderPickupInfo({ readyTimeLabel: readyLabel, pickupMinutes: togoInfoAfterPickupMinutes });
+    if (togoInfoAfterFulfillment) {
+      setOrderFulfillmentMode(togoInfoAfterFulfillment);
+    }
+
+    setShowTogoInfoAfterModal(false);
+    pendingTogoInfoRef.current = null;
+
+    try {
+      setPrefillUseTotalOnceNonce(0);
+      setPrefillDueNonce((n) => n + 0);
+    } catch {}
+    if ((guestCount || 0) > 1 || (orderItems || []).some((it) => it.type === 'separator')) {
+      if (!splitOriginalSnapshotRef.current) {
+        splitOriginalSnapshotRef.current = JSON.parse(JSON.stringify(orderItems));
+      }
+      setShowSplitBillModal(true);
+    } else {
+      setShowPaymentModal(true);
+    }
+  };
+
   const executeOkFlow = async () => {
     try {
       const items = (orderItems || []).filter(it => it.type === 'item');
@@ -9206,7 +9361,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <span className="text-gray-200">Extra 1 Enable</span>
                       <div className="flex items-center gap-2">
                         <button onClick={() => setShowItemExtra1SettingsModal(true)} className="text-xs px-2 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded">Settings</button>
-                        <button onClick={() => setTableBagFeeEnabled(v => !v)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${tableBagFeeEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}>
+                        <button
+                          onClick={() => {
+                            setTableBagFeeEnabled((v) => {
+                              const next = !v;
+                              queueMicrotask(() => {
+                                void pushBagFeeUtilityToFirebase({ enabled: next, amount: tableBagFeeValueRef.current });
+                              });
+                              return next;
+                            });
+                          }}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${tableBagFeeEnabled ? 'bg-yellow-600' : 'bg-gray-500'}`}
+                        >
                           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${tableBagFeeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                         </button>
                       </div>
@@ -10596,7 +10762,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onComplete: handleCompletePayment,
                     onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; isPartialPayment?: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } }) => {
                       const currentGuest = typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined;
-                      const hasSplitBill = (adhocSplitCount > 0) || guestIds.length > 1 || (orderItems || []).some(it => it.type === 'separator');
+                      const hasSplitBill =
+                        splitAllGuestsResolved.length > 1 || (orderItems || []).some(it => it.type === 'separator');
                       
                       // 실제 부분 결제 여부: 스플릿 결제에서 아직 미결제 게스트가 남아있는 경우
                       let isActuallyPartial = false;
@@ -10606,10 +10773,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           ? Object.entries(guestStatusMap).filter(([, st]) => st === 'PAID').map(([g]) => Number(g))
                           : [];
                         const newPaidGuests = Array.from(new Set([...latestPaid, ...paidFromStatus, currentGuest]));
-                        const allGuestsForSplit = (adhocSplitCount > 0)
-                          ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1)
-                          : guestIds;
-                        const unpaidGuests = allGuestsForSplit.filter(g => !newPaidGuests.includes(g));
+                        const unpaidGuests = splitAllGuestsResolved.filter(g => !newPaidGuests.includes(g));
                         isActuallyPartial = unpaidGuests.length > 0;
                       }
                       
@@ -10628,12 +10792,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         isPartialPayment: isActuallyPartial,
                         currentGuestNumber: currentGuest,
                       });
-                      if (isActuallyPartial && hasSplitBill && currentGuest) {
-                        setShowPaymentCompleteModal(true);
-                      } else {
-                        setShowPaymentModal(false);
-                        setShowPaymentCompleteModal(true);
-                      }
+                      // Payment Complete는 PaymentModal보다 위에 떠야 함 — 부분 스플릿이어도 결제 모달을 먼저 닫는다
+                      setShowPaymentModal(false);
+                      setShowPaymentCompleteModal(true);
                     },
                     channel: orderType,
                     customerName: (location.state && (location.state as any).customerName) || undefined,
@@ -11445,15 +11606,27 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   })()}
       {/* Open Price Modal */}
       {showOpenPriceModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-4 w-[400px] max-w-[95vw] shadow-2xl">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-lg font-bold text-gray-900">Open Price</h3>
-              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="text-gray-600 hover:text-gray-800 text-2xl font-bold" title="Close">×</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div
+            className="w-[400px] max-w-[95vw] overflow-hidden rounded-2xl border-0 p-4"
+            style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-gray-800">Open Price</h3>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
+                className="flex h-9 w-9 items-center justify-center border-0 text-lg font-bold text-gray-700 transition-[filter] active:brightness-[0.95]"
+                style={PAY_NEO.raised}
+                title="Close"
+              >
+                ×
+              </button>
             </div>
 
             {openPriceError && (
-              <div className="mb-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+              <div className="mb-2 rounded-[12px] border-0 p-2 text-sm text-red-700" style={PAY_NEO.inset}>
                 {openPriceError}
               </div>
             )}
@@ -11463,25 +11636,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <div className="grid grid-cols-12 gap-2">
                 <div className="col-span-8">
                   <label className="block text-sm text-gray-800 mb-1">Item Name</label>
-                  <div className="relative">
-                    <input
-                      ref={openPriceNameInputRef}
-                      value={openPriceName}
-                      onChange={(e) => {
-                        const raw = e.target.value || '';
-                        // Title-case for English words: uppercase first English letter and first after spaces
-                        const transformed = raw.replace(/(^|\s)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
-                        setOpenPriceName(transformed);
-                      }}
-                      onFocus={() => setSoftKbTarget('name')}
-                      onMouseDown={() => { setSoftKbTarget('name'); }}
-                      onTouchStart={() => { setSoftKbTarget('name'); }}
-                      className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="e.g. Open Charge"
-                    />
+                  <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                    <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                      <input
+                        ref={openPriceNameInputRef}
+                        value={openPriceName}
+                        onChange={(e) => {
+                          const raw = e.target.value || '';
+                          // Title-case for English words: uppercase first English letter and first after spaces
+                          const transformed = raw.replace(/(^|\s)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase());
+                          setOpenPriceName(transformed);
+                        }}
+                        onFocus={() => setSoftKbTarget('name')}
+                        onMouseDown={() => { setSoftKbTarget('name'); }}
+                        onTouchStart={() => { setSoftKbTarget('name'); }}
+                        className="h-12 w-full border-0 bg-transparent px-3 pr-14 text-base text-gray-900 outline-none focus:ring-0"
+                        placeholder="e.g. Open Charge"
+                      />
+                    </div>
                     <button
                       type="button"
-                      className="absolute inset-y-0 right-1 w-14 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                      className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      style={PAY_NEO.key}
                       onClick={() => {
                         try {
                           const userAgent = navigator.userAgent || '';
@@ -11503,40 +11679,43 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
                 <div className="col-span-4">
                   <label className="block text-sm text-gray-800 mb-1">Amount</label>
-                  <div className="relative">
-                    <input
-                      ref={openPriceAmountInputRef}
-                      inputMode="decimal"
-                      type="text"
-                      value={openPriceAmount}
-                      onChange={(e) => setOpenPriceAmount(e.target.value.replace(/[^0-9.]/g, ''))}
-                      onFocus={() => setSoftKbTarget('openPriceAmount')}
-                      onMouseDown={() => {
-                        setSoftKbTarget('openPriceAmount');
-                        requestAnimationFrame(() => {
-                          try {
-                            openPriceAmountInputRef.current?.focus();
-                            const value = openPriceAmountInputRef.current?.value || '';
-                            openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
-                          } catch {}
-                        });
-                      }}
-                      onTouchStart={() => {
-                        setSoftKbTarget('openPriceAmount');
-                        requestAnimationFrame(() => {
-                          try {
-                            openPriceAmountInputRef.current?.focus();
-                            const value = openPriceAmountInputRef.current?.value || '';
-                            openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
-                          } catch {}
-                        });
-                      }}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-14 text-gray-900 text-xl font-semibold tracking-wide focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="0.00"
-                    />
+                  <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                    <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                      <input
+                        ref={openPriceAmountInputRef}
+                        inputMode="decimal"
+                        type="text"
+                        value={openPriceAmount}
+                        onChange={(e) => setOpenPriceAmount(e.target.value.replace(/[^0-9.]/g, ''))}
+                        onFocus={() => setSoftKbTarget('openPriceAmount')}
+                        onMouseDown={() => {
+                          setSoftKbTarget('openPriceAmount');
+                          requestAnimationFrame(() => {
+                            try {
+                              openPriceAmountInputRef.current?.focus();
+                              const value = openPriceAmountInputRef.current?.value || '';
+                              openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
+                            } catch {}
+                          });
+                        }}
+                        onTouchStart={() => {
+                          setSoftKbTarget('openPriceAmount');
+                          requestAnimationFrame(() => {
+                            try {
+                              openPriceAmountInputRef.current?.focus();
+                              const value = openPriceAmountInputRef.current?.value || '';
+                              openPriceAmountInputRef.current?.setSelectionRange(value.length, value.length);
+                            } catch {}
+                          });
+                        }}
+                        className="w-full border-0 bg-transparent px-3 py-2 pr-12 text-xl font-semibold tracking-wide text-gray-900 outline-none focus:ring-0"
+                        placeholder="0.00"
+                      />
+                    </div>
                     <button
                       type="button"
-                      className="absolute inset-y-0 right-1 w-12 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                      className="absolute inset-y-1 right-1 flex w-10 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      style={PAY_NEO.keyPad}
                       onClick={() => {
                         setSoftKbTarget('openPriceAmount');
                         try {
@@ -11557,31 +11736,34 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
               <div>
                 <label className="block text-sm text-gray-800 mb-1">Note (as Modifier)</label>
-                <div className="relative">
-                  <input
-                    ref={openPriceNoteInputRef}
-                    value={openPriceNote}
-                    onChange={(e) => {
-                      const raw = e.target.value || '';
-                      // Capitalize ONLY the first English letter (once). Do not force others.
-                      const idx = raw.search(/[A-Za-z]/);
-                      if (idx >= 0) {
-                        const ch = raw[idx];
-                        const transformed = (ch >= 'a' && ch <= 'z') ? raw.slice(0, idx) + ch.toUpperCase() + raw.slice(idx + 1) : raw;
-                        setOpenPriceNote(transformed);
-                      } else {
-                        setOpenPriceNote(raw);
-                      }
-                    }}
-                    onFocus={() => setSoftKbTarget('note')}
-                    onMouseDown={() => { setSoftKbTarget('note'); }}
-                    onTouchStart={() => { setSoftKbTarget('note'); }}
-                    className="w-full h-12 rounded-lg border border-gray-300 pr-16 px-3 text-gray-900 text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Optional"
-                  />
+                <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                  <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                    <input
+                      ref={openPriceNoteInputRef}
+                      value={openPriceNote}
+                      onChange={(e) => {
+                        const raw = e.target.value || '';
+                        // Capitalize ONLY the first English letter (once). Do not force others.
+                        const idx = raw.search(/[A-Za-z]/);
+                        if (idx >= 0) {
+                          const ch = raw[idx];
+                          const transformed = (ch >= 'a' && ch <= 'z') ? raw.slice(0, idx) + ch.toUpperCase() + raw.slice(idx + 1) : raw;
+                          setOpenPriceNote(transformed);
+                        } else {
+                          setOpenPriceNote(raw);
+                        }
+                      }}
+                      onFocus={() => setSoftKbTarget('note')}
+                      onMouseDown={() => { setSoftKbTarget('note'); }}
+                      onTouchStart={() => { setSoftKbTarget('note'); }}
+                      className="h-12 w-full border-0 bg-transparent px-3 pr-14 text-base text-gray-900 outline-none focus:ring-0"
+                      placeholder="Optional"
+                    />
+                  </div>
                   <button
                     type="button"
-                    className="absolute inset-y-0 right-1 w-14 flex items-center justify-center text-gray-500 hover:text-gray-700"
+                    className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                    style={PAY_NEO.key}
                     onClick={() => {
                       try {
                         const userAgent = navigator.userAgent || '';
@@ -11609,8 +11791,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     {taxGroupOptions.map((opt) => (
                       <button
                         key={opt.id}
+                        type="button"
                         onClick={() => setSelectedTaxGroupId(opt.id)}
-                        className={`rounded-lg px-3 py-2 min-h-12 text-left ${selectedTaxGroupId === opt.id ? 'border-2 border-blue-500 bg-blue-50 hover:bg-blue-100' : 'border border-gray-300 bg-gray-50 hover:bg-gray-100'}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        style={selectedTaxGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Rate: ${opt.totalRate}%`}
                       >
                         <div className="flex justify-between items-center gap-2 w-full">
@@ -11627,8 +11811,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     {printerGroupOptions.map((opt) => (
                       <button
                         key={opt.id}
+                        type="button"
                         onClick={() => setSelectedPrinterGroupId(opt.id)}
-                        className={`rounded-lg px-3 py-2 min-h-12 text-left ${selectedPrinterGroupId === opt.id ? 'border-2 border-blue-500 bg-blue-50 hover:bg-blue-100' : 'border border-gray-300 bg-gray-50 hover:bg-gray-100'}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        style={selectedPrinterGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Printers: ${opt.count}`}
                       >
                         <div className="flex justify-between items-center gap-2 w-full">
@@ -11645,8 +11831,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-2">
-              <button onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }} className="py-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-900 text-base font-semibold">Cancel</button>
-              <button onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }} className="py-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-base font-semibold">Add</button>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
+                className="border-0 py-3 text-base font-semibold text-gray-900 transition-[filter] active:brightness-95 touch-manipulation"
+                style={PAY_NEO.key}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }}
+                className="border-0 py-3 text-base font-semibold transition-[filter] active:brightness-95 touch-manipulation"
+                style={PAY_NEO_PRIMARY_BLUE}
+              >
+                Add
+              </button>
             </div>
           </div>
         </div>
@@ -12389,7 +12589,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
               </div>
             </div>
-            <button onClick={() => setShowItemExtra1SettingsModal(false)} className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded">OK</button>
+            <button
+              onClick={() => {
+                void (async () => {
+                  await pushBagFeeUtilityToFirebase({ enabled: tableBagFeeEnabled, amount: tableBagFeeValue });
+                  setShowItemExtra1SettingsModal(false);
+                })();
+              }}
+              className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded"
+            >
+              OK
+            </button>
           </div>
         </div>
       )}
@@ -13430,6 +13640,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           softKbTarget={softKbTarget === 'kitchenMemo' ? 'f1' : null}
           setSoftKbTarget={(target) => setSoftKbTarget(target === 'f1' ? 'kitchenMemo' : null)}
           kbBottomOffset={kbBottomOffset}
+          usePayNeoShell
         />
       )}
 
@@ -13472,7 +13683,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         hasCashPayment={paymentCompleteData?.hasCashPayment || false}
         isPartialPayment={paymentCompleteData?.isPartialPayment}
         currentGuestNumber={paymentCompleteData?.currentGuestNumber}
-        allGuests={adhocSplitCount > 0 ? Array.from({ length: Math.max(1, adhocSplitCount) }, (_, i) => i + 1) : Array.from(guestIds)}
+        allGuests={splitAllGuestsResolved}
         paidGuests={Array.from(new Set([...persistedPaidGuests, ...(paymentCompleteData?.currentGuestNumber ? [paymentCompleteData.currentGuestNumber] : [])]))}
         onPrintReceipt={handlePartialPrintReceipt}
         onSelectGuest={handleGuestSelectFromModal}
@@ -14036,7 +14247,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           : togoAfterActiveField === 'togoAfterAddress' ? 'Address'
           : togoAfterActiveField === 'togoAfterZip' ? 'Zip'
           : 'Note';
-        const focusBorder = (field: string) => togoAfterActiveField === field ? 'border-emerald-500 ring-1 ring-emerald-300' : 'border-slate-300';
+        const focusRingWrap = (field: string) =>
+          togoAfterActiveField === field ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : '';
         const KEYBOARD_RESERVED = 260;
         const modalMaxH = Math.max(360, window.innerHeight - KEYBOARD_RESERVED - 32);
         const clampClock = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -14045,18 +14257,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         <>
         <div className="fixed inset-0 z-[99999] flex items-start justify-center bg-black bg-opacity-70 p-3 sm:p-4 pt-6">
           <div
-            className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-5 w-full border border-slate-200 flex flex-col"
-            style={{ maxWidth: '900px', maxHeight: `${modalMaxH}px` }}
+            className="flex w-full flex-col overflow-hidden border-0"
+            style={{ ...PAY_NEO.modalShell, maxWidth: '900px', maxHeight: `${modalMaxH}px` }}
           >
-            <div className="flex items-center justify-between mb-3 flex-shrink-0">
-              <h3 className="text-lg font-semibold text-slate-800">Customer Information</h3>
+            <div className="flex flex-shrink-0 items-center justify-between px-5 py-3" style={{ ...PAY_NEO.raised, borderRadius: '16px 16px 0 0' }}>
+              <h3 className="text-lg font-extrabold text-slate-800">Customer Information</h3>
             </div>
 
-            <div className="space-y-3 flex-1 min-h-0 overflow-y-auto">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" style={{ background: PAY_NEO_CANVAS }}>
               <div className="grid gap-1.5">
                 {/* Phone & Name row */}
-                <div className="flex flex-col md:flex-row gap-2">
-                  <div className="relative md:w-[34%] md:flex-none">
+                <div className="flex flex-col gap-2 md:flex-row">
+                  <div className={`rounded-[14px] md:w-[34%] md:flex-none ${focusRingWrap('togoAfterPhone')}`}>
                     <input
                       ref={togoAfterPhoneRef}
                       type="tel"
@@ -14065,10 +14277,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       onChange={e => setTogoInfoAfterPhone(e.target.value)}
                       onFocus={() => setTogoAfterKbTarget('togoAfterPhone')}
                       placeholder="(000)000-0000"
-                      className={`h-10 w-full px-3 rounded-lg border-2 ${focusBorder('togoAfterPhone')} focus:outline-none focus:ring-0 text-sm`}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
                     />
                   </div>
-                  <div className="relative md:w-[31%] md:flex-none">
+                  <div className={`rounded-[14px] md:w-[31%] md:flex-none ${focusRingWrap('togoAfterName')}`}>
                     <input
                       ref={togoAfterNameRef}
                       type="text"
@@ -14076,11 +14289,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       onChange={e => setTogoInfoAfterName(e.target.value)}
                       onFocus={() => setTogoAfterKbTarget('togoAfterName')}
                       placeholder="Customer name"
-                      className={`h-10 w-full px-3 rounded-lg border-2 ${focusBorder('togoAfterName')} focus:outline-none focus:ring-0 text-sm`}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
                     />
                   </div>
-                  <div className="flex md:flex-1 items-center justify-end">
-                    <div className="inline-flex w-full max-w-[214px] rounded-lg border border-slate-300 bg-white text-xs font-semibold overflow-hidden h-10" role="group">
+                  <div className="flex items-center justify-end md:flex-1">
+                    <div className="flex h-10 w-full max-w-[214px] gap-0.5 rounded-[12px] p-1 text-xs font-semibold" style={PAY_NEO.inset} role="group">
                       {([
                         { key: 'togo' as const, label: 'TOGO' },
                         { key: 'delivery' as const, label: 'DELIVERY' },
@@ -14091,10 +14305,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             type="button"
                             key={option.key}
                             onClick={() => setTogoInfoAfterFulfillment(option.key)}
-                            className={`h-full transition-all duration-150 focus:outline-none flex items-center justify-center text-center ${
-                              active ? 'bg-emerald-500 text-white' : 'bg-transparent text-slate-500 hover:text-slate-700'
-                            } ${idx === 0 ? 'border-r border-slate-300' : ''}`}
-                            style={idx === 1 ? { flex: '0 0 46%' } : { flex: '0 0 54%' }}
+                            className={`flex h-full items-center justify-center text-center transition-all duration-150 focus:outline-none touch-manipulation hover:brightness-[1.02] active:brightness-95 ${
+                              active ? 'font-bold text-slate-800' : 'font-semibold text-slate-600'
+                            }`}
+                            style={
+                              active
+                                ? { ...PAY_NEO.inset, flex: idx === 1 ? '0 0 46%' : '0 0 54%' }
+                                : { ...PAY_NEO.key, flex: idx === 1 ? '0 0 46%' : '0 0 54%' }
+                            }
                           >
                             <span className="mx-auto text-center">{option.label}</span>
                           </button>
@@ -14107,17 +14325,28 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
               <div className="grid gap-1.5">
                 {/* Prep Time summary */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
-                  <div className="flex flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700 min-w-0">
-                    <div className="flex items-center gap-2 min-w-[140px]">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
+                  <div className="flex min-w-0 flex-nowrap items-center gap-2 text-sm font-semibold text-slate-700">
+                    <div className="flex min-w-[140px] items-center gap-2">
                       <span className={togoInfoAfterPrepLocked ? 'text-slate-400' : ''}>Prep Time</span>
-                      <span className={`text-3xl font-mono font-semibold leading-none ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{prepDisplay}</span>
+                      <span
+                        className={`inline-flex items-center rounded-[12px] px-2 py-0.5 font-mono text-3xl font-semibold leading-none ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-indigo-700'}`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.raised}
+                      >
+                        {prepDisplay}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-2 text-xs sm:text-sm min-w-[170px]">
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${togoInfoAfterPrepLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                    <div className="flex min-w-[170px] items-center gap-2 text-xs sm:text-sm">
+                      <span
+                        className={`whitespace-nowrap rounded-[10px] px-2 py-1 font-semibold ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-emerald-800'}`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.key}
+                      >
                         Ready {readyDisplay}
                       </span>
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${togoInfoAfterPrepLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                      <span
+                        className={`whitespace-nowrap rounded-[10px] px-2 py-1 font-semibold ${togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-slate-700'}`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, opacity: 0.65 } : PAY_NEO.key}
+                      >
                         Current {currentDisplay}
                       </span>
                     </div>
@@ -14126,7 +14355,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Minute buttons */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-col gap-1.5">
                     <div className="flex flex-wrap gap-2">
                       {[5, 10, 15, 20, 25].map((min) => (
@@ -14135,15 +14364,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           key={`top-${min}`}
                           onClick={() => setTogoInfoAfterPickupMinutes(min)}
                           disabled={togoInfoAfterPrepLocked}
-                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                            togoInfoAfterPrepLocked
-                              ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50'
-                              : min === 15
-                              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-                              : 'bg-slate-500 text-white hover:bg-slate-600'
+                          className={`flex h-[40px] min-w-[70px] items-center justify-center rounded-[10px] border-0 px-3 text-sm font-semibold transition-all touch-manipulation ${
+                            togoInfoAfterPrepLocked ? 'cursor-not-allowed' : 'hover:brightness-[1.03] active:brightness-95'
                           }`}
+                          style={
+                            togoInfoAfterPrepLocked
+                              ? { ...PAY_NEO.inset, opacity: 0.45, cursor: 'not-allowed' }
+                              : min === 15
+                                ? PAY_NEO_PRIMARY_BLUE
+                                : PAY_NEO.key
+                          }
                         >
-                          +{min}
+                          <span className={togoInfoAfterPrepLocked ? 'text-slate-500' : min === 15 ? 'text-white' : 'text-slate-800'}>+{min}</span>
                         </button>
                       ))}
                     </div>
@@ -14154,11 +14386,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           key={`bottom-${min}`}
                           onClick={() => setTogoInfoAfterPickupMinutes(min)}
                           disabled={togoInfoAfterPrepLocked}
-                          className={`min-w-[70px] h-[40px] px-3 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                            togoInfoAfterPrepLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'
+                          className={`flex h-[40px] min-w-[70px] items-center justify-center rounded-[10px] border-0 px-3 text-sm font-semibold transition-all touch-manipulation ${
+                            togoInfoAfterPrepLocked ? 'cursor-not-allowed' : 'hover:brightness-[1.03] active:brightness-95'
                           }`}
+                          style={
+                            togoInfoAfterPrepLocked
+                              ? { ...PAY_NEO.inset, opacity: 0.45, cursor: 'not-allowed' }
+                              : PAY_NEO.key
+                          }
                         >
-                          +{min}
+                          <span className={togoInfoAfterPrepLocked ? 'text-slate-500' : 'text-slate-800'}>+{min}</span>
                         </button>
                       ))}
                       <button
@@ -14170,9 +14407,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             return !prev;
                           });
                         }}
-                        className={`w-[75px] h-[40px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${
-                          togoInfoAfterPrepLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'
-                        }`}
+                        className="flex h-[40px] w-[75px] items-center justify-center rounded-[10px] border-0 px-4 text-sm font-semibold text-white transition-all touch-manipulation hover:brightness-[1.03] active:brightness-95"
+                        style={togoInfoAfterPrepLocked ? OH_ACTION_NEO.red : OH_ACTION_NEO.orange}
                       >
                         {togoInfoAfterPrepLocked ? 'Prep On' : 'Prep Off'}
                       </button>
@@ -14181,7 +14417,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Manual time input (HH:MM) */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-inner">
+                <div className="rounded-[14px] p-3" style={PAY_NEO.inset}>
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-1">
                       <button
@@ -14197,11 +14433,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           setTogoInfoAfterPickupMinutes(diff);
                         }}
                         disabled={togoInfoAfterPrepLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${
+                          togoInfoAfterPrepLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03] active:brightness-95'
                         }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.blue}
                       >
                         -H
                       </button>
@@ -14212,11 +14447,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         readOnly
                         disabled={togoInfoAfterPrepLocked}
                         placeholder="HH"
-                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400'
-                            : 'bg-white border-slate-300 text-slate-800'
-                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                        className={`h-[38px] w-[54px] rounded-[14px] border-0 px-2 text-center font-mono text-sm outline-none focus:ring-0 ${
+                          togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-slate-800'
+                        }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, opacity: 0.55 } : PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -14232,11 +14466,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           setTogoInfoAfterPickupMinutes(diff);
                         }}
                         disabled={togoInfoAfterPrepLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-indigo-600 border-indigo-700 text-white hover:bg-indigo-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${
+                          togoInfoAfterPrepLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03] active:brightness-95'
                         }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.blue}
                       >
                         +H
                       </button>
@@ -14250,11 +14483,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           setTogoInfoAfterPickupMinutes(prev => Math.max(0, prev - 1));
                         }}
                         disabled={togoInfoAfterPrepLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${
+                          togoInfoAfterPrepLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03] active:brightness-95'
                         }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.emerald}
                       >
                         -M
                       </button>
@@ -14265,11 +14497,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         readOnly
                         disabled={togoInfoAfterPrepLocked}
                         placeholder="MM"
-                        className={`h-[38px] w-[54px] px-2 rounded-lg border text-sm font-mono text-center ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400'
-                            : 'bg-white border-slate-300 text-slate-800'
-                        } focus:outline-none focus:ring-2 focus:ring-emerald-300`}
+                        className={`h-[38px] w-[54px] rounded-[14px] border-0 px-2 text-center font-mono text-sm outline-none focus:ring-0 ${
+                          togoInfoAfterPrepLocked ? 'text-slate-400' : 'text-slate-800'
+                        }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, opacity: 0.55 } : PAY_NEO.inset}
                       />
                       <button
                         type="button"
@@ -14278,11 +14509,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           setTogoInfoAfterPickupMinutes(prev => prev + 1);
                         }}
                         disabled={togoInfoAfterPrepLocked}
-                        className={`h-[38px] w-[44px] rounded-lg text-sm font-bold border ${
-                          togoInfoAfterPrepLocked
-                            ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-emerald-600 border-emerald-700 text-white hover:bg-emerald-700'
+                        className={`h-[38px] w-[44px] rounded-[10px] border-0 text-sm font-bold transition-all touch-manipulation ${
+                          togoInfoAfterPrepLocked ? 'cursor-not-allowed text-slate-400' : 'text-white hover:brightness-[1.03] active:brightness-95'
                         }`}
+                        style={togoInfoAfterPrepLocked ? { ...PAY_NEO.inset, cursor: 'not-allowed' } : OH_ACTION_NEO.emerald}
                       >
                         +M
                       </button>
@@ -14295,54 +14525,73 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <div className="grid gap-1.5">
                 {/* Address & Zip */}
                 <div className="flex gap-2">
-                  <textarea
-                    ref={togoAfterAddressRef}
-                    value={togoInfoAfterAddress}
-                    onChange={e => setTogoInfoAfterAddress(e.target.value)}
-                    onFocus={() => setTogoAfterKbTarget('togoAfterAddress')}
-                    rows={1}
-                    className={`flex-1 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterAddress')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
-                    placeholder="Address"
-                  />
-                  <input
-                    ref={togoAfterZipRef}
-                    type="text"
-                    value={togoInfoAfterZip}
-                    onChange={e => setTogoInfoAfterZip(e.target.value)}
-                    onFocus={() => setTogoAfterKbTarget('togoAfterZip')}
-                    className={`w-24 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterZip')} focus:outline-none focus:ring-0 text-sm`}
-                    placeholder="Zip"
-                  />
+                  <div className={`min-h-[38px] flex-1 rounded-[14px] ${focusRingWrap('togoAfterAddress')}`}>
+                    <textarea
+                      ref={togoAfterAddressRef}
+                      value={togoInfoAfterAddress}
+                      onChange={e => setTogoInfoAfterAddress(e.target.value)}
+                      onFocus={() => setTogoAfterKbTarget('togoAfterAddress')}
+                      rows={1}
+                      className="min-h-[38px] w-full resize-none rounded-[14px] border-0 bg-transparent px-3 py-2 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
+                      placeholder="Address"
+                    />
+                  </div>
+                  <div className={`w-24 flex-none rounded-[14px] ${focusRingWrap('togoAfterZip')}`}>
+                    <input
+                      ref={togoAfterZipRef}
+                      type="text"
+                      value={togoInfoAfterZip}
+                      onChange={e => setTogoInfoAfterZip(e.target.value)}
+                      onFocus={() => setTogoAfterKbTarget('togoAfterZip')}
+                      className="h-10 w-full rounded-[14px] border-0 bg-transparent px-3 text-sm text-gray-900 outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
+                      placeholder="Zip"
+                    />
+                  </div>
                 </div>
               </div>
 
               <div className="grid gap-1.5">
                 {/* Note */}
-                <textarea
-                  ref={togoAfterNoteRef}
-                  value={togoInfoAfterNote}
-                  onChange={e => setTogoInfoAfterNote(e.target.value)}
-                  onFocus={() => setTogoAfterKbTarget('togoAfterNote')}
-                  rows={1}
-                  className={`flex-1 px-3 py-1 rounded-lg border-2 ${focusBorder('togoAfterNote')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`}
-                  placeholder="Note"
-                />
+                <div className={`min-h-[38px] rounded-[14px] ${focusRingWrap('togoAfterNote')}`}>
+                  <textarea
+                    ref={togoAfterNoteRef}
+                    value={togoInfoAfterNote}
+                    onChange={e => setTogoInfoAfterNote(e.target.value)}
+                    onFocus={() => setTogoAfterKbTarget('togoAfterNote')}
+                    rows={1}
+                    className="min-h-[38px] w-full resize-none rounded-[14px] border-0 bg-transparent px-3 py-2 text-sm text-gray-900 outline-none focus:ring-0"
+                    style={PAY_NEO.inset}
+                    placeholder="Note"
+                  />
+                </div>
               </div>
             </div>
 
             {/* Buttons */}
-            <div className="flex justify-end items-center mt-4 gap-3 flex-shrink-0">
+            <div className="mt-4 flex flex-shrink-0 items-center justify-end gap-3 border-0 px-4 pb-4 pt-0" style={{ background: PAY_NEO_CANVAS }}>
               <button
                 type="button"
                 onClick={() => setShowTogoInfoAfterModal(false)}
-                className="px-5 py-2 rounded bg-gradient-to-b from-white to-slate-100 border border-slate-200 text-slate-600 font-semibold shadow hover:shadow-md"
+                className={`rounded-[14px] border-0 px-5 py-3 font-bold text-gray-700 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                style={PAY_NEO.inset}
               >
                 Cancel
               </button>
               <button
                 type="button"
+                onClick={handleTogoInfoAfterPayOk}
+                className={`rounded-[14px] border-0 px-5 py-3 font-bold text-white touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                style={PAY_NEO_PRIMARY_AMBER}
+              >
+                Pay/OK
+              </button>
+              <button
+                type="button"
                 onClick={handleTogoInfoAfterConfirm}
-                className="px-6 py-2 rounded bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-semibold shadow hover:shadow-lg"
+                className={`rounded-[14px] border-0 px-6 py-3 font-bold text-white touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                style={PAY_NEO_PRIMARY_BLUE}
               >
                 OK
               </button>
@@ -14408,7 +14657,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 }, 0);
               }}
               onEnter={() => {
-                handleTogoInfoAfterConfirm();
+                handleTogoInfoAfterPayOk();
               }}
             />
           </KeyboardPortal>
