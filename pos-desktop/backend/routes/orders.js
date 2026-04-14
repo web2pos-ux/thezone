@@ -137,6 +137,8 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_mode TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN order_source TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN online_order_number TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'pending'`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN paid_at TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -251,8 +253,8 @@ module.exports = (db) => {
 			const closedAt = getLocalDatetimeString();
 			const { discount } = req.body || {};
 
-			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ?`;
-			const updateParams = [closedAt];
+			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ?, payment_status = 'PAID', paid_at = ?`;
+			const updateParams = [closedAt, closedAt];
 
 			if (discount && typeof discount === 'object' && discount.percent > 0) {
 				const discountedTotal = Number(((discount.discountedSubtotal || 0) + (discount.taxesTotal || 0)).toFixed(2));
@@ -425,10 +427,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const customerPhone = q.customerPhone ? String(q.customerPhone).trim() : '';
 			const customerName = q.customerName ? String(q.customerName).trim() : '';
 			const orderMode = q.order_mode; // QSR or FSR filter
+			const panel = String(q.panel || '').trim() === '1'; // 세일즈 투고패널용: 종료 주문·빈 주문 제외
 			const clauses = [];
 			const params = [];
 			
-			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode });
+			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode, panel });
 			
 			if (type) {
 				const types = String(type).split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
@@ -439,6 +442,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					clauses.push(`UPPER(o.order_type) IN (${types.map(() => '?').join(',')})`);
 					params.push(...types);
 				}
+				if (panel && types.length === 1 && types[0] === 'DELIVERY') {
+					clauses.push(`EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id)`);
+				}
+			}
+			if (panel && type) {
+				clauses.push(
+					`UPPER(COALESCE(o.status, '')) NOT IN ('PICKED_UP','CANCELLED','MERGED','CLOSED','VOIDED','VOID','REFUNDED')`
+				);
 			}
 			if (status) {
 				const statuses = String(status).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -587,14 +598,26 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const pad = (n) => String(n).padStart(2, '0');
 			const cutoffLocal = `${cutoff.getFullYear()}-${pad(cutoff.getMonth() + 1)}-${pad(cutoff.getDate())} ${pad(cutoff.getHours())}:${pad(cutoff.getMinutes())}:${pad(cutoff.getSeconds())}`;
 
+			// 활성 배달만: delivery_orders 자체 종료 + 연결된 orders가 VOID/취소/픽업 등이면 제외
+			// (Void 시 orders만 VOIDED로 두고 delivery_orders는 pending인 경우 패널 좀비 부활 방지)
 			const rows = await dbAll(`
 				SELECT d.*,
 					COALESCE(
 						(SELECT o.order_number FROM orders o WHERE o.id = d.order_id LIMIT 1),
-						(SELECT o.order_number FROM orders o WHERE o.table_id = ('DL' || CAST(d.id AS TEXT)) LIMIT 1)
+						(SELECT o.order_number FROM orders o WHERE UPPER(TRIM(o.table_id)) = UPPER('DL' || CAST(d.id AS TEXT)) LIMIT 1)
 					) AS pos_order_number
 				FROM delivery_orders d
 				WHERE d.created_at >= ?
+				AND UPPER(COALESCE(TRIM(d.status), '')) NOT IN ('PICKED_UP','CANCELLED','MERGED','CLOSED','VOIDED','VOID','REFUNDED')
+				AND NOT EXISTS (
+					SELECT 1 FROM orders o
+					WHERE (
+						(d.order_id IS NOT NULL AND o.id = d.order_id)
+						OR UPPER(TRIM(COALESCE(o.table_id, ''))) = UPPER('DL' || CAST(d.id AS TEXT))
+					)
+					AND UPPER(COALESCE(TRIM(o.status), '')) IN ('PICKED_UP','CANCELLED','MERGED','CLOSED','VOIDED','VOID','REFUNDED')
+				)
+				AND NOT (d.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM orders ox WHERE ox.id = d.order_id))
 				ORDER BY d.created_at DESC
 			`, [cutoffLocal]);
 			res.json({ success: true, orders: rows });

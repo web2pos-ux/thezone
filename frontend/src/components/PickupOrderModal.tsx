@@ -4,6 +4,7 @@ import { shouldShowInPickupList } from '../utils/pickupListRules';
 import { formatNameForDisplay } from '../utils/nameParser';
 import { getLocalDateString } from '../utils/datetimeUtils';
 import OrderDetailModal, { OrderData } from './OrderDetailModal';
+import { PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, OH_ACTION_NEO, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS } from '../utils/softNeumorphic';
 
 const VirtualKeyboard = lazy(() => import('./order/VirtualKeyboard'));
 
@@ -152,10 +153,8 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
     return formatted.trim().toLowerCase() === 'unknown' ? '' : formatted;
   };
 
-  const getFieldBorderClasses = (field: 'phone' | 'name' | 'address' | 'note' | 'zip') =>
-    keyboardTarget === field
-      ? 'border-2 border-emerald-500 shadow-[0_0_0_1px_rgba(16,185,129,0.2)]'
-      : 'border border-slate-300';
+  const pickupFieldRing = (field: 'phone' | 'name' | 'address' | 'note' | 'zip') =>
+    keyboardTarget === field ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : '';
 
   const displayedHistoryOrders = useMemo(() => {
     return [...customerHistoryOrders].slice(0, 6);
@@ -436,21 +435,20 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-70 flex items-start justify-center z-[9999] p-2 sm:p-3 pt-2">
+    <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black bg-opacity-70 p-2 pt-2 sm:p-3">
       <div
-        className="bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-[0_18px_45px_rgba(15,23,42,0.35)] px-4 sm:px-5 py-3 w-full border border-slate-200 flex flex-col overflow-hidden"
-        style={{ maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
+        className="flex w-full flex-col overflow-hidden border-0"
+        style={{ ...PAY_NEO.modalShell, maxWidth: '1000px', height: '96vh', maxHeight: '760px' }}
       >
-        {/* Header with Close Button */}
-        <div className="flex items-center justify-between mb-2 flex-shrink-0">
-          <div className="flex-1" />
+        <div className="flex flex-shrink-0 items-center justify-end px-3 pt-2">
           <button
             type="button"
             onClick={resetAndClose}
-            className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700"
-            style={{ background: 'rgba(156,163,175,0.25)' }}
+            className={`flex h-11 w-11 items-center justify-center rounded-full border-0 text-red-600 transition-all hover:brightness-[1.03] touch-manipulation ${NEO_MODAL_BTN_PRESS}`}
+            style={{ ...PAY_NEO.key, borderRadius: 9999 }}
+            title="Close"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
 
@@ -477,48 +475,49 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
         {/* ---- New Pickup Tab ---- */}
         {activeTab === 'pickup' && (
           <>
-            <div className="flex items-center justify-between mb-3 flex-shrink-0">
-              <div><h3 className="text-lg font-semibold text-slate-800">{newTabLabel}</h3></div>
+            <div className="flex flex-shrink-0 items-center justify-between px-5 py-3" style={{ ...PAY_NEO.raised, borderRadius: 0 }}>
+              <h3 className="text-lg font-extrabold text-slate-800">{newTabLabel}</h3>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={resetAndClose} className="px-4 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-600 font-semibold hover:bg-slate-200 transition-colors">Cancel</button>
+                <button type="button" onClick={resetAndClose} className={`rounded-[14px] border-0 px-4 py-3 font-bold text-gray-700 transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO.inset}>Cancel</button>
                 {orderMode === 'online' && (
-                  <button type="button" onClick={handlePaymentCompleteClick} className="px-4 py-2 rounded-lg bg-blue-500 text-white font-bold hover:bg-blue-600 transition-colors text-sm">Payment Complete</button>
+                  <button type="button" onClick={handlePaymentCompleteClick} className={`rounded-[14px] border-0 px-4 py-3 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO_PRIMARY_BLUE}>Payment Complete</button>
                 )}
-                <button type="button" onClick={handleOkClick} className="px-5 py-2 rounded-lg bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-colors">OK</button>
+                <button type="button" onClick={handleOkClick} className={`rounded-[14px] border-0 px-5 py-3 font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO_PRIMARY_BLUE}>OK</button>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)] gap-4 mt-2 flex-1 min-h-0" style={{ overflow: 'visible' }}>
+            <div className="flex min-h-0 flex-1 flex-col" style={{ background: PAY_NEO_CANVAS }}>
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden px-4 pb-2 pt-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]" style={{ overflow: 'visible' }}>
               {/* Left Column */}
-              <div className="space-y-3" style={{ overflow: 'visible' }}>
+              <div className="min-h-0 space-y-3 overflow-y-auto overflow-x-visible" style={{ overflow: 'visible' }}>
                 <div className="grid gap-1.5" style={{ overflow: 'visible' }}>
                   <div className="flex flex-col md:flex-row gap-2" style={{ overflow: 'visible' }}>
                     {orderMode === 'online' ? (
                       <>
                         <div className="relative flex-1" style={{ overflow: 'visible', zIndex: 100 }}>
-                          <input type="text" value={customerNameInput} onChange={(e) => handleNameInputChange(e.target.value)} onFocus={() => setKeyboardTarget('name')} ref={nameInputRef} className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('name')} focus:outline-none focus:ring-0`} placeholder="Order Number" />
+                          <input type="text" value={customerNameInput} onChange={(e) => handleNameInputChange(e.target.value)} onFocus={() => setKeyboardTarget('name')} ref={nameInputRef} className={`h-11 w-full rounded-[14px] border-0 px-3 focus:outline-none focus:ring-0 ${pickupFieldRing('name')}`} style={PAY_NEO.inset} placeholder="Order Number" />
                         </div>
                         <div className="relative flex-1" style={{ overflow: 'visible', zIndex: 100 }}>
-                          <input type="tel" value={customerPhone} onChange={(e) => handlePhoneInputChange(e.target.value)} onFocus={() => setKeyboardTarget('phone')} ref={phoneInputRef} className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('phone')} focus:outline-none focus:ring-0`} placeholder="(000)000-0000" />
+                          <input type="tel" value={customerPhone} onChange={(e) => handlePhoneInputChange(e.target.value)} onFocus={() => setKeyboardTarget('phone')} ref={phoneInputRef} className={`h-11 w-full rounded-[14px] border-0 px-3 focus:outline-none focus:ring-0 ${pickupFieldRing('phone')}`} style={PAY_NEO.inset} placeholder="(000)000-0000" />
                         </div>
                       </>
                     ) : (
                       <>
                         <div className="relative md:w-[34%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }}>
-                          <input type="tel" value={customerPhone} onChange={(e) => handlePhoneInputChange(e.target.value)} onFocus={() => setKeyboardTarget('phone')} ref={phoneInputRef} className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('phone')} focus:outline-none focus:ring-0`} placeholder="(000)000-0000" />
+                          <input type="tel" value={customerPhone} onChange={(e) => handlePhoneInputChange(e.target.value)} onFocus={() => setKeyboardTarget('phone')} ref={phoneInputRef} className={`h-11 w-full rounded-[14px] border-0 px-3 focus:outline-none focus:ring-0 ${pickupFieldRing('phone')}`} style={PAY_NEO.inset} placeholder="(000)000-0000" />
                         </div>
                         <div className="relative md:w-[31%] md:flex-none" style={{ overflow: 'visible', zIndex: 100 }}>
-                          <input type="text" value={customerNameInput} onChange={(e) => handleNameInputChange(e.target.value)} onFocus={() => setKeyboardTarget('name')} ref={nameInputRef} className={`h-10 w-full px-3 rounded-lg ${getFieldBorderClasses('name')} focus:outline-none focus:ring-0`} placeholder="Customer name" />
+                          <input type="text" value={customerNameInput} onChange={(e) => handleNameInputChange(e.target.value)} onFocus={() => setKeyboardTarget('name')} ref={nameInputRef} className={`h-11 w-full rounded-[14px] border-0 px-3 focus:outline-none focus:ring-0 ${pickupFieldRing('name')}`} style={PAY_NEO.inset} placeholder="Customer name" />
                         </div>
                       </>
                     )}
                     {orderMode !== 'online' && (
                     <div className="flex md:flex-1 items-center justify-end">
-                      <div className="inline-flex w-full max-w-[214px] rounded-lg border border-slate-300 bg-white text-xs font-semibold overflow-hidden h-10" role="group">
+                      <div className="inline-flex h-11 w-full max-w-[214px] overflow-hidden rounded-[14px] border-0 text-xs font-bold" style={PAY_NEO.raised} role="group">
                         {[{ key: 'togo' as const, label: 'TOGO' }, { key: 'delivery' as const, label: 'DELIVERY' }].map((option, idx, arr) => {
                           const active = orderMode === option.key;
                           return (
-                            <button type="button" key={option.key} onClick={() => setOrderMode(option.key)} className={`h-full transition-all duration-150 focus:outline-none flex items-center justify-center text-center ${active ? 'bg-emerald-500 text-white' : 'bg-transparent text-slate-500 hover:text-slate-700'} ${idx < arr.length - 1 ? 'border-r border-slate-300' : ''}`} style={idx === 1 ? { flex: '0 0 46%' } : { flex: '0 0 54%' }}>
+                            <button type="button" key={option.key} onClick={() => setOrderMode(option.key)} className={`flex h-full items-center justify-center text-center transition-all duration-150 focus:outline-none ${active ? 'ring-2 ring-emerald-400/60 ring-inset text-slate-800' : 'text-slate-600 hover:brightness-[1.02]'} ${NEO_MODAL_BTN_PRESS}`} style={active ? { ...PAY_NEO.inset, flex: idx === 1 ? '0 0 46%' : '0 0 54%' } : { ...PAY_NEO.key, flex: idx === 1 ? '0 0 46%' : '0 0 54%' }}>
                               <span className="mx-auto text-center">{option.label}</span>
                             </button>
                           );
@@ -530,29 +529,29 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
                 </div>
 
                 {/* Prep Time */}
-                <div className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-inner space-y-2">
-                  <div className="flex flex-nowrap items-center gap-1.5 text-sm font-semibold text-slate-700 min-w-0">
-                    <div className="flex items-center gap-1 min-w-[140px]">
+                <div className="space-y-2 rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
+                  <div className="flex min-w-0 flex-nowrap items-center gap-1.5 text-sm font-semibold text-slate-700">
+                    <div className="flex min-w-[140px] items-center gap-1">
                       <span className={prepButtonsLocked ? 'text-slate-400' : ''}>Prep Time</span>
-                      <span className={`text-3xl font-mono font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{formatMinutesToTime(pickupTime)}</span>
+                      <span className={`font-mono text-3xl font-semibold leading-none ${prepButtonsLocked ? 'text-slate-400' : 'text-indigo-600'}`}>{formatMinutesToTime(pickupTime)}</span>
                     </div>
-                    <div className="flex items-center gap-1 text-xs sm:text-sm min-w-[170px]">
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>Ready {readyTimeSnapshot.readyDisplay}</span>
-                      <span className={`px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>Current {readyTimeSnapshot.currentDisplay}</span>
+                    <div className="flex min-w-[188px] items-center gap-1.5 text-sm sm:text-base">
+                      <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 font-semibold ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>Ready {readyTimeSnapshot.readyDisplay}</span>
+                      <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 font-semibold ${prepButtonsLocked ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>Current {readyTimeSnapshot.currentDisplay}</span>
                     </div>
                     <div className="flex-1" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-wrap gap-2">
                       {[5, 10, 15, 20, 25].map((min) => (
-                        <button type="button" key={`top-${min}`} onClick={() => setPickupTime(min)} disabled={prepButtonsLocked} className={`min-w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'}`}>+{min}</button>
+                        <button type="button" key={`top-${min}`} onClick={() => setPickupTime(min)} disabled={prepButtonsLocked} className={`flex h-12 min-w-[75px] items-center justify-center rounded-[14px] border-0 px-4 text-sm font-bold transition-all ${prepButtonsLocked ? 'cursor-not-allowed opacity-45' : 'text-slate-800 hover:brightness-[1.02] touch-manipulation'} ${NEO_PREP_TIME_BTN_PRESS}`} style={prepButtonsLocked ? PAY_NEO.inset : PAY_NEO.key}>+{min}</button>
                       ))}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {[30, 40, 50, 60].map((min) => (
-                        <button type="button" key={`bottom-${min}`} onClick={() => setPickupTime(min)} disabled={prepButtonsLocked} className={`min-w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${prepButtonsLocked ? 'bg-slate-400 text-slate-200 cursor-not-allowed opacity-50' : 'bg-slate-500 text-white hover:bg-slate-600'}`}>+{min}</button>
+                        <button type="button" key={`bottom-${min}`} onClick={() => setPickupTime(min)} disabled={prepButtonsLocked} className={`flex h-12 min-w-[75px] items-center justify-center rounded-[14px] border-0 px-4 text-sm font-bold transition-all ${prepButtonsLocked ? 'cursor-not-allowed opacity-45' : 'text-slate-800 hover:brightness-[1.02] touch-manipulation'} ${NEO_PREP_TIME_BTN_PRESS}`} style={prepButtonsLocked ? PAY_NEO.inset : PAY_NEO.key}>+{min}</button>
                       ))}
-                      <button type="button" onClick={() => { setPrepButtonsLocked((prev) => { const next = !prev; if (next) { setPickupTime(0); } else { setPickupTime(15); } setPickupAmPm(getCurrentAmPm()); setPickupDateLabel(formatPickupDateLabel()); return next; }); }} className={`w-[75px] h-[48px] px-4 rounded-xl text-sm font-semibold shadow transition-transform flex items-center justify-center ${prepButtonsLocked ? 'bg-rose-600 text-white' : 'bg-rose-400 text-white hover:bg-rose-500'}`}>{prepButtonsLocked ? 'Prep On' : 'Prep Off'}</button>
+                      <button type="button" onClick={() => { setPrepButtonsLocked((prev) => { const next = !prev; if (next) { setPickupTime(0); } else { setPickupTime(15); } setPickupAmPm(getCurrentAmPm()); setPickupDateLabel(formatPickupDateLabel()); return next; }); }} className={`flex h-12 w-[75px] items-center justify-center rounded-[14px] border-0 px-4 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={OH_ACTION_NEO.red}>{prepButtonsLocked ? 'Prep On' : 'Prep Off'}</button>
                     </div>
                   </div>
                 </div>
@@ -560,19 +559,19 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
                 {/* Address & Zip */}
                 <div className="grid gap-1.5">
                   <div className="flex gap-2">
-                    <textarea value={customerAddress} onChange={(e) => setCustomerAddress(e.target.value)} onFocus={() => setKeyboardTarget('address')} ref={addressInputRef} rows={1} className={`flex-1 px-3 py-1 rounded-lg ${getFieldBorderClasses('address')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`} placeholder="Address" />
-                    <input type="text" value={customerZip} onChange={(e) => setCustomerZip(e.target.value)} onFocus={() => setKeyboardTarget('zip')} ref={zipInputRef} className={`w-24 px-3 py-1 rounded-lg ${getFieldBorderClasses('zip')} focus:outline-none focus:ring-0 text-sm`} placeholder="Zip" />
+                    <textarea value={customerAddress} onChange={(e) => setCustomerAddress(e.target.value)} onFocus={() => setKeyboardTarget('address')} ref={addressInputRef} rows={1} className={`min-h-[40px] flex-1 resize-none rounded-[14px] border-0 px-3 py-2 text-sm focus:outline-none focus:ring-0 ${pickupFieldRing('address')}`} style={PAY_NEO.inset} placeholder="Address" />
+                    <input type="text" value={customerZip} onChange={(e) => setCustomerZip(e.target.value)} onFocus={() => setKeyboardTarget('zip')} ref={zipInputRef} className={`w-24 rounded-[14px] border-0 px-3 py-2 text-sm focus:outline-none focus:ring-0 ${pickupFieldRing('zip')}`} style={PAY_NEO.inset} placeholder="Zip" />
                   </div>
                 </div>
 
                 {/* Note */}
                 <div className="grid gap-1.5">
-                  <textarea value={togoNote} onChange={(e) => setTogoNote(e.target.value)} onFocus={() => setKeyboardTarget('note')} ref={noteInputRef} rows={1} className={`flex-1 px-3 py-1 rounded-lg ${getFieldBorderClasses('note')} focus:outline-none focus:ring-0 text-sm resize-none min-h-[38px]`} placeholder="Note" />
+                  <textarea value={togoNote} onChange={(e) => setTogoNote(e.target.value)} onFocus={() => setKeyboardTarget('note')} ref={noteInputRef} rows={1} className={`min-h-[40px] flex-1 resize-none rounded-[14px] border-0 px-3 py-2 text-sm focus:outline-none focus:ring-0 ${pickupFieldRing('note')}`} style={PAY_NEO.inset} placeholder="Note" />
                 </div>
               </div>
 
               {/* Right Column - Order History */}
-              <div className="bg-white/85 rounded-2xl border border-slate-200 p-4 shadow-inner flex flex-col min-h-0 overflow-hidden">
+              <div className="flex min-h-0 flex-col overflow-hidden rounded-[18px] border-0 p-4" style={PAY_NEO.inset}>
                 <div className="flex items-center justify-between flex-shrink-0" style={{ marginTop: '-15px' }}>
                   <p className="text-base font-semibold text-slate-800">Order History</p>
                 </div>
@@ -597,7 +596,7 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
                         const hLabel = hIsDineIn ? null : !hIsPaid && !hIsPickedUp ? 'Unpaid' : (hIsPaid && !hIsPickedUp) ? 'Ready' : null;
                         return (
                           <div key={`${order.id}-${order.number}`}>
-                          <button type="button" onClick={() => normalized != null && handleHistoryOrderClick(normalized)} className={`w-full text-left px-3 py-2 rounded-xl border transition ${isSelected ? 'border-emerald-500 bg-emerald-50 shadow' : 'border-slate-200 hover:brightness-95'}`} style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem', backgroundColor: hBg }}>
+                          <button type="button" onClick={() => normalized != null && handleHistoryOrderClick(normalized)} className={`w-full rounded-[14px] border-0 px-3 py-2 text-left transition-all hover:brightness-[1.02] touch-manipulation ${isSelected ? 'ring-2 ring-emerald-400/70' : ''} ${NEO_MODAL_BTN_PRESS}`} style={{ paddingTop: '0.55rem', paddingBottom: '0.55rem', ...(isSelected ? PAY_NEO.inset : PAY_NEO.key), ...(hBg && !isSelected ? { backgroundColor: hBg } : {}) }}>
                             <div className="flex items-center justify-between text-[12px] font-semibold text-slate-800 gap-2">
                               <span className="truncate">{formatOrderHistoryDate(order)}</span>
                               <span className="flex items-center gap-1.5">
@@ -623,7 +622,7 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
                     ) : historyError ? (
                       <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 mt-2">{historyError}</div>
                     ) : historyOrderDetail ? (
-                      <div className="mt-3 border border-slate-200 rounded-xl overflow-hidden flex-1 min-h-0 flex flex-col">
+                      <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border-0" style={PAY_NEO.raised}>
                         <div className="flex-1 overflow-y-auto">
                           {historyOrderDetail.items.length === 0 ? (
                             <p className="text-sm text-slate-500 px-3 py-4">No items saved.</p>
@@ -664,26 +663,27 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
             </div>
 
             {/* Virtual Keyboard */}
-            <div className="mt-2 flex-shrink-0">
-              <Suspense fallback={<div className="h-40 bg-slate-100 rounded-xl animate-pulse" />}>
-                <VirtualKeyboard open={true} onType={handleKeyboardType} onBackspace={handleKeyboardBackspace} onClear={handleKeyboardClear} displayText={keyboardDisplayText} keepOpen={true} showNumpad={true} languages={['EN', 'KO']} currentLanguage="EN" maxWidthPx={1000} />
+            <div className="-mt-[30px] flex-shrink-0 px-4 pb-3">
+              <Suspense fallback={<div className="h-40 animate-pulse rounded-[14px]" style={PAY_NEO.inset} />}>
+                <VirtualKeyboard open={true} onType={handleKeyboardType} onBackspace={handleKeyboardBackspace} onClear={handleKeyboardClear} displayText={keyboardDisplayText} keepOpen={true} showNumpad={true} languages={['EN', 'KO']} currentLanguage="EN" maxWidthPx={1000} layoutMode="parentFlow" />
               </Suspense>
+            </div>
             </div>
           </>
         )}
 
         {/* ---- Pickup List Tab ---- */}
         {activeTab === 'complete' && (
-          <div className="flex flex-col flex-1 min-h-0">
-            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+          <div className="flex min-h-0 flex-1 flex-col px-4 pb-3 pt-2" style={{ background: PAY_NEO_CANVAS }}>
+            <div className="mb-3 flex flex-shrink-0 items-center justify-between rounded-[14px] border-0 px-4 py-3" style={PAY_NEO.raised}>
               <div>
-                <h3 className="text-lg font-semibold text-slate-800">{modeLabel} List</h3>
+                <h3 className="text-lg font-extrabold text-slate-800">{modeLabel} List</h3>
                 <p className="text-xs text-slate-500">Unpaid / Ready pickup — Amount column shows status. Picked up orders are removed.</p>
               </div>
-              <button type="button" onClick={loadPickupCompleteOrders} disabled={pickupCompleteLoading} className="px-4 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 font-semibold hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">{pickupCompleteLoading ? 'Loading...' : 'Refresh'}</button>
+              <button type="button" onClick={loadPickupCompleteOrders} disabled={pickupCompleteLoading} className={`rounded-[14px] border-0 px-4 py-3 font-bold text-slate-800 transition-all hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO.key}>{pickupCompleteLoading ? 'Loading...' : 'Refresh'}</button>
             </div>
-            {pickupCompleteError && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pickupCompleteError}</div>}
-            <div className="flex-1 min-h-0 border border-slate-200 rounded-xl overflow-hidden bg-white">
+            {pickupCompleteError && <div className="mb-3 rounded-[14px] border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-red-700">{pickupCompleteError}</div>}
+            <div className="min-h-0 flex-1 overflow-hidden rounded-[18px] border-0" style={PAY_NEO.inset}>
               {pickupCompleteLoading ? (
                 <div className="h-full flex items-center justify-center text-slate-400 text-sm">Loading...</div>
               ) : pickupCompleteOrders.length === 0 ? (

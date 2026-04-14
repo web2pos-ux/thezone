@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-03-24 06:58:09",
+  "menuId": "200000",
+  "categories": [
+    {
+      "category_id": 205000,
+      "name": "Open Price",
+      "menu_id": 200000,
+      "sort_order": 0,
+      "image_url": null,
+      "firebase_id": null,
+      "description": null
+    }
+  ],
+  "items": [
+    {
+      "item_id": 225000,
+      "name": "Open Price",
+      "short_name": null,
+      "price": 0,
+      "price2": 0,
+      "description": "",
+      "category_id": 205000,
+      "menu_id": 200000,
+      "is_open_price": 1,
+      "image_url": null,
+      "sort_order": 0,
+      "online_visible": 1,
+      "delivery_visible": 1,
+      "online_hide_type": null,
+      "online_available_until": null,
+      "delivery_hide_type": null,
+      "delivery_available_until": null,
+      "firebase_id": null,
+      "kitchen_ticket_elements": "[]"
+    },
+    {
+      "item_id": 225001,
+      "name": "Service Fee",
+      "short_name": "Service",
+      "price": 0,
+      "price2": 0,
+      "description": "",
+      "category_id": 205000,
+      "menu_id": 200000,
+      "is_open_price": 1,
+      "image_url": null,
+      "sort_order": 0,
+      "online_visible": 1,
+      "delivery_visible": 1,
+      "online_hide_type": null,
+      "online_available_until": null,
+      "delivery_hide_type": null,
+      "delivery_available_until": null,
+      "firebase_id": null,
+      "kitchen_ticket_elements": "[]"
+    }
+  ],
+  "backupType": "pre_import"
+}

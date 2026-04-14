@@ -363,8 +363,8 @@ router.put('/policy', async (req, res) => {
   try {
     const { peak_start, peak_end, peak_max_per_slot, normal_max_per_slot, dwell_minutes, no_show_grace_minutes } = req.body || {};
     await dbRun(`
-      INSERT INTO reservation_policy (peak_start, peak_end, peak_max_per_slot, normal_max_per_slot, dwell_minutes, no_show_grace_minutes)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO reservation_policy (id, peak_start, peak_end, peak_max_per_slot, normal_max_per_slot, dwell_minutes, no_show_grace_minutes)
+      VALUES (1, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         peak_start = excluded.peak_start,
         peak_end = excluded.peak_end,

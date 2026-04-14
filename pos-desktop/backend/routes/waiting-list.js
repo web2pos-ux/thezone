@@ -32,6 +32,21 @@ const ensureTable = async () => {
   } catch (e) {
     // ignore if already exists
   }
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS waiting_list_archive (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      business_date TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      phone_number TEXT,
+      party_size INTEGER NOT NULL,
+      notes TEXT,
+      outcome TEXT NOT NULL,
+      table_number TEXT,
+      joined_at TEXT,
+      archived_at TEXT NOT NULL,
+      source_waiting_id INTEGER
+    )
+  `);
 };
 
 ensureTable().catch(()=>{});

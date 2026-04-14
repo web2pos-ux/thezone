@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Notification from '../components/Notification';
 import { API_URL } from '../config/constants';
+import { INTRO_SCREEN_LOGIN_PERMISSION } from '../constants/introScreenLoginPermission';
 
 // Types
 interface Employee {
@@ -216,7 +217,8 @@ const EmployeeInfoPage = () => {
       permissions: [
         { name: 'Printer Test', level: 3 },
         { name: 'Table Layout Edit', level: 4 },
-        { name: 'Reservation Settings', level: 3 }
+        { name: 'Reservation Settings', level: 3 },
+        { name: INTRO_SCREEN_LOGIN_PERMISSION.name, level: INTRO_SCREEN_LOGIN_PERMISSION.defaultLevel }
       ]
     },
     {

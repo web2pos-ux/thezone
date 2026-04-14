@@ -1,9 +1,41 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAPI_BASE } from '../config/constants';
+import { getAPI_BASE, API_URL } from '../config/constants';
+import {
+  INTRO_SCREEN_LOGIN_PERMISSION,
+  PERMISSION_LEVELS_STORAGE_KEY,
+  roleToPermLevel,
+  clampPermLevel,
+} from '../constants/introScreenLoginPermission';
+import { isMasterPosPin } from '../constants/masterPosPin';
 
-/** 인트로에서 BackOffice / Sales 공통 PIN (고정) */
-const INTRO_PIN = '0888';
+/** 인트로 PIN: 레거시 고정값 또는 만능 PIN(1126) 또는 직원 PIN (Employee Manager → 최소 레벨 이상) */
+const INTRO_FALLBACK_PIN = '0888';
+
+async function getIntroScreenLoginMinLevel(): Promise<number> {
+  const fb = INTRO_SCREEN_LOGIN_PERMISSION.defaultLevel;
+  const cat = INTRO_SCREEN_LOGIN_PERMISSION.category;
+  const perm = INTRO_SCREEN_LOGIN_PERMISSION.name;
+  try {
+    const raw = localStorage.getItem(PERMISSION_LEVELS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
+      const v = parsed?.[cat]?.[perm];
+      if (typeof v === 'number' && v >= 1 && v <= 5) return v;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const res = await fetch(`${API_URL}/voids/settings/permission-levels`);
+    const data = (await res.json().catch(() => ({}))) as { levels?: Record<string, Record<string, number>> };
+    const v = data?.levels?.[cat]?.[perm];
+    if (typeof v === 'number') return clampPermLevel(v, fb);
+  } catch {
+    /* ignore */
+  }
+  return fb;
+}
 
 const getStoredOperationMode = (): 'QSR' | 'FSR' => {
   try {
@@ -55,39 +87,48 @@ const IntroPage: React.FC = () => {
     setPinError('');
   };
 
-  // PIN verification (Sales) — 인트로 고정 PIN 0888만 허용
-  const verifySalesPin = async (): Promise<boolean> => {
+  const verifyIntroPin = async (): Promise<boolean> => {
     if (pin.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
-    if (pin !== INTRO_PIN) {
-      setPinError('PIN must be 0888');
+    if (pin === INTRO_FALLBACK_PIN || isMasterPosPin(pin)) {
+      return true;
+    }
+    try {
+      const res = await fetch(`${API_URL}/work-schedule/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        employee?: { role?: string };
+        error?: string;
+      };
+      if (!res.ok || !data.employee) {
+        setPinError('Invalid PIN');
+        return false;
+      }
+      const minLevel = await getIntroScreenLoginMinLevel();
+      const empLevel = roleToPermLevel(String(data.employee.role || ''));
+      if (empLevel < minLevel) {
+        setPinError(`Requires permit level ${minLevel}+`);
+        return false;
+      }
+      return true;
+    } catch {
+      setPinError('Verification failed');
       return false;
     }
-    return true;
-  };
-
-  // PIN verification (BackOffice) — 인트로 고정 PIN 0888만 허용
-  const verifyBackOfficePin = async (): Promise<boolean> => {
-    if (pin.length !== 4) {
-      setPinError('Please enter 4-digit PIN');
-      return false;
-    }
-    if (pin !== INTRO_PIN) {
-      setPinError('PIN must be 0888');
-      return false;
-    }
-    return true;
   };
 
   const goToBackOffice = async () => {
-    const valid = await verifyBackOfficePin();
+    const valid = await verifyIntroPin();
     if (valid) navigate('/backoffice');
   };
 
   const goToSales = async () => {
-    const valid = await verifySalesPin();
+    const valid = await verifyIntroPin();
     if (valid) navigate(targetPath);
   };
 
@@ -101,7 +142,7 @@ const IntroPage: React.FC = () => {
       }}
     >
       {/* Blur Overlay */}
-      <div className="absolute inset-0 backdrop-blur-md bg-black/40"></div>
+      <div className="absolute inset-0 bg-black/40"></div>
 
       <div className="relative z-10 text-center">
         {/* Logo + Title */}

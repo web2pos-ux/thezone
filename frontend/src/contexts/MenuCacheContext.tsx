@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, ReactNode, useCa
 import type { Category, MenuItem } from '../pages/order/orderTypes';
 import { fetchMenuStructure, MenuCachePayload, ModifierGroup } from '../utils/menuDataFetcher';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
+import { getAPI_URL } from '../config/constants';
 
 interface MenuCache {
   categories: Category[];
@@ -20,7 +21,6 @@ interface MenuCacheContextType extends MenuCache {
 
 const MenuCacheContext = createContext<MenuCacheContextType | null>(null);
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177';
 const CACHE_KEY = 'web2pos_menu_cache';
 const CACHE_EXPIRY = 1000 * 60 * 60 * 24; // 24시간 (매우 길게)
 const SOFT_EXPIRY = 1000 * 60 * 5; // 5분 (백그라운드 새로고침 기준)
@@ -43,8 +43,9 @@ const fetchAndRemember = async (forceRefresh = false): Promise<MenuCachePayload>
       inflightPayload = null;
     }
     const request = (async () => {
-      const { storeId, menuId } = await resolveMenuIdentifiers(API_URL);
-      const payload = await fetchMenuStructure(API_URL, menuId, storeId);
+      const base = getAPI_URL();
+      const { storeId, menuId } = await resolveMenuIdentifiers(base);
+      const payload = await fetchMenuStructure(base, menuId, storeId);
       inMemoryPayload = payload;
       return payload;
     })();

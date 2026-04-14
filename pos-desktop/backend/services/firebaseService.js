@@ -56,6 +56,21 @@ function getFirestore() {
   return db;
 }
 
+/**
+ * POS가 대시보드 동기화용으로 `restaurants/{id}/orders`에 넣은 배달 스텁(source=POS, DL… / delivery).
+ * 앱 온라인 주문과 같은 컬렉션이라 이 문서가 온라인 파이프라인에 들어가면 SQLite·패널에 중복 카드가 생긴다.
+ */
+function isPosDeliveryMirrorFirestoreOrder(order) {
+  if (!order || typeof order !== 'object') return false;
+  const source = String(order.source || '').toUpperCase();
+  if (source !== 'POS') return false;
+  const orderType = String(order.orderType || order.type || '').toLowerCase();
+  const tableId = String(order.tableId || order.table_id || '').trim().toUpperCase();
+  if (orderType === 'delivery') return true;
+  if (tableId.startsWith('DL')) return true;
+  return false;
+}
+
 // 온라인 주문 실시간 리스너
 // restaurantId: Firebase의 레스토랑 ID
 // onNewOrder: 새 주문 콜백 함수
@@ -80,7 +95,11 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
       (snapshot) => {
         snapshot.docChanges().forEach((change) => {
           const order = { id: change.doc.id, ...change.doc.data() };
-          
+
+          if (isPosDeliveryMirrorFirestoreOrder(order)) {
+            return;
+          }
+
           if (change.type === 'added') {
             // 초기 로딩 시의 added는 무시하고, 그 이후의 added만 알림 (새 주문)
             if (!isInitial) {
@@ -134,13 +153,22 @@ async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
 
-  // 서브컬렉션 우선 시도
+  const docId = String(orderId);
   if (restaurantId) {
-    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
-    await restaurantRef.collection('orders').doc(orderId).update(updateData);
+    const restaurantRef = firestore.collection('restaurants').doc(String(restaurantId));
+    try {
+      await restaurantRef.collection('orders').doc(docId).update(updateData);
+    } catch (subErr) {
+      console.warn(`[Firebase] updateOrderStatus subcollection failed (${subErr?.message || subErr}), trying root orders`);
+      await firestore.collection('orders').doc(docId).update(updateData);
+    }
   } else {
-    // fallback: 글로벌 컬렉션
-    await firestore.collection('orders').doc(orderId).update(updateData);
+    try {
+      await firestore.collection('orders').doc(docId).update(updateData);
+    } catch (rootErr) {
+      console.warn(`[Firebase] updateOrderStatus root failed (${rootErr?.message || rootErr})`);
+      throw rootErr;
+    }
   }
 
   console.log(`✅ 주문 상태 변경: ${orderId} → ${newStatus}`);
@@ -229,14 +257,17 @@ async function getOnlineOrders(restaurantId, options = {}) {
       orders.push({ id: doc.id, ...data });
     });
 
+    const terminalFb = new Set(['cancelled', 'picked_up', 'completed', 'paid', 'merged', 'refunded']);
+    const activeOrders = orders.filter((o) => !terminalFb.has(String(o.status || '').toLowerCase()));
+
     // 결과를 createdAt 기준 내림차순 정렬 (클라이언트 사이드)
-    orders.sort((a, b) => {
+    activeOrders.sort((a, b) => {
       const aTime = a.createdAt?._seconds || 0;
       const bTime = b.createdAt?._seconds || 0;
       return bTime - aTime;
     });
 
-    return orders;
+    return activeOrders;
   } catch (error) {
     console.error('[getOnlineOrders] Error:', error.message);
     throw error;
@@ -595,17 +626,25 @@ async function syncUtilitySettings(restaurantId, utilitySettings) {
   try {
     const firestore = getFirestore();
     const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const snap = await settingsRef.get();
+    const prev = snap.exists ? (snap.data().utilitySettings || {}) : {};
+
+    const mergedUtility = {
+      bagFee: {
+        enabled: Boolean(utilitySettings?.bagFee?.enabled),
+        amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
+      },
+      utensils: {
+        enabled: Boolean(utilitySettings?.utensils?.enabled),
+      },
+      preOrderReprint:
+        utilitySettings && Object.prototype.hasOwnProperty.call(utilitySettings, 'preOrderReprint')
+          ? { enabled: Boolean(utilitySettings.preOrderReprint?.enabled) }
+          : (prev.preOrderReprint || { enabled: false }),
+    };
 
     await settingsRef.set({
-      utilitySettings: {
-        bagFee: {
-          enabled: Boolean(utilitySettings?.bagFee?.enabled),
-          amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
-        },
-        utensils: {
-          enabled: Boolean(utilitySettings?.utensils?.enabled),
-        },
-      },
+      utilitySettings: mergedUtility,
       updatedAt: new Date(),
     }, { merge: true });
 
@@ -1325,6 +1364,7 @@ async function saveVoidToFirebase(restaurantId, voidData) {
 module.exports = {
   initializeFirebase,
   getFirestore,
+  isPosDeliveryMirrorFirestoreOrder,
   listenToOnlineOrders,
   updateOrderStatus,
   updateOrderAsPaid,

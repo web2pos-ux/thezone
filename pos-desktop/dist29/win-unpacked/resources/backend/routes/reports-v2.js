@@ -1259,7 +1259,7 @@ async function generateSingleReport(db, reportId, startDate, endDate) {
     case 'daily-sales-overview':
       return await getHourlySales(db, startDate, endDate);
     case 'weekly-sales-trend':
-      return await getWeeklySalesTrend(db, startDate);
+      return await getWeeklySalesTrend(db, endDate);
     case 'day-of-week-performance':
       return await getDayOfWeekPerformance(db, startDate, endDate);
     case 'monthly-sales-comparison':

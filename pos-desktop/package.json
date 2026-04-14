@@ -1,6 +1,6 @@
 {
   "name": "thezonepos",
-  "version": "1.6.5",
+  "version": "1.6.14",
   "description": "TheZonePOS - Restaurant POS System",
   "main": "main.js",
   "author": "WEB2POS",
@@ -59,33 +59,46 @@
       {
         "from": "backend",
         "to": "backend",
-        "filter": ["**/*", "!node_modules/**"]
+        "filter": [
+          "**/*",
+          "!node_modules/**"
+        ]
       },
       {
         "from": "frontend-build",
         "to": "frontend/build",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "db",
         "to": "db",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "apk",
         "to": "apk",
-        "filter": ["*.apk"]
+        "filter": [
+          "*.apk"
+        ]
       }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "icon.ico"

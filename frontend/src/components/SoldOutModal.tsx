@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { MODAL_CLOSE_X_RAISED_STYLE, NEO_PRESS_INSET_ONLY_NO_SHIFT } from '../utils/softNeumorphic';
 
 interface SoldOutModalProps {
   isOpen: boolean;
@@ -277,12 +278,14 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
               </div>
             )}
           </div>
-          <button 
-            onClick={() => { onClose(); setSelectedExtendItemId(null); }} 
-            className="w-9 h-9 rounded-full flex items-center justify-center text-red-400 hover:text-red-500 transition-all active:scale-90"
-            style={{ background: 'linear-gradient(145deg, #e8edf4, #d8dde4)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
+          <button
+            type="button"
+            onClick={() => { onClose(); setSelectedExtendItemId(null); }}
+            className={`flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-full border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+            style={MODAL_CLOSE_X_RAISED_STYLE}
+            aria-label="Close"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>

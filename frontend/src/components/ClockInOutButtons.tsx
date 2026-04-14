@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import PinInputModal from './PinInputModal';
 import clockInOutApi from '../services/clockInOutApi';
+import {
+  PAY_NEO,
+  OH_ACTION_NEO,
+  NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
+} from '../utils/softNeumorphic';
 
 interface ClockInOutButtonsProps {
   compact?: boolean; // 작은 버튼으로 표시할지 여부
@@ -30,10 +37,7 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
       const { employee } = await clockInOutApi.verifyPin(pin);
       
       // Then clock in
-      const response = await clockInOutApi.clockIn(employee.id, employee.name, pin);
-      
-      alert(`${employee.name}님, 출근 처리되었습니다!\n시간: ${new Date(response.clockInTime).toLocaleTimeString('ko-KR')}`);
-      
+      await clockInOutApi.clockIn(employee.id, employee.name, pin);
       setShowClockInModal(false);
     } catch (error: any) {
       setError(error.message || '출근 처리 실패');
@@ -122,7 +126,7 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
               console.log('🟢 Clock In 버튼 클릭됨!');
               setShowClockInModal(true);
             }}
-            className="h-9 px-2 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded transition-colors"
+            className={`h-9 px-2 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded touch-manipulation ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
             title="출근 (Clock In)"
           >
             ⏰ IN
@@ -132,7 +136,7 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
               console.log('🔴 Clock Out 버튼 클릭됨!');
               setShowClockOutModal(true);
             }}
-            className="h-9 px-2 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded transition-colors"
+            className={`h-9 px-2 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded touch-manipulation ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
             title="퇴근 (Clock Out)"
           >
             🚪 OUT
@@ -207,20 +211,32 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
 
               <div className="flex gap-3">
                 <button
+                  type="button"
                   onClick={() => {
                     setShowEarlyOutModal(false);
                     setSelectedEmployee(null);
                     setEarlyOutReason('');
                     setApprovedBy('');
                   }}
-                  className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+                  className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-semibold text-gray-700 hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                  style={PAY_NEO.key}
                 >
                   취소
                 </button>
                 <button
+                  type="button"
                   onClick={handleEarlyOut}
                   disabled={!earlyOutReason.trim() || isLoading}
-                  className="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-semibold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                    !earlyOutReason.trim() || isLoading
+                      ? `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
+                      : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                  }`}
+                  style={
+                    !earlyOutReason.trim() || isLoading
+                      ? { ...PAY_NEO.inset, color: '#64748b' }
+                      : { ...OH_ACTION_NEO.red, borderRadius: 14 }
+                  }
                 >
                   {isLoading ? '처리 중...' : '조기 퇴근 처리'}
                 </button>
@@ -238,13 +254,13 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
       <div className="flex gap-3">
         <button
           onClick={() => setShowClockInModal(true)}
-          className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-colors"
+          className={`px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md touch-manipulation ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
         >
           ⏰ Clock In (출근)
         </button>
         <button
           onClick={() => setShowClockOutModal(true)}
-          className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md transition-colors"
+          className={`px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg shadow-md touch-manipulation ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
         >
           🚪 Clock Out (퇴근)
         </button>
@@ -316,20 +332,32 @@ const ClockInOutButtons: React.FC<ClockInOutButtonsProps> = ({ compact = false }
 
             <div className="flex gap-3">
               <button
+                type="button"
                 onClick={() => {
                   setShowEarlyOutModal(false);
                   setSelectedEmployee(null);
                   setEarlyOutReason('');
                   setApprovedBy('');
                 }}
-                className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors"
+                className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-semibold text-gray-700 hover:brightness-[1.02] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                style={PAY_NEO.key}
               >
                 취소
               </button>
               <button
+                type="button"
                 onClick={handleEarlyOut}
                 disabled={!earlyOutReason.trim() || isLoading}
-                className="flex-1 px-4 py-3 bg-red-500 hover:bg-red-600 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-semibold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                  !earlyOutReason.trim() || isLoading
+                    ? `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
+                    : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                }`}
+                style={
+                  !earlyOutReason.trim() || isLoading
+                    ? { ...PAY_NEO.inset, color: '#64748b' }
+                    : { ...OH_ACTION_NEO.red, borderRadius: 14 }
+                }
               >
                 {isLoading ? '처리 중...' : '조기 퇴근 처리'}
               </button>

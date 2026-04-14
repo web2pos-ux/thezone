@@ -43,10 +43,7 @@ const TableMapPage = () => {
       const { employee } = await clockInOutApi.verifyPin(pin);
       
       // Then clock in
-      const response = await clockInOutApi.clockIn(employee.id, employee.name, pin);
-      
-      alert(`${employee.name}님, 출근 처리되었습니다!\n시간: ${new Date(response.clockInTime).toLocaleTimeString('ko-KR')}`);
-      
+      await clockInOutApi.clockIn(employee.id, employee.name, pin);
       setShowClockInModal(false);
       loadClockedInEmployees();
     } catch (error: any) {

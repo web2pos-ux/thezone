@@ -161,33 +161,65 @@ export const PAY_KEYPAD_KEY: CSSProperties = {
  * (인라인 style boxShadow는 유지하고 transform·brightness로 눌림 표현 — VirtualKeyboard keyPressFx와 동일 의도)
  */
 export const NEO_MODAL_BTN_PRESS =
-  '[webkit-tap-highlight-color:transparent] transition-[transform,filter] duration-100 ease-out active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+  '[-webkit-tap-highlight-color:transparent] transition-[transform,filter] duration-100 ease-out active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
 
 /**
  * 프렙 +5/+10/+15 등 분 버튼 — 인라인 boxShadow를 덮어 인셋 눌림이 보이게 함 (!shadow, VirtualKeyboard keyPressFx와 동일 계열)
  */
 export const NEO_PREP_TIME_BTN_PRESS =
-  '[webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-100 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-100 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
 
 /**
  * 그라데이션/컬러 인라인 boxShadow 버튼 — 딜리버리 채널 4종, OH_ACTION_NEO 슬레이트·블루·에메랄드 등
  */
 export const NEO_COLOR_BTN_PRESS =
-  '[webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-100 ease-out active:!shadow-[inset_4px_4px_12px_rgba(0,0,0,0.48),inset_-2px_-2px_8px_rgba(255,255,255,0.14)] active:translate-y-px active:scale-[0.97] active:brightness-[0.9] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-100 ease-out active:!shadow-[inset_4px_4px_12px_rgba(0,0,0,0.48),inset_-2px_-2px_8px_rgba(255,255,255,0.14)] active:translate-y-px active:scale-[0.97] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+
+/** PaymentCompleteModal 영수증 버튼과 동일한 모서리 반경 (로컬 `PCM_RX_ROUND`와 동일 값). */
+export const PCM_RX_ROUND: CSSProperties = { borderRadius: 12 };
+
+/** Reservation 모달 등 — `:active` 오목/스케일이 지연 없이 바로 보이도록 `duration-0` */
+export const NEO_MODAL_BTN_PRESS_SNAP =
+  '[-webkit-tap-highlight-color:transparent] transition-[transform,filter] duration-0 ease-out active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+
+export const NEO_PREP_TIME_BTN_PRESS_SNAP =
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-0 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.98] active:brightness-[0.93] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
+
+export const NEO_COLOR_BTN_PRESS_SNAP =
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-0 ease-out active:!shadow-[inset_4px_4px_12px_rgba(0,0,0,0.48),inset_-2px_-2px_8px_rgba(255,255,255,0.14)] active:translate-y-px active:scale-[0.97] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
 
 /**
  * 인셋 눌림만 — `active:translate-y` / `scale` 없음 (버튼이 아래로 밀려 보이지 않음).
  * 닫기 X, Void 키패드 등 고정 위치에 권장.
  */
 export const NEO_PRESS_INSET_ONLY_NO_SHIFT =
-  '[webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:brightness-[0.94] disabled:brightness-100';
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:brightness-[0.94] disabled:brightness-100';
+
+/**
+ * `NEO_PRESS_INSET_ONLY_NO_SHIFT`와 동일(이동·스케일 없음); :active 오목의 밝은 면을 흰색 대신 노란 하이라이트로.
+ * 온라인/투고 카드 모달 Print Bill(`PAY_NEO_PRIMARY_AMBER`) 전용.
+ */
+export const NEO_PRESS_INSET_AMBER_NO_SHIFT =
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_rgba(250,204,21,0.72)] active:brightness-[0.94] disabled:brightness-100';
 
 /** 컬러 CTA — 인셋 눌림만, 위치 이동 없음 */
 export const NEO_COLOR_BTN_PRESS_NO_SHIFT =
-  '[webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_4px_4px_12px_rgba(0,0,0,0.48),inset_-2px_-2px_8px_rgba(255,255,255,0.14)] active:brightness-[0.9] disabled:brightness-100';
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_4px_4px_12px_rgba(0,0,0,0.48),inset_-2px_-2px_8px_rgba(255,255,255,0.14)] disabled:brightness-100';
 
 /** Gift Card / Sold Out 등 모달 닫기 X — `PAY_NEO.raised` + 바깥 흰 번짐 제거 */
 export const MODAL_CLOSE_X_RAISED_STYLE: CSSProperties = {
   ...PAY_NEO.raised,
   boxShadow: '5px 5px 10px #babecc',
+};
+
+/**
+ * `bg-slate-700` 헤더 위 닫기 X — 밝은 회색 캔버스 대신 다크톤 볼록 네오
+ * (배경 #334155 대비 살짝 올라온 면 + 짙은 그림자 / 슬레이트 하이라이트)
+ */
+export const MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE: CSSProperties = {
+  background: 'linear-gradient(145deg, #556277, #3d4d62)',
+  borderRadius: 12,
+  border: 0,
+  boxShadow:
+    '5px 5px 14px rgba(15, 23, 42, 0.58), -4px -4px 12px rgba(148, 163, 184, 0.28)',
 };

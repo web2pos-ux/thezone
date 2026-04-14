@@ -49,6 +49,16 @@ const PRINTER_CONFIG = {
   }
 };
 
+/**
+ * Receipt 그래픽: PAID/CHANGE 박스의 금액 오른쪽 끝과 동일 (padX + 8px 안쪽).
+ * 아이템·소계·세금·결제수단·팁 등 `drawLeftRightText` 오른쪽 열과 수평 정렬.
+ */
+function getReceiptGraphicAmountRightEdgeX(ctx) {
+  const w = ctx._receiptWidth || PRINTER_CONFIG.width;
+  const padX = Math.max(3, Math.round(PRINTER_CONFIG.padding));
+  return w - padX - 8;
+}
+
 function clampNumber(n, min, max, fallback) {
   const num = Number(n);
   if (!Number.isFinite(num)) return fallback;
@@ -488,9 +498,15 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   ctx.font = `${fontWeight} ${fontSize}px "Arial", "Malgun Gothic", sans-serif`;
   
   const rightWidth = ctx.measureText(rightText).width;
-  const configuredRightPadding = Number(ctx._receiptRightPadding || 0);
-  const safeRightPadding = Math.max(padding, configuredRightPadding);
-  const rightX = width - rightWidth - safeRightPadding;
+  let rightX;
+  if (ctx._receiptUsesPaidAmountColumn) {
+    const rightEdge = getReceiptGraphicAmountRightEdgeX(ctx);
+    rightX = rightEdge - rightWidth;
+  } else {
+    const configuredRightPadding = Number(ctx._receiptRightPadding || 0);
+    const safeRightPadding = Math.max(padding, configuredRightPadding);
+    rightX = width - rightWidth - safeRightPadding;
+  }
   
   const maxLeftWidth = rightX - padding - 5;
   
@@ -515,13 +531,13 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   const textY = y + actualLineHeight / 2;
   
   ctx.fillText(displayLeftText, padding, textY);
-  ctx.fillText(rightText, width - rightWidth - safeRightPadding, textY);
+  ctx.fillText(rightText, rightX, textY);
 
   if (extraBold) {
     ctx.fillText(displayLeftText, padding + 0.4, textY);
     ctx.fillText(displayLeftText, padding - 0.4, textY);
-    ctx.fillText(rightText, width - rightWidth - safeRightPadding + 0.4, textY);
-    ctx.fillText(rightText, width - rightWidth - safeRightPadding - 0.4, textY);
+    ctx.fillText(rightText, rightX + 0.4, textY);
+    ctx.fillText(rightText, rightX - 0.4, textY);
   }
   
   return y + actualLineHeight;
@@ -669,7 +685,7 @@ function renderKitchenTicketGraphic(orderData) {
   const statusFontSize = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.8);
   if (isReprint) {
     y = drawTextBlock(ctx, {
-      text: '** REPRINT **',
+      text: orderData.reprintBannerText || '** REPRINT **',
       fontSize: statusFontSize,
       fontWeight: 'bold',
       align: 'center',
@@ -731,23 +747,28 @@ function renderKitchenTicketGraphic(orderData) {
     const phoneDigits = phoneRaw.replace(/\D/g, '');
     rightBoxChannelPart = 'PICKUP';
     if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+      rightBoxInfoPart = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      rightBoxInfoPart = phoneDigits;
     } else if (cleanPosSeq) {
       rightBoxInfoPart = `#${cleanPosSeq}`;
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isTogoLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
+    const nameStr = String(customerName || '').trim();
     rightBoxChannelPart = 'TOGO';
     if (phoneDigits.length >= 4) {
-      rightBoxInfoPart = `"${phoneDigits.slice(-4)}"`;
+      rightBoxInfoPart = phoneDigits.slice(-4);
     } else if (phoneDigits.length > 0) {
-      rightBoxInfoPart = `"${phoneDigits}"`;
+      rightBoxInfoPart = phoneDigits;
+    } else if (nameStr) {
+      rightBoxInfoPart = nameStr.slice(0, 8).toUpperCase();
+    } else if (cleanPosSeq) {
+      rightBoxInfoPart = String(cleanPosSeq);
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isOnlineLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
@@ -768,15 +789,15 @@ function renderKitchenTicketGraphic(orderData) {
       quoteBody = String(cleanPosSeq);
     }
     if (quoteBody) {
-      rightBoxInfoPart = `"${quoteBody.toUpperCase()}"`;
+      rightBoxInfoPart = quoteBody.toUpperCase();
     }
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (isDeliveryLike) {
     const platform = getKitchenDeliveryCompanyLabel(deliveryCompany) || 'DELIVERY';
     const ext = formatExternalAlphaNumTail(deliveryOrderNumber, 12);
     rightBoxChannelPart = platform;
-    if (ext) rightBoxInfoPart = `"${ext}"`;
-    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart} ${rightBoxInfoPart}` : rightBoxChannelPart;
+    if (ext) rightBoxInfoPart = ext;
+    rightBoxText = rightBoxInfoPart ? `${rightBoxChannelPart}-${rightBoxInfoPart}` : rightBoxChannelPart;
   } else if (tableName) {
     const tableLabel = formatTableLabel(tableName);
     rightBoxChannelPart = tableLabel;
@@ -877,11 +898,11 @@ function renderKitchenTicketGraphic(orderData) {
     const maxRightTextW = Math.max(0, rightBoxW - orderHeaderPadX * 2);
 
     if (rightBoxInfoPart) {
-      // 채널명과 부가정보를 분리 렌더링
-      const spaceBetween = 6;
+      // 채널명-부가정보를 하이픈으로 연결하여 렌더링 (예: ONLINE-7777, UBER-5DIS59)
+      const channelWithHyphen = `${rightBoxChannelPart}-`;
+      const spaceBetween = 0;
       ctx.font = channelFont;
-      const channelTextW = ctx.measureText(rightBoxChannelPart).width;
-      const spaceW = ctx.measureText(' ').width;
+      const channelTextW = ctx.measureText(channelWithHyphen).width;
 
       // 부가정보에 사용 가능한 너비
       const availableForInfo = Math.max(0, maxRightTextW - channelTextW - spaceBetween);
@@ -906,10 +927,10 @@ function renderKitchenTicketGraphic(orderData) {
       const startX = rightBoxX + (rightBoxW - totalTextW) / 2;
       const centerY = headerStartY + headerH / 2;
 
-      // 채널명 그리기 (고정 크기)
+      // 채널명 + 하이픈 그리기 (고정 크기)
       ctx.font = channelFont;
       ctx.textAlign = 'left';
-      ctx.fillText(rightBoxChannelPart, startX, centerY);
+      ctx.fillText(channelWithHyphen, startX, centerY);
 
       // 부가정보 그리기 (동적 크기)
       ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
@@ -976,8 +997,8 @@ function renderKitchenTicketGraphic(orderData) {
     }, y);
   }
   
-  // 주문자 정보 (TOGO, ONLINE, DELIVERY 채널에서 이름 · 전화번호 표시)
-  const showCustomerInfo = (channel === 'TOGO' || channel === 'ONLINE' || isDeliveryLike) && (customerName || customerPhone);
+  // 주문자 정보 (DELIVERY 채널에서 이름 · 전화번호 표시, TOGO/ONLINE/THEZONE 제외)
+  const showCustomerInfo = isDeliveryLike && !isOnlineLike && (customerName || customerPhone);
   if (showCustomerInfo) {
     let customerDisplay = '';
     if (customerName && customerPhone) {
@@ -1007,8 +1028,7 @@ function renderKitchenTicketGraphic(orderData) {
   const hidePaidStatus = isKitchenPrinter || isDineInStyle;
   let paidStatusText = '';
   if (!isReprint && !isAdditionalOrder) {
-    if (isDeliveryLike && !isKitchenPrinter) paidStatusText = 'PAID';
-    else if (!hidePaidStatus && isPaid) paidStatusText = 'PAID';
+    if (!hidePaidStatus && isPaid) paidStatusText = 'PAID';
     else if (!hidePaidStatus) paidStatusText = 'UNPAID';
   }
   
@@ -1498,6 +1518,7 @@ function renderReceiptGraphic(receiptData) {
   // Method A: keep width 512, use a slightly smaller minimum right padding (receipt/bill only)
   // so content uses a bit more printable area without changing dot width.
   ctx._minRightPadding = RECEIPT_WIDTH === 512 ? 10 : 15;
+  ctx._receiptUsesPaidAmountColumn = true;
   
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, RECEIPT_WIDTH, estimatedHeight);
@@ -1645,8 +1666,8 @@ function renderReceiptGraphic(receiptData) {
   let orderTypeText;
   if (!channel || channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE') {
     orderTypeText = 'DINE-IN';
-  } else if (channel === 'FORHERE' || channel === 'FOR HERE') {
-    orderTypeText = 'FOR HERE';
+  } else if (channel === 'FORHERE' || channel === 'FOR HERE' || channel === 'EAT IN' || channel === 'EATIN') {
+    orderTypeText = 'EAT IN';
   } else {
     orderTypeText = channel;
   }
@@ -1894,11 +1915,40 @@ function renderReceiptGraphic(receiptData) {
           y = drawLeftRightText(ctx, `  ${tax.name}`, `$${Number(tax.amount).toFixed(2)}`, y, guestSumRegularOpts);
         });
       }
-      // Guest total
+      // Guest total (amount-only box)
       if (entry.guestTotal != null) {
-        y = drawLeftRightText(ctx, `  Guest ${entry.guestNumber} Total`, `$${Number(entry.guestTotal).toFixed(2)}`, y, guestSumBoldOpts);
+        const gtLabel = `  Guest ${entry.guestNumber} Total`;
+        const gtAmount = `$${Number(entry.guestTotal).toFixed(2)}`;
+        const gtFontSize = guestSumBoldOpts.fontSize || PRINTER_CONFIG.fontSize.normal;
+        const gtPadX = ctx._receiptPadding || PRINTER_CONFIG.padding;
+        const gtBoxPadY = 4;
+        const gtLineH = gtFontSize + gtBoxPadY * 2;
+        const gtBoxInnerPadX = 6;
+
+        ctx.font = `bold ${gtFontSize}px "Arial", "Malgun Gothic", sans-serif`;
+        const gtAmountWidth = ctx.measureText(gtAmount).width;
+        const amountRightEdge = getReceiptGraphicAmountRightEdgeX(ctx);
+
+        ctx.fillStyle = '#000000';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(gtLabel, gtPadX + 4, y + gtLineH / 2);
+
+        const gtBoxW = gtAmountWidth + gtBoxInnerPadX * 2;
+        const gtBoxX = amountRightEdge - gtBoxW;
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.strokeRect(gtBoxX, y, gtBoxW, gtLineH);
+        ctx.setLineDash([]);
+
+        ctx.textAlign = 'right';
+        ctx.fillText(gtAmount, amountRightEdge, y + gtLineH / 2);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+
+        y += gtLineH + 2;
       }
-      y += 2;
     } else {
       const itemName = entry.name || entry.itemName || '';
       const quantity = entry.quantity || entry.qty || 1;
@@ -1916,7 +1966,6 @@ function renderReceiptGraphic(receiptData) {
       if (stItems.visible) {
         y += stItems.lineSpacing;
         y = drawLeftRightText(ctx, `${quantity}x ${itemName}${unitLabel}`, `$${itemOnlyTotal.toFixed(2)}`, y, {
-          // 최소 폰트 크기 보장 (이전 깔끔한 폼 기준)
           fontSize: Math.max(Number(stItems.fontSize) || 0, 26),
           fontWeight: stItems.fontWeight,
           fontStyle: stItems.fontStyle,
@@ -1966,7 +2015,6 @@ function renderReceiptGraphic(receiptData) {
           if (stMods.visible) {
             y += stMods.lineSpacing;
             y = drawLeftRightText(ctx, `  + ${mod.name}`, priceText, y, {
-              // 최소 폰트 크기 보장 (이전 깔끔한 폼 기준)
               fontSize: Math.max(Number(stMods.fontSize) || 0, PRINTER_CONFIG.fontSize.normal),
               fontWeight: stMods.fontWeight,
               fontStyle: stMods.fontStyle,
@@ -2003,7 +2051,7 @@ function renderReceiptGraphic(receiptData) {
           });
         }
       }
-
+      
       // Item discount (if exists)
       const discount = entry.discount;
       if (discount && discount.amount > 0) {
@@ -2054,7 +2102,7 @@ function renderReceiptGraphic(receiptData) {
       });
     }
   }
-
+  
   // 할인 (Subtotal 바로 아래에 표시)
   if (receiptData.adjustments && receiptData.adjustments.length > 0) {
     receiptData.adjustments.forEach(adj => {
@@ -2069,17 +2117,15 @@ function renderReceiptGraphic(receiptData) {
         align: 'left',
         inverse: false
       });
-      if (stAdj.visible) {
-        y += stAdj.lineSpacing;
-        y = drawLeftRightText(ctx, `${label}`, `${sign}$${Math.abs(amount).toFixed(2)}`, y, {
-          fontSize: ITEM_BASE_FONT_SIZE,
-          fontWeight: stAdj.fontWeight,
-          fontStyle: stAdj.fontStyle,
-          inverse: stAdj.inverse,
-          lineHeight: stAdj.lineHeight,
-          extraBold: stAdj.extraBold
-        });
-      }
+      y += stAdj.lineSpacing;
+      y = drawLeftRightText(ctx, `${label}`, `${sign}$${Math.abs(amount).toFixed(2)}`, y, {
+        fontSize: ITEM_BASE_FONT_SIZE,
+        fontWeight: stAdj.fontWeight,
+        fontStyle: stAdj.fontStyle,
+        inverse: stAdj.inverse,
+        lineHeight: stAdj.lineHeight,
+        extraBold: stAdj.extraBold
+      });
     });
     // Net Sales (할인 적용 후 순매출)
     const hasDiscount = receiptData.adjustments.some(adj => Number(adj.amount || 0) < 0);
@@ -2205,7 +2251,7 @@ function renderReceiptGraphic(receiptData) {
       });
     }
 
-    // PAID (Reverse — 검은 배경 + 흰 글씨)
+    // PAID (박스 스타일 — 좌우 정렬, 굵은 테두리 박스)
     {
       const paidLabel = 'PAID';
       const paidAmountStr = `$${Number(grossPaidTotal).toFixed(2)}`;
@@ -2319,6 +2365,10 @@ function renderReceiptGraphic(receiptData) {
   }
   
   y += 30;
+  
+  try {
+    delete ctx._receiptUsesPaidAmountColumn;
+  } catch {}
   
   // IMPORTANT: use the actual receipt width (58/80mm), not the global 80mm width,
   // otherwise the far-right edge can be clipped or the image can be cropped.
@@ -2726,10 +2776,14 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   estH += 350; // Sales Summary (rows + separators)
   estH += 200; // Sales by Type
   estH += 300; // Payment Breakdown (multiple methods)
-  estH += 200; // Tips
+  const tipsByServerRows = (zReportData?.select_server_on_entry && Array.isArray(zReportData?.tips_by_server))
+    ? zReportData.tips_by_server.length
+    : 0;
+  estH += 200 + tipsByServerRows * 44; // Tips (+ optional per-server lines)
   estH += 200; // Adjustments header + base rows
-  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 50;
-  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 50;
+  if (zReportData?.refund_details?.length) estH += zReportData.refund_details.length * 56;
+  if (zReportData?.void_details?.length) estH += zReportData.void_details.length * 56;
+  if (zReportData?.discount_details?.length) estH += zReportData.discount_details.length * 56;
   estH += 250; // Cash Drawer
   estH += 400; // Denominations (up to 11 rows)
   estH += 150; // footer
@@ -2748,6 +2802,7 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+  // === 헤더 ===
   const ZR_BASE = 1.05;
   const ZR_FONT = {
     small: Math.round(PRINTER_CONFIG.fontSize.small * ZR_BASE),
@@ -2759,7 +2814,6 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
     sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * ZR_BASE * 1.10),
   };
 
-  // === 헤더 ===
   y = drawTextBlock(ctx, { text: '*** Z-REPORT ***', fontSize: ZR_FONT.xxlarge, fontWeight: 'bold', align: 'center', inverse: true }, y);
   y += 4;
   y = drawTextBlock(ctx, { text: 'DAY CLOSING REPORT', fontSize: ZR_FONT.large, fontWeight: 'bold', align: 'center' }, y);
@@ -2846,6 +2900,13 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   y += 8;
   y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: ZR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
+  if (zReportData?.select_server_on_entry && Array.isArray(zReportData?.tips_by_server) && zReportData.tips_by_server.length > 0) {
+    zReportData.tips_by_server.forEach((s) => {
+      const label = `  ${String(s.server_name || 'Unknown').slice(0, 28)}`;
+      y = drawLeftRightText(ctx, label, formatMoney(s.tips || 0), y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    });
+    y = drawSeparator(ctx, y, 'dashed');
+  }
   row('Total Tips', `${zReportData?.total_tip_order_count || 0}`, formatMoney(zReportData?.tip_total || 0), true);
   row('Cash Tips', `${zReportData?.cash_tip_order_count || 0}`, formatMoney(zReportData?.cash_tips || 0));
   row('Card Tips', `${zReportData?.card_tip_order_count || 0}`, formatMoney(zReportData?.card_tips || 0));
@@ -2858,13 +2919,32 @@ function renderZReportGraphic(zReportData, closingCash = 0, cashBreakdown = {}, 
   (zReportData?.refund_details || []).forEach(r => {
     const orderNum = r.order_number || `#${r.order_id}`;
     y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(r.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const refBy = (r.refunded_by && String(r.refunded_by).trim()) ? String(r.refunded_by).trim() : '';
+    if (refBy) {
+      y = drawTextBlock(ctx, { text: `    Refund by: ${refBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
   });
   row('Voids', `${zReportData?.void_count || 0}`, `-${formatMoney(zReportData?.void_total || 0)}`);
   (zReportData?.void_details || []).forEach(v => {
     const orderNum = v.order_number || `#${v.order_id}`;
     y = drawLeftRightText(ctx, `  Order ${orderNum}`, `-${formatMoney(v.total)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const voidBy = (v.created_by && String(v.created_by).trim()) ? String(v.created_by).trim() : '';
+    if (voidBy) {
+      y = drawTextBlock(ctx, { text: `    Void by: ${voidBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
   });
   row('Discounts', `${zReportData?.discount_order_count || 0}`, `-${formatMoney(zReportData?.discount_total || 0)}`);
+  (zReportData?.discount_details || []).forEach((d) => {
+    const orderNum = d.order_number || `#${d.order_id}`;
+    const lbl = (d.label && String(d.label).trim()) ? String(d.label).trim().slice(0, 22) : String(d.kind || '').slice(0, 22);
+    y = drawLeftRightText(ctx, `  ${orderNum} ${lbl}`, `-${formatMoney(d.amount_applied)}`, y, { fontSize: ZR_FONT.small, fontWeight: '600' });
+    const discBy = (d.applied_by_name && String(d.applied_by_name).trim())
+      ? String(d.applied_by_name).trim()
+      : (d.applied_by_employee_id && String(d.applied_by_employee_id).trim() ? String(d.applied_by_employee_id).trim() : '');
+    if (discBy) {
+      y = drawTextBlock(ctx, { text: `    Discount by: ${discBy.slice(0, 36)}`, fontSize: ZR_FONT.small, align: 'left' }, y);
+    }
+  });
 
   // Cash Drawer
   y += 8;
@@ -3023,6 +3103,27 @@ function renderItemReportGraphic(reportData, printerOpts = {}) {
     y = drawTextBlock(ctx, { text: 'No item data available', fontSize: IR_FONT.normal, align: 'center' }, y);
   }
 
+  const hourly = reportData.hourlySales || [];
+  if (hourly.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- HOURLY SALES --', fontSize: IR_FONT.normal, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    hourly.forEach((h) => {
+      const hr = h.hour != null ? String(h.hour).padStart(2, '0') : '';
+      y = drawLeftRightText(ctx, `${hr}:00`, `${fmt(h.revenue)} (${h.order_count || 0} ord)`, y, { fontSize: IR_FONT.normal, fontWeight: 'normal' });
+    });
+  }
+
+  const tt = reportData.tableTurnover || [];
+  if (tt.length > 0) {
+    y += 8;
+    y = drawTextBlock(ctx, { text: '-- TABLE TURNOVER --', fontSize: IR_FONT.normal, fontWeight: 'bold', align: 'center' }, y);
+    y = drawSeparator(ctx, y, 'dashed');
+    tt.slice(0, 40).forEach((t) => {
+      y = drawLeftRightText(ctx, String(t.table_name || '').slice(0, 22), `${t.order_count} ord / ${Math.round(t.avg_duration_min || 0)}m`, y, { fontSize: IR_FONT.normal, fontWeight: 'normal' });
+    });
+  }
+
   y += 8;
   y = drawSeparator(ctx, y, 'double');
   y = drawTextBlock(ctx, { text: `Printed: ${now.toLocaleString('en-US')}`, fontSize: IR_FONT.normal, align: 'center' }, y);
@@ -3070,7 +3171,7 @@ function renderSalesDashboardGraphic(reportData, printerOpts = {}) {
   const payLen = (reportData.paymentBreakdown || []).length;
   const hourLen = (reportData.hourlySales || []).length;
   const tblLen = (reportData.tableTurnover || []).length;
-  const delKeys = Object.keys(reportData.deliveryPlatforms || []).length;
+  const delKeys = Object.keys(reportData.deliveryPlatforms || {}).length;
   const taxRows = (reportData.taxDetails || []).length;
   const chMap = reportData.channels || {};
   const chWithData = ['DINE-IN', 'TOGO', 'ONLINE', 'DELIVERY', 'OTHER'].filter((k) => {
@@ -3233,27 +3334,6 @@ function renderSalesDashboardGraphic(reportData, printerOpts = {}) {
     });
   }
 
-  const hourly = reportData.hourlySales || [];
-  if (hourly.length > 0) {
-    y += 8;
-    y = drawTextBlock(ctx, { text: '-- HOURLY SALES --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
-    y = drawSeparator(ctx, y, 'dashed');
-    hourly.forEach((h) => {
-      const hr = h.hour != null ? String(h.hour).padStart(2, '0') : '';
-      row(`${hr}:00`, `${fmt(h.revenue)} (${h.order_count || 0} ord)`, false);
-    });
-  }
-
-  const tt = reportData.tableTurnover || [];
-  if (tt.length > 0) {
-    y += 8;
-    y = drawTextBlock(ctx, { text: '-- TABLE TURNOVER --', fontSize: SDR_FONT.section, fontWeight: 'bold', align: 'center' }, y);
-    y = drawSeparator(ctx, y, 'dashed');
-    tt.slice(0, 40).forEach((t) => {
-      row(String(t.table_name || '').slice(0, 22), `${t.order_count} ord / ${Math.round(t.avg_duration_min || 0)}m`, false);
-    });
-  }
-
   const rv = reportData.refundsVoids || [];
   if (rv.length > 0) {
     const refund = rv.find((r) => r.type === 'refund');
@@ -3314,8 +3394,8 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
     sectionTitle: Math.round(PRINTER_CONFIG.fontSize.normal * SR_BASE * 1.10),
   };
 
-  let estH = 200 + 350 + 250 + 200 + 200 + 350 + 500 + 150;
-  estH = Math.max(estH, 2100);
+  let estH = 200 + 450 + 400 + 350 + 250 + 350 + 500 + 200;
+  estH = Math.max(estH, 2800);
 
   const canvas = createCanvas(WIDTH, estH);
   const ctx = canvas.getContext('2d');
@@ -3347,7 +3427,7 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
     fontSize: SR_FONT.dateTime, align: 'center'
   }, y);
   if (shiftData.closed_by) {
-    y = drawTextBlock(ctx, { text: `Closed by: ${shiftData.closed_by}`, fontSize: SR_FONT.small, align: 'center' }, y);
+    y = drawTextBlock(ctx, { text: `Closed by: ${shiftData.closed_by}`, fontSize: SR_FONT.large, fontWeight: 'bold', align: 'center' }, y);
   }
   y = drawTextBlock(ctx, { text: `Printed: ${timeStr}`, fontSize: SR_FONT.small, align: 'center' }, y);
   y = drawSeparator(ctx, y, 'double');
@@ -3359,36 +3439,147 @@ function renderShiftReportGraphic(shiftData = {}, printerOpts = {}) {
   row('Order Count', `${shiftData.order_count || 0}`, true);
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Sales by Type
+  // Sales by Type — with Tips
   y += 4;
   y = drawTextBlock(ctx, { text: '-- SALES BY TYPE --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  const chRow = (label, count, sales) => {
-    const opts = { fontSize: SR_FONT.normal, fontWeight: '500' };
-    y = drawLeftRightText(ctx, `${label}  ${count || 0}`, formatMoney(sales), y, opts);
+
+  const drawHeaderRow = () => {
+    const hOpts = { fontSize: SR_FONT.small, fontWeight: 'bold', extraBold: true, paddingY: 2 };
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.22);
+    ctx.font = `bold ${SR_FONT.small}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = SR_FONT.small + 4;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText('Type', padding, ty);
+    const cntText = '#';
+    ctx.fillText(cntText, width - rp - colW * 3 - ctx.measureText(cntText).width / 2, ty);
+    const amtText = 'Amount';
+    ctx.fillText(amtText, width - rp - colW * 2 - ctx.measureText(amtText).width, ty);
+    const tipText = 'Tips';
+    ctx.fillText(tipText, width - rp - colW - ctx.measureText(tipText).width, ty);
+    const totText = 'Total';
+    ctx.fillText(totText, width - rp - ctx.measureText(totText).width, ty);
+    y += lh;
   };
-  chRow('Dine-In', shiftData.dine_in_count, shiftData.dine_in_sales);
-  chRow('Togo', shiftData.togo_count, shiftData.togo_sales);
-  chRow('Online', shiftData.online_count, shiftData.online_sales);
-  chRow('Delivery', shiftData.delivery_count, shiftData.delivery_sales);
+
+  const drawTypeRow = (label, count, sales, tips) => {
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.22);
+    const fs = SR_FONT.normal;
+    ctx.font = `500 ${fs}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = fs + 8;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText(label, padding, ty);
+    const total = (sales || 0) + (tips || 0);
+    const cntStr = `${count || 0}`;
+    ctx.fillText(cntStr, width - rp - colW * 3 - ctx.measureText(cntStr).width / 2, ty);
+    const amtStr = formatMoney(sales);
+    ctx.fillText(amtStr, width - rp - colW * 2 - ctx.measureText(amtStr).width, ty);
+    const tipStr = formatMoney(tips);
+    ctx.fillText(tipStr, width - rp - colW - ctx.measureText(tipStr).width, ty);
+    const totStr = formatMoney(total);
+    ctx.fillText(totStr, width - rp - ctx.measureText(totStr).width, ty);
+    y += lh;
+  };
+
+  drawHeaderRow();
+  drawTypeRow('Dine-In', shiftData.dine_in_count, shiftData.dine_in_sales, shiftData.dine_in_tips);
+  drawTypeRow('Togo', shiftData.togo_count, shiftData.togo_sales, shiftData.togo_tips);
+  drawTypeRow('Online', shiftData.online_count, shiftData.online_sales, shiftData.online_tips);
+  drawTypeRow('Delivery', shiftData.delivery_count, shiftData.delivery_sales, shiftData.delivery_tips);
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Payments
+  // Payments — with Tips per method
   y += 4;
   y = drawTextBlock(ctx, { text: '-- PAYMENTS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  row('Cash', formatMoney(shiftData.cash_sales));
-  row('Card', formatMoney(shiftData.card_sales));
-  if ((shiftData.other_sales || 0) > 0) {
-    row('Other', formatMoney(shiftData.other_sales));
+
+  const drawPayHeaderRow = () => {
+    const hOpts = { fontSize: SR_FONT.small, fontWeight: 'bold', paddingY: 2 };
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.28);
+    ctx.font = `bold ${SR_FONT.small}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = SR_FONT.small + 4;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText('Method', padding, ty);
+    const amtText = 'Amount';
+    ctx.fillText(amtText, width - rp - colW * 2 - ctx.measureText(amtText).width, ty);
+    const tipText = 'Tips';
+    ctx.fillText(tipText, width - rp - colW - ctx.measureText(tipText).width, ty);
+    const totText = 'Total';
+    ctx.fillText(totText, width - rp - ctx.measureText(totText).width, ty);
+    y += lh;
+  };
+
+  const drawPayRow = (label, amount, tips, bold = false) => {
+    const width = ctx._receiptWidth || PRINTER_CONFIG.width;
+    const padding = ctx._receiptPadding || PRINTER_CONFIG.padding;
+    const rp = Math.max(padding, Number(ctx._receiptRightPadding || 0));
+    const colW = Math.floor((width - padding - rp) * 0.28);
+    const fs = SR_FONT.normal;
+    const fw = bold ? 'bold' : '500';
+    ctx.font = `${fw} ${fs}px "Arial", "Malgun Gothic", sans-serif`;
+    const lh = fs + 8;
+    ctx.fillStyle = '#000000';
+    ctx.textBaseline = 'middle';
+    const ty = y + lh / 2;
+    ctx.fillText(label, padding, ty);
+    const total = (amount || 0) + (tips || 0);
+    const amtStr = formatMoney(amount);
+    ctx.fillText(amtStr, width - rp - colW * 2 - ctx.measureText(amtStr).width, ty);
+    const tipStr = formatMoney(tips);
+    ctx.fillText(tipStr, width - rp - colW - ctx.measureText(tipStr).width, ty);
+    const totStr = formatMoney(total);
+    ctx.fillText(totStr, width - rp - ctx.measureText(totStr).width, ty);
+    y += lh;
+  };
+
+  const payBreakdown = shiftData.payment_breakdown || [];
+  if (payBreakdown.length > 0) {
+    drawPayHeaderRow();
+    let payAmtTotal = 0, payTipTotal = 0;
+    payBreakdown.forEach(p => {
+      const label = (p.method || 'OTHER').charAt(0) + (p.method || 'OTHER').slice(1).toLowerCase();
+      drawPayRow(label, p.amount, p.tips);
+      payAmtTotal += (p.amount || 0);
+      payTipTotal += (p.tips || 0);
+    });
+    drawPayRow('TOTAL', payAmtTotal, payTipTotal, true);
+  } else {
+    row('Cash', formatMoney(shiftData.cash_sales));
+    row('Card', formatMoney(shiftData.card_sales));
+    if ((shiftData.other_sales || 0) > 0) {
+      row('Other', formatMoney(shiftData.other_sales));
+    }
   }
   y = drawSeparator(ctx, y, 'dashed');
 
-  // Tips
+  // Tips — breakdown by payment method
   y += 4;
   y = drawTextBlock(ctx, { text: '-- TIPS --', fontSize: SR_FONT.sectionTitle, fontWeight: 'bold', align: 'center' }, y);
   y = drawSeparator(ctx, y, 'dashed');
-  if (shiftData.closed_by && shiftData.server_tip_total != null) {
+  const tipBk = shiftData.tip_breakdown || [];
+  if (tipBk.length > 0) {
+    tipBk.forEach(t => {
+      const label = (t.method || 'OTHER').charAt(0) + (t.method || 'OTHER').slice(1).toLowerCase();
+      row(label, formatMoney(t.tips));
+    });
+    const tipSum = tipBk.reduce((s, t) => s + (t.tips || 0), 0);
+    row('Total', formatMoney(tipSum), true);
+  } else if (shiftData.closed_by && shiftData.server_tip_total != null) {
     row(`${shiftData.closed_by} Tips`, formatMoney(shiftData.server_tip_total), true);
   } else {
     row('Total Tips', formatMoney(shiftData.tip_total), true);

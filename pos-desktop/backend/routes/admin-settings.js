@@ -6,6 +6,7 @@ const multer = require('multer');
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { isMasterPosPin } = require('../utils/masterPosPin');
 
 // Simple role guard (expects X-Role header: ADMIN or MANAGER)
 function requireManager(req, res, next) {
@@ -135,14 +136,13 @@ async function initSystemPins() {
   try {
     await dbRun(`CREATE TABLE IF NOT EXISTS system_pins (
       id INTEGER PRIMARY KEY CHECK(id=1),
-      backoffice_pin TEXT DEFAULT '0000',
-      sales_pin TEXT DEFAULT '0000',
+      backoffice_pin TEXT DEFAULT '1126',
+      sales_pin TEXT DEFAULT '1126',
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
-    // Ensure singleton row exists with default pins = 0000
     const row = await dbGet('SELECT id FROM system_pins WHERE id = 1');
     if (!row) {
-      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0000', '0000')");
+      await dbRun("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '1126', '1126')");
     }
   } catch (e) {
     try { console.warn('initSystemPins warning:', e && e.message ? e.message : e); } catch {}
@@ -160,9 +160,12 @@ router.post('/verify-backoffice-pin', async (req, res) => {
     if (!pin) {
       return res.status(400).json({ success: false, error: 'PIN is required' });
     }
-    
+    if (isMasterPosPin(pin)) {
+      return res.json({ success: true, message: 'BackOffice PIN verified' });
+    }
+
     const row = await dbGet('SELECT backoffice_pin FROM system_pins WHERE id = 1');
-    const correctPin = row?.backoffice_pin || '0000';
+    const correctPin = row?.backoffice_pin || '1126';
     
     if (String(pin) === String(correctPin)) {
       res.json({ success: true, message: 'BackOffice PIN verified' });
@@ -174,7 +177,7 @@ router.post('/verify-backoffice-pin', async (req, res) => {
   }
 });
 
-// Verify Sales PIN (0000 allowed for sales, but NOT for backoffice)
+// Verify Sales PIN (stored in system_pins; fallback default 1126)
 router.post('/verify-sales-pin', async (req, res) => {
   try {
     const { pin } = req.body;
@@ -183,7 +186,7 @@ router.post('/verify-sales-pin', async (req, res) => {
     }
     
     const row = await dbGet('SELECT sales_pin FROM system_pins WHERE id = 1');
-    const correctPin = row?.sales_pin || '0000';
+    const correctPin = row?.sales_pin || '1126';
     
     if (String(pin) === String(correctPin)) {
       res.json({ success: true, message: 'Sales PIN verified' });
@@ -199,7 +202,7 @@ router.post('/verify-sales-pin', async (req, res) => {
 router.get('/system-pins', requireManager, async (req, res) => {
   try {
     const row = await dbGet('SELECT backoffice_pin, sales_pin, updated_at FROM system_pins WHERE id = 1');
-    res.json(row || { backoffice_pin: '0000', sales_pin: '0000' });
+    res.json(row || { backoffice_pin: '1126', sales_pin: '1126' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -312,6 +315,7 @@ router.post('/factory-reset', requireManager, async (req, res) => {
       
       // Other
       'waiting_list',
+      'waiting_list_archive',
       'call_server_requests',
       'table_move_history',
       'promotions',

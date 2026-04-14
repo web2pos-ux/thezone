@@ -31,6 +31,25 @@ module.exports = (db) => {
     db.all(sql, params, (err, rows) => { if (err) reject(err); else resolve(rows || []); });
   });
 
+  /** 웨이팅 마감 이력: Day Closing 시 `waiting_list` 전부를 여기로 복사한 뒤 용 테이블만 비움 */
+  const ensureWaitingListArchiveTable = async () => {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS waiting_list_archive (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_date TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        phone_number TEXT,
+        party_size INTEGER NOT NULL,
+        notes TEXT,
+        outcome TEXT NOT NULL,
+        table_number TEXT,
+        joined_at TEXT,
+        archived_at TEXT NOT NULL,
+        source_waiting_id INTEGER
+      )
+    `);
+  };
+
   // ===== Printer helper (Front receipt printer) =====
   const printEscPosTextToFront = async (text, { openDrawer = false } = {}) => {
     if (!text) throw new Error('No text provided');
@@ -1629,6 +1648,29 @@ module.exports = (db) => {
         await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
         console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
       } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
+
+      // 웨이팅: 마감 영업일·고객·인원·Assigned/Canceled/Not Assigned 이력을 archive에 보관 후 당일용 waiting_list만 비움
+      try {
+        await ensureWaitingListArchiveTable();
+        const businessDate = String(activeSession.date || '').trim() || getLocalDate();
+        await dbRun(`
+          INSERT INTO waiting_list_archive (
+            business_date, customer_name, phone_number, party_size, notes,
+            outcome, table_number, joined_at, archived_at, source_waiting_id
+          )
+          SELECT
+            ?, customer_name, phone_number, party_size, notes,
+            CASE
+              WHEN status = 'seated' THEN 'Assigned'
+              WHEN status = 'cancelled' THEN 'Canceled'
+              ELSE 'Not Assigned'
+            END,
+            table_number, joined_at, ?, id
+          FROM waiting_list
+        `, [businessDate, now]);
+        const del = await dbRun(`DELETE FROM waiting_list`);
+        console.log('[daily-closings] waiting_list archived for', businessDate, 'then cleared, rows removed:', del?.changes ?? 0);
+      } catch (e) { console.warn('Failed to archive/clear waiting_list on closing:', e?.message || e); }
 
       // Firebase 동기화
       try {

@@ -6,6 +6,15 @@ import TableIcon from './icons/TableIcon';
 import MenuIcon from './icons/MenuIcon';
 import OrderIcon from './icons/OrderIcon';
 import { API_URL } from '../config/constants';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_NEO_PRIMARY_BLUE,
+  PAY_NEO_PRIMARY_AMBER,
+  PAY_NEO_KEY_FLAT,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
+  NEO_PRESS_INSET_ONLY_NO_SHIFT,
+} from '../utils/softNeumorphic';
 
 const navLinks = [
   { path: '/backoffice/basic-info', label: 'Business Info', icon: 'custom' },
@@ -439,66 +448,68 @@ const BackOfficeLayout = () => {
         <Outlet />
       </main>
       
-      {/* EXIT 모달 */}
+      {/* EXIT 모달 — PaymentModal PAY_NEO 톤 */}
       {showExitModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[80]">
-          <div className="bg-white rounded-2xl shadow-2xl w-[350px] overflow-hidden">
-            {/* Header */}
-            <div className="bg-gradient-to-r from-gray-700 to-gray-800 text-white px-6 py-4 text-center">
-              <div className="text-2xl font-bold">Exit Menu</div>
-              <div className="text-gray-300 mt-1 text-sm">Select an option</div>
-            </div>
-            
-            {/* Buttons */}
-            <div className="p-6 space-y-3">
-              {/* Go to Sales 버튼 - QSR이면 /qsr, FSR이면 /sales */}
-              <button
-                onClick={() => {
-                  setShowExitModal(false);
-                  if (serviceType === 'QSR') {
-                    navigate('/qsr');
-                  } else {
-                    navigate('/sales');
-                  }
-                }}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">🏪</span>
-                Go to Sales
-              </button>
-              
-              {/* Go to Windows 버튼 (앱 종료 또는 Intro로 이동) */}
-              <button
-                onClick={() => {
-                  setShowExitModal(false);
-                  try {
-                    if (window.electron && window.electron.quit) {
-                      // Electron 앱에서는 앱 종료
-                      window.electron.quit();
+          <div
+            className="w-[350px] max-w-[92vw] overflow-hidden p-0"
+            onClick={(e) => e.stopPropagation()}
+            style={{ ...PAY_NEO.modalShell }}
+          >
+            <div className="rounded-[inherit] overflow-hidden" style={{ background: PAY_NEO_CANVAS }}>
+              <div className="mx-4 mt-4 rounded-xl px-5 py-4 text-center" style={PAY_NEO.inset}>
+                <div className="text-xl font-bold text-gray-800">Exit Menu</div>
+                <div className="mt-1 text-sm text-gray-600">Select an option</div>
+              </div>
+              <div className="space-y-3 px-4 py-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExitModal(false);
+                    if (serviceType === 'QSR') {
+                      navigate('/qsr');
                     } else {
-                      // 브라우저에서는 Intro 페이지로 이동
+                      navigate('/sales');
+                    }
+                  }}
+                  className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                  style={PAY_NEO_PRIMARY_BLUE}
+                >
+                  <span className="text-2xl">🏪</span>
+                  Go to Sales
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExitModal(false);
+                    try {
+                      if (window.electron && window.electron.quit) {
+                        window.electron.quit();
+                      } else {
+                        window.location.href = '/';
+                      }
+                    } catch (e) {
+                      console.error('Quit failed:', e);
                       window.location.href = '/';
                     }
-                  } catch (e) {
-                    console.error('Quit failed:', e);
-                    window.location.href = '/';
-                  }
-                }}
-                className="w-full py-4 bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-3"
-              >
-                <span className="text-2xl">🪟</span>
-                Go to Windows
-              </button>
-            </div>
-            
-            {/* Cancel */}
-            <div className="px-6 pb-6">
-              <button
-                onClick={() => setShowExitModal(false)}
-                className="w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-medium rounded-xl transition-colors"
-              >
-                Cancel
-              </button>
+                  }}
+                  className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                  style={PAY_NEO_PRIMARY_AMBER}
+                >
+                  <span className="text-2xl">🪟</span>
+                  Go to Windows
+                </button>
+              </div>
+              <div className="px-4 pb-5">
+                <button
+                  type="button"
+                  onClick={() => setShowExitModal(false)}
+                  className={`w-full rounded-xl py-3 text-sm font-semibold text-gray-800 ${NEO_PRESS_INSET_ONLY_NO_SHIFT} touch-manipulation`}
+                  style={PAY_NEO_KEY_FLAT}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         </div>

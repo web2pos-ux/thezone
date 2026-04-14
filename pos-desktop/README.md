@@ -20,6 +20,18 @@ npm install
 build.bat
 ```
 
+### 3b. 배포용 실행앱 만들 때 (권장)
+
+**설치파일/포터블을 새로 낼 때는 패치 버전을 무조건 올린 뒤 빌드한다.**
+
+```bash
+# Windows — package.json 패치 버전 증가 → build.bat → build:win
+build-release.bat
+```
+
+- `pos-desktop/package.json`의 `version` (예: 1.6.5 → 1.6.6)이 올라가며, `dist29\TheZonePOS Setup x.y.z.exe` 파일명에 반영된다.
+- 개발 중에만 버전을 바꾸지 않고 묶고 싶다면 기존처럼 `build.bat` 후 `npm run build:win`만 사용한다.
+
 ### ⚠️ 빌드 전 필수 체크리스트
 
 빌드하기 전에 아래 파일들이 `pos-desktop/backend/config/`에 있는지 확인:

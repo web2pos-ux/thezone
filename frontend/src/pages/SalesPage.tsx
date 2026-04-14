@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import { isMasterPosPin } from '../constants/masterPosPin';
 import { firebaseDb } from '../config/firebase';
@@ -19,7 +19,15 @@ import { clearServerAssignment } from '../utils/serverAssignmentStorage';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
-import { printReceipt, printKitchenTicket, printBill, openCashDrawer } from '../utils/printUtils';
+import {
+  printReceipt,
+  printKitchenTicket,
+  printBill,
+  openCashDrawer,
+  armPanelTogoPayKitchenSuppress,
+  disarmPanelTogoPayKitchenSuppress,
+  isPanelTogoPayKitchenSuppressActive,
+} from '../utils/printUtils';
 import { SOFT_NEO, OH_ACTION_NEO, PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, PAY_NEO_PRIMARY_AMBER, PAY_NEO_KEY_FLAT, PAY_KEYPAD_KEY, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS, NEO_COLOR_BTN_PRESS, PCM_RX_ROUND, NEO_PRESS_INSET_ONLY_NO_SHIFT, NEO_PRESS_INSET_AMBER_NO_SHIFT, NEO_COLOR_BTN_PRESS_NO_SHIFT, MODAL_CLOSE_X_RAISED_STYLE, MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE } from '../utils/softNeumorphic';
 import { calculateOrderPricing } from '../utils/orderPricing';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
@@ -87,6 +95,12 @@ const CARD_DETAIL_ITEMS_TAX_FLAT: React.CSSProperties = {
 	boxShadow: 'none',
 };
 
+/** 카드 상세 모달 — 아이템 목록만 PAY_NEO_CANVAS(#e0e5ec)보다 아주 약간만 밝게 */
+const CARD_DETAIL_ITEMS_LIST_SLIGHT: React.CSSProperties = {
+	...CARD_DETAIL_ITEMS_TAX_FLAT,
+	background: '#ecf1f7',
+};
+
 /** OrderDetailModal 등에서 넘긴 __togoTotals.total이 0이면 typeof number만으로 채택되어 결제 모달이 $0이 됨 — 양수일 때만 태그 합계 사용, 아니면 재계산·fullOrder.total 보강 */
 function pickOnlineTogoPaymentTotals(
   order: any,
@@ -130,6 +144,67 @@ function pickOnlineTogoPaymentTotals(
     };
   }
   return fromItems;
+}
+
+/** 투고/온라인/딜리버리 카드 상세 모달 — 주문에 subtotal·tax가 비어 있거나 0일 때 라인 합계·pricing으로 보강 */
+function computeCardDetailModalTotals(cdOrder: any, cdItems: any[]) {
+  const fo = cdOrder?.fullOrder || {};
+  const rawItems = (Array.isArray(cdItems) && cdItems.length > 0 ? cdItems : (fo.items || [])) as any[];
+  return pickOnlineTogoPaymentTotals(
+    { ...cdOrder, fullOrder: { ...fo, items: rawItems } },
+    () => {
+      try {
+        if (!rawItems.length) {
+          return { subtotal: 0, tax: 0, taxLines: [], total: 0 };
+        }
+        const normalizedItems = rawItems.map((it: any) => {
+          let discountObj: any = it.discount ?? null;
+          if (!discountObj && it.discount_json) {
+            try {
+              discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json;
+            } catch {
+              discountObj = null;
+            }
+          }
+          return {
+            id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
+            orderLineId: it.order_line_id ?? it.orderLineId,
+            name: it.name,
+            type: it.type,
+            quantity: it.quantity,
+            price: typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0),
+            totalPrice: it.total_price ?? it.totalPrice,
+            modifiers: it.modifiers ?? it.options ?? [],
+            memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+            discount: discountObj,
+            guestNumber: it.guestNumber ?? it.guest_number,
+            taxGroupId: it.taxGroupId ?? it.tax_group_id,
+            void_id: it.void_id,
+            voidId: it.voidId,
+            is_void: it.is_void,
+          };
+        });
+        const pricing = calculateOrderPricing(normalizedItems as any);
+        const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+        const storedTotalRaw = Number(
+          (cdOrder.total ?? fo.total ?? fo.grandTotal ?? fo.orderTotal ?? pricing.totals.total ?? 0) as any
+        );
+        const storedTotal =
+          Number.isFinite(storedTotalRaw) && storedTotalRaw > 0
+            ? Number(storedTotalRaw.toFixed(2))
+            : Number((pricing.totals.total || 0).toFixed(2));
+        const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+        return {
+          subtotal: netSubtotal,
+          tax: derivedTax,
+          taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [],
+          total: storedTotal,
+        };
+      } catch {
+        return { subtotal: 0, tax: 0, taxLines: [], total: 0 };
+      }
+    }
+  );
 }
 
 interface TableElement {
@@ -329,6 +404,37 @@ const syncPosBagFeeLocalFromUtilityBagFee = (bagFee: { enabled: boolean; amount:
   } catch {}
 };
 
+/** SSE `new_order`와 `loadOnlineOrders` 폴링이 같은 주문에 대해 자동 수락·키친 프린트를 두 번 호출하지 않도록 */
+function claimOnlineAutoAcceptPrintOnce(
+  storeRef: React.MutableRefObject<Set<string>>,
+  orderId: string | undefined | null
+): boolean {
+  if (orderId == null || String(orderId).trim() === '') return false;
+  const key = String(orderId);
+  const s = storeRef.current;
+  if (s.has(key)) return false;
+  s.add(key);
+  if (s.size > 400) {
+    const keys = Array.from(s);
+    const dropCount = s.size - 200;
+    for (let i = 0; i < dropCount; i++) {
+      s.delete(keys[i]);
+    }
+  }
+  return true;
+}
+
+/** New Delivery 모달 — 채널 버튼 톤과 맞춘 Order # 입력란 왼쪽 라벨 색 */
+const DELIVERY_ORDER_MODAL_CHANNEL_BADGE: Record<
+  'UberEats' | 'Doordash' | 'SkipTheDishes' | 'Fantuan',
+  { label: string; color: string }
+> = {
+  UberEats: { label: 'Uber Eats', color: '#047857' },
+  Doordash: { label: 'DoorDash', color: '#c41f00' },
+  SkipTheDishes: { label: 'Skip', color: '#ea580c' },
+  Fantuan: { label: 'Fantuan', color: '#0f766e' },
+};
+
 const SalesPage: React.FC = () => {
   const [tableElements, setTableElements] = useState<TableElement[]>([]);
   const [screenSize, setScreenSize] = useState({ width: '1024', height: '768', scale: 1 });
@@ -336,6 +442,7 @@ const SalesPage: React.FC = () => {
   const [frameReady, setFrameReady] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Floor ê´€ë ¨ ìƒíƒœ
   const [selectedFloor, setSelectedFloor] = useState('1F');
@@ -534,7 +641,7 @@ const SalesPage: React.FC = () => {
   // Day status check
   const checkDayStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${API_URL}/api/daily-closings/today`);
+      const response = await fetch(`${API_URL}/daily-closings/today`);
       const result = await response.json();
       if (result.success) {
         if (result.isOpen) {
@@ -822,8 +929,11 @@ const SalesPage: React.FC = () => {
   const [newOrderAlertData, setNewOrderAlertData] = useState<any>(null);
   const [selectedPrepTime, setSelectedPrepTime] = useState<number>(20);
   const previousOnlineOrdersRef = useRef<string[]>([]);
+  const onlineAutoAcceptPrintOnceRef = useRef<Set<string>>(new Set());
   const isFirstOnlineOrderLoadRef = useRef<boolean>(true); // ì²« ë¡œë“œ ì‹œ ì•ŒëžŒ ë°©ì§€
-  
+  const isFirstDeliveryPanelLoadRef = useRef(true);
+  const previousDeliveryPanelKeysRef = useRef<Set<string>>(new Set());
+
   // ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ìŒ
   const onlineOrderAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -1689,12 +1799,20 @@ const SalesPage: React.FC = () => {
     return raw;
   };
 
+  /** POS 일일 순번(데이 오픈 후 001~)만 표시. SQLite PK·타임스탬프·TZO- 등에서 숫자만 뽑아 큰 번호가 되는 것을 막음 */
+  const isDailyPosDisplayDigits = (v: unknown): boolean => {
+    if (v == null || v === '') return false;
+    const raw = String(v).trim().replace(/^#/, '');
+    if (!/^\d+$/.test(raw)) return false;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 && n <= 999999;
+  };
+
   const formatPosNumber = (orderNumber?: string | number | null): string => {
     if (orderNumber == null || orderNumber === '') return '—';
-    const raw = String(orderNumber).trim();
-    const digits = raw.replace(/\D/g, '');
-    const num = digits ? Number(digits) : Number(raw);
-    if (!Number.isFinite(num) || num <= 0) return '—';
+    const raw = String(orderNumber).trim().replace(/^#/, '');
+    if (!isDailyPosDisplayDigits(raw)) return '—';
+    const num = Number(raw);
     return `#${String(num).padStart(3, '0')}`;
   };
 
@@ -1946,6 +2064,21 @@ const SalesPage: React.FC = () => {
     createInitialOnlineQueueCards()
   );
 
+  /** 후 고객 인포 취소 시 OrderPage에서 전달: 임시 투고 패널 카드 제거 후 one-shot state 정리 */
+  useEffect(() => {
+    const raw = (location.state as any)?.abandonTogoProvisionalId;
+    if (raw == null || raw === '') return;
+    const sid = String(raw);
+    setTogoOrders((prev) => prev.filter((o) => String(o?.id) !== sid));
+    setTogoOrderMeta((prev) => {
+      if (!prev[sid]) return prev;
+      const next = { ...prev };
+      delete next[sid];
+      return next;
+    });
+    navigate('/sales', { replace: true, state: {} });
+  }, [location.state, navigate]);
+
   // Prevent "zombie" state: if the selected order disappears from the list, close/clear the detail modal.
   useEffect(() => {
     if (!showOrderDetailModal) return;
@@ -2155,7 +2288,10 @@ const SalesPage: React.FC = () => {
         const orderType = (o.orderType || '').toLowerCase();
         const status = (o.status || '').toLowerCase();
         const customerName = (o.customerName || '').toLowerCase().trim();
-        
+        const src = String(o.source || '').toUpperCase();
+        const tableIdUpper = String(o.tableId || o.table_id || '').trim().toUpperCase();
+        if (src === 'POS' && (orderType === 'delivery' || tableIdUpper.startsWith('DL'))) return false;
+
         // POSì—ì„œ ìƒì„±ëœ ì£¼ë¬¸ ì œì™¸
         if (orderType === 'dine_in' || orderType === 'dine-in') return false;
         if (orderType === 'togo') return false;
@@ -2176,8 +2312,7 @@ const SalesPage: React.FC = () => {
         // merged ìƒíƒœ ì œì™¸ (ì´ë¯¸ ë¨¸ì§€ëœ ì£¼ë¬¸)
         if (status === 'merged') return false;
         
-        // completed/paid ìƒíƒœ ì œì™¸ (ì™„ë£Œëœ ì£¼ë¬¸)
-        if (status === 'completed' || status === 'paid') return false;
+        // completed / paid 는 픽업 전 패널(Ready)에 남겨야 함 — picked_up 만 제외
         
         return true;
       });
@@ -2186,7 +2321,13 @@ const SalesPage: React.FC = () => {
       
       const mappedCards: OnlineQueueCard[] = filteredOrders.map((o: any, idx: number) => ({
         id: o.id,
-        number: o.localOrderId || o.id || String(idx + 1),
+        number: (() => {
+          const fromSnake = String(o.posOrderNumber || o.order_number || '').trim().replace(/^#/, '');
+          if (isDailyPosDisplayDigits(fromSnake)) return fromSnake;
+          const fromCamel = String(o.orderNumber || '').trim().replace(/^#/, '');
+          if (isDailyPosDisplayDigits(fromCamel)) return fromCamel;
+          return '';
+        })(),
         localOrderId: o.localOrderId || null, // SQLite ID ëª…ì‹œì  ì €ìž¥
         time: new Date(o.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
         phone: o.customerPhone || '',
@@ -2206,7 +2347,7 @@ const SalesPage: React.FC = () => {
             const d = new Date(pt);
             if (!isNaN(d.getTime())) return d;
           }
-          // pickupTime ì—†ìœ¼ë©´ createdAt + 20ë¶„ìœ¼ë¡œ ê³„ì‚°
+          // pickupTime 없으면 주문 시각 + Utility에 맞춘 Thezone 프렙(분) — 카드에 표시하는 Ready 시각과 동일
           const created = o.createdAt;
           if (created) {
             let createdDate: Date;
@@ -2214,7 +2355,9 @@ const SalesPage: React.FC = () => {
             else if (created.seconds) createdDate = new Date(created.seconds * 1000);
             else createdDate = new Date(created);
             if (!isNaN(createdDate.getTime())) {
-              return new Date(createdDate.getTime() + 20 * 60000); // +20ë¶„
+              const prepStr = prepTimeSettingsRef.current?.thezoneorder?.time || '20m';
+              const prepMin = parseInt(String(prepStr).replace(/[^\d]/g, ''), 10) || 20;
+              return new Date(createdDate.getTime() + prepMin * 60000);
             }
           }
           return null;
@@ -2244,21 +2387,9 @@ const SalesPage: React.FC = () => {
       }
 
       const hiddenOnlineSwipe = swipeRemovedPanelIdsRef.current;
-      // mappedCards가 잠깐 비는 응답(레이스/일시 오류)에서 still=false가 되어 숨김 키가 전부 지워지면, 곧바로 같은 카드가 부활함
-      if (mappedCards.length > 0) {
-        hiddenOnlineSwipe.forEach((rid) => {
-          const still = mappedCards.some(
-            (c) =>
-              String(c.id) === rid ||
-              String(c.localOrderId ?? '') === rid ||
-              String((c as any).fullOrder?.localOrderId ?? '') === rid ||
-              String((c as any).fullOrder?.id ?? '') === rid ||
-              (String((c as any).onlineOrderNumber || '').trim() !== '' &&
-                String((c as any).onlineOrderNumber) === rid)
-          );
-          if (!still) hiddenOnlineSwipe.delete(rid);
-        });
-      }
+      // 숨김 키를 "이번 응답에 없음"으로 지우지 않음. 그렇게 하면 API 레이스·필터 변동 시 키가
+      // 사라져 같은 주문이 좀비처럼 다시 뜸. 키는 픽업/결제 완료 이벤트·스와이프 시에만 등록되며
+      // 세션 동안 유지(페이지 새로고침 시 초기화).
       const mappedOnlineVisible = mappedCards.filter((c) => {
         if (hiddenOnlineSwipe.has(String(c.id))) return false;
         const loc = c.localOrderId != null ? String(c.localOrderId) : '';
@@ -2267,6 +2398,8 @@ const SalesPage: React.FC = () => {
         if (fl != null && String(fl) !== '' && hiddenOnlineSwipe.has(String(fl))) return false;
         const fid = (c as any).fullOrder?.id;
         if (fid != null && String(fid) !== '' && hiddenOnlineSwipe.has(String(fid))) return false;
+        const foid = String((c as any).fullOrder?.firebase_order_id || (c as any).fullOrder?.firebaseOrderId || '').trim();
+        if (foid && hiddenOnlineSwipe.has(foid)) return false;
         const onum = String((c as any).onlineOrderNumber || '').trim();
         if (onum && hiddenOnlineSwipe.has(onum)) return false;
         return true;
@@ -2292,37 +2425,43 @@ const SalesPage: React.FC = () => {
       // ìƒˆ ì£¼ë¬¸ ì²˜ë¦¬
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
-        
-        playOnlineOrderSound();
-        console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
+
         if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
-          // Auto ëª¨ë“œ: ìžë™ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
-          const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
-          const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
-          const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
-          
-          console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
-          
-          fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId })
-          }).then(() => {
-            console.log('[loadOnlineOrders] Order auto-accepted:', newOrder.id);
-            fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+          if (!claimOnlineAutoAcceptPrintOnce(onlineAutoAcceptPrintOnceRef, newOrder.id)) {
+            console.log('[loadOnlineOrders] Skip duplicate auto accept/print (already handled e.g. by SSE):', newOrder.id);
+          } else {
+            playOnlineOrderSound();
+            console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
+            const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
+            const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+            const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
+
+            console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
+
+            fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId })
-            }).then(() => {
-              console.log('[loadOnlineOrders] Kitchen ticket printed:', newOrder.id);
-            }).catch(printErr => {
-              console.error('[loadOnlineOrders] Kitchen ticket print failed:', printErr);
-            });
-          }).catch(err => {
-            console.error('[loadOnlineOrders] Auto accept failed:', err);
-          });
+              body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId }),
+            })
+              .then(() => {
+                console.log('[loadOnlineOrders] Order auto-accepted:', newOrder.id);
+                return fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId }),
+                });
+              })
+              .then(() => {
+                console.log('[loadOnlineOrders] Kitchen ticket printed:', newOrder.id);
+              })
+              .catch((err) => {
+                console.error('[loadOnlineOrders] Auto accept or print failed:', err);
+              });
+          }
         } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
           // Manual ëª¨ë“œ: ì•Œë¦¼ ëª¨ë‹¬ í‘œì‹œ
+          playOnlineOrderSound();
+          console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
           setNewOrderAlertData(newOrder);
           setSelectedPrepTime(20);
           setShowNewOrderAlert(true);
@@ -2733,37 +2872,40 @@ const SalesPage: React.FC = () => {
             const newOrder = data.order;
             console.log('[SSE] New order received:', newOrder.id);
 
-            playOnlineOrderSound();
-
             if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
-              // Auto ëª¨ë“œ: ìžë™ìœ¼ë¡œ ìˆ˜ë½ (ëª¨ë‹¬ ì—†ìŒ)
-              const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
-              const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
-              const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
-              
-              console.log(`[SSE] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min`);
-              
-              fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId })
-              }).then(() => {
-                console.log('[SSE] Order auto-accepted:', newOrder.id);
-                fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+              if (!claimOnlineAutoAcceptPrintOnce(onlineAutoAcceptPrintOnceRef, newOrder.id)) {
+                console.log('[SSE] Skip duplicate auto accept/print (already handled e.g. by polling):', newOrder.id);
+              } else {
+                playOnlineOrderSound();
+                const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
+                const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+                const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
+
+                console.log(`[SSE] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min`);
+
+                fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId })
-                }).then(() => {
-                  console.log('[SSE] Kitchen ticket printed:', newOrder.id);
-                }).catch(printErr => {
-                  console.error('[SSE] Kitchen ticket print failed:', printErr);
-                });
-                loadOnlineOrders();
-              }).catch(err => {
-                console.error('[SSE] Auto accept failed:', err);
-              });
+                  body: JSON.stringify({ prepTime: prepMinutes, pickupTime, restaurantId: onlineOrderRestaurantId }),
+                })
+                  .then(() => {
+                    console.log('[SSE] Order auto-accepted:', newOrder.id);
+                    return fetch(`${API_URL}/online-orders/order/${newOrder.id}/print`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ printerType: 'kitchen', restaurantId: onlineOrderRestaurantId }),
+                    });
+                  })
+                  .then(() => {
+                    console.log('[SSE] Kitchen ticket printed:', newOrder.id);
+                    loadOnlineOrders();
+                  })
+                  .catch((err) => {
+                    console.error('[SSE] Auto accept or print failed:', err);
+                  });
+              }
             } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
-              // Manual ëª¨ë“œ: ì•Œë¦¼ ëª¨ë‹¬ í‘œì‹œ
+              playOnlineOrderSound();
               setNewOrderAlertData(newOrder);
               setSelectedPrepTime(20);
               setShowNewOrderAlert(true);
@@ -2837,7 +2979,7 @@ const SalesPage: React.FC = () => {
 
       const [togoRes, deliveryRes, onlineRes, deliveryOrdersRes] = await Promise.all([
         fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&limit=200`),
-        fetch(`${API_URL}/orders?type=DELIVERY&limit=200`),
+        fetch(`${API_URL}/orders?type=DELIVERY&limit=200&panel=1`),
         fetch(`${API_URL}/orders?type=ONLINE&limit=200`),
         fetch(`${API_URL}/orders/delivery-orders`),
       ]);
@@ -2944,6 +3086,11 @@ const SalesPage: React.FC = () => {
           if (posFromMeta != null && String(posFromMeta).trim() !== '') {
             existing.order_number = existing.order_number || posFromMeta;
             existing.pos_order_number = existing.pos_order_number || posFromMeta;
+          }
+          const metaKey = String(meta.id);
+          if (metaKey && orderMap.has(metaKey)) {
+            const slot = orderMap.get(metaKey);
+            if (slot && slot !== existing) orderMap.delete(metaKey);
           }
         } else {
           // delivery_ordersì—ë§Œ ìžˆëŠ” ì£¼ë¬¸ (ì•„ì§ OK ì•ˆ ëˆ„ë¥¸ ì£¼ë¬¸)
@@ -3106,6 +3253,7 @@ const SalesPage: React.FC = () => {
               : null),
           prepTime: o.prepTime || o.prep_time || 0,
           onlineOrderNumber: o.onlineOrderNumber || o.online_order_number || '',
+          firebase_order_id: o.firebase_order_id || o.firebaseOrderId || null,
         };
       });
       setTogoOrderMeta((prevMeta) => {
@@ -3135,19 +3283,7 @@ const SalesPage: React.FC = () => {
         console.log('ðŸš— [loadTogoOrders] Final deliveryOrders:', deliveryOrders.length, deliveryOrders);
         
         const hiddenSwipe = swipeRemovedPanelIdsRef.current;
-        if (normalizedOrders.length > 0) {
-          hiddenSwipe.forEach((rid) => {
-            const still = normalizedOrders.some(
-              (o: any) =>
-                String(o.id) === rid ||
-                String((o as any).deliveryMetaId || '') === rid ||
-                String((o as any).order_id || '') === rid ||
-                (String((o as any).onlineOrderNumber || '').trim() !== '' &&
-                  String((o as any).onlineOrderNumber) === rid)
-            );
-            if (!still) hiddenSwipe.delete(rid);
-          });
-        }
+        // 온라인 큐와 동일: 응답에 일시적으로 없다고 숨김 키를 지우지 않음(좀비 부활 방지).
         const togoVisible = normalizedOrders.filter((o: any) => {
           if (hiddenSwipe.has(String(o.id))) return false;
           const dm = String((o as any).deliveryMetaId || '');
@@ -3156,15 +3292,45 @@ const SalesPage: React.FC = () => {
           if (oid && hiddenSwipe.has(oid)) return false;
           const onum = String((o as any).onlineOrderNumber || '').trim();
           if (onum && hiddenSwipe.has(onum)) return false;
+          const fid = String((o as any).firebase_order_id || (o as any).firebaseOrderId || '').trim();
+          if (fid && hiddenSwipe.has(fid)) return false;
           return true;
         });
+
+        const deliveryPanelKey = (o: any): string | null => {
+          const f = String(o.fulfillment || o.fulfillment_mode || '').toLowerCase();
+          const tid = String(o.table_id || '').toUpperCase();
+          const typ = String(o.type || o.order_type || '').toLowerCase();
+          const isDel =
+            f === 'delivery' ||
+            tid.startsWith('DL') ||
+            typ === 'delivery' ||
+            !!(o.deliveryCompany || o.delivery_company);
+          if (!isDel) return null;
+          const dm = String(o.deliveryMetaId || o.delivery_meta_id || '').trim();
+          if (dm) return `dm:${dm}`;
+          return `id:${String(o.id)}`;
+        };
+        const nextDelKeys = new Set<string>();
+        for (const o of togoVisible) {
+          const k = deliveryPanelKey(o);
+          if (k) nextDelKeys.add(k);
+        }
+        if (!isFirstDeliveryPanelLoadRef.current) {
+          const hasNewDelivery = Array.from(nextDelKeys).some((k) => !previousDeliveryPanelKeysRef.current.has(k));
+          if (hasNewDelivery) playOnlineOrderSound();
+        } else {
+          isFirstDeliveryPanelLoadRef.current = false;
+        }
+        previousDeliveryPanelKeysRef.current = nextDelKeys;
+
         setTogoOrders(togoVisible);
         return nextMeta;
       });
     } catch (error) {
       console.warn('Failed to load togo orders:', error);
     }
-  }, [API_URL, setTogoOrders]);
+  }, [API_URL, setTogoOrders, playOnlineOrderSound]);
   const openChannelOrder = useCallback(
     (channel: VirtualOrderChannel, order: any) => {
       const resolvedVirtualId =
@@ -3596,7 +3762,32 @@ const SalesPage: React.FC = () => {
               const data = await res.json();
               if (data.success && data.items) {
                 setCardDetailItems(data.items);
-                setCardDetailOrder((prev: any) => prev ? { ...prev, subtotal: data.order?.subtotal || 0, tax: data.order?.tax || 0, total: data.order?.total || 0 } : prev);
+                setCardDetailOrder((prev: any) => {
+                  if (!prev) return prev;
+                  const parsed = Array.isArray(data.items) ? data.items : [];
+                  const calcSub = parsed.reduce((sum: number, item: any) => {
+                    const p = Number(item.price || item.total_price || 0);
+                    const q = item.quantity || 1;
+                    const mp = Number(item.totalModifierPrice || 0);
+                    return sum + (p + mp) * q;
+                  }, 0);
+                  const oSub = data.order?.subtotal != null ? Number(data.order.subtotal) : NaN;
+                  const oTax = data.order?.tax != null ? Number(data.order.tax) : NaN;
+                  const oTot = data.order?.total != null ? Number(data.order.total) : NaN;
+                  const subtotal = Number.isFinite(oSub) && oSub > 0.0001 ? oSub : calcSub;
+                  const prevTot = Number(prev.total ?? prev.fullOrder?.total ?? 0);
+                  const total =
+                    Number.isFinite(oTot) && oTot > 0.0001
+                      ? oTot
+                      : prevTot > 0.0001
+                        ? prevTot
+                        : subtotal;
+                  let tax = Number.isFinite(oTax) ? oTax : NaN;
+                  if (!Number.isFinite(tax) || tax < 0) {
+                    tax = Math.max(0, Number((total - subtotal).toFixed(2)));
+                  }
+                  return { ...prev, subtotal, tax, total };
+                });
               }
             }
           } catch {}
@@ -6474,7 +6665,11 @@ const SalesPage: React.FC = () => {
 
   const handleOrderListPrintKitchen = async () => {
     if (!orderListSelectedOrder) return;
-    
+    if (isPanelTogoPayKitchenSuppressActive()) {
+      console.log('[OrderList] Kitchen print skipped (panel togo/online payment flow)');
+      return;
+    }
+
     try {
       // If user clicks Reprint before details load, fetch items on-demand.
       let itemsForPrint: any[] = Array.isArray(orderListSelectedItems) ? orderListSelectedItems : [];
@@ -9544,8 +9739,12 @@ const SalesPage: React.FC = () => {
     setShowOnlineTogoPaymentCompleteModal(false);
     
     const completionData = onlineTogoCompletionRef.current;
-    if (!completionData) return;
-    
+    if (!completionData) {
+      disarmPanelTogoPayKitchenSuppress();
+      return;
+    }
+
+    try {
     const { orderType, orderId, orderDetail, paymentOrder, sessionPayments } = completionData;
     // IMPORTANT: completionData.sessionPayments is a snapshot taken when payment completed.
     // If tip was added after completion (TipEntryModal / Add Cash Tip), use the latest state.
@@ -9995,6 +10194,12 @@ const SalesPage: React.FC = () => {
       void loadOnlineOrders();
       void loadTogoOrders();
     }, 2000);
+    } finally {
+      disarmPanelTogoPayKitchenSuppress();
+      window.setTimeout(() => {
+        try { disarmPanelTogoPayKitchenSuppress(); } catch {}
+      }, 2500);
+    }
   };
 
   return (
@@ -10394,11 +10599,13 @@ const SalesPage: React.FC = () => {
                         (sourceOnlineOrder)
                       );
                       const dStatus = String(order.status || order.fullOrder?.status || '').toUpperCase();
+                      const dIsPanelDelivery = isRightPanelDeliveryOrder(order);
                       const dIsPaid = dStatus === 'PAID' || dStatus === 'COMPLETED' || dStatus === 'CLOSED';
+                      const dTreatAsPaid = dIsPanelDelivery || dIsPaid;
                       const dIsPickedUp = dStatus === 'PICKED_UP';
-                      const dCanSwipePickup = dIsPaid && !dIsPickedUp;
+                      const dCanSwipePickup = dTreatAsPaid && !dIsPickedUp;
                       if (dIsPickedUp) return null;
-                      let backgroundColor = dIsPickedUp ? '#E9D5FF' : dIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
+                      let backgroundColor = dIsPickedUp ? '#E9D5FF' : dTreatAsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
                       let borderColor = '#C084FC';
                       let borderWidth = 1;
                       if (isSourceTogo) {
@@ -10414,7 +10621,12 @@ const SalesPage: React.FC = () => {
                       const deliveryCardType = (order as any).virtualChannel === 'online' ? 'online' : 'delivery';
                       const deliveryDisplayTime = formatTimeAmPm(String((order as any).readyTimeLabel || (order as any).time || ''));
                       const deliveryDisplayCompany = orderListNormalizeDeliveryAbbr(deliveryMeta.company) || 'DLV';
-                      const deliveryDisplayNumber = formatPosNumber((order as any).order_number || (order as any).localOrderId || (order as any).number);
+                      const deliveryDisplayNumber = formatPosNumber(
+                        (order as any).order_number ||
+                          (order as any).pos_order_number ||
+                          (order as any).posOrderNumber ||
+                          (isDailyPosDisplayDigits((order as any).number) ? (order as any).number : null)
+                      );
                       const deliveryExternalNumber = formatDeliveryOrderNumberForPanel(
                         (order as any).deliveryOrderNumber ||
                         (order as any).fullOrder?.deliveryOrderNumber ||
@@ -10473,7 +10685,7 @@ const SalesPage: React.FC = () => {
                           >
                             <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
                               <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
-                              <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${dIsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dIsPaid ? 'READY' : 'UNPAID'}</span>
+                              <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
                               <span className="font-bold text-right">{deliveryDisplayNumber}</span>
                             </div>
                             <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
@@ -10518,9 +10730,11 @@ const SalesPage: React.FC = () => {
                       }
                       return Infinity;
                     };
+                    // SQLite ONLINE 행은 onlineQueueCards(Firestore)와 동일 주문이므로 제외 — 한 장만 표시
                     const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
                       ...togoOrders
                         .filter((o) => !isRightPanelDeliveryOrder(o))
+                        .filter((o) => orderListGetPickupChannel(o) !== 'online')
                         .map((o) => {
                           const pickupChannel = orderListGetPickupChannel(o);
                           const type: 'togo' | 'online' = pickupChannel === 'online' ? 'online' : 'togo';
@@ -10631,6 +10845,16 @@ const SalesPage: React.FC = () => {
                         );
                       }
                       const card = order as OnlineQueueCard;
+                      const onlineDailyRaw =
+                        (card as any).posOrderNumber ??
+                        (card as any).fullOrder?.posOrderNumber ??
+                        (card as any).fullOrder?.order_number ??
+                        (card as any).order_number ??
+                        (typeof (card as any).orderNumber === 'string' &&
+                        isDailyPosDisplayDigits((card as any).orderNumber)
+                          ? (card as any).orderNumber
+                          : null) ??
+                        (isDailyPosDisplayDigits((card as any).number) ? (card as any).number : null);
                       const onlinePanelDisplayId = formatOnlinePanelDisplayId(
                         (card as any).onlineOrderNumber ||
                           (card as any).fullOrder?.orderNumber ||
@@ -10640,20 +10864,70 @@ const SalesPage: React.FC = () => {
                           (card as any).fullOrder?.displayOrderNumber ||
                           (card as any).fullOrder?.firebaseOrderNumber,
                         card.phone || (card as any).fullOrder?.customerPhone,
-                        (card as any).localOrderId ?? (card as any).number
+                        onlineDailyRaw
                       );
-                      const onlinePosDisplayNumber = formatPosNumber((card as any).localOrderId ?? (card as any).number);
+                      const onlinePosDisplayNumber = formatPosNumber(onlineDailyRaw);
                       const isSourceOnline = isMoveMergeMode && sourceOnlineOrder?.id === card.id;
                       const isTargetSelectable =
                         isMoveMergeMode &&
                         ((sourceTableId && selectionChoice) ||
                           (sourceTogoOrder && sourceTogoOrder.id !== card.id) ||
                           !!sourceOnlineOrder);
-                      const oStatus = String(card.status || card.fullOrder?.status || '').toUpperCase();
-                      const oIsPaid = oStatus === 'PAID' || oStatus === 'COMPLETED' || oStatus === 'CLOSED';
+                      const fo = (card as any).fullOrder || {};
+                      const oStatus = String(card.status || fo.status || '').toUpperCase();
+                      const paySt = String(fo.paymentStatus || fo.payment_status || '').toLowerCase();
+                      const oIsPaid =
+                        oStatus === 'PAID' ||
+                        oStatus === 'COMPLETED' ||
+                        oStatus === 'CLOSED' ||
+                        paySt === 'paid' ||
+                        paySt === 'completed' ||
+                        fo.paid === true ||
+                        fo.isPaid === true;
                       const oIsPickedUp = oStatus === 'PICKED_UP';
                       const onlineCanSwipePickup = oIsPaid && !oIsPickedUp;
-                      const displayTime = formatTimeAmPm(card.time);
+                      /** 카드 좌측: 주문 접수 시각이 아니라 픽업/준비 완료 예정 시각(프렙 반영) */
+                      const onlineReadyDisplayRaw = (() => {
+                        const pt = card.pickupTime;
+                        if (pt instanceof Date && !Number.isNaN(pt.getTime())) {
+                          return pt.toLocaleTimeString('en-US', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                          });
+                        }
+                        const rtl =
+                          fo.readyTime ||
+                          fo.ready_time ||
+                          fo.readyTimeLabel ||
+                          fo.ready_time_label ||
+                          fo.pickupTimeLabel ||
+                          fo.pickup_time_label;
+                        if (rtl != null && String(rtl).trim() !== '') {
+                          return String(rtl).trim();
+                        }
+                        const prepStr = prepTimeSettingsRef.current?.thezoneorder?.time || '20m';
+                        const prepMin = parseInt(String(prepStr).replace(/[^\d]/g, ''), 10) || 20;
+                        const placed = card.placedTime || fo.createdAt;
+                        let placedMs: number | null = null;
+                        if (placed instanceof Date) placedMs = placed.getTime();
+                        else if (placed && typeof placed === 'object') {
+                          const sec = (placed as any)._seconds ?? (placed as any).seconds;
+                          if (sec != null) placedMs = Number(sec) * 1000;
+                        } else if (placed) {
+                          const d = new Date(placed as any);
+                          if (!Number.isNaN(d.getTime())) placedMs = d.getTime();
+                        }
+                        if (placedMs != null && !Number.isNaN(placedMs)) {
+                          return new Date(placedMs + prepMin * 60000).toLocaleTimeString('en-US', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                          });
+                        }
+                        return String(card.time || '').trim();
+                      })();
+                      const displayTime = formatTimeAmPm(onlineReadyDisplayRaw);
                       if (oIsPickedUp) return null;
                       return (
                         <div key={`online-${card.id}`} className="relative overflow-hidden rounded-lg">
@@ -12314,17 +12588,93 @@ const SalesPage: React.FC = () => {
           const cdItems = cardDetailItems;
           const cdChannel = cardDetailChannel;
           const cdStatus = String(cdOrder.status || cdOrder.fullOrder?.status || '').toUpperCase();
-          const cdIsPaid = cdStatus === 'PAID' || cdStatus === 'COMPLETED' || cdStatus === 'CLOSED';
+          const cdIsPaid =
+            cdChannel === 'delivery' ||
+            cdStatus === 'PAID' ||
+            cdStatus === 'COMPLETED' ||
+            cdStatus === 'CLOSED';
           const cdOrderId = cdChannel === 'delivery'
             ? (cdOrder.order_id || cdOrder.id)
             : (cdOrder.localOrderId || cdOrder.fullOrder?.localOrderId || cdOrder.order_id || cdOrder.id);
-          const cdSubtotal = cdOrder.subtotal || cdOrder.fullOrder?.subtotal || 0;
-          const cdTax = cdOrder.tax || cdOrder.fullOrder?.tax || 0;
-          const cdTotal = cdOrder.total || cdOrder.fullOrder?.total || 0;
+          const _cdMoney = computeCardDetailModalTotals(cdOrder, cdItems);
+          const cdSubtotal = _cdMoney.subtotal;
+          const cdTax = _cdMoney.tax;
+          const cdTotal = _cdMoney.total;
           const cdName = cdOrder.name || cdOrder.customer_name || cdOrder.fullOrder?.customerName || '';
           const cdPhone = cdOrder.phone || cdOrder.customer_phone || cdOrder.fullOrder?.customerPhone || '';
+          /** 딜리버리: 패널·주문목록과 동일 규칙의 채널 주문번호(고객정보 영역 표시용) */
+          const cdDeliveryChannelOrderLine =
+            cdChannel === 'delivery'
+              ? (() => {
+                  const { company, orderNumber } = orderListGetDeliveryMeta(cdOrder);
+                  let ext = String(orderNumber || '').replace(/^#/, '').trim();
+                  if (!ext) ext = String(formatDeliveryPanelDisplayId(cdOrder) || '').trim();
+                  if (!ext) return '';
+                  const abbr = orderListNormalizeDeliveryAbbr(company);
+                  const up = ext.toUpperCase();
+                  return abbr ? `${abbr}-${up}` : up;
+                })()
+              : '';
           const cdNumber = cdOrder.number || cdOrder.order_number || '';
           const cdChannelLabel = cdChannel === 'delivery' ? 'DLV' : cdChannel === 'online' ? 'ONLINE' : 'TOGO';
+          const cdFo = (cdOrder as any).fullOrder || {};
+          const cdPickupTimeFromDate = (v: any): string => {
+            if (v == null) return '';
+            try {
+              if (typeof v?.toDate === 'function') {
+                const d = v.toDate();
+                if (d && !Number.isNaN(d.getTime())) {
+                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                }
+              }
+              if (typeof v === 'object' && v && '_seconds' in v && (v as any)._seconds != null) {
+                const d = new Date((v as any)._seconds * 1000);
+                if (!Number.isNaN(d.getTime())) {
+                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                }
+              }
+              if (typeof v === 'object' && v && 'seconds' in v && (v as any).seconds != null) {
+                const d = new Date((v as any).seconds * 1000);
+                if (!Number.isNaN(d.getTime())) {
+                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                }
+              }
+              const d = new Date(v);
+              if (!Number.isNaN(d.getTime())) {
+                return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+              }
+            } catch {
+              /* ignore */
+            }
+            return '';
+          };
+          let cdPickupDisplay = '';
+          if (cdChannel === 'togo') {
+            const raw = String(
+              (cdOrder as any).readyTimeLabel || (cdOrder as any).ready_time || (cdOrder as any).time || ''
+            ).trim();
+            cdPickupDisplay = raw ? formatTimeAmPm(raw) : '';
+          } else if (cdChannel === 'delivery') {
+            const raw = String(
+              (cdOrder as any).readyTimeLabel ||
+                (cdOrder as any).ready_time ||
+                cdFo.readyTimeLabel ||
+                (cdOrder as any).time ||
+                ''
+            ).trim();
+            cdPickupDisplay = raw ? formatTimeAmPm(raw) : '';
+          } else {
+            const pt = (cdOrder as any).pickupTime ?? cdFo.pickupTime ?? cdFo.readyTime;
+            cdPickupDisplay = cdPickupTimeFromDate(pt);
+            if (!cdPickupDisplay) {
+              const placed = (cdOrder as any).placedTime ?? cdFo.createdAt ?? cdFo.pickup_time;
+              cdPickupDisplay = cdPickupTimeFromDate(placed);
+            }
+            if (!cdPickupDisplay) {
+              const raw = String((cdOrder as any).time || cdFo.time || '').trim();
+              cdPickupDisplay = raw ? formatTimeAmPm(raw) : '';
+            }
+          }
 
           return (
             <div
@@ -12361,20 +12711,30 @@ const SalesPage: React.FC = () => {
                 </div>
 
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
-                  {(cdName || cdPhone) && (
-                    <div className="space-y-2 rounded-[14px] p-2.5 text-sm" style={PAY_NEO.inset}>
-                      <div className="flex flex-wrap gap-3 text-gray-800">
-                        {cdName && <span className="font-medium">{cdName}</span>}
-                        {cdPhone && <span className="font-bold">{cdPhone}</span>}
+                  {(cdName || cdPhone || cdPickupDisplay || cdDeliveryChannelOrderLine) && (
+                    <div className="space-y-2 rounded-[14px] p-2.5 text-base leading-snug" style={PAY_NEO.inset}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1 flex flex-wrap items-center gap-3 text-gray-800">
+                          {cdDeliveryChannelOrderLine && (
+                            <span className="font-bold text-indigo-900" title="Delivery order #">
+                              {cdDeliveryChannelOrderLine}
+                            </span>
+                          )}
+                          {cdName && <span className="font-medium">{cdName}</span>}
+                          {cdPhone && <span className="font-bold">{cdPhone}</span>}
+                        </div>
+                        {cdPickupDisplay ? (
+                          <span className="shrink-0 text-base font-bold whitespace-nowrap text-red-600">{cdPickupDisplay}</span>
+                        ) : null}
                       </div>
                     </div>
                   )}
 
-                  <div className="space-y-2 rounded-[14px] p-2.5" style={CARD_DETAIL_ITEMS_TAX_FLAT}>
+                  <div className="space-y-2 rounded-[14px] p-2.5" style={CARD_DETAIL_ITEMS_LIST_SLIGHT}>
                     {cdItems.length === 0 ? (
                       <div className="py-8 text-center text-sm text-gray-500">Loading items...</div>
                     ) : (
-                      <div className="space-y-2">
+                      <div className="space-y-1">
                         {cdItems.map((item: any, idx: number) => {
                           const itemPrice = Number(item.price || item.total_price || 0);
                           const qty = item.quantity || 1;
@@ -12386,7 +12746,7 @@ const SalesPage: React.FC = () => {
                             else if (item.modifiers) { mods = item.modifiers; }
                           } catch {}
                           return (
-                            <div key={item.id || item.order_line_id || idx} className="flex items-start justify-between border-b border-gray-200/80 py-1.5 last:border-0">
+                            <div key={item.id || item.order_line_id || idx} className="flex items-start justify-between border-b border-gray-200/80 py-[3px] last:border-0">
                               <div className="flex-1">
                                 <div className="text-sm font-medium text-gray-800">
                                   {qty > 1 && <span className="mr-1 font-bold text-blue-600">{qty}x</span>}
@@ -12472,7 +12832,6 @@ const SalesPage: React.FC = () => {
                           try { if (it.modifiers_json) { mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json; } } catch {}
                           return { ...it, modifiers: mods };
                         });
-                        if (!items.length) { alert('No items to void.'); return; }
                         const sels: Record<string, { checked: boolean; qty: number }> = {};
                         items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
                         const orderForVoid = {
@@ -12530,7 +12889,7 @@ const SalesPage: React.FC = () => {
                             const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
                             const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
                             const nextOrderType =
-                              rawType.includes('delivery') || rawFulfillment.includes('delivery') || cdChannel === 'delivery'
+                              rawType.includes('delivery') || rawFulfillment.includes('delivery')
                                 ? 'delivery'
                                 : rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
                                 ? 'togo'
@@ -12568,7 +12927,7 @@ const SalesPage: React.FC = () => {
                             const rawType = String(cdOrder.order_type || cdChannel || '').toLowerCase();
                             const rawFulfillment = String(cdOrder.fulfillment_mode || '').toLowerCase();
                             const nextOrderType =
-                              rawType.includes('delivery') || rawFulfillment.includes('delivery') || cdChannel === 'delivery'
+                              rawType.includes('delivery') || rawFulfillment.includes('delivery')
                                 ? 'delivery'
                                 : rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
                                 ? 'togo'
@@ -12980,7 +13339,6 @@ const SalesPage: React.FC = () => {
                                       try { if (it.modifiers_json) { mods = typeof it.modifiers_json === 'string' ? JSON.parse(it.modifiers_json) : it.modifiers_json; } } catch {}
                                       return { ...it, modifiers: mods };
                                     });
-                                    if (!items.length) { alert('No items to void.'); return; }
                                     const sels: Record<string, { checked: boolean; qty: number }> = {};
                                     items.forEach((it: any) => { const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id); sels[key] = { checked: true, qty: it.quantity || 1 }; });
                                     const sqliteVoidId = resolveSqliteOrderIdForVoid(orderListSelectedOrder, voidType);
@@ -13181,10 +13539,6 @@ const SalesPage: React.FC = () => {
                                   } catch {}
                                   return { ...it, modifiers: mods };
                                 });
-                                if (!items.length) {
-                                  alert('No items to void.');
-                                  return;
-                                }
                                 const sels: Record<string, { checked: boolean; qty: number }> = {};
                                 items.forEach((it: any) => {
                                   const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
@@ -13932,15 +14286,33 @@ const SalesPage: React.FC = () => {
               <div className="min-h-0 min-w-0 space-y-2">
                 <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
                   <div className="mb-2 text-xs font-semibold text-slate-600">Order #</div>
-                  <input
-                    type="text"
-                    ref={deliveryOrderInputRef}
-                    value={deliveryOrderNumber}
-                    onChange={(e) => setDeliveryOrderNumber(e.target.value.toUpperCase())}
-                    placeholder="Order #"
-                    className="h-12 w-full rounded-[14px] border-0 px-3 text-center font-mono text-xl tracking-widest text-slate-800 focus:outline-none focus:ring-0"
-                    style={PAY_NEO.inset}
-                  />
+                  <div className="flex min-w-0 items-stretch gap-2">
+                    {(() => {
+                      const b =
+                        deliveryCompany &&
+                        DELIVERY_ORDER_MODAL_CHANNEL_BADGE[
+                          deliveryCompany as keyof typeof DELIVERY_ORDER_MODAL_CHANNEL_BADGE
+                        ];
+                      if (!b) return null;
+                      return (
+                        <span
+                          className="flex shrink-0 items-center px-1 text-base font-extrabold leading-none tracking-tight"
+                          style={{ color: b.color }}
+                        >
+                          {b.label}
+                        </span>
+                      );
+                    })()}
+                    <input
+                      type="text"
+                      ref={deliveryOrderInputRef}
+                      value={deliveryOrderNumber}
+                      onChange={(e) => setDeliveryOrderNumber(e.target.value.toUpperCase())}
+                      placeholder="Order #"
+                      className="h-12 min-w-0 flex-1 rounded-[14px] border-0 px-3 text-center font-mono text-xl tracking-widest text-slate-800 focus:outline-none focus:ring-0"
+                      style={PAY_NEO.inset}
+                    />
+                  </div>
                 </div>
 
                 <div className="rounded-[18px] border-0 p-3" style={PAY_NEO.inset}>
@@ -14313,6 +14685,7 @@ const SalesPage: React.FC = () => {
         key={`ot-pay-${String(onlineTogoPaymentOrder?.id ?? 'x')}-${Number(onlineTogoPaymentOrder?.total ?? 0)}-${showOnlineTogoPaymentModal ? '1' : '0'}`}
         isOpen={showOnlineTogoPaymentModal}
         onClose={() => {
+          disarmPanelTogoPayKitchenSuppress();
           setShowOnlineTogoPaymentModal(false);
           setOnlineTogoPaymentOrder(null);
           // ê²°ì œ ì„¸ì…˜ ì´ˆê¸°í™”
@@ -14742,6 +15115,7 @@ const SalesPage: React.FC = () => {
                     }
                     
                     // ê²°ì œ ëª¨ë‹¬ ì—´ê¸°
+                    armPanelTogoPayKitchenSuppress();
                     setOnlineTogoPaymentOrder(unpaidPickupOrder);
                     setShowOnlineTogoPaymentModal(true);
                     
@@ -14895,6 +15269,7 @@ const SalesPage: React.FC = () => {
               status: order.fullOrder?.status || order.status || 'pending',
             };
             setSelectedOrderType(orderType === 'delivery' ? 'delivery' : 'togo');
+            armPanelTogoPayKitchenSuppress();
             setOnlineTogoPaymentOrder(orderForPayment);
             setShowFsrPickupModal(false);
             setShowOnlineTogoPaymentModal(true);
@@ -14979,6 +15354,7 @@ const SalesPage: React.FC = () => {
               status: order.fullOrder?.status || order.status || 'pending',
             };
             setSelectedOrderType(orderType === 'delivery' ? 'delivery' : 'togo');
+            armPanelTogoPayKitchenSuppress();
             setOnlineTogoPaymentOrder(orderForPayment);
             setShowPickupListModal(false);
             setShowOnlineTogoPaymentModal(true);
@@ -15115,7 +15491,7 @@ const SalesPage: React.FC = () => {
           setSelectedOrderType(null);
         }}
         onBackToOrder={handleBackToOrderFromDetailModal}
-        onlineOrders={[...onlineQueueCards, ...togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'online' || String(o.type || '').toLowerCase() === 'online')] as OrderData[]}
+        onlineOrders={onlineQueueCards as OrderData[]}
         togoOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany && String(o.fulfillment || '').toLowerCase() !== 'online' && String(o.type || '').toLowerCase() !== 'online') as OrderData[]}
         deliveryOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() === 'delivery' || String(o.type || '').toLowerCase() === 'delivery' || o.deliveryCompany) as OrderData[]}
         initialOrderType={(selectedOrderType as OrderChannelType) || 'togo'}
@@ -15238,6 +15614,7 @@ const SalesPage: React.FC = () => {
               flushSync(() => {
                 setOnlineTogoPaymentOrder(orderForPayment);
               });
+              armPanelTogoPayKitchenSuppress();
               setShowOrderDetailModal(false);
               setShowOnlineTogoPaymentModal(true);
             } catch (err: any) {
@@ -15330,7 +15707,6 @@ const SalesPage: React.FC = () => {
                 });
               }
             }
-            if (!items.length) { alert('No items to void.'); return; }
             const sels: Record<string, { checked: boolean; qty: number }> = {};
             items.forEach((it: any) => {
               const key = String(it.order_line_id || it.orderLineId || it.item_id || it.id);
@@ -15371,8 +15747,9 @@ const SalesPage: React.FC = () => {
           return s + (item ? (item.price || 0) * v.qty : 0);
         }, 0);
         const resolvedVoidOrderId = resolveSqliteOrderIdForVoid(togoVoidOrder, togoVoidOrderType);
+        const isShellEntireVoid = !(togoVoidItems || []).length;
         const canConfirm =
-          selCount > 0 &&
+          (selCount > 0 || isShellEntireVoid) &&
           togoVoidPin.length >= 4 &&
           !togoVoidLoading &&
           resolvedVoidOrderId != null &&
@@ -15384,7 +15761,7 @@ const SalesPage: React.FC = () => {
 
         /** 항목 미선택: 비활성 Void를 오목(inset) 대신 볼록(raised)으로 표시 */
         const voidCtaDisabledStyle: React.CSSProperties =
-          selCount === 0
+          selCount === 0 && !isShellEntireVoid
             ? { ...PAY_NEO.raised, color: '#94a3b8' }
             : { ...PAY_NEO.inset, color: '#94a3b8' };
 
@@ -15393,7 +15770,10 @@ const SalesPage: React.FC = () => {
           setTogoVoidLoading(true);
           setTogoVoidPinError('');
           try {
-            const lines = selectedItems.map(([k, v]) => {
+            const shellVoid = !(togoVoidItems || []).length;
+            const lines = shellVoid
+              ? []
+              : selectedItems.map(([k, v]) => {
               const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
               return {
                 order_line_id: item?.order_line_id || item?.orderLineId || null,
@@ -15405,10 +15785,12 @@ const SalesPage: React.FC = () => {
                 printer_group_id: item?.printer_group_id || null,
               };
             });
-            const isEntire = selectedItems.length === togoVoidItems.length && selectedItems.every(([k, v]) => {
+            const isEntire =
+              shellVoid ||
+              (selectedItems.length === togoVoidItems.length && selectedItems.every(([k, v]) => {
               const item = togoVoidItems.find((it: any) => String(it.order_line_id || it.orderLineId || it.item_id || it.id) === k);
               return v.qty >= (item?.quantity || 1);
-            });
+            }));
             const res = await fetch(`${API_URL}/orders/${orderId}/void`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -15426,12 +15808,67 @@ const SalesPage: React.FC = () => {
               setTogoVoidLoading(false);
               return;
             }
+
+            const vo: any = togoVoidOrder;
+            const dm =
+              vo?.deliveryMetaId ??
+              vo?.delivery_meta_id ??
+              (typeof vo?.table_id === 'string' && String(vo.table_id).toUpperCase().startsWith('DL')
+                ? String(vo.table_id).substring(2)
+                : null);
+            const fbDoc =
+              vo?.fullOrder?.id != null && String(vo.fullOrder.id).trim() !== ''
+                ? String(vo.fullOrder.id).trim()
+                : '';
+            const sqliteStr = orderId != null && String(orderId).trim() !== '' ? String(orderId).trim() : '';
+            const voidTypeLc = String(togoVoidOrderType || '').toLowerCase();
+            // SQLite void만으로는 패널에 남는 경우: Firestore 온라인 행 + delivery_orders 메타
+            if (fbDoc && (voidTypeLc === 'online' || fbDoc !== sqliteStr)) {
+              try {
+                await fetch(`${API_URL}/online-orders/order/${encodeURIComponent(fbDoc)}/cancel`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                });
+              } catch (e) {
+                console.warn('[Void] Firebase online cancel failed:', e);
+              }
+            }
+            if (dm != null && String(dm).trim() !== '') {
+              try {
+                await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(dm).trim())}/status`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ status: 'CANCELLED' }),
+                });
+              } catch (e) {
+                console.warn('[Void] delivery_orders CANCELLED patch failed:', e);
+              }
+            }
+            registerSwipeRemovedPanelIds(
+              vo?.id,
+              fbDoc,
+              sqliteStr,
+              vo?.localOrderId,
+              vo?.fullOrder?.localOrderId,
+              vo?.order_id,
+              vo?.onlineOrderNumber,
+              vo?.fullOrder?.onlineOrderNumber,
+              vo?.fullOrder?.externalOrderNumber,
+              dm
+            );
+
+            setTogoVoidLoading(false);
             setShowTogoVoidModal(false);
+            setShowCardDetailModal(false);
             setShowOrderDetailModal(false);
             setSelectedOrderDetail(null);
             setSelectedOrderType(null);
             loadOnlineOrders();
             loadTogoOrders();
+            window.setTimeout(() => {
+              loadOnlineOrders();
+              loadTogoOrders();
+            }, 600);
             if (showOrderListModal) {
               setOrderListSelectedOrder(null);
               setOrderListSelectedItems([]);
@@ -15473,6 +15910,11 @@ const SalesPage: React.FC = () => {
                 <div className="flex flex-col lg:flex-row gap-4">
                   <div className="w-full lg:max-w-[400px] lg:flex-none space-y-3">
                     <div className="space-y-0 px-3 py-4" style={PAY_NEO.inset}>
+                      {isShellEntireVoid && (
+                        <div className="mb-3 rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                          No line items on this order. Void still removes it from the board (entire order, $0.00).
+                        </div>
+                      )}
                       <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-400/40">
                         <div className="text-sm font-bold text-gray-800">Select Items</div>
                         <label className="text-sm flex items-center gap-2 cursor-pointer">

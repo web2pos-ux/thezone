@@ -470,7 +470,7 @@ router.get('/:reportId', async (req, res) => {
         data = await getDailySalesOverview(db, start);
         break;
       case 'weekly-sales-trend':
-        data = await getWeeklySalesTrend(db, start);
+        data = await getWeeklySalesTrend(db, end);
         break;
       case 'monthly-sales-comparison':
         data = await getMonthlySalesComparison(db, start);

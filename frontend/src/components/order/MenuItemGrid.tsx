@@ -216,7 +216,7 @@ const SortableEmptyCell: React.FC<{ id: string; height: number; lockLayout?: boo
   return (
     <div
       ref={setNodeRef}
-      className={invisible ? 'w-full h-full' : 'w-full h-full rounded-xl border border-dashed border-gray-300'}
+      className="w-full h-full"
       style={{ height: `${height}px` }}
       aria-hidden
     />

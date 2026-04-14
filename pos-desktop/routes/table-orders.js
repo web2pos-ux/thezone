@@ -335,20 +335,39 @@ module.exports = (db) => {
         
         console.log(`[${orderSource}] Adding items to existing order #${posOrderId} for table ${table_id}${server_name ? ` by ${server_name}` : ''}`);
       } else {
-        // 새 주문 생성
+        // 새 주문 생성 — POS 일일 순번은 Day Open 이후 orders.js POST 와 동일(admin_settings.daily_order_counter)
         isNewOrder = true;
-        const orderNumber = Math.floor(Math.random() * 900) + 100;
-        orderId = source === 'HANDHELD' ? `HH-${table_id}-${orderNumber}` : `TO-${table_id}-${orderNumber}`;
+        const sessionKey =
+          source === 'HANDHELD'
+            ? `HH-${table_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            : `TO-${table_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        orderId = sessionKey;
         const subtotalAfterDiscount = itemsSubtotal - promotionDiscount;
         const total = subtotalAfterDiscount * 1.05; // 세금 포함
-        
-        const posOrderResult = await dbRun(`
+
+        const posOrderResult = await dbRun(
+          `
           INSERT INTO orders (order_number, order_type, total, status, created_at, table_id, order_source, guest_count, server_name)
           VALUES (?, 'DINE_IN', ?, 'PENDING', ?, ?, ?, ?, ?)
-        `, [orderId, total, createdAt, table_id, orderSource, guest_count || 1, server_name || null]);
-        
+        `,
+          [null, total, createdAt, table_id, orderSource, guest_count || 1, server_name || null]
+        );
+
         posOrderId = posOrderResult.lastID;
-        console.log(`[${orderSource}] New order ${orderId} created for table ${table_id}, POS order ID: ${posOrderId}${server_name ? ` by ${server_name}` : ''}`);
+        let displayNumber = String(posOrderId).padStart(3, '0');
+        try {
+          const counterRow = await dbGet(`SELECT value FROM admin_settings WHERE key = 'daily_order_counter'`);
+          const nextNum = parseInt(counterRow?.value || '0', 10) + 1;
+          await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', ?)`, [String(nextNum)]);
+          displayNumber = String(nextNum).padStart(3, '0');
+          await dbRun(`UPDATE orders SET order_number = ? WHERE id = ?`, [displayNumber, posOrderId]);
+        } catch (counterErr) {
+          console.error(`[${orderSource}] Daily counter failed (fallback id):`, counterErr.message);
+          await dbRun(`UPDATE orders SET order_number = ? WHERE id = ?`, [displayNumber, posOrderId]);
+        }
+        console.log(
+          `[${orderSource}] New dine-in order #${displayNumber} for table ${table_id}, session ${orderId}, POS id: ${posOrderId}${server_name ? ` by ${server_name}` : ''}`
+        );
       }
 
       // 2. order_items 테이블에 아이템 저장

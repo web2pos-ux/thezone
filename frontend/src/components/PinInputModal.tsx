@@ -1,4 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_KEYPAD_KEY,
+  OH_ACTION_NEO,
+  PAY_NEO_PRIMARY_BLUE,
+  NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
+} from '../utils/softNeumorphic';
 
 interface PinInputModalProps {
   isOpen: boolean;
@@ -67,114 +77,144 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
 
   if (!isOpen) return null;
 
+  /** 패드·하단 — `active:brightness` 대신 인셋 오목 (위치 이동 없음은 컬러키에만 `NO_SHIFT`) */
+  const padBase =
+    'h-14 rounded-[10px] font-semibold touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-[1.02]';
+  const padNeoPress = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`;
+
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black bg-opacity-50">
+    <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/50">
       <div
-        className="bg-white rounded-lg shadow-xl p-6 w-96"
+        className="w-96 max-w-[92vw] overflow-hidden outline-none"
+        style={PAY_NEO.modalShell}
         onKeyDown={handleKeyPress}
         tabIndex={0}
       >
-        {/* Header */}
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-bold text-gray-800">{title}</h2>
+        <div
+          className="px-5 py-4 flex items-start justify-between gap-2"
+          style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}
+        >
+          <h2 className="text-xl font-extrabold text-slate-800 leading-tight pr-2">{title}</h2>
           <button
+            type="button"
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
             disabled={isLoading}
+            className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] disabled:opacity-50 disabled:translate-y-0 disabled:scale-100 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+            style={{ ...PAY_NEO.raised }}
+            aria-label="Close"
+            title="Close"
           >
-            ×
+            <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
 
-        {/* Message */}
-        {message && (
-          <p className="text-gray-600 mb-4 text-center">{message}</p>
-        )}
+        <div className="px-5 pb-5 pt-2" style={{ background: PAY_NEO_CANVAS }}>
+          {message && (
+            <p className="text-slate-600 mb-4 text-center text-sm font-medium">{message}</p>
+          )}
 
-        {/* PIN Display */}
-        <div className="mb-6">
-          <div className="flex justify-center gap-3">
-            {[0, 1, 2, 3].map((index) => (
-              <div
-                key={index}
-                className={`w-14 h-14 rounded-lg border-2 flex items-center justify-center text-3xl ${
-                  pin.length > index
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-300 bg-gray-50'
-                }`}
-              >
-                {pin.length > index ? '•' : ''}
-              </div>
-            ))}
+          <div className="mb-5">
+            <div className="flex justify-center gap-3">
+              {[0, 1, 2, 3].map((index) => (
+                <div
+                  key={index}
+                  style={PAY_NEO.inset}
+                  className={`w-14 h-14 flex items-center justify-center text-3xl rounded-[14px] ${
+                    pin.length > index ? 'text-blue-700' : 'text-slate-400'
+                  }`}
+                >
+                  {pin.length > index ? '•' : ''}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
 
-        {/* Error Message */}
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-red-600 text-center text-sm">{error}</p>
-          </div>
-        )}
-
-        {/* Number Pad */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
-            <button
-              key={num}
-              onClick={() => handleNumberClick(num)}
-              disabled={isLoading}
-              className="h-14 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-lg text-2xl font-semibold text-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          {error && (
+            <div
+              className="mb-4 p-3 rounded-[14px] border border-red-200/80"
+              style={PAY_NEO.inset}
             >
-              {num}
+              <p className="text-red-600 text-center text-sm font-semibold">{error}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
+              <button
+                key={num}
+                type="button"
+                onClick={() => handleNumberClick(num)}
+                disabled={isLoading}
+                className={`${padBase} text-2xl text-gray-800 ${padNeoPress}`}
+                style={PAY_KEYPAD_KEY}
+              >
+                {num}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={isLoading}
+              className={`${padBase} text-sm text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+              style={{ ...OH_ACTION_NEO.red, borderRadius: 10 }}
+            >
+              Clear
             </button>
-          ))}
-          <button
-            onClick={handleClear}
-            disabled={isLoading}
-            className="h-14 bg-red-100 hover:bg-red-200 active:bg-red-300 rounded-lg text-sm font-semibold text-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Clear
-          </button>
-          <button
-            onClick={() => handleNumberClick('0')}
-            disabled={isLoading}
-            className="h-14 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-lg text-2xl font-semibold text-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            0
-          </button>
-          <button
-            onClick={handleBackspace}
-            disabled={isLoading}
-            className="h-14 bg-yellow-100 hover:bg-yellow-200 active:bg-yellow-300 rounded-lg text-sm font-semibold text-yellow-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            ⌫
-          </button>
-        </div>
-
-        {/* Loading Indicator */}
-        {isLoading && (
-          <div className="flex justify-center items-center py-2">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-            <span className="ml-2 text-gray-600">처리 중...</span>
+            <button
+              type="button"
+              onClick={() => handleNumberClick('0')}
+              disabled={isLoading}
+              className={`${padBase} text-2xl text-gray-800 ${padNeoPress}`}
+              style={PAY_KEYPAD_KEY}
+            >
+              0
+            </button>
+            <button
+              type="button"
+              onClick={handleBackspace}
+              disabled={isLoading}
+              className={`${padBase} text-xl text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+              style={{ ...OH_ACTION_NEO.orange, borderRadius: 10 }}
+            >
+              ⌫
+            </button>
           </div>
-        )}
 
-        {/* Action Buttons */}
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            disabled={isLoading}
-            className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold text-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            취소
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={pin.length !== 4 || isLoading}
-            className="flex-1 px-4 py-3 bg-blue-500 hover:bg-blue-600 rounded-lg font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            확인
-          </button>
+          {isLoading && (
+            <div className="flex justify-center items-center py-2 text-sm text-slate-600 font-medium">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
+              <span className="ml-2">처리 중...</span>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isLoading}
+              className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-bold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${padNeoPress}`}
+              style={PAY_NEO.key}
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={pin.length !== 4 || isLoading}
+              className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-bold hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                pin.length === 4 && !isLoading ? NEO_COLOR_BTN_PRESS_NO_SHIFT : padNeoPress
+              }`}
+              style={
+                pin.length !== 4 || isLoading
+                  ? { ...PAY_NEO.inset, color: '#64748b' }
+                  : PAY_NEO_PRIMARY_BLUE
+              }
+            >
+              확인
+            </button>
+          </div>
         </div>
       </div>
     </div>

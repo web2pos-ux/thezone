@@ -480,7 +480,7 @@ const tableOperationsRoutes = require('./routes/table-operations')(db);
 const tableMoveHistoryRoutes = require('./routes/table-move-history')(db);
 const workScheduleRoutes = require('./routes/work-schedule');
 const giftCardsRoutes = require('./routes/gift-cards')(db);
-const { router: onlineOrdersRoutes, startOrderListener, broadcastToRestaurant } = require('./routes/online-orders');
+const { router: onlineOrdersRoutes, startOrderListener, broadcastToRestaurant, stopAllFirebaseOrderListeners } = require('./routes/online-orders');
 const tableOrdersRoutes = require('./routes/table-orders')(db);
 const devicesRoutes = require('./routes/devices')(db);
 const menuSyncRoutes = require('./routes/menu-sync');
@@ -507,6 +507,7 @@ app.use('/api/modifier-groups', modifierGroupRoutes);
 app.use('/api/menu-independent-options', menuIndependentOptionsRoutes);
 app.use('/api/open-price', openPriceRoutes);
 app.use('/api/reservations', reservationRoutes);
+app.use('/api', reservationRoutes);
 app.use('/api/reservation-settings', reservationSettingsRoutes);
 app.use('/api/waiting-list', waitingListRoutes);
 app.use('/api/admin-settings', adminSettingsRoutes);
@@ -737,6 +738,10 @@ app.put('/api/menu-item-colors', (req, res) => {
 
 // --- Socket.io Server Setup ---
 const server = http.createServer(app);
+/** @type {ReturnType<typeof setInterval> | null} */
+let printerDispatchInterval = null;
+/** Firestore boot listeners (menu visibility, day off, pause, prep time) — unsubscribe on shutdown */
+const firebaseBootUnsubs = [];
 const io = new Server(server, {
   cors: {
     origin: function(origin, callback) {
@@ -907,7 +912,7 @@ server.listen(PORT, async () => {
         
         // 3. Menu Visibility Listener (Firebase → POS 실시간 동기화)
         const IdMapperService = require('./services/idMapperService');
-        listenToMenuVisibilityChanges(restaurantId, async (change) => {
+        const unsubMenuVis = listenToMenuVisibilityChanges(restaurantId, async (change) => {
           try {
             // 1차: IdMapperService로 Firebase ID → POS ID 매핑 시도
             let posItemId = await IdMapperService.firebaseToLocal('menu_item', change.firebaseItemId);
@@ -968,10 +973,11 @@ server.listen(PORT, async () => {
             console.warn(`⚠️ POS visibility 동기화 실패: ${change.itemName}`, syncErr.message);
           }
         });
+        if (typeof unsubMenuVis === 'function') firebaseBootUnsubs.push(unsubMenuVis);
         console.log(`👂 Menu Visibility 리스너 활성화 - Firebase → POS 실시간 동기화 (IdMapper 사용)`);
         
         // 4. Day Off Listener (Firebase → POS 실시간 동기화)
-        listenToDayOffChanges(restaurantId, async (change) => {
+        const unsubDayOff = listenToDayOffChanges(restaurantId, async (change) => {
           try {
             if (!change.dates || !Array.isArray(change.dates)) return;
             
@@ -997,10 +1003,11 @@ server.listen(PORT, async () => {
             console.warn(`⚠️ POS Day Off 동기화 실패:`, syncErr.message);
           }
         });
+        if (typeof unsubDayOff === 'function') firebaseBootUnsubs.push(unsubDayOff);
         console.log(`👂 Day Off 리스너 활성화 - Firebase → POS 실시간 동기화`);
         
         // 5. Pause Listener (Firebase → POS 실시간 동기화)
-        listenToPauseChanges(restaurantId, async (change) => {
+        const unsubPause = listenToPauseChanges(restaurantId, async (change) => {
           try {
             if (!change.settings) return;
             
@@ -1024,10 +1031,11 @@ server.listen(PORT, async () => {
             console.warn(`⚠️ POS Pause 동기화 실패:`, syncErr.message);
           }
         });
+        if (typeof unsubPause === 'function') firebaseBootUnsubs.push(unsubPause);
         console.log(`👂 Pause 리스너 활성화 - Firebase → POS 실시간 동기화`);
         
         // 6. Prep Time Listener (Firebase → POS 실시간 동기화)
-        listenToPrepTimeChanges(restaurantId, async (change) => {
+        const unsubPrep = listenToPrepTimeChanges(restaurantId, async (change) => {
           try {
             if (!change.settings) return;
             
@@ -1051,6 +1059,7 @@ server.listen(PORT, async () => {
             console.warn(`⚠️ POS Prep Time 동기화 실패:`, syncErr.message);
           }
         });
+        if (typeof unsubPrep === 'function') firebaseBootUnsubs.push(unsubPrep);
         console.log(`👂 Prep Time 리스너 활성화 - Firebase → POS 실시간 동기화`);
       }
     });
@@ -1087,7 +1096,78 @@ server.listen(PORT, async () => {
 
     // Fire once shortly after boot, then on interval.
     setTimeout(() => { dispatchOnce(); }, 1000);
-    setInterval(() => { dispatchOnce(); }, 5000);
+    printerDispatchInterval = setInterval(() => { dispatchOnce(); }, 5000);
   } catch {}
+
+  // Pre Order Reprint — 픽업 30분 전 키친 자동 출력 스케줄
+  try {
+    const preorderReprintService = require('./services/preorderReprintService');
+    const preorderTick = () => {
+      preorderReprintService.tick({ dbRun, dbGet, dbAll, port: PORT }).catch(() => {});
+    };
+    setTimeout(preorderTick, 12000);
+    setInterval(preorderTick, 45000);
+  } catch (preErr) {
+    console.warn('[Backend] PreOrder reprint scheduler:', preErr && preErr.message);
+  }
 });
+
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[Backend] ${signal} received, shutting down...`);
+  try {
+    stopAllFirebaseOrderListeners();
+  } catch (e) {
+    console.warn('[Backend] stopAllFirebaseOrderListeners:', (e && e.message) || e);
+  }
+  try {
+    firebaseBootUnsubs.splice(0).forEach((fn) => {
+      try {
+        if (typeof fn === 'function') fn();
+      } catch (_) { /* ignore */ }
+    });
+  } catch (_) { /* ignore */ }
+  try {
+    require('./services/remoteSyncService').shutdown();
+  } catch (_) { /* ignore */ }
+  if (printerDispatchInterval) {
+    try {
+      clearInterval(printerDispatchInterval);
+    } catch (_) { /* ignore */ }
+    printerDispatchInterval = null;
+  }
+  const forceExit = setTimeout(() => {
+    console.warn('[Backend] Forcing process exit (shutdown timeout)');
+    process.exit(0);
+  }, 4000);
+
+  server.close((err) => {
+    if (err) console.warn('[Backend] server.close:', err.message);
+    try {
+      io.close(() => {
+        try {
+          db.close((dbErr) => {
+            if (dbErr) console.warn('[Backend] db.close:', dbErr.message);
+            clearTimeout(forceExit);
+            process.exit(0);
+          });
+        } catch (dbCloseErr) {
+          console.warn('[Backend] db.close sync error:', dbCloseErr && dbCloseErr.message);
+          clearTimeout(forceExit);
+          process.exit(0);
+        }
+      });
+    } catch (ioErr) {
+      console.warn('[Backend] io.close:', ioErr && ioErr.message);
+      clearTimeout(forceExit);
+      process.exit(0);
+    }
+  });
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
 startServer();

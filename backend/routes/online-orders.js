@@ -8,6 +8,7 @@ const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
+const preorderReprintService = require('../services/preorderReprintService');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -15,6 +16,48 @@ const activeSettingsListeners = new Map();
 
 // 연결된 SSE 클라이언트들
 const sseClients = new Map();
+
+/**
+ * POS 일일 주문번호(admin_settings.daily_order_counter) — `orders.js` POST / 와 동일 규칙.
+ * 온라인(Firebase→SQLite) 경로에서도 데이클로징 후 001~ 이 한 줄로 이어지도록 사용.
+ */
+async function assignPosDailyOrderNumberToSqliteOrder(orderId) {
+  if (orderId == null || !Number.isFinite(Number(orderId))) return null;
+  let displayNumber = null;
+  try {
+    const counterRow = await dbGet(`SELECT value FROM admin_settings WHERE key = 'daily_order_counter'`);
+    const nextNum = parseInt(counterRow?.value || '0', 10) + 1;
+    await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', ?)`, [String(nextNum)]);
+    displayNumber = String(nextNum).padStart(3, '0');
+    await dbRun(`UPDATE orders SET order_number = ? WHERE id = ?`, [displayNumber, orderId]);
+  } catch (e) {
+    console.error('[Online] Daily order_number assign failed:', e.message);
+  }
+  return displayNumber;
+}
+
+/** 레거시(ONLINE-타임스탬프·비어 있음)면 일일 번호로 한 번 교체 */
+async function ensurePosDailyOrderNumberForOnlineSqliteRow(orderId, currentOrderNumber) {
+  if (orderId == null || !Number.isFinite(Number(orderId))) return null;
+  const cur = currentOrderNumber != null ? String(currentOrderNumber).trim() : '';
+  if (cur && !/^ONLINE-/i.test(cur)) return cur;
+  return await assignPosDailyOrderNumberToSqliteOrder(orderId);
+}
+
+/** Kitchen/출력 헤더: SQLite `order_number`(일일 순번) 우선 — Sales 카드·POS 영수증과 동일 */
+function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
+  if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
+    const t = String(localOrder.order_number).trim().replace(/^#/, '');
+    if (t) {
+      const display = /^\d+$/.test(t) && t.length < 3 ? t.padStart(3, '0') : t;
+      return `#${display}`;
+    }
+  }
+  const fb = firebaseOrder?.orderNumber != null ? String(firebaseOrder.orderNumber).trim() : '';
+  if (fb) return fb.startsWith('#') ? fb : `#${fb}`;
+  if (localOrder?.id != null) return `#${localOrder.id}`;
+  return firebaseOrderId ? `#${firebaseOrderId}` : '#';
+}
 
 // orders 테이블 마이그레이션 (컬럼 추가)
 (async () => {
@@ -119,6 +162,8 @@ function startOrderListener(restaurantId) {
 
   const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
+      if (firebaseService.isPosDeliveryMirrorFirestoreOrder(order)) return;
+
       const firebaseOrderId = order.id;
       let localOrder = null;
 
@@ -133,14 +178,13 @@ function startOrderListener(restaurantId) {
         
         if (!localOrder) {
           const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-          const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
           
           const result = await dbRun(
             `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, fulfillment_mode)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              orderNumber,
+              null,
               'ONLINE',
               order.total || 0,
               'PENDING',
@@ -167,7 +211,10 @@ function startOrderListener(restaurantId) {
               );
             }
           }
-          console.log(`✅ 온라인 주문 SQLite 저장: #${localOrder.id} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'})`);
+          const posDaily = await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
+          console.log(
+            `✅ 온라인 주문 SQLite 저장: id=${localOrder.id} pos#=${posDaily || '—'} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'})`
+          );
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -175,6 +222,16 @@ function startOrderListener(restaurantId) {
       
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
+      try {
+        if (localOrder?.id) {
+          const r = await dbGet('SELECT order_number FROM orders WHERE id = ?', [localOrder.id]);
+          if (r?.order_number) {
+            formatted.posOrderNumber = r.order_number;
+            formatted.orderNumber = r.order_number;
+            formatted.order_number = r.order_number;
+          }
+        }
+      } catch {}
       
       broadcastToClients(restaurantId, {
         type: 'new_order',
@@ -182,6 +239,8 @@ function startOrderListener(restaurantId) {
       });
     },
     onOrderUpdate: (order) => {
+      if (firebaseService.isPosDeliveryMirrorFirestoreOrder(order)) return;
+
       broadcastToClients(restaurantId, {
         type: 'order_updated',
         order: formatOrderForFrontend(order)
@@ -318,6 +377,8 @@ function formatOrderForFrontend(order) {
   return {
     id: order.id,
     orderNumber: resolvedOrderNumber,
+    /** POS SQLite 일일 순번 — 프론트가 camel/snake 모두에서 읽을 수 있게 */
+    order_number: order.order_number != null && String(order.order_number).trim() !== '' ? String(order.order_number).trim() : null,
     customerName: order.customerName,
     customerPhone: order.customerPhone,
     customerEmail: order.customerEmail || null,
@@ -537,19 +598,30 @@ router.get('/:restaurantId', async (req, res) => {
       limit: parseInt(limit) || 50
     });
 
+    const SQLITE_HIDE = new Set([
+      'MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED',
+      'VOIDED', 'VOID', 'CLOSED', 'PICKED_UP',
+    ]);
+
     // 각 온라인 주문에 대해 SQLite ID를 조회하거나 생성
     const ordersWithLocalId = await Promise.all(orders.map(async (order) => {
       const firebaseOrderId = order.id;
-      
-      // 이미 SQLite에 저장된 주문인지 확인 (상태와 주문타입도 함께 조회)
-      let localOrder = await dbGet(
-        'SELECT id, status, order_type FROM orders WHERE firebase_order_id = ?',
+
+      // 동일 firebase_order_id로 행이 여러 개면(구버그) VOIDED 행이 있으면 무조건 숨김
+      const locals = await dbAll(
+        'SELECT id, status, order_type, order_number FROM orders WHERE firebase_order_id = ?',
         [firebaseOrderId]
       );
-      
-      // SQLite에서 이미 MERGED, COMPLETED, PAID, CANCELLED 상태면 null 반환 (필터링됨)
-      if (localOrder && ['MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED'].includes(localOrder.status)) {
-        return null; // 이 주문은 필터링됨
+      let localOrder = null;
+      if (locals && locals.length > 0) {
+        if (locals.some((r) => SQLITE_HIDE.has(String(r.status || '').toUpperCase()))) {
+          return null;
+        }
+        localOrder = locals.reduce((best, r) => (Number(r.id) > Number(best.id) ? r : best));
+      }
+
+      if (localOrder && SQLITE_HIDE.has(String(localOrder.status || '').toUpperCase())) {
+        return null;
       }
       
       // 테이블로 이동된 주문 (order_type = 'POS')도 필터링
@@ -559,14 +631,13 @@ router.get('/:restaurantId', async (req, res) => {
       
       if (!localOrder) {
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-        const orderNumber = order.orderNumber || `ONLINE-${Date.now()}`;
         
         try {
           const result = await dbRun(
             `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, fulfillment_mode)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              orderNumber,
+              null,
               'ONLINE',
               order.total || 0,
               'PENDING',
@@ -577,7 +648,7 @@ router.get('/:restaurantId', async (req, res) => {
               'online'
             ]
           );
-          localOrder = { id: result.lastID };
+          localOrder = { id: result.lastID, order_number: null };
           
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
@@ -588,13 +659,29 @@ router.get('/:restaurantId', async (req, res) => {
               );
             }
           }
+          const posDailyNew = await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
+          if (posDailyNew) localOrder.order_number = posDailyNew;
         } catch (insertError) {
           console.error('온라인 주문 SQLite 저장 실패:', insertError.message);
         }
       }
+
+      if (localOrder?.id) {
+        try {
+          const r = await dbGet('SELECT order_number FROM orders WHERE id = ?', [localOrder.id]);
+          const ensured = await ensurePosDailyOrderNumberForOnlineSqliteRow(localOrder.id, r?.order_number);
+          if (ensured) localOrder.order_number = ensured;
+          else if (r?.order_number) localOrder.order_number = r.order_number;
+        } catch {}
+      }
       
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
+      if (localOrder?.order_number) {
+        formatted.posOrderNumber = localOrder.order_number;
+        formatted.orderNumber = localOrder.order_number;
+        formatted.order_number = localOrder.order_number;
+      }
       return formatted;
     }));
 
@@ -813,7 +900,12 @@ router.post('/order/:orderId/cancel', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const result = await firebaseService.updateOrderStatus(orderId, 'cancelled');
+    let restaurantId = req.body?.restaurantId;
+    if (!restaurantId) {
+      const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile LIMIT 1');
+      restaurantId = profile?.firebase_restaurant_id;
+    }
+    const result = await firebaseService.updateOrderStatus(orderId, 'cancelled', restaurantId || null);
 
     res.json({
       success: true,
@@ -870,6 +962,17 @@ router.post('/order/:orderId/accept', async (req, res) => {
     console.log(`[ACCEPT] orderId: ${orderId}, prepTime: ${prepTime}, pickupTime: ${pickupTime}, readyTime: ${readyTime}`);
 
     const result = await firebaseService.acceptOrder(orderId, prepTime, pickupTime, restaurantId || null, readyTime || null);
+
+    try {
+      await preorderReprintService.onOnlineOrderAccepted({
+        dbRun,
+        dbGet,
+        restaurantId: restaurantId || null,
+        orderId,
+      });
+    } catch (preErr) {
+      console.warn('[ACCEPT] preorder reprint schedule:', preErr && preErr.message);
+    }
 
     res.json({
       success: true,
@@ -929,14 +1032,14 @@ router.post('/order/:orderId/print', async (req, res) => {
     const restaurant = await firebaseService.getRestaurantById(order.restaurantId);
     const restaurantName = restaurant?.name || '레스토랑';
 
-    // 로컬 POS 주문 ID 조회
+    // 로컬 POS 주문: 일일 order_number(카드·영수증과 동일) — 예전에는 id(9217 등)를 잘못 사용함
     const localOrder = await dbGet(
-      'SELECT id FROM orders WHERE firebase_order_id = ?',
+      'SELECT id, order_number FROM orders WHERE firebase_order_id = ?',
       [orderId]
     );
-    const localOrderNumber = localOrder?.id ? `#${localOrder.id}` : order.orderNumber;
+    const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, orderId);
 
-    console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase: ${order.orderNumber})`);
+    console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase 표시번호: ${order.orderNumber}, sqlite id: ${localOrder?.id ?? '—'})`);
 
     // 메뉴 아이템별 프린터 그룹 조회
     const printItems = [];
@@ -1486,8 +1589,10 @@ router.get('/utility-settings', async (req, res) => {
     }
 
     const utilitySettings = await firebaseService.getUtilitySettings(restaurantId);
-    const defaults = { bagFee: { enabled: false, amount: 0.10 }, utensils: { enabled: false } };
-    res.json({ success: true, utilitySettings: utilitySettings || defaults });
+    const defaults = { bagFee: { enabled: false, amount: 0.10 }, utensils: { enabled: false }, preOrderReprint: { enabled: false } };
+    const merged = { ...defaults, ...(utilitySettings || {}) };
+    if (!merged.preOrderReprint) merged.preOrderReprint = { enabled: false };
+    res.json({ success: true, utilitySettings: merged });
   } catch (error) {
     console.error('[UTILITY] Get error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -1516,6 +1621,9 @@ router.post('/utility-settings', async (req, res) => {
       },
       utensils: {
         enabled: Boolean(utilitySettings?.utensils?.enabled),
+      },
+      preOrderReprint: {
+        enabled: Boolean(utilitySettings?.preOrderReprint?.enabled),
       },
     };
 

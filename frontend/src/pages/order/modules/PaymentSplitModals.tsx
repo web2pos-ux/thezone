@@ -43,7 +43,7 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
   } = (splitBillModalProps || {}) as SplitBillBridgeProps;
 
   const handleSplitItemEqual = useCallback(
-    (rowIndex: number) => {
+    (rowIndex: number, splitCount?: number) => {
       if (!setOrderItems) return;
       setOrderItems(prev => {
         if (rowIndex < 0 || rowIndex >= prev.length) return prev;
@@ -54,9 +54,15 @@ const PaymentSplitModals: React.FC<PaymentSplitModalsProps> = ({
         prev.forEach(it => {
           if (it.type !== 'separator') guests.add(it.guestNumber || 1);
         });
-        const guestList = Array.from(guests).sort((a, b) => a - b);
-        const n = Math.max(1, guestList.length || 1);
+        let guestList = Array.from(guests).sort((a, b) => a - b);
+        const n = splitCount ? Math.max(2, splitCount) : Math.max(1, guestList.length || 1);
         if (n <= 1) return prev;
+
+        while (guestList.length < n) {
+          const nextGuest = (guestList.length > 0 ? Math.max(...guestList) : 0) + 1;
+          guestList.push(nextGuest);
+        }
+        guestList = guestList.slice(0, n);
 
         const Q = Math.max(1, src.quantity || 1);
         const unitPrice = src.totalPrice;

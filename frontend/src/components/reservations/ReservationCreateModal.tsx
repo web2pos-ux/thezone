@@ -3,6 +3,40 @@ import { API_URL } from '../../config/constants';
 import VirtualKeyboard from '../order/VirtualKeyboard';
 import { Keyboard as KeyboardIcon } from 'lucide-react';
 import TableSelectionModal from './TableSelectionModal';
+import {
+	PAY_NEO,
+	PAY_NEO_CANVAS,
+	PAY_NEO_PRIMARY_BLUE,
+	PAY_KEYPAD_KEY,
+	NEO_MODAL_BTN_PRESS_SNAP,
+	NEO_PREP_TIME_BTN_PRESS_SNAP,
+	NEO_COLOR_BTN_PRESS_SNAP,
+} from '../../utils/softNeumorphic';
+
+/** Reservation 모달 전용 — 눌림 오목이 지연 없이 바로 보이도록 SNAP 클래스 사용 */
+const NEO_MODAL_BTN_PRESS = NEO_MODAL_BTN_PRESS_SNAP;
+const NEO_PREP_TIME_BTN_PRESS = NEO_PREP_TIME_BTN_PRESS_SNAP;
+const NEO_COLOR_BTN_PRESS = NEO_COLOR_BTN_PRESS_SNAP;
+
+// Auto-capitalize first letter and first letter after space
+const autoCapitalizeName = (s: string): string => {
+	if (!s) return s;
+	return s.replace(/(^|\s)([a-z])/g, (_, space, char) => space + char.toUpperCase());
+};
+
+// Party size → tables needed: 1~5 = 1 table, 6~9 = 2, 10~13 = 3, ...
+const calcTablesNeeded = (partySize: number): number => {
+	if (!partySize || partySize <= 0) return 1;
+	if (partySize <= 5) return 1;
+	return 1 + Math.ceil((partySize - 5) / 4);
+};
+
+// Party size dropdown options (2~30) with table count label
+const PARTY_SIZE_OPTIONS = Array.from({ length: 29 }, (_, i) => {
+	const size = i + 2;
+	const tables = calcTablesNeeded(size);
+	return { value: String(size), label: `${size} guests — ${tables} table${tables > 1 ? 's' : ''}` };
+});
 
 // Helpers: digits-only and phone formatting XXX-XXX-XXXX
 const onlyDigits = (s: string) => (s || '').replace(/\D/g, '');
@@ -17,7 +51,7 @@ interface ReservationCreateModalProps {
 	open: boolean;
 	onClose: () => void;
 	onCreated?: () => void;
-	onTableStatusChanged?: (tableId: number, tableName: string, status: string, customerName?: string) => void;
+	onTableStatusChanged?: (tableId: number, tableName: string, status: string, customerName?: string, reservationTime?: string, partySize?: number) => void;
 }
 
 // Very lightweight two-month calendar (current and next month)
@@ -83,7 +117,7 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	const [toastMsg, setToastMsg] = useState<string>('');
 	// soft keyboard state
 	const [softKbOpen, setSoftKbOpen] = useState<boolean>(false);
-	const [softKbTarget, setSoftKbTarget] = useState<'name' | 'phone' | 'party' | 'deposit' | null>(null);
+	const [softKbTarget, setSoftKbTarget] = useState<'name' | 'phone' | 'party' | 'deposit' | 'tl_name' | 'tl_phone' | 'tl_party' | 'tl_deposit' | null>(null);
 	const kbBottomOffset = 0;
 	const [kbLang, setKbLang] = useState<string>('EN');
 	// Filters removed per request
@@ -106,10 +140,26 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	
 	// Table selection modal state
 	const [showTableSelectionModal, setShowTableSelectionModal] = useState<boolean>(false);
+	const [slotViewMode, setSlotViewMode] = useState<'grid' | 'timeline'>('timeline');
+	const [showTimelineForm, setShowTimelineForm] = useState<boolean>(false);
+	const [tlFormName, setTlFormName] = useState('');
+	const [tlFormPhone, setTlFormPhone] = useState('');
+	const [tlFormParty, setTlFormParty] = useState('');
+	const [tlFormHour, setTlFormHour] = useState('06');
+	const [tlFormMinute, setTlFormMinute] = useState('00');
+	const [tlFormAmpm, setTlFormAmpm] = useState<'AM' | 'PM'>('PM');
+	const [tlFormDeposit, setTlFormDeposit] = useState('');
+	const [tlFormChannel, setTlFormChannel] = useState<'Walk-in' | 'Phone' | 'Online'>('Walk-in');
+	const [tlFormSaving, setTlFormSaving] = useState(false);
+	const [tlFormError, setTlFormError] = useState<string | null>(null);
 	// Slot save states
 	const [savingSlots, setSavingSlots] = useState<boolean>(false);
 	const [slotsSaved, setSlotsSaved] = useState<boolean>(false);
-	const [selectedReservationForTable, setSelectedReservationForTable] = useState<{ id: string; name: string; partySize: number } | null>(null);
+	const [selectedReservationForTable, setSelectedReservationForTable] = useState<{ id: string; name: string; partySize: number; tablesNeeded?: number; tableIndex?: number; reservationTime?: string } | null>(null);
+	// Track how many tables have been assigned per reservation ID
+	const [tableAssignmentCount, setTableAssignmentCount] = useState<Record<string, number>>({});
+	// Track assigned table names per reservation ID (for display on bars)
+	const [assignedTableNames, setAssignedTableNames] = useState<Record<string, string[]>>({});
 
 	// Availability generator - all days open with configurable max slots
 	const availabilityMonth = useMemo(() => {
@@ -302,7 +352,7 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		}
 	}, [phone]);
 
-	// Position right-docked slot modal like a magnet to the main modal's right edge
+	// Position slot modal: timeline = centered full-width; grid = docked right of main modal
     useEffect(() => {
 		if (!showSlotModal) return;
 		
@@ -312,26 +362,37 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 			const rect = root.getBoundingClientRect();
             const vw = window.innerWidth;
             const vh = window.innerHeight;
-            const modalWidth = Math.min(538, vw - 20); // 468 * 1.15 ≈ 538
-            const modalHeight = 690; // 600 * 1.15 ≈ 690
-            
-            // 메인 모달 오른쪽에 도킹 시도, 35px 왼쪽으로 이동
-            let leftPos = rect.right + 8 - 35;
-            if (leftPos + modalWidth > vw - 10) {
-				// 화면 오른쪽을 넘으면 화면 오른쪽 끝에 맞춤
-				leftPos = Math.max(10, vw - modalWidth - 10);
+
+            if (slotViewMode === 'timeline') {
+				const modalWidth = Math.min(1035, vw - 20);
+				const modalHeight = Math.min(vh * 0.95, vh - 20);
+				const leftPos = Math.max(10, (vw - modalWidth) / 2);
+				const topPos = Math.max(10, Math.min((vh - modalHeight) / 2, vh - modalHeight - 10));
+				setSlotModalStyle({
+					position: 'fixed',
+					left: `${leftPos}px`,
+					top: `${topPos}px`,
+					width: `${modalWidth}px`,
+					zIndex: 60
+				});
+            } else {
+				const modalWidth = Math.min(538, vw - 20);
+				const modalHeight = 690;
+				let leftPos = rect.right + 8 - 35;
+				if (leftPos + modalWidth > vw - 10) {
+					leftPos = Math.max(10, vw - modalWidth - 10);
+				}
+				const topPos = Math.max(10, Math.min((vh - modalHeight) / 2, vh - modalHeight - 10));
+				setSlotModalStyle({
+					position: 'fixed',
+					left: `${leftPos}px`,
+					top: `${topPos}px`,
+					width: `${modalWidth}px`,
+					zIndex: 60
+				});
             }
-            const topPos = Math.max(10, Math.min((vh - modalHeight) / 2, vh - modalHeight - 10));
-            
-            setSlotModalStyle({ 
-				position: 'fixed',
-				left: `${leftPos}px`, 
-				top: `${topPos}px`,
-				width: `${modalWidth}px`,
-				zIndex: 60
-			});
 		} catch {}
-    }, [showSlotModal, date, availabilityMonth, open]);
+    }, [showSlotModal, date, availabilityMonth, open, slotViewMode]);
 
 	const loadCustomerHistory = async (phoneNumber: string) => {
 		try {
@@ -361,16 +422,16 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		if (!selectedReservationForTable) return;
 
 		try {
-			// Update table status to Occupied
 			const response = await fetch(`${API_URL}/table-map/elements/${tableId}/status`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ status: 'Occupied' })
+				body: JSON.stringify({ status: 'Reserved' })
 			});
 
 			if (response.ok) {
-				// Update reservation status to 'arrived' with table info
 				const reservationId = selectedReservationForTable.id;
+				const tablesNeeded = selectedReservationForTable.tablesNeeded || 1;
+
 				setReservationStatuses(prev => ({
 					...prev,
 					[reservationId]: {
@@ -380,19 +441,28 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 					}
 				}));
 
-				// Notify parent component about table status change with reservation name
 				if (onTableStatusChanged) {
-					onTableStatusChanged(tableId, tableName, 'Occupied', selectedReservationForTable.name);
+					onTableStatusChanged(tableId, tableName, 'Reserved', selectedReservationForTable.name, selectedReservationForTable.reservationTime, selectedReservationForTable.partySize);
 				}
 
-				// Show success message
-				setToastMsg(`Table ${tableName} assigned to ${selectedReservationForTable.name}`);
-				setShowToast(true);
-				setTimeout(() => setShowToast(false), 3000);
+				const newCount = (tableAssignmentCount[reservationId] || 0) + 1;
+				setTableAssignmentCount(prev => ({ ...prev, [reservationId]: newCount }));
+				setAssignedTableNames(prev => ({ ...prev, [reservationId]: [...(prev[reservationId] || []), tableName] }));
 
-				// Close table selection modal
 				setShowTableSelectionModal(false);
 				setSelectedReservationForTable(null);
+
+				if (newCount >= tablesNeeded) {
+					setToastMsg(`All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`);
+					setShowToast(true);
+					setTimeout(() => setShowToast(false), 3000);
+					setShowSlotModal(false);
+					setTableAssignmentCount(prev => { const next = { ...prev }; delete next[reservationId]; return next; });
+				} else {
+					setToastMsg(`Table ${tableName} assigned (${newCount}/${tablesNeeded}) — select next table`);
+					setShowToast(true);
+					setTimeout(() => setShowToast(false), 3000);
+				}
 			} else {
 				throw new Error('Failed to update table status');
 			}
@@ -409,7 +479,6 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		if (!selectedReservationForTable) return;
 
 		try {
-			// Update table status in database
 			const response = await fetch(`${API_URL}/table-map/elements/${tableId}/status`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
@@ -418,7 +487,8 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 
 			if (response.ok) {
 				const reservationId = selectedReservationForTable.id;
-				const newStatus = status === 'Occupied' ? 'occupied' : 'hold';
+				const tablesNeeded = selectedReservationForTable.tablesNeeded || 1;
+				const newStatus = status === 'Occupied' ? 'occupied' : status === 'Reserved' ? 'arrived' : 'hold';
 				
 				setReservationStatuses(prev => ({
 					...prev,
@@ -429,15 +499,28 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 					}
 				}));
 
-				// Notify parent component about table status change with reservation name
 				if (onTableStatusChanged) {
-					onTableStatusChanged(tableId, tableName, status, selectedReservationForTable.name);
+					onTableStatusChanged(tableId, tableName, status, selectedReservationForTable.name, selectedReservationForTable.reservationTime, selectedReservationForTable.partySize);
 				}
 
-				// Close both modals
+				const newCount = (tableAssignmentCount[reservationId] || 0) + 1;
+				setTableAssignmentCount(prev => ({ ...prev, [reservationId]: newCount }));
+				setAssignedTableNames(prev => ({ ...prev, [reservationId]: [...(prev[reservationId] || []), tableName] }));
+
 				setShowTableSelectionModal(false);
 				setSelectedReservationForTable(null);
-				onClose(); // Close the main Create Reservation modal
+
+				if (newCount >= tablesNeeded) {
+					setToastMsg(`All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`);
+					setShowToast(true);
+					setTimeout(() => setShowToast(false), 3000);
+					setShowSlotModal(false);
+					setTableAssignmentCount(prev => { const next = { ...prev }; delete next[reservationId]; return next; });
+				} else {
+					setToastMsg(`Table ${tableName} assigned (${newCount}/${tablesNeeded}) — select next table`);
+					setShowToast(true);
+					setTimeout(() => setShowToast(false), 3000);
+				}
 			} else {
 				console.error('Failed to update table status');
 				setToastMsg('Failed to update table status. Please try again.');
@@ -496,12 +579,13 @@ const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | '
 			}
 		}
 		if (action === 'arrived' && reservationId) {
-			// Get party size from reservation data
 			const partySize = getPartySizeFromReservation(reservationId);
+			const tablesNeeded = calcTablesNeeded(partySize);
 			setSelectedReservationForTable({
 				id: reservationId,
 				name: customerName,
-				partySize: partySize
+				partySize: partySize,
+				tablesNeeded
 			});
 			setShowTableSelectionModal(true);
 			return;
@@ -575,6 +659,26 @@ const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | '
 			}
 		} catch {}
 	}, [open, today, rescheduleMode, rescheduleTarget]);
+
+	// Auto-focus Name input when detail modal opens (once)
+	useEffect(() => {
+		if (!showDetailModal) return;
+		const timer = setTimeout(() => {
+			const el = document.getElementById('detail-modal-name-input') as HTMLInputElement | null;
+			if (el) { el.focus(); setSoftKbTarget('name'); setSoftKbOpen(true); }
+		}, 150);
+		return () => clearTimeout(timer);
+	}, [showDetailModal]);
+
+	// Auto-focus Name input when timeline form opens (once)
+	useEffect(() => {
+		if (!showTimelineForm) return;
+		const timer = setTimeout(() => {
+			const el = document.getElementById('timeline-form-name-input') as HTMLInputElement | null;
+			if (el) el.focus();
+		}, 150);
+		return () => clearTimeout(timer);
+	}, [showTimelineForm]);
 
 const time24 = useMemo(() => {
 		const h12Num = Math.max(1, Math.min(12, Number(hour12) || 12));
@@ -740,12 +844,59 @@ const handleSave = async () => {
 		}
 	};
 
+	const handleTimelineFormSave = async () => {
+		setTlFormError(null);
+		const h12 = Math.max(1, Math.min(12, Number(tlFormHour) || 12));
+		let h24 = h12 % 12;
+		if (tlFormAmpm === 'PM') h24 += 12;
+		const formTime24 = `${String(h24).padStart(2, '0')}:${String(Math.max(0, Math.min(59, Number(tlFormMinute) || 0))).padStart(2, '0')}`;
+		if (!tlFormName.trim() || !tlFormPhone.trim() || !(Number(tlFormParty) > 0)) {
+			setTlFormError('Name, Phone, Party Size are required');
+			return;
+		}
+		setTlFormSaving(true);
+		try {
+			const payload = {
+				customer_name: tlFormName.trim(),
+				phone_number: tlFormPhone.trim(),
+				reservation_date: date,
+				reservation_time: formTime24,
+				party_size: Number(tlFormParty),
+				special_requests: JSON.stringify({ channel: tlFormChannel, deposit: Number(tlFormDeposit || '0'), note: '' })
+			};
+			const res = await fetch(`${API_URL}/reservations/reservations`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			if (!res.ok) throw new Error(await res.text() || 'Failed');
+			setShowTimelineForm(false);
+			setTlFormName(''); setTlFormPhone(''); setTlFormParty(''); setTlFormDeposit('');
+			setTlFormHour('06'); setTlFormMinute('00'); setTlFormAmpm('PM'); setTlFormChannel('Walk-in');
+			const listRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(date)}`);
+			if (listRes.ok) {
+				const list = await listRes.json();
+				const grouped: Record<string, any[]> = {};
+				(list || []).forEach((r: any) => { const t = String(r?.reservation_time || '').slice(0, 5); if (!grouped[t]) grouped[t] = []; grouped[t].push(r); });
+				setReservationsByTime(grouped);
+			}
+			if (onCreated) onCreated();
+		} catch (e: any) {
+			setTlFormError(String(e?.message || 'Failed to create reservation'));
+		} finally {
+			setTlFormSaving(false);
+		}
+	};
+
 	if (!open) return null;
 
 	return (
 		<>
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 p-4">
-			<div className="bg-white rounded-lg shadow-xl w-[580px] p-4 flex flex-col" style={{ marginLeft: '-40px', height: '80vh' }}>
+			<div
+				className="flex w-[580px] flex-col border-0 p-4"
+				style={{ marginLeft: '-40px', height: '80vh', ...PAY_NEO.modalShell }}
+			>
                 {showToast && (
                     <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
                         <div className="px-5 py-3 rounded-lg bg-black/80 text-white shadow-2xl" style={{ fontSize: 20 }}>
@@ -757,30 +908,33 @@ const handleSave = async () => {
 					<div className="flex items-center justify-center mb-1 h-12">
 						<h2 className="text-lg font-semibold whitespace-nowrap">Reservation</h2>
 						<button
+							type="button"
 							onClick={onClose}
-							className="absolute w-12 h-12 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full flex items-center justify-center touch-manipulation transition-colors z-[55] backdrop-blur-sm"
-							style={{ right: '-5px', top: 'calc(50% - 25px)', transform: 'translateY(-50%)' }}
+							className={`absolute z-[55] flex h-12 w-12 touch-manipulation select-none items-center justify-center rounded-full border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+							style={{ ...PAY_NEO.raised, right: '-5px', top: 'calc(50% - 25px)', transform: 'translateY(-50%)' }}
 						>
-							<svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
-					{/* Tab buttons */}
-					<div className="flex gap-1 border-b border-gray-200 pb-0">
+					{/* Tab buttons — PAY_NEO key / primary */}
+					<div className="flex gap-1.5 pb-0" style={{ borderBottom: '1px solid rgba(148,163,184,0.35)' }}>
 						{([
 							{ key: 'create' as const, label: '📅 Create', desc: 'New Reservation' },
 							{ key: 'checkin' as const, label: '🪑 Check-in', desc: 'Assign Table' },
 							{ key: 'manage' as const, label: '⚙️ Manage', desc: 'Cancel / Edit' },
 						]).map(tab => (
 							<button
+								type="button"
 								key={tab.key}
 								onClick={() => setActiveTab(tab.key)}
-								className={`flex-1 py-2 px-3 text-sm font-semibold rounded-t-lg transition-colors ${
+								className={`flex-1 rounded-t-[12px] border-0 px-3 py-2 text-sm font-semibold touch-manipulation select-none ${
 									activeTab === tab.key
-										? 'bg-blue-600 text-white shadow-sm'
-										: 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+										? `text-white ${NEO_COLOR_BTN_PRESS}`
+										: `text-slate-700 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`
 								}`}
+								style={activeTab === tab.key ? { ...PAY_NEO_PRIMARY_BLUE } : { ...PAY_NEO.key }}
 							>
 								{tab.label}
 							</button>
@@ -789,7 +943,7 @@ const handleSave = async () => {
 				</div>
 
 				{/* Tab content area - scrollable, fixed size */}
-				<div className="flex-1 overflow-y-auto min-h-0">
+				<div className="flex-1 min-h-0 overflow-y-auto rounded-b-[14px] px-1 pt-1" style={{ background: PAY_NEO_CANVAS }}>
 
 				{/* ===== CREATE TAB ===== */}
 				{activeTab === 'create' && <>
@@ -799,8 +953,10 @@ const handleSave = async () => {
 					<div className="flex-1 min-w-0">
 						<div className="flex items-center justify-center gap-2 mb-2">
 							<button
+								type="button"
 								onClick={() => setAvailMonthOffset(prev => prev - 1)}
-								className="p-3 hover:bg-gray-100 rounded touch-manipulation"
+								className={`rounded-[10px] border-0 p-3 text-slate-800 touch-manipulation select-none hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+								style={{ ...PAY_KEYPAD_KEY }}
 							>
 								<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -810,8 +966,10 @@ const handleSave = async () => {
 								{new Date(availabilityMonth.year, availabilityMonth.month - 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
 							</span>
 							<button
+								type="button"
 								onClick={() => setAvailMonthOffset(prev => prev + 1)}
-								className="p-3 hover:bg-gray-100 rounded touch-manipulation"
+								className={`rounded-[10px] border-0 p-3 text-slate-800 touch-manipulation select-none hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+								style={{ ...PAY_KEYPAD_KEY }}
 							>
 								<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -820,7 +978,7 @@ const handleSave = async () => {
 						</div>
 
 					{/* Availability calendar */}
-					<div ref={anchorRef} className="bg-gray-50 rounded-xl p-3 border border-gray-200">
+					<div ref={anchorRef} className="rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
 						<div className="grid grid-cols-7 gap-[5px] mb-2">
 							{['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <span key={d} className="text-center text-xs font-bold text-gray-500">{d}</span>)}
 						</div>
@@ -834,18 +992,23 @@ const handleSave = async () => {
 									const isToday = d.date === today;
 								return (
 									<button
+										type="button"
 										key={d.date}
 										disabled={!d.isOpen}
-										className={`w-full flex flex-col items-center justify-center rounded-lg border transition-all ${
-											isSelected
-												? 'bg-blue-600 text-white border-blue-600 shadow-md'
-												: isToday
-													? 'bg-blue-50 text-blue-700 border-blue-300 hover:bg-blue-100'
-													: !d.isOpen
-														? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
-														: 'bg-white text-gray-700 border-gray-200 hover:bg-gray-100 hover:border-gray-300'
+										className={`w-full flex flex-col items-center justify-center rounded-[10px] border-0 touch-manipulation select-none ${
+											!d.isOpen
+												? 'cursor-not-allowed opacity-50'
+												: isSelected
+													? `text-white ${NEO_COLOR_BTN_PRESS}`
+													: `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} text-slate-800 ${isToday ? 'ring-2 ring-blue-400/80' : ''}`
 										}`}
-										style={{ height: '54px' }}
+										style={
+											!d.isOpen
+												? { ...PAY_NEO.inset, height: '54px', opacity: 0.45 }
+												: isSelected
+													? { ...PAY_NEO_PRIMARY_BLUE, height: '54px' }
+													: { ...PAY_NEO.key, height: '54px' }
+										}
                                     onClick={() => { 
 										if (!d.isOpen) return;
 										setDate(d.date); 
@@ -867,7 +1030,7 @@ const handleSave = async () => {
 				{/* Today's reservation list under calendar */}
 				<div className="mt-2">
 					<div className="text-sm font-semibold">Today's Reservations</div>
-						<div className="mt-2 border rounded divide-y max-h-64 overflow-auto">
+						<div className="mt-2 max-h-64 divide-y divide-slate-300/40 overflow-auto rounded-[14px]" style={{ ...PAY_NEO.inset }}>
 {(todayReservations || []).length === 0 && (
 							<div className="px-3 py-2 text-xs text-gray-500">No reservations today.</div>
 						)}
@@ -896,35 +1059,40 @@ const handleSave = async () => {
 				</div>
 
 					{/* Right: Slot Settings Panel */}
-					<div className="w-[160px] flex-shrink-0 bg-gray-50 rounded-lg p-3 border border-gray-200">
+					<div className="w-[160px] flex-shrink-0 rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
 						<div className="text-sm font-semibold text-gray-700 mb-3">⚙️ Slot Settings</div>
 						
 						<div className="mb-3">
 							<label className="block text-xs text-gray-500 mb-2 text-center">Max Tables Per Day</label>
 							<div className="flex items-center justify-center gap-2">
 								<button
+									type="button"
 									onClick={() => {
 										const v = Math.max(1, maxSlotsPerDay - 1);
 										setMaxSlotsPerDay(v);
 										localStorage.setItem('reservation_maxSlots', String(v));
 									}}
-									className="w-9 h-9 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold text-lg flex items-center justify-center transition-colors"
+									className={`flex h-9 w-9 items-center justify-center rounded-[10px] border-0 text-lg font-bold text-slate-800 touch-manipulation select-none hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+									style={{ ...PAY_KEYPAD_KEY }}
 								>−</button>
-								<div className="w-12 h-9 flex items-center justify-center bg-white border border-gray-300 rounded-md text-lg font-bold text-blue-600">
+								<div className="flex h-9 w-12 items-center justify-center rounded-[10px] text-lg font-bold text-blue-700" style={{ ...PAY_NEO.inset }}>
 									{maxSlotsPerDay}
 								</div>
 								<button
+									type="button"
 									onClick={() => {
 										const v = Math.min(99, maxSlotsPerDay + 1);
 										setMaxSlotsPerDay(v);
 										localStorage.setItem('reservation_maxSlots', String(v));
 									}}
-									className="w-9 h-9 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold text-lg flex items-center justify-center transition-colors"
+									className={`flex h-9 w-9 items-center justify-center rounded-[10px] border-0 text-lg font-bold text-slate-800 touch-manipulation select-none hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+									style={{ ...PAY_KEYPAD_KEY }}
 								>+</button>
 							</div>
 						</div>
 						
 						<button
+							type="button"
 							onClick={async () => {
 								try {
 									setSavingSlots(true);
@@ -951,13 +1119,20 @@ const handleSave = async () => {
 								}
 							}}
 							disabled={savingSlots}
-							className={`w-full py-2 rounded-md text-sm font-semibold transition-colors ${
+							className={`w-full rounded-[12px] border-0 py-2 text-sm font-semibold touch-manipulation select-none ${
 								slotsSaved
-									? 'bg-green-500 text-white'
+									? `text-white ${NEO_COLOR_BTN_PRESS}`
 									: savingSlots
-										? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-										: 'bg-blue-600 text-white hover:bg-blue-700'
+										? 'cursor-not-allowed opacity-70'
+										: `text-white ${NEO_COLOR_BTN_PRESS}`
 							}`}
+							style={
+								slotsSaved
+									? { ...PAY_NEO.raised, background: '#16a34a', color: '#fff', boxShadow: '5px 5px 12px rgba(22,101,52,0.4), -3px -3px 10px rgba(255,255,255,0.25)' }
+									: savingSlots
+										? { ...PAY_NEO.inset, color: '#64748b' }
+										: { ...PAY_NEO_PRIMARY_BLUE }
+							}
 						>
 							{slotsSaved ? '✓ Saved' : savingSlots ? 'Saving...' : 'Save'}
 						</button>
@@ -976,7 +1151,7 @@ const handleSave = async () => {
 					<div>
 						<div className="text-sm font-semibold mb-2">Today's Reservations — Assign Table</div>
 						<div className="text-xs text-gray-500 mb-3">Select a reservation to assign a table for arrived guests.</div>
-						<div className="border rounded divide-y max-h-[55vh] overflow-auto">
+						<div className="max-h-[55vh] divide-y divide-slate-300/40 overflow-auto rounded-[14px]" style={{ ...PAY_NEO.inset }}>
 							{(todayReservations || []).length === 0 && (
 								<div className="px-4 py-8 text-center text-gray-400">No reservations today.</div>
 							)}
@@ -1012,12 +1187,17 @@ const handleSave = async () => {
 													<span className="px-3 py-1.5 rounded text-xs font-semibold bg-green-100 text-green-700">Seated</span>
 												) : (
 													<button
-														className="px-3 py-1.5 rounded text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+														type="button"
+														className={`rounded-[10px] border-0 px-3 py-1.5 text-xs font-semibold text-white touch-manipulation select-none ${NEO_COLOR_BTN_PRESS}`}
+														style={{ ...PAY_NEO_PRIMARY_BLUE }}
 														onClick={() => {
+															const ps = Number(r.party_size || 2);
 															setSelectedReservationForTable({
 																id: r.id,
 																name: r.customer_name || 'Guest',
-																partySize: Number(r.party_size || 2)
+																partySize: ps,
+																tablesNeeded: r.tables_needed || calcTablesNeeded(ps),
+																reservationTime: r.reservation_time || ''
 															});
 															setShowTableSelectionModal(true);
 														}}
@@ -1044,14 +1224,17 @@ const handleSave = async () => {
 								type="date"
 								value={date || today}
 								onChange={(e) => setDate(e.target.value)}
-								className="border rounded px-2 py-1 text-sm"
+								className="rounded-[10px] border-0 px-2 py-1.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+								style={{ ...PAY_NEO.inset }}
 							/>
 							<button
-								className="text-xs text-blue-600 hover:text-blue-800 underline"
+								type="button"
+								className={`rounded-[10px] border-0 px-2.5 py-1 text-xs font-semibold text-blue-800 touch-manipulation select-none hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+								style={{ ...PAY_NEO.key }}
 								onClick={() => setDate(today)}
 							>Today</button>
 						</div>
-						<div className="border rounded divide-y max-h-[55vh] overflow-auto">
+						<div className="max-h-[55vh] divide-y divide-slate-300/40 overflow-auto rounded-[14px]" style={{ ...PAY_NEO.inset }}>
 							{(() => {
 								// Flatten all reservations for the selected date
 								const allReservations: any[] = [];
@@ -1104,7 +1287,9 @@ const handleSave = async () => {
 												<div className="flex-shrink-0 ml-3 flex items-center gap-1.5">
 													{/* Reschedule */}
 													<button
-														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+														type="button"
+														className={`rounded-[10px] border-0 px-2.5 py-1.5 text-xs font-semibold text-blue-800 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+														style={{ ...PAY_NEO.key }}
 														onClick={() => {
 															setRescheduleMode(true);
 															setRescheduleTarget({ id: r.id, name: r.customer_name, phone: r.phone_number, partySize: r.party_size });
@@ -1119,7 +1304,9 @@ const handleSave = async () => {
 													</button>
 													{/* Cancel */}
 													<button
-														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+														type="button"
+														className={`rounded-[10px] border-0 px-2.5 py-1.5 text-xs font-semibold text-red-700 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+														style={{ ...PAY_NEO.key, background: '#f1d5d8' }}
 														onClick={() => {
 															setConfirmTarget({ id: r.id, name: r.customer_name, phone: r.phone_number });
 															setConfirmModalOpen(true);
@@ -1129,7 +1316,9 @@ const handleSave = async () => {
 													</button>
 													{/* No Show */}
 													<button
-														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-orange-50 text-orange-600 hover:bg-orange-100 transition-colors"
+														type="button"
+														className={`rounded-[10px] border-0 px-2.5 py-1.5 text-xs font-semibold text-amber-800 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+														style={{ ...PAY_NEO.key, background: '#fde8d0' }}
 														onClick={() => {
 															handleReservationAction('no_show', r.customer_name, r.phone_number, r.id);
 														}}
@@ -1141,7 +1330,9 @@ const handleSave = async () => {
 											{isInactive && !isCompleted && (
 												<div className="flex-shrink-0 ml-3">
 													<button
-														className="px-2.5 py-1.5 rounded text-xs font-semibold bg-green-50 text-green-600 hover:bg-green-100 transition-colors"
+														type="button"
+														className={`rounded-[10px] border-0 px-2.5 py-1.5 text-xs font-semibold text-emerald-900 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+														style={{ ...PAY_NEO.key, background: '#d1fae5' }}
 														onClick={() => {
 															handleReservationAction('rebook', r.customer_name, r.phone_number, r.id);
 														}}
@@ -1160,30 +1351,268 @@ const handleSave = async () => {
 
 				</div>{/* end scrollable tab content */}
 
-		{/* Time Slot Availability Modal (docked to right of main modal) */}
+				<div className="mt-3 flex items-end justify-end gap-0">
+						{error && <div className="text-sm text-red-600 mr-auto">{error}</div>}
+						{successMsg && <div className="text-sm text-green-700 mr-auto">{successMsg}</div>}
+				</div>
+			</div>{/* end main modal white box */}
+		</div>{/* end main modal backdrop */}
+
+		{/* Time Slot Availability Modal — PAY_NEO shell (date pick → timeline/grid) */}
 		{showSlotModal && (
-			<div className="absolute z-[60]"
+			<div className="fixed z-[60]"
 				ref={slotModalRef}
 				style={slotModalStyle}
 			>
-				<div className="bg-white rounded-lg shadow-xl w-full p-4 max-h-[92vh] overflow-y-auto">
-					<div className="flex items-center justify-between mb-3">
-						<div className="text-sm font-semibold">Time Slot Availability • {date}</div>
-						<button 
-							className="p-3 border-2 border-red-500 bg-gray-400/30 hover:bg-gray-400/50 rounded-full touch-manipulation backdrop-blur-sm transition-colors"
+				<div className="w-full max-h-[92vh] overflow-y-auto overflow-x-hidden border-0 p-0" style={{ ...PAY_NEO.modalShell }}>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<div className="min-w-0 flex-1">
+							<div className="text-base font-bold text-slate-800 truncate">Reservation Timeline • {date}</div>
+							<div className="mt-0.5 text-xs text-slate-600">
+								<span>{slotViewMode === 'grid' ? 'Numbers show available tables' : 'Reservation timeline'}</span>
+								<span className="ml-2 font-semibold text-blue-600">MAX {maxSlotsPerDay}</span>
+							</div>
+						</div>
+						<button
+							type="button"
+							className={`flex h-11 w-11 flex-shrink-0 touch-manipulation select-none items-center justify-center rounded-full border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+							style={{ ...PAY_NEO.raised }}
 							onClick={() => setShowSlotModal(false)}
+							aria-label="Close"
 						>
-							<svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
-					<div className="mb-0.5">
-						<span className="text-sm text-gray-600">Numbers show available tables</span>
-						<span className="ml-2 text-sm font-semibold text-blue-600">MAX {maxSlotsPerDay}</span>
-					</div>
-					<div className="mb-2" />
-					<div className="border rounded p-2">
+					<div className="px-3 pb-4 pt-2" style={{ background: PAY_NEO_CANVAS }}>
+					{slotViewMode === 'timeline' ? (() => {
+						const dwellMinsT = Number(policy?.dwell_minutes || 120);
+						const toMinsT = (s: string) => { const [H, M] = s.split(':').map(n => Number(n)); return H * 60 + M; };
+						const fromMinsT = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+						const dowT = new Date(date || new Date().toISOString().slice(0, 10)).getDay();
+						const bhT = businessHours.find(b => Number(b.day_of_week) === dowT && Number(b.is_open) === 1);
+						const openT = bhT?.open_time || '11:00';
+						const closeT = bhT?.close_time || '21:00';
+						const startMT = toMinsT(openT);
+						const endMT = toMinsT(closeT);
+						const totalSlots = Math.ceil((endMT - startMT) / 15);
+						const labelWidth = 52;
+						const nowDate = new Date();
+						const todayStr = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`;
+						const isToday = date === todayStr;
+						const nowMins = nowDate.getHours() * 60 + nowDate.getMinutes();
+
+						const allReservations: any[] = [];
+						for (const [rTime, rList] of Object.entries(reservationsByTime)) {
+							for (const r of (rList || [])) {
+								if (r.status === 'cancelled' || r.status === 'completed') continue;
+								allReservations.push({ ...r, _startTime: rTime });
+							}
+						}
+
+						const ROW_H = 51;
+						const BAR_H = ROW_H - 8;
+						const rsvRows = maxSlotsPerDay;
+						const assigned: any[][] = Array.from({ length: rsvRows }, () => []);
+						const sorted = [...allReservations].sort((a, b) => toMinsT(a._startTime) - toMinsT(b._startTime));
+
+						// Color mapping: same reservation ID → same color, different time slots → different colors
+						let colorCounter = 0;
+						const timeColorMap: Record<string, number> = {};
+						const idColorMap: Record<string, number> = {};
+						const timeColors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316', '#84CC16', '#14B8A6', '#A855F7', '#F43F5E'];
+
+						for (const rsv of sorted) {
+							const rStart = toMinsT(rsv._startTime);
+							const rEnd = rStart + dwellMinsT;
+							const tablesNeeded = rsv.tables_needed || calcTablesNeeded(Number(rsv.party_size || 1));
+							const rsvId = String(rsv.id || rsv.reservation_number || '');
+
+							// Assign color: same ID → same color; otherwise time-based
+							if (!(rsvId && idColorMap[rsvId] !== undefined)) {
+								const timeKey = rsv._startTime;
+								if (timeColorMap[timeKey] === undefined) timeColorMap[timeKey] = colorCounter++;
+								if (rsvId) idColorMap[rsvId] = timeColorMap[timeKey];
+							}
+							const assignedColor = rsvId ? idColorMap[rsvId] : (timeColorMap[rsv._startTime] ?? colorCounter++);
+
+							// Place each table copy into separate rows and track row positions
+							const placedRows: number[] = [];
+							let placedCount = 0;
+							for (let row = 0; row < rsvRows && placedCount < tablesNeeded; row++) {
+								const conflict = assigned[row].some((existing: any) => {
+									const eStart = toMinsT(existing._startTime);
+									const eEnd = eStart + dwellMinsT;
+									return rStart < eEnd && rEnd > eStart;
+								});
+								if (!conflict) {
+									assigned[row].push({ ...rsv, _tableIndex: placedCount + 1, _tablesTotal: tablesNeeded, _colorIdx: assignedColor, _placedRows: [] });
+									placedRows.push(row);
+									placedCount++;
+								}
+							}
+							if (placedCount === 0 && assigned.length > 0) {
+								assigned[assigned.length - 1].push({ ...rsv, _tableIndex: 1, _tablesTotal: tablesNeeded, _colorIdx: assignedColor, _placedRows: [] });
+								placedRows.push(assigned.length - 1);
+							}
+							// Store placed row indices on each copy for gap-fill rendering
+							for (const row of placedRows) {
+								const items = assigned[row];
+								const last = items[items.length - 1];
+								if (last && last._placedRows !== undefined) last._placedRows = placedRows;
+							}
+						}
+
+						return (<>
+							<div className="overflow-hidden p-2" style={{ ...PAY_NEO.inset, maxWidth: '100%' }}>
+								<div style={{ width: '100%', position: 'relative' }}>
+									{/* Time header — pure % layout, no fixed slot widths */}
+									<div className="flex items-end border-b border-gray-300 pb-1 mb-1" style={{ marginLeft: labelWidth }}>
+										{Array.from({ length: totalSlots }).map((_, i) => {
+											const m = startMT + i * 15;
+											const min = m % 60;
+											const isHour = min === 0;
+											return (
+												<div key={i} style={{ flex: '1 1 0%', minWidth: 0 }} className="text-center">
+													{isHour ? (
+														<span className="text-xs font-bold text-gray-800">{fromMinsT(m)}</span>
+													) : min === 30 ? (
+														<span className="text-[11px] font-semibold text-gray-500">30</span>
+													) : null}
+												</div>
+											);
+										})}
+									</div>
+
+									{/* Current time indicator */}
+									{isToday && nowMins >= startMT && nowMins <= endMT && (() => {
+										const pct = (nowMins - startMT) / (endMT - startMT) * 100;
+										return (
+											<div
+												className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20"
+												style={{ left: `calc(${labelWidth}px + (100% - ${labelWidth}px) * ${pct / 100})` }}
+											/>
+										);
+									})()}
+
+									{/* RSV rows */}
+									{Array.from({ length: rsvRows }).map((_, rowIdx) => {
+										const rowReservations = assigned[rowIdx] || [];
+										return (
+											<div key={rowIdx} className="flex items-center border-b border-gray-100" style={{ height: ROW_H }}>
+												<div className="text-xs font-bold text-gray-700 flex-shrink-0 flex items-center justify-center" style={{ width: labelWidth }}>
+													RSV{rowIdx + 1}
+												</div>
+												<div className="relative flex-1 min-w-0" style={{ height: BAR_H }}>
+													{/* Grid lines — % based */}
+													{Array.from({ length: totalSlots }).map((_, i) => {
+														const m = startMT + i * 15;
+														const min = m % 60;
+														const borderColor = min === 0 ? 'rgba(0,0,0,0.25)' : min === 30 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.04)';
+														const borderW = min === 0 ? 1.5 : 1;
+														const leftPct = (i / totalSlots) * 100;
+														return (
+															<div
+																key={i}
+																className="absolute top-0 bottom-0"
+																style={{ left: `${leftPct}%`, borderLeft: `${borderW}px solid ${borderColor}` }}
+															/>
+														);
+													})}
+
+													{/* Connector band between multi-table rows */}
+													{[...rowReservations].map((rsv: any, bi: number) => {
+														const tblTotal = rsv._tablesTotal || 1;
+														const placedRows: number[] = rsv._placedRows || [];
+														if (tblTotal <= 1 || placedRows.length < 2) return null;
+														const myPosInPlaced = placedRows.indexOf(rowIdx);
+														if (myPosInPlaced < 0 || myPosInPlaced >= placedRows.length - 1) return null;
+														const nextRow = placedRows[myPosInPlaced + 1];
+														const rowSpan = nextRow - rowIdx;
+														const rStart = toMinsT(rsv._startTime);
+														const rEnd = Math.min(rStart + dwellMinsT, endMT);
+														const leftPct = ((rStart - startMT) / (endMT - startMT)) * 100;
+														const widthPct = ((rEnd - rStart) / (endMT - startMT)) * 100;
+														const color = timeColors[(rsv._colorIdx ?? 0) % timeColors.length];
+														const bandTop = (BAR_H - 4) / 2 + 2;
+														const bandHeight = rowSpan * ROW_H - (BAR_H - 4) / 2;
+														return (
+															<div
+																key={`conn-${rsv.id || bi}-r${rowIdx}`}
+																className="absolute z-[2] pointer-events-none"
+																style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 2)}%`, top: bandTop, height: bandHeight, backgroundColor: color, opacity: 0.4, borderRadius: 2 }}
+															/>
+														);
+													})}
+
+													{/* Reservation bars */}
+													{[...rowReservations].sort((a, b) => toMinsT(a._startTime) - toMinsT(b._startTime)).map((rsv: any, bi: number) => {
+														const rStart = toMinsT(rsv._startTime);
+														const rEnd = Math.min(rStart + dwellMinsT, endMT);
+														const leftPct = ((rStart - startMT) / (endMT - startMT)) * 100;
+														const widthPct = ((rEnd - rStart) / (endMT - startMT)) * 100;
+														const color = timeColors[(rsv._colorIdx ?? 0) % timeColors.length];
+														const rsvName = rsv.customer_name || rsv.guest_name || rsv.name || '';
+														const rsvParty = rsv.party_size || 1;
+														const tblIdx = rsv._tableIndex || 1;
+														const tblTotal = rsv._tablesTotal || 1;
+														const timeLabel = `${fromMinsT(rStart)}-${fromMinsT(rEnd)}`;
+														const isFirstTable = tblIdx === 1;
+														const rsvId = String(rsv.id || '');
+														const dbTable = rsv.table_number || '';
+														const sessionTables = assignedTableNames[rsvId] || [];
+														const thisTableName = sessionTables[tblIdx - 1] || '';
+														const allTableDisplay = dbTable || sessionTables.join(', ');
+
+														return (
+															<div
+																key={`${rsv.id || bi}-t${tblIdx}`}
+																className="absolute top-0.5 rounded-md flex flex-col justify-center px-1.5 text-white font-semibold overflow-hidden cursor-pointer hover:brightness-110 transition-all shadow-sm z-[5]"
+																style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 2)}%`, height: BAR_H - 4, backgroundColor: thisTableName ? color : color, border: thisTableName ? '2px solid rgba(255,255,255,0.6)' : 'none' }}
+																title={`${timeLabel}\n${rsvName} • ${rsvParty}ppl (T${tblIdx}/${tblTotal})${allTableDisplay ? `\nTables: ${allTableDisplay}` : ''}`}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	setSelectedReservationForTable({ id: rsvId, name: rsvName, partySize: rsvParty, tablesNeeded: tblTotal, tableIndex: tblIdx, reservationTime: rsv._startTime });
+																	setShowTableSelectionModal(true);
+																}}
+															>
+																{isFirstTable ? (<>
+																	<div className="text-[11px] leading-tight truncate opacity-90">
+																		{timeLabel} • {rsvParty}ppl{tblTotal > 1 ? ` [T${tblIdx}/${tblTotal}]` : ''}
+																	</div>
+																	<div className="text-xs leading-tight truncate font-bold flex items-center gap-1">
+																		<span>{rsvName || 'Guest'}</span>
+																		{allTableDisplay && <span className="text-[10px] font-normal opacity-80">📍{allTableDisplay}</span>}
+																	</div>
+																</>) : (
+																	<div className="text-[11px] leading-tight truncate text-center font-bold opacity-90">
+																		[T{tblIdx}/{tblTotal}]{thisTableName ? ` 📍${thisTableName}` : ''}
+																	</div>
+																)}
+															</div>
+														);
+													})}
+
+													{/* Clickable background for adding reservation in empty time gaps */}
+													<div
+														className="absolute inset-0 z-[1] cursor-pointer hover:bg-blue-50/30 rounded transition-colors"
+														onClick={() => { setShowTimelineForm(true); setSoftKbOpen(true); setSoftKbTarget('tl_name'); }}
+													/>
+													{rowReservations.length === 0 && (
+														<div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[3]">
+															<span className="text-xs text-blue-300 font-medium italic whitespace-nowrap">+ Add new reservation</span>
+														</div>
+													)}
+												</div>
+											</div>
+										);
+									})}
+								</div>
+							</div>
+						</>);
+					})() : (
+					<div className="overflow-hidden p-2" style={{ ...PAY_NEO.inset }}>
 						{(() => {
 							// Build 15-min slots within business hours and render 4-columns per hour row
 							const dow = (new Date(date || today).getDay());
@@ -1199,34 +1628,24 @@ const handleSave = async () => {
 							// Dwell time (체류 시간): 예약 1건이 테이블을 점유하는 시간 (분)
 							const dwellMinutes = Number(policy?.dwell_minutes || 120);
 
-							// 파티 사이즈 → 점유 테이블 수 계산
-							// 1-5명: 1테이블, 6-9명: 2테이블, 10-13명: 3테이블, ...
-							const calcTablesNeeded = (partySize: number): number => {
-								if (!partySize || partySize <= 0) return 1;
-								if (partySize <= 5) return 1;
-								return 1 + Math.ceil((partySize - 5) / 4);
-							};
+							// calcTablesNeeded is defined at module top level
 
 							const computeLeft = (t:string) => {
-								// 단일 Max Slots Per Day 값만 사용
 								const max = maxSlotsPerDay;
 
-								// 체류 시간 기반 점유 계산: 타임슬롯 t에 "아직 점유 중인" 테이블 수를 센다
-								// 예약 시간 s에서 시작 → s + dwellMinutes까지 점유
-								// t에 점유 중 = s <= t < s + dwellMinutes
-								// 각 예약의 party_size에 따라 점유 테이블 수가 다름
+								// 구간 겹침(interval overlap) 기반 점유 계산:
+								// t에 새 예약 시 [t, t+dwell) 구간과 기존 예약 [s, s+dwell) 구간이 겹치는지 확인
+								// 겹침 조건: s < t + dwell AND t < s + dwell
 								const tMins = toMins(t);
 								let occupiedTables = 0;
 								for (const [slotTime, reservations] of Object.entries(reservationsByTime)) {
 									const sMins = toMins(slotTime);
-									// 이 슬롯의 예약이 아직 t 시점에 점유 중인지 확인
-									if (sMins <= tMins && tMins < sMins + dwellMinutes) {
-										// cancelled, no_show, completed 제외
+									if (sMins < tMins + dwellMinutes && tMins < sMins + dwellMinutes) {
 										const activeReservations = (reservations || []).filter(
 											(r: any) => r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed'
 										);
 										for (const r of activeReservations) {
-											occupiedTables += calcTablesNeeded(Number(r.party_size || 1));
+											occupiedTables += Number(r.tables_needed) || calcTablesNeeded(Number(r.party_size || 1));
 										}
 									}
 								}
@@ -1235,7 +1654,7 @@ const handleSave = async () => {
 							return (
 								<div className="space-y-0.5">
 									{/* Column header: 00/15/30/45 minutes */}
-									<div className="grid grid-cols-5 gap-x-0.5 gap-y-0 items-center px-0.5 py-1 bg-gray-100 rounded-lg">
+									<div className="grid grid-cols-5 gap-x-0.5 gap-y-0 items-center px-0.5 py-1 rounded-[14px]" style={{ ...PAY_NEO.inset, background: '#d8dde6' }}>
 										<div className="text-base font-bold px-3 py-2 whitespace-nowrap text-gray-800">Time</div>
 										<div className="text-xs font-bold text-gray-700 text-center">00Min</div>
 										<div className="text-xs font-bold text-gray-700 text-center">15Min</div>
@@ -1249,7 +1668,10 @@ const handleSave = async () => {
 									<div key={h} className={`grid grid-cols-5 gap-x-0.5 gap-y-0 items-center ${h % 2 === 1 ? 'bg-blue-50' : 'bg-orange-50'}`}>
 										<div className="flex items-center justify-between text-lg font-bold px-1 py-1 whitespace-nowrap text-gray-800">
 											<span className="cursor-pointer select-none" onClick={() => setHourViewHour(String(h).padStart(2,'0'))}>{label}</span>
-                                            <button className="ml-2 inline-flex items-center justify-center text-sm font-normal px-2.5 py-1.5 min-h-[32px] min-w-[40px] rounded-lg bg-blue-200/30 backdrop-blur-sm border border-blue-200/40 text-blue-400 hover:bg-blue-200/50 hover:shadow-md transition-all shadow-sm"
+											<button
+												type="button"
+												className={`ml-2 inline-flex min-h-[32px] min-w-[40px] touch-manipulation select-none items-center justify-center rounded-[10px] border-0 px-2.5 py-1.5 text-sm font-semibold text-blue-800 hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+												style={{ ...PAY_KEYPAD_KEY }}
 												onClick={() => setHourViewHour(String(h).padStart(2,'0'))}
 											>
 												View
@@ -1258,13 +1680,17 @@ const handleSave = async () => {
 												{mins.map(m => {
 													const t = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
 													const enabled = isEnabled(t);
-                                                    if (!enabled) return <div key={m} className="h-12 bg-gray-100 rounded flex items-center justify-center"><span className="text-gray-400 text-xs">Closed</span></div>;
+                                                    if (!enabled) return (
+														<div key={m} className="flex h-12 items-center justify-center rounded-[10px]" style={{ ...PAY_NEO.inset, opacity: 0.85 }}>
+															<span className="text-xs text-gray-500">Closed</span>
+														</div>
+													);
 													const left = computeLeft(t);
 													const full = left <= 0;
 												return (
                                                 <div
                                                     key={m}
-                                                    className={`flex items-center justify-between px-1 py-0 min-h-[12px] w-full rounded transition-colors ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-blue-100/50'}`}
+                                                    className={`flex min-h-[12px] w-full items-center justify-between rounded-[10px] px-1 py-0 transition-[filter] ${full ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:brightness-[1.02]'}`}
                                                     onClick={() => { if (!full) { setSelectedSlotTime(t); setShowDetailModal(true); } }}
                                                     onDragOver={(e) => { if (!full) e.preventDefault(); }}
                                                     onDrop={(e) => { if (!full) { handleDropOnTimeSlot(t); } }}
@@ -1273,9 +1699,19 @@ const handleSave = async () => {
 														<span className="tabular-nums text-base font-semibold inline-block w-[2ch] text-right">{left}</span>
 													</div>
                                                     {full ? (
-                                                    <span className="inline-flex items-center justify-center text-sm px-2.5 py-1.5 rounded bg-red-200 text-red-800 min-h-[32px] min-w-[40px] cursor-not-allowed select-none">Full</span>
+														<span
+															className="inline-flex min-h-[32px] min-w-[40px] cursor-not-allowed select-none items-center justify-center rounded-[10px] px-2.5 py-1.5 text-sm font-bold text-red-800"
+															style={{ ...PAY_NEO.inset, background: '#e8ccd0' }}
+														>
+															Full
+														</span>
                                                     ) : (
-													<button className="inline-flex items-center justify-center text-sm font-normal px-2.5 py-1.5 rounded-lg bg-blue-200/30 backdrop-blur-sm border border-blue-200/40 text-blue-400 hover:bg-blue-200/50 hover:shadow-md transition-all shadow-sm min-h-[32px] min-w-[40px]" onClick={(e) => { e.stopPropagation(); setSelectedSlotTime(t); setShowDetailModal(true); }}>
+													<button
+														type="button"
+														className={`inline-flex min-h-[32px] min-w-[40px] touch-manipulation select-none items-center justify-center rounded-[10px] border-0 px-2.5 py-1.5 text-sm font-semibold text-blue-800 hover:brightness-[1.03] ${NEO_PREP_TIME_BTN_PRESS}`}
+														style={{ ...PAY_KEYPAD_KEY }}
+														onClick={(e) => { e.stopPropagation(); setSelectedSlotTime(t); setShowDetailModal(true); }}
+													>
 														Add
 													</button>
 												)}
@@ -1289,6 +1725,8 @@ const handleSave = async () => {
 							);
 						})()}
 					</div>
+					)}
+				</div>
 				</div>
 			</div>
 		)}
@@ -1335,11 +1773,7 @@ const handleSave = async () => {
 					channelInfo = sp.channel || '';
 					depositInfo = sp.deposit ? `$${sp.deposit}` : '';
 				} catch {}
-				const tablesUsed = (() => {
-					const ps = Number(r.party_size || 1);
-					if (ps <= 5) return 1;
-					return 1 + Math.ceil((ps - 5) / 4);
-				})();
+				const tablesUsed = Number(r.tables_needed) || calcTablesNeeded(Number(r.party_size || 1));
 				return (
 					<div key={`${isOccupying ? 'occ' : 'dir'}-${i}`} className={`px-3 py-2.5 flex items-center gap-3 ${isOccupying ? 'bg-amber-50/50' : 'hover:bg-gray-50'}`}>
 						<div className="flex-1 min-w-0">
@@ -1363,7 +1797,9 @@ const handleSave = async () => {
 						<div className="flex items-center gap-1 flex-shrink-0">
 							{!isOccupying && r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed' && (
 								<button
-									className="px-2 py-1 text-xs rounded bg-red-50 text-red-600 hover:bg-red-100"
+									type="button"
+									className={`rounded-[10px] border-0 px-2 py-1 text-xs font-semibold text-red-700 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+									style={{ ...PAY_NEO.key, background: '#f1d5d8' }}
 									onClick={() => { setConfirmTarget({ id: r.id, name: r.customer_name, phone: r.phone_number }); setConfirmModalOpen(true); }}
 								>Cancel</button>
 							)}
@@ -1374,23 +1810,23 @@ const handleSave = async () => {
 
 			return (
 			<div className="fixed inset-0 z-[95] flex items-center justify-center bg-black bg-opacity-60">
-				<div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-4 max-h-[70vh] overflow-y-auto">
-					<div className="flex items-center justify-between mb-3">
-						<div className="text-lg font-semibold">📋 Reservations • {date} {hourViewHour}:00</div>
-						<button className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation" onClick={() => setHourViewHour('')}>
-							<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<div className="w-full max-w-lg max-h-[70vh] overflow-y-auto border-0 p-0" style={{ ...PAY_NEO.modalShell }}>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<div className="min-w-0 text-lg font-semibold text-slate-800">📋 Reservations • {date} {hourViewHour}:00</div>
+						<button type="button" className={'flex h-11 w-11 flex-shrink-0 touch-manipulation select-none items-center justify-center rounded-full border-[3px] border-red-500 hover:brightness-[1.03] ' + NEO_MODAL_BTN_PRESS + ' ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_NEO.raised }} onClick={() => setHourViewHour('')} aria-label="Close">
+							<svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
-					<div className="max-h-[55vh] overflow-auto space-y-3">
+					<div className="max-h-[55vh] space-y-3 overflow-auto px-4 pb-4 pt-3" style={{ background: PAY_NEO_CANVAS }}>
 						{[0,15,30,45].map((min) => {
 							const t = `${hourViewHour}:${String(min).padStart(2,'0')}`;
 							const { directReservations, occupyingReservations } = buildSlotData(t);
 							const totalCount = directReservations.length + occupyingReservations.length;
 							return (
-								<div key={min} className="border rounded-lg overflow-hidden">
-									<div className="bg-gray-100 px-3 py-2 flex items-center justify-between">
+								<div key={min} className="overflow-hidden rounded-[14px]" style={{ ...PAY_NEO.inset }}>
+									<div className="flex items-center justify-between px-3 py-2" style={{ ...PAY_NEO.inset, background: '#d8dde6' }}>
 										<span className="text-sm font-bold text-gray-700">{hourViewHour}:{String(min).padStart(2,'0')}</span>
 										<div className="flex items-center gap-2">
 											{occupyingReservations.length > 0 && (
@@ -1421,17 +1857,17 @@ const handleSave = async () => {
 		{/* Customer History Modal */}
 		{showHistoryModal && (
 			<div className="fixed inset-0 z-[80] flex items-center justify-center bg-black bg-opacity-40">
-				<div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-4 max-h-[80vh] overflow-y-auto">
-					<div className="flex items-center justify-between mb-3">
-						<div className="text-lg font-semibold">Customer History</div>
-						<button className="text-gray-500 hover:text-gray-700" onClick={() => setShowHistoryModal(false)}>Close</button>
+				<div className="w-full max-w-lg max-h-[80vh] overflow-y-auto border-0 p-0" style={{ ...PAY_NEO.modalShell }}>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<div className="text-lg font-semibold text-slate-800">Customer History</div>
+						<button type="button" className={'rounded-[10px] border-0 px-3 py-1.5 text-sm font-semibold text-slate-700 touch-manipulation select-none hover:brightness-[1.03] ' + NEO_MODAL_BTN_PRESS + ' ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_NEO.key }} onClick={() => setShowHistoryModal(false)}>Close</button>
 					</div>
-					<div className="space-y-2">
+					<div className="space-y-2 px-4 pb-4 pt-2" style={{ background: PAY_NEO_CANVAS }}>
 						{customerHistory.length === 0 ? (
 							<div className="text-gray-500 text-center py-4">No history found</div>
 						) : (
 							customerHistory.map((history: any, index: number) => (
-								<div key={index} className="border rounded p-3 bg-gray-50">
+								<div key={index} className="rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
 									<div className="flex justify-between items-start">
 										<div>
 											<div className="font-medium">{history.customer_name}</div>
@@ -1465,21 +1901,23 @@ const handleSave = async () => {
 		{/* Confirm Cancel / No-Show Modal */}
 		{confirmModalOpen && (
 			<div className="fixed inset-0 z-[85] flex items-center justify-center bg-black bg-opacity-40">
-				<div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-4">
-					<div className="flex items-center justify-between mb-2">
-						<div className="text-base font-semibold">Select action</div>
-						<button className="p-3 bg-gray-100 hover:bg-gray-200 rounded-full touch-manipulation" onClick={() => { setConfirmModalOpen(false); setConfirmTarget(null); }}>
-							<svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<div className="w-full max-w-sm border-0 p-0" style={{ ...PAY_NEO.modalShell }}>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<div className="text-base font-semibold text-slate-800">Select action</div>
+						<button type="button" className={`flex h-10 w-10 flex-shrink-0 touch-manipulation select-none items-center justify-center rounded-full border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`} style={{ ...PAY_NEO.raised }} onClick={() => { setConfirmModalOpen(false); setConfirmTarget(null); }} aria-label="Close">
+							<svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
 							</svg>
 						</button>
 					</div>
-					<div className="text-sm text-gray-700 mb-4">
+					<div className="px-4 pb-4 pt-2" style={{ background: PAY_NEO_CANVAS }}>
+					<div className="mb-4 text-sm text-slate-700">
 						{confirmTarget?.name} • {confirmTarget?.phone}
 					</div>
 					<div className="flex items-center justify-end gap-2">
-                        <button className="px-3 py-2 rounded bg-red-100 text-red-700 hover:bg-red-200" onClick={() => { if (confirmTarget) { setCancelledLabelMap((prev: Record<string, 'Cancel' | 'No Show'>) => ({ ...prev, [confirmTarget.id]: 'Cancel' })); handleReservationAction('cancel', confirmTarget.name, confirmTarget.phone, confirmTarget.id); } setConfirmModalOpen(false); }}>Cancel</button>
-						<button className="px-3 py-2 rounded bg-orange-100 text-orange-700 hover:bg-orange-200" onClick={() => { if (confirmTarget) { handleReservationAction('no_show', confirmTarget.name, confirmTarget.phone, confirmTarget.id); } setConfirmModalOpen(false); }}>No Show</button>
+                        <button type="button" className={`rounded-[10px] border-0 px-3 py-2 text-sm font-semibold text-red-800 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`} style={{ ...PAY_NEO.key, background: '#f1d5d8' }} onClick={() => { if (confirmTarget) { setCancelledLabelMap((prev: Record<string, 'Cancel' | 'No Show'>) => ({ ...prev, [confirmTarget.id]: 'Cancel' })); handleReservationAction('cancel', confirmTarget.name, confirmTarget.phone, confirmTarget.id); } setConfirmModalOpen(false); }}>Cancel</button>
+						<button type="button" className={`rounded-[10px] border-0 px-3 py-2 text-sm font-semibold text-amber-900 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`} style={{ ...PAY_NEO.key, background: '#fde8d0' }} onClick={() => { if (confirmTarget) { handleReservationAction('no_show', confirmTarget.name, confirmTarget.phone, confirmTarget.id); } setConfirmModalOpen(false); }}>No Show</button>
+					</div>
 					</div>
 				</div>
 			</div>
@@ -1488,18 +1926,19 @@ const handleSave = async () => {
 		{/* Detail Reservation Modal (per-slot input) */}
 		{showDetailModal && (
 			<div className="fixed inset-0 z-[70] flex items-center justify-center bg-black bg-opacity-50">
-				<div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-5">
-					<div className="flex items-center justify-between mb-3">
-						<div className="text-sm font-semibold">{rescheduleMode ? 'Reschedule' : 'Add'} • {date} {selectedSlotTime}</div>
-						<button className="text-gray-500 hover:text-gray-700" onClick={() => { setShowDetailModal(false); setRescheduleMode(false); setRescheduleTarget(null); }}>Back</button>
+				<div className="w-full max-w-lg border-0 p-0" style={{ ...PAY_NEO.modalShell }}>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<div className="min-w-0 text-sm font-semibold text-slate-800">{rescheduleMode ? 'Reschedule' : 'Add'} • {date} {selectedSlotTime}</div>
+						<button type="button" className={`rounded-[10px] border-0 px-3 py-1.5 text-sm font-semibold text-slate-700 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`} style={{ ...PAY_NEO.key }} onClick={() => { setShowDetailModal(false); setRescheduleMode(false); setRescheduleTarget(null); setSoftKbOpen(false); setSoftKbTarget(null); }}>Back</button>
 					</div>
+					<div className="p-5" style={{ background: PAY_NEO_CANVAS }}>
 					{/* Row 1: Name (4), Phone (4), Party Size (2) */}
 					<div className="grid grid-cols-10 gap-2">
 						<div className="col-span-4">
 							<label className="block text-sm font-medium mb-1">Name</label>
 							<div className="relative">
-								<input className="w-full border rounded px-3 py-2 pr-12" value={name} onChange={e=>setName(e.target.value)} onFocus={() => { if (softKbOpen) setSoftKbTarget('name'); }} placeholder="Customer name" />
-								<button className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-gray-500 hover:text-gray-700" title="Open Keyboard" onClick={() => { setSoftKbTarget('name'); setSoftKbOpen(true); }}>
+								<input id="detail-modal-name-input" className="w-full border-0 px-3 py-2 pr-12 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60" style={{ ...PAY_NEO.inset }} value={name} onChange={e=>setName(autoCapitalizeName(e.target.value))} onFocus={() => { setSoftKbTarget('name'); setSoftKbOpen(true); }} placeholder="Customer name" />
+								<button type="button" className={'absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 touch-manipulation select-none items-center justify-center text-slate-700 hover:brightness-[1.03] ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_KEYPAD_KEY }} title="Open Keyboard" onClick={() => { setSoftKbTarget('name'); setSoftKbOpen(true); }}>
 									<KeyboardIcon size={22} />
 								</button>
 							</div>
@@ -1507,20 +1946,18 @@ const handleSave = async () => {
 						<div className="col-span-4">
 							<label className="block text-sm font-medium mb-1">Phone</label>
 							<div className="relative">
-								<input className="w-full border rounded px-3 py-2 pr-12" value={phone} onChange={e=>setPhone(formatPhone(e.target.value))} onFocus={() => { if (softKbOpen) setSoftKbTarget('phone'); }} placeholder="Contact number" />
-								<button className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-gray-500 hover:text-gray-700" title="Open Keyboard" onClick={() => { setSoftKbTarget('phone'); setSoftKbOpen(true); }}>
+								<input className="w-full border-0 px-3 py-2 pr-12 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60" style={{ ...PAY_NEO.inset }} value={phone} onChange={e=>setPhone(formatPhone(e.target.value))} onFocus={() => { if (softKbOpen) setSoftKbTarget('phone'); }} placeholder="Contact number" />
+								<button type="button" className={'absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 touch-manipulation select-none items-center justify-center text-slate-700 hover:brightness-[1.03] ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_KEYPAD_KEY }} title="Open Keyboard" onClick={() => { setSoftKbTarget('phone'); setSoftKbOpen(true); }}>
 									<KeyboardIcon size={22} />
 								</button>
 							</div>
 						</div>
 						<div className="col-span-2">
-							<label className="block text-sm font-medium mb-1">Party Size</label>
-							<div className="relative">
-								<input className="w-full border rounded px-3 py-2 pr-12" value={partySize} onChange={e=>setPartySize(e.target.value.replace(/[^0-9]/g,''))} onFocus={() => { if (softKbOpen) setSoftKbTarget('party'); }} placeholder="2" />
-								<button className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-gray-500 hover:text-gray-700" title="Open Keyboard" onClick={() => { setSoftKbTarget('party'); setSoftKbOpen(true); }}>
-									<KeyboardIcon size={22} />
-								</button>
-							</div>
+							<label className="block text-sm font-medium mb-1">Party</label>
+							<select className="w-full cursor-pointer border-0 px-2 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60" style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }} value={partySize} onChange={e => setPartySize(e.target.value)}>
+								<option value="">—</option>
+								{PARTY_SIZE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.value} ({calcTablesNeeded(Number(o.value))}T)</option>)}
+							</select>
 						</div>
 					</div>
 					{/* Row 2: Deposit, Channel segmented */}
@@ -1528,8 +1965,8 @@ const handleSave = async () => {
 						<div className="w-[32%]">
 							<label className="block text-sm font-medium mb-1">Deposit</label>
 							<div className="relative">
-								<input className="w-full border rounded px-3 py-2 pr-12" value={deposit} onChange={e=>setDeposit(e.target.value.replace(/[^0-9.]/g,''))} onFocus={() => { if (softKbOpen) setSoftKbTarget('deposit'); }} placeholder="0" />
-								<button className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-gray-500 hover:text-gray-700" title="Open Keyboard" onClick={() => { setSoftKbTarget('deposit'); setSoftKbOpen(true); }}>
+								<input className="w-full border-0 px-3 py-2 pr-12 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60" style={{ ...PAY_NEO.inset }} value={deposit} onChange={e=>setDeposit(e.target.value.replace(/[^0-9.]/g,''))} onFocus={() => { if (softKbOpen) setSoftKbTarget('deposit'); }} placeholder="0" />
+								<button type="button" className={'absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 touch-manipulation select-none items-center justify-center text-slate-700 hover:brightness-[1.03] ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_KEYPAD_KEY }} title="Open Keyboard" onClick={() => { setSoftKbTarget('deposit'); setSoftKbOpen(true); }}>
 									<KeyboardIcon size={22} />
 								</button>
 							</div>
@@ -1538,14 +1975,14 @@ const handleSave = async () => {
 							<label className="block text-sm font-medium mb-1">Channel</label>
 							<div className="flex gap-2">
 								{(['Walk-in','Phone','Online'] as const).map((c) => (
-									<button key={c} onClick={()=>setChannel(c)} className={`px-4 py-2 rounded border ${channel===c ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-100 hover:bg-gray-200 text-gray-800 border-gray-300'}`}>{c}</button>
+									<button type="button" key={c} onClick={()=>setChannel(c)} className={(channel === c ? 'text-white ' + NEO_COLOR_BTN_PRESS : 'text-slate-800 ' + NEO_MODAL_BTN_PRESS + ' ' + NEO_PREP_TIME_BTN_PRESS) + ' flex-1 touch-manipulation select-none rounded-[10px] border-0 px-3 py-2 text-xs font-semibold'} style={channel === c ? { ...PAY_NEO_PRIMARY_BLUE } : { ...PAY_NEO.key }}>{c}</button>
 								))}
 							</div>
 						</div>
 					</div>
 					<div className="mt-4 flex items-center justify-end gap-2">
-						<button className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300" onClick={()=>{ setShowDetailModal(false); setRescheduleMode(false); setRescheduleTarget(null); }}>Cancel</button>
-						<button className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700" onClick={async ()=>{
+						<button type="button" className={'rounded-[12px] border-0 px-4 py-2 text-sm font-semibold text-slate-800 touch-manipulation select-none hover:brightness-[1.03] ' + NEO_MODAL_BTN_PRESS + ' ' + NEO_PREP_TIME_BTN_PRESS} style={{ ...PAY_NEO.key }} onClick={()=>{ setShowDetailModal(false); setRescheduleMode(false); setRescheduleTarget(null); setSoftKbOpen(false); setSoftKbTarget(null); }}>Cancel</button>
+						<button type="button" className={'rounded-[12px] border-0 px-4 py-2 text-sm font-semibold text-white touch-manipulation select-none disabled:opacity-50 ' + NEO_COLOR_BTN_PRESS} style={{ ...PAY_NEO_PRIMARY_BLUE }} onClick={async ()=>{
 							try {
 								// Validation
 								if (!name.trim()) { alert('Please enter customer name.'); return; }
@@ -1592,6 +2029,8 @@ const handleSave = async () => {
 								setShowDetailModal(false);
 								setRescheduleMode(false);
 								setRescheduleTarget(null);
+								setSoftKbOpen(false);
+								setSoftKbTarget(null);
 								if (onCreated) onCreated();
 							} catch (e:any) {
 								alert(String(e?.message||'Failed to save'));
@@ -1600,27 +2039,188 @@ const handleSave = async () => {
 							}
 						}} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
 					</div>
+					</div>
 				</div>
 			</div>
 		)}
 
-		{/* Soft Virtual Keyboard */}
+		{/* Timeline New Reservation Modal — PAY_NEO shell + inset fields (keyboard below) */}
+		{showTimelineForm && (
+			<div className="fixed inset-0 z-[70] flex items-end justify-center pointer-events-none" style={{ paddingBottom: '380px' }}>
+				<div className="fixed inset-0 bg-black/40 pointer-events-auto" style={{ zIndex: -1 }} onClick={() => { if (softKbOpen) return; setShowTimelineForm(false); setTlFormError(null); setSoftKbOpen(false); setSoftKbTarget(null); }} />
+				<div
+					className="mb-[15px] w-[700px] max-w-[95vw] pointer-events-auto overflow-hidden border-0 p-0"
+					style={{ ...PAY_NEO.modalShell }}
+					onClick={e => e.stopPropagation()}
+				>
+					<div className="flex items-center justify-between gap-3 px-4 py-3" style={{ ...PAY_NEO.raised, borderRadius: '14px 14px 0 0' }}>
+						<span className="font-bold text-lg text-slate-800">New Reservation • {date}</span>
+						<button
+							type="button"
+							onClick={() => { setShowTimelineForm(false); setTlFormError(null); setSoftKbOpen(false); setSoftKbTarget(null); }}
+							className={`flex h-11 w-11 flex-shrink-0 touch-manipulation select-none items-center justify-center rounded-full border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+							style={{ ...PAY_NEO.raised }}
+							aria-label="Close"
+						>
+							<svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+							</svg>
+						</button>
+					</div>
+					<div className="space-y-3 p-5" style={{ background: PAY_NEO_CANVAS }}>
+						{tlFormError && (
+							<div className="rounded-[14px] px-3 py-2 text-sm text-red-700" style={{ ...PAY_NEO.inset, background: '#fee2e2' }}>
+								{tlFormError}
+							</div>
+						)}
+						<div className="grid grid-cols-2 gap-4">
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Name</label>
+								<input
+									id="timeline-form-name-input"
+									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+									style={{ ...PAY_NEO.inset }}
+									placeholder="Guest name"
+									value={tlFormName}
+									onChange={e => setTlFormName(autoCapitalizeName(e.target.value))}
+									onFocus={() => { setSoftKbOpen(true); setSoftKbTarget('tl_name'); }}
+								/>
+							</div>
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Phone</label>
+								<input
+									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+									style={{ ...PAY_NEO.inset }}
+									placeholder="XXX-XXX-XXXX"
+									value={tlFormPhone}
+									onChange={e => setTlFormPhone(formatPhone(e.target.value))}
+									onFocus={() => { setSoftKbOpen(true); setSoftKbTarget('tl_phone'); }}
+								/>
+							</div>
+						</div>
+						<div className="grid grid-cols-3 gap-4">
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Party Size</label>
+								<select
+									className="w-full cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+									style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+									value={tlFormParty}
+									onChange={e => setTlFormParty(e.target.value)}
+								>
+									<option value="">—</option>
+									{PARTY_SIZE_OPTIONS.map(o => (
+										<option key={o.value} value={o.value}>{o.label}</option>
+									))}
+								</select>
+							</div>
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Deposit ($)</label>
+								<input
+									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+									style={{ ...PAY_NEO.inset }}
+									type="number"
+									min="0"
+									placeholder="0"
+									value={tlFormDeposit}
+									onChange={e => setTlFormDeposit(e.target.value.replace(/[^0-9.]/g, ''))}
+									onFocus={() => { setSoftKbOpen(true); setSoftKbTarget('tl_deposit'); }}
+								/>
+							</div>
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Channel</label>
+								<div className="flex gap-1">
+									{(['Walk-in', 'Phone', 'Online'] as const).map(ch => (
+										<button
+											type="button"
+											key={ch}
+											className={`flex-1 touch-manipulation select-none rounded-[10px] border-0 py-2 text-xs font-semibold ${tlFormChannel === ch ? `text-white ${NEO_COLOR_BTN_PRESS}` : `text-slate-800 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}`}
+											style={tlFormChannel === ch ? { ...PAY_NEO_PRIMARY_BLUE } : { ...PAY_NEO.key }}
+											onClick={() => setTlFormChannel(ch)}
+										>
+											{ch}
+										</button>
+									))}
+								</div>
+							</div>
+						</div>
+						<div className="grid grid-cols-2 gap-4">
+							<div>
+								<label className="mb-1 block text-xs font-semibold text-slate-600">Reservation Time</label>
+								<div className="flex gap-2">
+									<select
+										className="min-w-0 flex-1 cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										value={tlFormHour}
+										onChange={e => setTlFormHour(e.target.value)}
+									>
+										{Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map(h => (
+											<option key={h} value={h}>{h}</option>
+										))}
+									</select>
+									<select
+										className="min-w-0 flex-1 cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										value={tlFormMinute}
+										onChange={e => setTlFormMinute(e.target.value)}
+									>
+										{['00', '15', '30', '45'].map(m => (
+											<option key={m} value={m}>{m}</option>
+										))}
+									</select>
+									<select
+										className="w-20 cursor-pointer border-0 px-2 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
+										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										value={tlFormAmpm}
+										onChange={e => setTlFormAmpm(e.target.value as 'AM' | 'PM')}
+									>
+										<option value="AM">AM</option>
+										<option value="PM">PM</option>
+									</select>
+								</div>
+							</div>
+							<div className="flex items-end">
+								<button
+									type="button"
+									className={`w-full rounded-[14px] border-0 px-4 py-2.5 text-base font-bold text-white disabled:opacity-50 ${NEO_COLOR_BTN_PRESS}`}
+									style={PAY_NEO_PRIMARY_BLUE}
+									disabled={tlFormSaving}
+									onClick={handleTimelineFormSave}
+								>
+									{tlFormSaving ? 'Saving...' : 'Save Reservation'}
+								</button>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		)}
+
+		{/* Soft Virtual Keyboard — rendered at top-level Fragment so it's above all modals */}
 		{softKbOpen && (
 			<VirtualKeyboard
 				open={softKbOpen}
 				title={''}
-				bottomOffsetPx={kbBottomOffset}
+				bottomOffsetPx={(showTimelineForm ? 100 : kbBottomOffset) - 15}
 				zIndex={2147483647}
 				languages={['EN']}
 				currentLanguage={kbLang}
 				onToggleLanguage={(next)=>setKbLang(next)}
-				displayText={softKbTarget==='name'?name:softKbTarget==='phone'?phone:softKbTarget==='party'?partySize:softKbTarget==='deposit'?deposit:''}
+				displayText={softKbTarget==='name'?name:softKbTarget==='phone'?phone:softKbTarget==='party'?partySize:softKbTarget==='deposit'?deposit:softKbTarget==='tl_name'?tlFormName:softKbTarget==='tl_phone'?tlFormPhone:softKbTarget==='tl_party'?tlFormParty:softKbTarget==='tl_deposit'?tlFormDeposit:''}
 				onRequestClose={() => { setSoftKbOpen(false); setSoftKbTarget(null); }}
 				onType={(k)=>{
-					if (softKbTarget==='name') setName(prev=>`${prev||''}${k}`);
+					if (softKbTarget==='name') setName(prev=>autoCapitalizeName(`${prev||''}${k}`));
 					if (softKbTarget==='phone') setPhone(prev=>formatPhone(`${prev||''}${k}`));
 					if (softKbTarget==='party') setPartySize(prev=>`${(prev||'').replace(/[^0-9]/g,'')}${k}`.replace(/[^0-9]/g,''));
 					if (softKbTarget==='deposit') setDeposit(prev=>{
+						const next=`${prev||''}${k}`;
+						const sanitized=next.replace(/[^0-9.]/g,'');
+						const dots=(sanitized.match(/\./g)||[]).length;
+						return dots>1 ? (prev||'') : sanitized;
+					});
+					if (softKbTarget==='tl_name') setTlFormName(prev=>autoCapitalizeName(`${prev||''}${k}`));
+					if (softKbTarget==='tl_phone') setTlFormPhone(prev=>formatPhone(`${prev||''}${k}`));
+					if (softKbTarget==='tl_party') setTlFormParty(prev=>`${(prev||'').replace(/[^0-9]/g,'')}${k}`.replace(/[^0-9]/g,''));
+					if (softKbTarget==='tl_deposit') setTlFormDeposit(prev=>{
 						const next=`${prev||''}${k}`;
 						const sanitized=next.replace(/[^0-9.]/g,'');
 						const dots=(sanitized.match(/\./g)||[]).length;
@@ -1635,21 +2235,26 @@ const handleSave = async () => {
 					});
 					if (softKbTarget==='party') setPartySize(prev=>prev?String(prev).slice(0,-1):'');
 					if (softKbTarget==='deposit') setDeposit(prev=>prev?String(prev).slice(0,-1):'');
+					if (softKbTarget==='tl_name') setTlFormName(prev=>prev?prev.slice(0,-1):'');
+					if (softKbTarget==='tl_phone') setTlFormPhone(prev=>{
+						const d = onlyDigits(prev||'');
+						return formatPhone(d ? d.slice(0, -1) : '');
+					});
+					if (softKbTarget==='tl_party') setTlFormParty(prev=>prev?String(prev).slice(0,-1):'');
+					if (softKbTarget==='tl_deposit') setTlFormDeposit(prev=>prev?String(prev).slice(0,-1):'');
 				}}
 				onClear={()=>{
 					if (softKbTarget==='name') setName('');
 					if (softKbTarget==='phone') setPhone('');
 					if (softKbTarget==='party') setPartySize('');
 					if (softKbTarget==='deposit') setDeposit('');
+					if (softKbTarget==='tl_name') setTlFormName('');
+					if (softKbTarget==='tl_phone') setTlFormPhone('');
+					if (softKbTarget==='tl_party') setTlFormParty('');
+					if (softKbTarget==='tl_deposit') setTlFormDeposit('');
 				}}
 			/>
 		)}
-				<div className="mt-3 flex items-end justify-end gap-0">
-						{error && <div className="text-sm text-red-600 mr-auto">{error}</div>}
-						{successMsg && <div className="text-sm text-green-700 mr-auto">{successMsg}</div>}
-				</div>
-			</div>
-		</div>
 
 		{/* Table Selection Modal */}
 		<TableSelectionModal

@@ -8,8 +8,20 @@ import {
 } from 'lucide-react';
 import { API_URL } from '../config/constants';
 import { getLocalDateString, getLocalDatetimeString } from '../utils/datetimeUtils';
+import {
+  PAY_NEO,
+  PAY_NEO_CANVAS,
+  PAY_NEO_PRIMARY_BLUE,
+  NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS_SNAP,
+  NEO_COLOR_BTN_PRESS_SNAP,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
+} from '../utils/softNeumorphic';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
+
+const QSR_PAGE_MODAL_PAD_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
 
 // ==================== Types ====================
 interface MenuItem {
@@ -3193,43 +3205,68 @@ const QsrPage: React.FC = () => {
       
       {/* ==================== Open Price Modal ==================== */}
       {showOpenPriceModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-96 overflow-hidden">
-            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4">
-              <h3 className="text-white font-bold text-xl">Open Price</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div
+            className="w-96 max-w-[95vw] overflow-hidden rounded-2xl border-0 p-5"
+            style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-xl font-bold text-gray-800">Open Price</h3>
+              <button
+                type="button"
+                onClick={() => setShowOpenPriceModal(false)}
+                className={`flex h-9 w-9 items-center justify-center rounded-xl border-0 text-lg font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_PAGE_MODAL_PAD_PRESS}`}
+                style={PAY_NEO.raised}
+                title="Close"
+              >
+                ×
+              </button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Item Name</label>
-                <input
-                  type="text"
-                  value={openPriceName}
-                  onChange={(e) => setOpenPriceName(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                  placeholder="Enter item name"
-                />
+                <label className="mb-1 block text-sm font-medium text-gray-800">Item Name</label>
+                <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                  <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                    <input
+                      type="text"
+                      value={openPriceName}
+                      onChange={(e) => setOpenPriceName(e.target.value)}
+                      className="h-12 w-full border-0 bg-transparent px-4 text-base text-gray-900 outline-none focus:ring-0"
+                      placeholder="Enter item name"
+                    />
+                  </div>
+                </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Price ($)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={openPriceAmount}
-                  onChange={(e) => setOpenPriceAmount(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                  placeholder="0.00"
-                />
+                <label className="mb-1 block text-sm font-medium text-gray-800">Price ($)</label>
+                <div className="relative rounded-[14px] focus-within:ring-2 focus-within:ring-blue-400/50 focus-within:ring-offset-2 focus-within:ring-offset-[#e0e5ec]">
+                  <div className="overflow-hidden rounded-[14px]" style={PAY_NEO.inset}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={openPriceAmount}
+                      onChange={(e) => setOpenPriceAmount(e.target.value)}
+                      className="h-12 w-full border-0 bg-transparent px-4 text-base font-semibold text-gray-900 outline-none focus:ring-0"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
               </div>
               <div className="flex gap-3 pt-2">
                 <button
+                  type="button"
                   onClick={() => setShowOpenPriceModal(false)}
-                  className="flex-1 py-3 bg-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-300 transition"
+                  className={`flex-1 rounded-[14px] border-0 py-3 text-base font-semibold text-gray-900 touch-manipulation hover:brightness-[1.02] ${QSR_PAGE_MODAL_PAD_PRESS}`}
+                  style={PAY_NEO.key}
                 >
                   Cancel
                 </button>
                 <button
+                  type="button"
                   onClick={handleOpenPrice}
-                  className="flex-1 py-3 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 transition"
+                  className={`flex-1 rounded-[14px] border-0 py-3 text-base font-bold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                  style={PAY_NEO_PRIMARY_BLUE}
                 >
                   Add to Order
                 </button>
@@ -3339,41 +3376,46 @@ const QsrPage: React.FC = () => {
       
       {/* ==================== Search Modal ==================== */}
       {showSearchModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-[500px] max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="bg-gradient-to-r from-blue-500 to-blue-600 px-6 py-4">
-              <h3 className="text-white font-bold text-xl">Search Menu</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="flex max-h-[80vh] w-[500px] flex-col overflow-hidden border-0" style={PAY_NEO.modalShell}>
+            <div className="px-5 py-3" style={{ ...PAY_NEO.raised, borderRadius: '16px 16px 0 0' }}>
+              <h3 className="text-xl font-extrabold text-slate-800">Search Menu</h3>
             </div>
-            <div className="p-4 border-b">
+            <div className="border-0 p-4" style={{ background: PAY_NEO_CANVAS }}>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="min-w-0 flex-1 rounded-[14px] border-0 px-4 py-3 text-gray-900 outline-none focus:ring-2 focus:ring-blue-400/50 focus:ring-offset-2 focus:ring-offset-[#e0e5ec]"
+                  style={PAY_NEO.inset}
                   placeholder="Search items..."
                   autoFocus
                 />
                 <button
+                  type="button"
                   onClick={handleSearch}
-                  className="px-6 py-3 bg-blue-500 text-white rounded-xl font-bold hover:bg-blue-600 transition"
+                  className={`rounded-[14px] border-0 px-6 py-3 font-bold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_SNAP}`}
+                  style={PAY_NEO_PRIMARY_BLUE}
                 >
                   Search
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4" style={{ background: PAY_NEO_CANVAS }}>
               {searchResults.length > 0 ? (
                 <div className="grid grid-cols-2 gap-2">
                   {searchResults.map(item => (
                     <button
+                      type="button"
                       key={item.item_id}
                       onClick={() => {
                         handleItemClick(item);
                         setShowSearchModal(false);
                       }}
-                      className="p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition text-left"
+                      className={`rounded-[12px] border-0 p-3 text-left touch-manipulation hover:brightness-[1.02] ${NEO_PREP_TIME_BTN_PRESS_SNAP}`}
+                      style={PAY_NEO.key}
                     >
                       <div className="font-medium text-gray-800">{item.name}</div>
                       <div className="text-sm text-gray-500">${item.price.toFixed(2)}</div>
@@ -3381,15 +3423,17 @@ const QsrPage: React.FC = () => {
                   ))}
                 </div>
               ) : searchQuery ? (
-                <div className="text-center text-gray-400 py-8">No items found</div>
+                <div className="py-8 text-center text-gray-500">No items found</div>
               ) : (
-                <div className="text-center text-gray-400 py-8">Enter search term</div>
+                <div className="py-8 text-center text-gray-500">Enter search term</div>
               )}
             </div>
-            <div className="p-4 border-t">
+            <div className="border-0 p-4 pt-0" style={{ background: PAY_NEO_CANVAS }}>
               <button
+                type="button"
                 onClick={() => setShowSearchModal(false)}
-                className="w-full py-3 bg-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-300 transition"
+                className={`w-full rounded-[14px] border-0 py-3 font-bold text-gray-700 touch-manipulation transition-[box-shadow,filter] duration-0 ease-out hover:brightness-[1.02] [-webkit-tap-highlight-color:transparent] active:!shadow-[inset_6px_6px_12px_#babecc,inset_-6px_-6px_12px_#ffffff] active:brightness-[0.92]`}
+                style={PAY_NEO.inset}
               >
                 Close
               </button>

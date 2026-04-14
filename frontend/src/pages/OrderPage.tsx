@@ -14,6 +14,7 @@ import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import ManagerPinModal from '../components/ManagerPinModal';
 import SoldOutModal from '../components/SoldOutModal';
 import { API_URL } from '../config/constants';
+import { isPanelTogoPayKitchenSuppressActive } from '../utils/printUtils';
 import BottomActionBar from '../components/order/BottomActionBar';
 import ModifierPanel from '../components/order/ModifierPanel';
 import OrderCatalogPanel, { CatalogSnapshot } from './order/OrderCatalogPanel';
@@ -33,11 +34,15 @@ import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
 import {
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
+  NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
   OH_ACTION_NEO,
   PAY_NEO,
   PAY_NEO_CANVAS,
   PAY_NEO_PRIMARY_AMBER,
   PAY_NEO_PRIMARY_BLUE,
+  PAY_KEYPAD_KEY,
 } from '../utils/softNeumorphic';
 import {
   applyModifierLayoutTemplate,
@@ -57,6 +62,9 @@ import TipEntryModal from '../components/TipEntryModal';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
 const CATALOG_SNAPSHOT_KEY = 'orderLayout:lastCatalogSnapshot';
+
+/** Void 모달(FSR OrderPage) — 패드·±·푸터 오목 눌림 (PinInputModal과 동일 결합) */
+const ORDER_VOID_PAD_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
 
 const readLayoutSettingsSnapshotSeed = (): { raw: string | null; data: Partial<LayoutSettings> | null } => {
   if (typeof window === 'undefined') {
@@ -89,6 +97,15 @@ const readCatalogSnapshot = (): CatalogSnapshot | null => {
   }
   return null;
 };
+
+/** Day open 이후 일일 순번 표기 통일(예: 5 → 005). 영수증·Kitchen·화면 주문번호와 동일하게 맞춤 */
+function normalizeDailyPosOrderNumber(raw: string | null | undefined): string {
+  if (raw == null) return '';
+  const t = String(raw).trim().replace(/^#/, '');
+  if (!t) return '';
+  if (/^\d+$/.test(t)) return t.length < 3 ? t.padStart(3, '0') : t;
+  return t;
+}
 
 /** Utility(Firebase) Bag Fee on/off·금액 → POS Extra1용 localStorage (세금/프린터 미포함) */
 const syncPosBagFeeLocalFromUtilityBagFee = (bagFee: { enabled: boolean; amount: number }) => {
@@ -168,6 +185,12 @@ const OrderPage = () => {
   const normalizedOrderType = typeof orderType === 'string' ? orderType : 'pos';
   const normalizedOrderTypeLower = normalizedOrderType.toLowerCase();
   const isTogo = (normalizedOrderTypeLower === 'togo');
+  /** 투고 패널(/sales/order)의 togo·online·delivery 카드는 입고 시 주방 출력 완료 — 결제 완료 후 주방 재출력 금지, 영수증만 */
+  const skipPostPaymentKitchenForPanelChannels =
+    isSalesOrder &&
+    (normalizedOrderTypeLower === 'togo' ||
+      normalizedOrderTypeLower === 'online' ||
+      normalizedOrderTypeLower === 'delivery');
   const normalizedPriceType: 'price' | 'price2' = locationPriceType === 'price2' ? 'price2' : 'price';
 
   // Resolve accurate table name for POS/table orders when not provided directly
@@ -208,6 +231,8 @@ const OrderPage = () => {
   const [togoInfoAfterPrepLocked, setTogoInfoAfterPrepLocked] = useState(false);
   const [togoInfoAfterFulfillment, setTogoInfoAfterFulfillment] = useState<'togo' | 'delivery'>('togo');
   const pendingTogoInfoRef = useRef<{ name: string; phone: string } | null>(null);
+  /** 투고 정보 모달에서 Pay/OK로 결제만 연 경우 — 결제 완료 시점 처리 분기용 */
+  const togoWalkInPayAfterInfoRef = useRef(false);
   const togoAfterPhoneRef = useRef<HTMLInputElement>(null);
   const togoAfterNameRef = useRef<HTMLInputElement>(null);
   const togoAfterAddressRef = useRef<HTMLTextAreaElement>(null);
@@ -838,6 +863,12 @@ const handleVoidPinClear = useCallback(() => {
       console.warn('[Reprint] No items to reprint.');
       return;
     }
+    if (isPanelTogoPayKitchenSuppressActive()) {
+      console.log('[Reprint] suppressed (Sales panel togo/online payment flow)');
+      return;
+    }
+
+    await ensureReceiptOrderNumberRefFromDb();
 
     const printItems: any[] = items.map((it: any) => {
       const printerGroupIds = Array.isArray(it.printerGroupIds) ? it.printerGroupIds : 
@@ -865,7 +896,12 @@ const handleVoidPinClear = useCallback(() => {
 
     const printTableName = resolvedTableName || tableNameFromState || '';
     const printServerName = selectedServer?.name || '';
-    const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current || `ORD-${Date.now()}`);
+    const reprintNum = normalizeDailyPosOrderNumber(savedOrderNumberRef.current);
+    const printOrderNumber = reprintNum
+      ? `#${reprintNum}`
+      : savedOrderIdRef.current != null && String(savedOrderIdRef.current).trim() !== ''
+        ? `#${String(savedOrderIdRef.current).trim()}`
+        : `ORD-${Date.now()}`;
 
     try {
       const response = await fetch(`${API_URL}/printers/print-order`, { 
@@ -1151,8 +1187,17 @@ const handleVoidPinClear = useCallback(() => {
   const splitDiscountRef = useRef<any>(null);
   // Track whether kitchen ticket has been printed for this order (prevent duplicate prints on Payment path)
   const kitchenTicketPrintedRef = useRef<boolean>(false);
+  /** executeOkFlow 동시 실행 방지 (더블 OK → 정상 Kitchen + 즉시 ADDITIONAL 중복 방지) */
+  const executeOkFlowInFlightRef = useRef<boolean>(false);
   // Prevent accidental duplicate guest-receipt prints (double-click / re-render edge cases)
   const lastGuestReceiptPrintRef = useRef<{ key: string; ts: number } | null>(null);
+  /** Sales 투고패널 카드 → Pay & Pickup 진입 시: 결제 완료 후 패널/픽업 동기화용 */
+  const panelTogoOnlinePickupRef = React.useRef<{
+    sqliteOrderId: number;
+    firebaseOrderId: string | null;
+    channel: string;
+    deliveryMetaId?: string | number | null;
+  } | null>(null);
   // Payment Complete Modal state
   const [showPaymentCompleteModal, setShowPaymentCompleteModal] = useState(false);
   const [paymentCompleteData, setPaymentCompleteData] = useState<{
@@ -1542,7 +1587,8 @@ const handleVoidPinClear = useCallback(() => {
     if (!saveRes.ok) throw new Error('Failed to save order');
     const saved = await saveRes.json();
     savedOrderIdRef.current = saved.orderId;
-    savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
+    savedOrderNumberRef.current =
+      normalizeDailyPosOrderNumber(String(saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || '')) || null;
     
     // Live Order 실시간 업데이트를 위한 이벤트 발생
     const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -1752,11 +1798,12 @@ const handleVoidPinClear = useCallback(() => {
         const paySubtotal = Number((payTotals.subtotal || 0).toFixed(2));
         const payTax = Number(((payTotals.taxLines || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)).toFixed(2));
         const payTotal = Number((paySubtotal + payTax).toFixed(2));
-        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), orderMode: 'FSR' }) });
+        const saveRes = await fetch(`${API_URL}/orders`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderNumber, orderType: orderType||'POS', total: payTotal, subtotal: paySubtotal, tax: payTax, items: items.map((it:any)=>({ id: it.id, name: it.name, quantity: it.quantity, price: it.totalPrice, guestNumber: it.guestNumber || 1, modifiers: it.modifiers || [], memo: it.memo || null, discount: (it as any).discount || null, splitDenominator: it.splitDenominator || null, orderLineId: (it as any).orderLineId || null, taxRate: Number(it.taxRate || it.tax_rate || 0), tax: Number(it.tax || 0), togoLabel: it.togoLabel || false, taxGroupId: it.taxGroupId || null, printerGroupId: it.printerGroupId || null })), customerName: getPersistableCustomerName(), customerPhone: getPersistableCustomerPhone(), fulfillmentMode: orderFulfillmentMode || null, readyTime: orderPickupInfo.readyTimeLabel || null, pickupMinutes: orderPickupInfo.pickupMinutes ?? null, kitchenNote: savedKitchenMemo || null, orderSource: (location.state as any)?.deliveryCompany || null, isPrepaid: !!(location.state as any)?.isPrepaid, onlineOrderNumber: onlineOrderNumberForKitchenRef.current || null, orderMode: 'FSR' }) });
         if (!saveRes.ok) throw new Error('Failed to save order');
         const saved = await saveRes.json();
         savedOrderIdRef.current = saved.orderId;
-        savedOrderNumberRef.current = saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || null;
+        savedOrderNumberRef.current =
+          normalizeDailyPosOrderNumber(String(saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || '')) || null;
         
         // Live Order 실시간 업데이트를 위한 이벤트 발생
         const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -1917,6 +1964,30 @@ const handleVoidPinClear = useCallback(() => {
       alert('An error occurred during payment processing.');
     }
   };
+
+  /** 영수증용: 일일 order_number가 ref에 없으면 DB에서 보강 (Kitchen과 동일 번호) */
+  const ensureReceiptOrderNumberRefFromDb = useCallback(async () => {
+    const existing = savedOrderNumberRef.current;
+    if (existing != null && String(existing).trim() !== '') {
+      const n = normalizeDailyPosOrderNumber(String(existing));
+      if (n) savedOrderNumberRef.current = n;
+      return;
+    }
+    const oid = savedOrderIdRef.current;
+    if (oid == null || !Number.isFinite(Number(oid))) return;
+    try {
+      const res = await fetch(`${API_URL}/orders/${encodeURIComponent(String(oid))}`);
+      if (!res.ok) return;
+      const j: any = await res.json().catch(() => null);
+      const row = j?.order;
+      const raw = row?.order_number != null ? String(row.order_number).trim() : '';
+      const n = normalizeDailyPosOrderNumber(raw);
+      if (n) savedOrderNumberRef.current = n;
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const handleCompletePayment = async (receiptCount: number = 2) => {
     try {
       // Flush pending payments to DB before closing order
@@ -2056,11 +2127,17 @@ const handleVoidPinClear = useCallback(() => {
 
       if (orderId) {
         const pmDiscountForClose = paymentCompleteData?.discount;
+        const stPick = (location.state || {}) as any;
+        const pickedUpClose =
+          !!(stPick.fromOrderHistory && stPick.autoPickup) || togoWalkInPayAfterInfoRef.current;
         try {
           await fetch(`${API_URL}/orders/${orderId}/close`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(pmDiscountForClose && pmDiscountForClose.percent > 0 ? { discount: pmDiscountForClose } : {})
+            body: JSON.stringify({
+              ...(pmDiscountForClose && pmDiscountForClose.percent > 0 ? { discount: pmDiscountForClose } : {}),
+              ...(pickedUpClose ? { pickedUp: true } : {}),
+            })
           });
         } catch (e) { console.warn('Order status update failed (can be ignored):', e); }
       }
@@ -2073,8 +2150,10 @@ const handleVoidPinClear = useCallback(() => {
       // Live Order 실시간 업데이트를 위한 이벤트 발생
       window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
 
-      // Kitchen Ticket: if OK was not pressed before Payment, print kitchen ticket now
-      if (!kitchenTicketPrintedRef.current) {
+      // Kitchen Ticket: OK 생략 시에만 보조 출력 — 패널 togo/online/delivery는 생성 시 이미 주방 출력됨
+      if (skipPostPaymentKitchenForPanelChannels) {
+        kitchenTicketPrintedRef.current = true;
+      } else if (!kitchenTicketPrintedRef.current) {
         kitchenTicketPrintedRef.current = true;
         try {
           const kitchenItems = (orderItems || []).filter((it: any) => it && it.type === 'item');
@@ -2103,6 +2182,7 @@ const handleVoidPinClear = useCallback(() => {
       if (!receiptPrintedRef.current) {
         receiptPrintedRef.current = true; // Mark as printed to prevent duplicates
         try {
+          await ensureReceiptOrderNumberRefFromDb();
           // Build receipt data
         const guestSections = guestIds.map((g: number) => {
           const guestItems = (orderItems || []).filter(it => it.type === 'item' && (it.guestNumber || 1) === g);
@@ -2242,6 +2322,9 @@ const handleVoidPinClear = useCallback(() => {
     clearServerAssignmentForContext();
     setSelectedServer(null);
     window.dispatchEvent(new Event('paymentCompleted'));
+    if (togoWalkInPayAfterInfoRef.current) {
+      togoWalkInPayAfterInfoRef.current = false;
+    }
     navigate('/sales', { replace: true });
     } catch (e) {
       console.error(e);
@@ -2253,12 +2336,114 @@ const handleVoidPinClear = useCallback(() => {
   // Payment Complete Modal handlers
   // ═══════════════════════════════════════════════════
 
+  const runPanelTogoOnlinePickupAfterPayment = React.useCallback(
+    async (
+      closedOrderId: number | null | undefined,
+      panelSnapshot?: {
+        sqliteOrderId: number;
+        firebaseOrderId: string | null;
+        channel: string;
+        deliveryMetaId?: string | number | null;
+      } | null
+    ) => {
+      const panel = panelSnapshot ?? panelTogoOnlinePickupRef.current;
+      if (!panel || closedOrderId == null || closedOrderId === undefined) return;
+      if (String(panel.sqliteOrderId) !== String(closedOrderId)) return;
+      try {
+        await fetch(`${API_URL}/orders/${closedOrderId}/status`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'PICKED_UP' }),
+        });
+      } catch (e) {
+        try { console.warn('[panelAutoPickup] PICKED_UP failed:', e); } catch {}
+      }
+      const ch = (panel.channel || '').toLowerCase();
+      if (ch === 'online' && panel.firebaseOrderId) {
+        try {
+          await fetch(`${API_URL}/online-orders/order/${encodeURIComponent(String(panel.firebaseOrderId))}/pickup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          });
+        } catch (e) {
+          try { console.warn('[panelAutoPickup] online pickup failed:', e); } catch {}
+        }
+      }
+      const dm = panel.deliveryMetaId;
+      if (ch === 'delivery' && dm != null && String(dm).trim() !== '') {
+        try {
+          await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(dm))}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'PICKED_UP' }),
+          });
+        } catch (e) {
+          try { console.warn('[panelAutoPickup] delivery meta PICKED_UP failed:', e); } catch {}
+        }
+      }
+      try {
+        window.dispatchEvent(
+          new CustomEvent('panelPickupOrderComplete', {
+            detail: {
+              sqliteOrderId: closedOrderId,
+              firebaseOrderId: panel.firebaseOrderId,
+              channel: ch,
+              deliveryMetaId: dm != null && String(dm).trim() !== '' ? dm : null,
+            },
+          })
+        );
+      } catch {}
+      panelTogoOnlinePickupRef.current = null;
+    },
+    []
+  );
+
   // 결제 완료 모달에서 최종 완료 처리 (전체 결제 완료 시)
   const handlePaymentCompleteClose = async (receiptCount: number) => {
     window.dispatchEvent(new Event('paymentCompleted'));
     const savedPaymentData = paymentCompleteData;
     setShowPaymentCompleteModal(false);
     setPaymentCompleteData(null);
+
+    /** Pay & Pickup: (1) Sales 카드에서 진입 (2) 투고 생성 화면에서 정보 모달 Pay — 둘 다 결제+픽업 완료로 처리 */
+    const locNavPickup = (location.state || {}) as any;
+    const walkInPayAndPickupImmediate = togoWalkInPayAfterInfoRef.current;
+    if (walkInPayAndPickupImmediate) {
+      togoWalkInPayAfterInfoRef.current = false;
+    }
+    const pickupImmediateFlow =
+      !!(locNavPickup.fromOrderHistory && locNavPickup.autoPickup) || walkInPayAndPickupImmediate;
+    const mergePanelSnapForPickup = (oid: number | null | undefined) => {
+      const cur = panelTogoOnlinePickupRef.current;
+      if (cur && oid != null && String(cur.sqliteOrderId) === String(oid)) {
+        return { ...cur };
+      }
+      if (!pickupImmediateFlow || oid == null || !Number.isFinite(Number(oid))) return null;
+      const fidRaw = locNavPickup.firebaseOrderId ?? null;
+      const fid =
+        fidRaw != null && String(fidRaw).trim() !== '' ? String(fidRaw).trim() : null;
+      const dmRaw = locNavPickup.deliveryMetaId ?? null;
+      const deliveryMetaId =
+        dmRaw != null && String(dmRaw).trim() !== '' && String(dmRaw).trim() !== 'undefined'
+          ? dmRaw
+          : null;
+      return {
+        sqliteOrderId: Number(oid),
+        firebaseOrderId: fid,
+        channel: String(locNavPickup.orderType || orderType || 'togo').toLowerCase(),
+        deliveryMetaId,
+      };
+    };
+    const buildCloseBodyForPayment = (disc: any) => {
+      const o: Record<string, unknown> = {};
+      if (disc && typeof disc === 'object' && Number((disc as any).percent || 0) > 0) {
+        o.discount = disc;
+      }
+      if (pickupImmediateFlow) {
+        o.pickedUp = true;
+      }
+      return o;
+    };
 
     // --- Confirmed save: flush all pending payments to DB ---
     const orderId_confirm = savedOrderIdRef.current;
@@ -2341,6 +2526,7 @@ const handleVoidPinClear = useCallback(() => {
           const alreadyPrintedByModal = savedPaymentData?.isPartialPayment === false && typeof savedPaymentData?.currentGuestNumber === 'number';
           if (receiptCount > 0 && !alreadyPrintedByModal) {
             try {
+              await ensureReceiptOrderNumberRefFromDb();
               if (guestPaymentMode === 'ALL') {
                 const totalsForReceipt = computeGuestTotals('ALL');
                 const rSubtotal = Number((totalsForReceipt.subtotal || 0).toFixed(2));
@@ -2396,7 +2582,44 @@ const handleVoidPinClear = useCallback(() => {
             }
           }
 
-          // Immediate UI cleanup + navigate first
+          const chSplitFinalize = (orderType || '').toLowerCase();
+          if (
+            !skipPostPaymentKitchenForPanelChannels &&
+            (chSplitFinalize === 'togo' || chSplitFinalize === 'online' || chSplitFinalize === 'delivery') &&
+            !kitchenTicketPrintedRef.current
+          ) {
+            const kitItemsSplit = (orderItems || []).filter((it: any) => it && it.type === 'item');
+            if (kitItemsSplit.length > 0) {
+              kitchenTicketPrintedRef.current = true;
+              try {
+                if (!savedOrderIdRef.current) await saveOrderToBackend();
+                await printKitchenOrders(false);
+                console.log('🖨️ Kitchen ticket printed from PaymentCompleteClose (split Pay-in-Full)');
+              } catch (e) {
+                kitchenTicketPrintedRef.current = false;
+                console.warn('Kitchen ticket split finalize failed (ignored):', e);
+              }
+            }
+          } else if (skipPostPaymentKitchenForPanelChannels) {
+            kitchenTicketPrintedRef.current = true;
+          }
+
+          // Immediate UI cleanup + navigate first (패널 스냅샷은 navigate 전에 보관 — 언마운트 후 ref 비어 runPanel 스킵 방지)
+          const panelSnapSplit = mergePanelSnapForPickup(orderId);
+          if (pickupImmediateFlow && orderId && panelSnapSplit) {
+            try {
+              window.dispatchEvent(
+                new CustomEvent('panelPickupOrderComplete', {
+                  detail: {
+                    sqliteOrderId: orderId,
+                    firebaseOrderId: panelSnapSplit.firebaseOrderId ?? null,
+                    channel: panelSnapSplit.channel || 'togo',
+                    deliveryMetaId: panelSnapSplit.deliveryMetaId ?? null,
+                  },
+                })
+              );
+            } catch {}
+          }
           clearServerAssignmentForContext();
           setSelectedServer(null);
           splitDiscountRef.current = null;
@@ -2421,7 +2644,7 @@ const handleVoidPinClear = useCallback(() => {
                   await fetch(`${API_URL}/orders/${orderId}/close`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(pmDiscount && pmDiscount.percent > 0 ? { discount: pmDiscount } : {})
+                    body: JSON.stringify(buildCloseBodyForPayment(pmDiscount))
                   });
                 } catch {}
               }
@@ -2435,6 +2658,8 @@ const handleVoidPinClear = useCallback(() => {
                   });
                 } catch {}
               }
+
+              await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapSplit);
 
               try {
                 window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
@@ -2543,6 +2768,7 @@ const handleVoidPinClear = useCallback(() => {
           finalTotal = Number((pmDiscount.discountedSubtotal + pmDiscount.taxesTotal).toFixed(2));
         }
 
+        await ensureReceiptOrderNumberRefFromDb();
         const receiptData = {
           header: {
             orderNumber: savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (orderId || ''),
@@ -2614,6 +2840,36 @@ const handleVoidPinClear = useCallback(() => {
       }
     }
 
+    // Pay/OK → PaymentCompleteModal: 투고·온라인·배달은 패널(/sales/order)에서 이미 주방 출력됨 — 여기서는 주방 출력하지 않음.
+    const channelLcPayClose = (orderType || '').toLowerCase();
+    const kitchenAfterChannel =
+      channelLcPayClose === 'togo' ||
+      channelLcPayClose === 'online' ||
+      channelLcPayClose === 'delivery';
+    if (
+      kitchenAfterChannel &&
+      !skipPostPaymentKitchenForPanelChannels &&
+      !hasSplitContextFallback &&
+      !kitchenTicketPrintedRef.current
+    ) {
+      const kitchenItemsPayClose = (orderItems || []).filter((it: any) => it && it.type === 'item');
+      if (kitchenItemsPayClose.length > 0) {
+        kitchenTicketPrintedRef.current = true;
+        try {
+          if (!savedOrderIdRef.current) {
+            await saveOrderToBackend();
+          }
+          await printKitchenOrders(false);
+          console.log('🖨️ Kitchen ticket printed from PaymentCompleteClose (Pay/OK path)');
+        } catch (ktErr) {
+          kitchenTicketPrintedRef.current = false;
+          console.warn('Kitchen ticket from PaymentCompleteClose failed (ignored):', ktErr);
+        }
+      }
+    } else if (skipPostPaymentKitchenForPanelChannels && kitchenAfterChannel) {
+      kitchenTicketPrintedRef.current = true;
+    }
+
     // 스플릿: 미결제 게스트가 남았으면 테이블맵으로 가지 않고 결제 모달에서 다음 게스트 계속
     if (hasSplitContextFallback || savedPaymentData?.isPartialPayment === true) {
       const currentGuestNum = savedPaymentData?.currentGuestNumber;
@@ -2638,7 +2894,22 @@ const handleVoidPinClear = useCallback(() => {
       }
     }
 
-    // Navigate to table map immediately
+    // Navigate to table map immediately (패널 스냅샷은 navigate 전에 보관)
+    const panelSnapMain = mergePanelSnapForPickup(orderId);
+    if (pickupImmediateFlow && orderId && panelSnapMain) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('panelPickupOrderComplete', {
+            detail: {
+              sqliteOrderId: orderId,
+              firebaseOrderId: panelSnapMain.firebaseOrderId ?? null,
+              channel: panelSnapMain.channel || 'togo',
+              deliveryMetaId: panelSnapMain.deliveryMetaId ?? null,
+            },
+          })
+        );
+      } catch {}
+    }
     clearServerAssignmentForContext();
     setSelectedServer(null);
     navigate('/sales', { replace: true });
@@ -2662,7 +2933,7 @@ const handleVoidPinClear = useCallback(() => {
             await fetch(`${API_URL}/orders/${orderId}/close`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(pmDiscClose && pmDiscClose.percent > 0 ? { discount: pmDiscClose } : {})
+              body: JSON.stringify(buildCloseBodyForPayment(pmDiscClose))
             });
           } catch {}
         }
@@ -2675,6 +2946,7 @@ const handleVoidPinClear = useCallback(() => {
             });
           } catch {}
         }
+        await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapMain);
         window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
       } catch {}
     })();
@@ -2697,6 +2969,8 @@ const handleVoidPinClear = useCallback(() => {
         return;
       }
       lastGuestReceiptPrintRef.current = { key: dedupeKey, ts: now };
+
+      await ensureReceiptOrderNumberRefFromDb();
 
       const isEvenSplit = adhocSplitCount > 0;
       const splitCount = adhocSplitCount;
@@ -6295,6 +6569,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
       if (mode === 'ALL_DETAILS') {
          // 공통 Bill 데이터 빌드 함수 사용 (주문 제출 시 Bill과 동일한 로직)
+         await ensureReceiptOrderNumberRefFromDb();
          const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current ? `#${savedOrderIdRef.current}` : orderNumber);
          const channelDisplay = normalizedOrderType.toUpperCase() === 'POS' ? 'Dine-In' : normalizedOrderType.toUpperCase();
          
@@ -6639,7 +6914,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const savedOrder = await saveRes.json();
         const newOrderId = savedOrder?.orderId ?? savedOrder?.id;
         try { savedOrderIdRef.current = newOrderId ?? savedOrderIdRef.current; } catch {}
-        try { savedOrderNumberRef.current = savedOrder?.order_number || String(savedOrder?.dailyNumber || '').padStart(3, '0') || savedOrderNumberRef.current; } catch {}
+        try {
+          const rawOn =
+            savedOrder?.order_number || String(savedOrder?.dailyNumber || '').padStart(3, '0') || '';
+          const n = normalizeDailyPosOrderNumber(rawOn);
+          savedOrderNumberRef.current = n || savedOrderNumberRef.current;
+        } catch {}
         
         // New Order Created: Clear stale paidGuests state for this table to prevent merging old data
         try {
@@ -6763,6 +7043,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   };
 
   const printKitchenOrders = async (wasUpdateMode: boolean, orderItemsOverride?: any[]) => {
+      if (isPanelTogoPayKitchenSuppressActive()) {
+        console.log('[printKitchenOrders] suppressed (Sales panel togo/online payment flow)');
+        return;
+      }
+      await ensureReceiptOrderNumberRefFromDb();
       const source = Array.isArray(orderItemsOverride) ? orderItemsOverride : (orderItems || []);
       const items = (source || []).filter((it: any) => it && it.type === 'item');
       const printItems: any[] = [];
@@ -6838,7 +7123,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
       const printTableName = resolvedTableName || tableNameFromState || '';
       const printServerName = selectedServer?.name || '';
-      const printOrderNumber = savedOrderNumberRef.current ? `#${savedOrderNumberRef.current}` : (savedOrderIdRef.current || `ORD-${Date.now()}`);
+      const kitchenNum = normalizeDailyPosOrderNumber(savedOrderNumberRef.current);
+      const printOrderNumber = kitchenNum
+        ? `#${kitchenNum}`
+        : savedOrderIdRef.current != null && String(savedOrderIdRef.current).trim() !== ''
+          ? `#${String(savedOrderIdRef.current).trim()}`
+          : `ORD-${Date.now()}`;
       
       // 딜리버리 정보 추출
       const deliveryCompany = (location.state as any)?.deliveryCompany || '';
@@ -6872,8 +7162,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 (orderType || '').toLowerCase() === 'online' ? onlineOrderNumberForKitchenRef.current || '' : '',
             },
             isAdditionalOrder: wasUpdateMode,
-            // Delivery 주문은 항상 PAID로 출력
-            isPaid: isDeliveryOrder
+            // 배달: 항상 PAID. 투고/온라인/픽업: 세션 결제 합이 총액에 도달하면 PAID(웨이트리스·영수용 복사 티켓에 UNPAID 방지)
+            isPaid:
+              isDeliveryOrder ||
+              (['TOGO', 'ONLINE', 'PICKUP'].includes(orderTypeDisplay) &&
+                payGrandAll > 0.05 &&
+                (sessionPayments || []).reduce((s, p) => s + Number(p.amount || 0), 0) + 0.05 >= payGrandAll),
           }) 
         });
         const result = await response.json();
@@ -6966,6 +7260,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
   };
 
   const handleTogoInfoAfterConfirm = async () => {
+    togoWalkInPayAfterInfoRef.current = false;
     const name = togoInfoAfterName.trim();
     const phone = togoInfoAfterPhone.trim();
     pendingTogoInfoRef.current = { name, phone };
@@ -7007,6 +7302,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
 
     setShowTogoInfoAfterModal(false);
     pendingTogoInfoRef.current = null;
+    togoWalkInPayAfterInfoRef.current = true;
 
     try {
       setPrefillUseTotalOnceNonce(0);
@@ -7022,7 +7318,104 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
   };
 
+  /** 후 고객 인포 모달 Cancel: 주문 초기화 후 테이블맵으로 복귀(선 인포와 동일), Sales 임시 투고 카드 제거 */
+  const handleTogoInfoAfterCancel = async () => {
+    setShowTogoInfoAfterModal(false);
+    setShowPaymentModal(false);
+    setShowSplitBillModal(false);
+    setTogoInfoAfterName('');
+    setTogoInfoAfterPhone('');
+    setTogoInfoAfterAddress('');
+    setTogoInfoAfterZip('');
+    setTogoInfoAfterNote('');
+    setTogoInfoAfterPickupMinutes(15);
+    setTogoInfoAfterPrepLocked(false);
+    setTogoInfoAfterFulfillment('togo');
+    togoWalkInPayAfterInfoRef.current = false;
+    pendingTogoInfoRef.current = null;
+
+    const st: any = location.state || {};
+    setOrderCustomerInfo({ name: '', phone: '' });
+    const initPickup = st && typeof st.pickup === 'object' ? st.pickup : null;
+    const initPickupMinutes =
+      initPickup && typeof initPickup.minutes === 'number' ? Number(initPickup.minutes) : null;
+    const initReady = typeof st.readyTimeLabel === 'string' ? st.readyTimeLabel : '';
+    setOrderPickupInfo({ readyTimeLabel: initReady, pickupMinutes: initPickupMinutes });
+    const initFulfillmentRaw =
+      typeof st.togoFulfillment === 'string'
+        ? st.togoFulfillment
+        : typeof st.fulfillmentMode === 'string'
+          ? st.fulfillmentMode
+          : null;
+    setOrderFulfillmentMode(initFulfillmentRaw ? String(initFulfillmentRaw).toLowerCase() : null);
+
+    setOrderItems([]);
+    setActiveGuestNumber(1);
+    setGuestPaymentMode('ALL');
+    try {
+      initializeSplitGuests([] as any);
+    } catch {}
+    splitGuestsInitDoneRef.current = false;
+    setSessionPayments([]);
+    setPaymentsByGuest({});
+    setPersistedPaidGuests([]);
+    setSavedKitchenMemo('');
+    receiptPrintedRef.current = false;
+    kitchenTicketPrintedRef.current = false;
+    originalSavedQuantitiesRef.current = {};
+    splitOriginalSnapshotRef.current = null;
+    payInFullFromSplitRef.current = false;
+    openedFromSplitRef.current = false;
+    allModeStickyRef.current = false;
+    setSelectedOrderItemId(null);
+    setSelectedOrderLineId(null);
+    setSelectedOrderGuestNumber(null);
+
+    const stateOrderId = st?.orderId;
+    const savedId = savedOrderIdRef.current;
+    if (savedId != null && Number.isFinite(Number(savedId))) {
+      try {
+        await fetch(`${API_URL}/orders/${savedId}`, { method: 'DELETE' });
+      } catch {
+        /* ignore */
+      }
+    }
+    savedOrderIdRef.current = null;
+    savedOrderNumberRef.current = null;
+
+    const tableIdForMap = st?.tableId;
+    try {
+      if (tableIdForMap) {
+        localStorage.removeItem(`voidDisplay_${tableIdForMap}`);
+        localStorage.removeItem(`splitGuests_${tableIdForMap}`);
+      }
+      if (savedId != null) {
+        try {
+          localStorage.removeItem(`pendingPayments_${savedId}`);
+        } catch {}
+      }
+      if (stateOrderId != null && String(stateOrderId) !== String(savedId ?? '')) {
+        try {
+          localStorage.removeItem(`pendingPayments_${stateOrderId}`);
+        } catch {}
+      }
+    } catch {}
+
+    clearServerAssignmentForContext();
+    setSelectedServer(null);
+
+    navigate('/sales', {
+      replace: true,
+      state:
+        stateOrderId != null && stateOrderId !== ''
+          ? { abandonTogoProvisionalId: stateOrderId }
+          : {},
+    });
+  };
+
   const executeOkFlow = async () => {
+    if (executeOkFlowInFlightRef.current) return;
+    executeOkFlowInFlightRef.current = true;
     try {
       const items = (orderItems || []).filter(it => it.type === 'item');
       const tableIdForMap = (location.state && (location.state as any).tableId) || null;
@@ -7066,6 +7459,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // - 먼저 현재 스냅샷 기준으로 출력(증가분만)
       // - 그 다음 저장
       // 신규 주문은 기존대로 저장 후 출력
+      //
+      // 투고 등: 선저장만 되어 savedOrderIdRef만 있고 DB 수량 베이스라인·이전 주방출력이 없으면
+      // ADDITIONAL로 전체가 한 번 더 나가므로 선(先) ADDITIONAL은 그때만 건너뜀.
+      const hasSavedQtyBaseline = Object.keys(originalSavedQuantitiesRef.current || {}).length > 0;
+      const shouldPrePrintAdditional =
+        wasUpdateMode && (kitchenTicketPrintedRef.current || hasSavedQtyBaseline);
+
       const stamp = Date.now();
       let seq = 0;
       const orderItemsSnapshot = (orderItems || []).map((it: any) => {
@@ -7075,9 +7475,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         return { ...it, orderLineId: `${it.id}-${stamp}-${seq}` };
       });
 
-      if (wasUpdateMode) {
+      let didPrePrintKitchenAdditional = false;
+      if (shouldPrePrintAdditional) {
         try {
           await printKitchenOrders(true, orderItemsSnapshot);
+          didPrePrintKitchenAdditional = true;
           kitchenTicketPrintedRef.current = true;
         } catch {}
       }
@@ -7101,12 +7503,15 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         }
       }
       
-      // 2. 주방 프린트
+      // 2. 주방 프린트 (신규: 저장 후 정상 / 업데이트: 선 ADDITIONAL 했으면 생략, 안 했으면 정상 1회)
       if (saved) {
-         if (!wasUpdateMode) {
-           await printKitchenOrders(false, orderItemsSnapshot);
-           kitchenTicketPrintedRef.current = true;
-         }
+        if (!wasUpdateMode) {
+          await printKitchenOrders(false, orderItemsSnapshot);
+          kitchenTicketPrintedRef.current = true;
+        } else if (!didPrePrintKitchenAdditional) {
+          await printKitchenOrders(false, orderItemsSnapshot);
+          kitchenTicketPrintedRef.current = true;
+        }
       }
 
       // 3. 게스트 상태 저장 - 제거됨 (OK 시점에 불완전한 상태를 저장하면 재진입시 PAID로 잠기는 문제 발생)
@@ -7181,6 +7586,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     } catch (e) {
       console.error('executeOkFlow failed', e);
       alert('OK processing failed');
+    } finally {
+      executeOkFlowInFlightRef.current = false;
     }
   };
 
@@ -7703,7 +8110,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         try { savedOrderNumberRef.current = null; } catch {}
         if (!res.ok) return;
         const json = await res.json();
-        savedOrderNumberRef.current = json?.order?.order_number || null;
+        savedOrderNumberRef.current =
+          normalizeDailyPosOrderNumber(
+            json?.order?.order_number != null ? String(json.order.order_number).trim() : ''
+          ) || null;
         applyCustomerInfoFromOrder(json?.order);
         const serverIdFromApi = json?.order?.server_id || json?.order?.serverId;
         const serverNameFromApi = json?.order?.server_name || json?.order?.serverName;
@@ -7903,6 +8313,30 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           savedOrderIdRef.current = Number(st.orderId); 
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
+          if (st.fromOrderHistory && st.autoPickup) {
+            const row = json?.order || {};
+            const fidRaw =
+              row.firebase_order_id ||
+              row.firebaseOrderId ||
+              st.firebaseOrderId ||
+              null;
+            const fid = fidRaw != null && String(fidRaw).trim() !== '' ? String(fidRaw).trim() : null;
+            const dmRaw =
+              row.delivery_meta_id ||
+              row.deliveryMetaId ||
+              st.deliveryMetaId ||
+              null;
+            const deliveryMetaId =
+              dmRaw != null && String(dmRaw).trim() !== '' && String(dmRaw).trim() !== 'undefined'
+                ? dmRaw
+                : null;
+            panelTogoOnlinePickupRef.current = {
+              sqliteOrderId: Number(st.orderId),
+              firebaseOrderId: fid,
+              channel: String(st.orderType || '').toLowerCase(),
+              deliveryMetaId,
+            };
+          }
           loadPersistedPaidGuests();
           
           // If openPayment flag is set, open payment modal after loading
@@ -11319,7 +11753,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           <div className="text-lg font-bold text-gray-800">Void Items</div>
           <button
             type="button"
-            className="flex h-11 w-11 items-center justify-center text-2xl font-bold text-gray-700 transition-[filter] active:brightness-95 touch-manipulation border-0"
+            className={`flex h-11 w-11 items-center justify-center rounded-xl border-0 text-2xl font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
             style={PAY_NEO.raised}
             onClick={()=>setShowVoidModal(false)}
             title="Close"
@@ -11365,7 +11799,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
                         type="button"
-                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${ORDER_VOID_PAD_PRESS}`}
                         style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.max(1, sel.qty - 1);
@@ -11376,7 +11810,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                       <button
                         type="button"
-                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${ORDER_VOID_PAD_PRESS}`}
                         style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.min(maxQty, sel.qty + 1);
@@ -11423,7 +11857,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               <button
                                 type="button"
-                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${ORDER_VOID_PAD_PRESS}`}
                                 style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.max(1, sel.qty - 1);
@@ -11434,7 +11868,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                               <button
                                 type="button"
-                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${ORDER_VOID_PAD_PRESS}`}
                                 style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.min(maxQty, sel.qty + 1);
@@ -11496,7 +11930,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   />
                   <button
                     type="button"
-                    className="absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 transition-[filter] active:brightness-95"
+                    className={`absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                     style={PAY_NEO.key}
                     onClick={() => {
                       try {
@@ -11538,8 +11972,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <button
                         key={`void-pin-${num}`}
                         type="button"
-                        className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
-                        style={PAY_NEO.keyPad}
+                        className={`h-12 rounded-[10px] border-0 font-semibold text-gray-800 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
+                        style={PAY_KEYPAD_KEY}
                         onClick={() => handleVoidPinDigit(String(num))}
                       >
                         {num}
@@ -11547,24 +11981,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     ))}
                     <button
                       type="button"
-                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
-                      style={PAY_NEO.keyPad}
+                      className={`h-12 rounded-[10px] border-0 text-sm font-semibold text-white hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                      style={{ ...OH_ACTION_NEO.red, borderRadius: 10 }}
                       onClick={handleVoidPinClear}
                     >
                       Clear
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
-                      style={PAY_NEO.keyPad}
+                      className={`h-12 rounded-[10px] border-0 font-semibold text-gray-800 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
+                      style={PAY_KEYPAD_KEY}
                       onClick={() => handleVoidPinDigit('0')}
                     >
                       0
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-[10px] border-0 font-semibold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
-                      style={PAY_NEO.keyPad}
+                      className={`h-12 rounded-[10px] border-0 text-lg font-semibold text-white hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                      style={{ ...OH_ACTION_NEO.orange, borderRadius: 10 }}
                       onClick={handleVoidPinBackspace}
                     >
                       ←
@@ -11580,7 +12014,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         <div className="mt-3 flex items-center justify-end gap-3">
           <button
             type="button"
-            className="min-w-[110px] rounded-[10px] border-0 px-5 py-2.5 text-sm font-bold text-gray-800 transition-[filter] active:brightness-95 touch-manipulation"
+            className={`min-w-[110px] rounded-[14px] border-0 px-5 py-2.5 text-sm font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
             style={PAY_NEO.key}
             onClick={()=>setShowVoidModal(false)}
           >
@@ -11588,12 +12022,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           </button>
           <button
             type="button"
-            className="min-w-[110px] rounded-xl border-0 px-5 py-2.5 text-sm font-bold text-white transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-40"
-            style={{
-              background: 'linear-gradient(145deg, #ef4444, #dc2626)',
-              boxShadow: '5px 5px 12px rgba(127,29,29,0.45), -3px -3px 10px rgba(255,255,255,0.22)',
-              borderRadius: 12,
-            }}
+            className={`min-w-[110px] rounded-[14px] border-0 px-5 py-2.5 text-sm font-bold touch-manipulation hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-60 ${
+              canConfirmVoid ? `${NEO_COLOR_BTN_PRESS_NO_SHIFT} text-white` : `${ORDER_VOID_PAD_PRESS} text-slate-500`
+            }`}
+            style={canConfirmVoid ? { ...OH_ACTION_NEO.red, borderRadius: 14 } : { ...PAY_NEO.inset }}
             disabled={!canConfirmVoid}
             onClick={handleConfirmVoid}
           >
@@ -11617,7 +12049,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
-                className="flex h-9 w-9 items-center justify-center border-0 text-lg font-bold text-gray-700 transition-[filter] active:brightness-[0.95]"
+                className={`flex h-9 w-9 items-center justify-center rounded-xl border-0 text-lg font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                 style={PAY_NEO.raised}
                 title="Close"
               >
@@ -11656,7 +12088,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                     <button
                       type="button"
-                      className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      className={`absolute inset-y-1 right-1 flex w-12 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                       style={PAY_NEO.key}
                       onClick={() => {
                         try {
@@ -11714,7 +12146,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                     <button
                       type="button"
-                      className="absolute inset-y-1 right-1 flex w-10 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      className={`absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                       style={PAY_NEO.keyPad}
                       onClick={() => {
                         setSoftKbTarget('openPriceAmount');
@@ -11762,7 +12194,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
                   <button
                     type="button"
-                    className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                    className={`absolute inset-y-1 right-1 flex w-12 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                     style={PAY_NEO.key}
                     onClick={() => {
                       try {
@@ -11793,7 +12225,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         key={opt.id}
                         type="button"
                         onClick={() => setSelectedTaxGroupId(opt.id)}
-                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
                         style={selectedTaxGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Rate: ${opt.totalRate}%`}
                       >
@@ -11813,7 +12245,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         key={opt.id}
                         type="button"
                         onClick={() => setSelectedPrinterGroupId(opt.id)}
-                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
                         style={selectedPrinterGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Printers: ${opt.count}`}
                       >
@@ -11834,7 +12266,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
-                className="border-0 py-3 text-base font-semibold text-gray-900 transition-[filter] active:brightness-95 touch-manipulation"
+                className={`rounded-[14px] border-0 py-3 text-base font-semibold text-gray-900 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                 style={PAY_NEO.key}
               >
                 Cancel
@@ -11842,7 +12274,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }}
-                className="border-0 py-3 text-base font-semibold transition-[filter] active:brightness-95 touch-manipulation"
+                className={`rounded-[14px] border-0 py-3 text-base font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
                 style={PAY_NEO_PRIMARY_BLUE}
               >
                 Add
@@ -13428,24 +13860,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="rounded-2xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)', background: '#e0e5ec' }}>
+            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-2xl shadow-2xl" style={{ transform: 'translateY(-70px)', background: '#e0e5ec' }}>
               {/* Header */}
-              <div className="px-4 py-3 flex justify-between items-center rounded-t-2xl" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
+              <div className="flex items-center justify-between rounded-t-2xl px-5 py-3.5" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
                 <h3 className="text-lg font-bold text-gray-700">Item Discount</h3>
-                <button onClick={handleCancelItemDiscount} className="text-red-400 hover:text-red-500 text-2xl font-bold leading-none">&times;</button>
+                <button type="button" onClick={handleCancelItemDiscount} className={`rounded-xl px-[0.55rem] py-[0.275rem] text-2xl font-bold leading-none text-red-400 hover:text-red-500 hover:brightness-[1.02] touch-manipulation min-h-[1.925rem] min-w-[1.925rem] flex items-center justify-center ${ORDER_VOID_PAD_PRESS}`}>&times;</button>
               </div>
               
               {/* Item Info */}
-              <div className="px-4 py-2 mx-4 mt-3 rounded-2xl" style={{ background: '#e0e5ec', boxShadow: 'inset 2px 2px 5px #b8bec7, inset -2px -2px 5px #ffffff' }}>
+              <div className="mx-5 mt-3 rounded-2xl px-4 py-2.5" style={{ background: '#e0e5ec', boxShadow: 'inset 2px 2px 5px #b8bec7, inset -2px -2px 5px #ffffff' }}>
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-gray-600 truncate max-w-[280px]">{itemName}</span>
+                  <span className="max-w-[min(320px,70vw)] truncate text-sm font-medium text-gray-600">{itemName}</span>
                   <span className="text-base font-bold text-gray-700">${itemOriginalPrice.toFixed(2)}</span>
                 </div>
               </div>
 
-              <div className="p-4 space-y-3">
+              <div className="space-y-4 p-5">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className="rounded-2xl p-3 border-0" style={itemDiscountMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                <div className="rounded-2xl border-0 p-4" style={itemDiscountMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
@@ -13466,19 +13898,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Percent & Amount Presets - Side by Side */}
-                <div className="flex gap-3">
+                <div className="flex gap-5">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 rounded-2xl p-3" style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' }}>
-                    <div className="text-xs font-bold text-blue-500 mb-2 flex items-center gap-1">
+                  <div className="flex-1 rounded-2xl p-4" style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' }}>
+                    <div className="mb-3 flex items-center gap-1 text-xs font-bold text-blue-500">
                       <span className="rounded-lg px-2 py-0.5 text-xs font-bold text-blue-500" style={{ background: '#e0e5ec', boxShadow: '2px 2px 4px #b8bec7, -2px -2px 4px #ffffff' }}>%</span>
                       Percent
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-3">
                       {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(v => (
                         <button
                           key={`pct-${v}`}
                           onClick={() => { setItemDiscountMode('percent'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
+                          className={`flex min-h-[3.3rem] items-center justify-center rounded-xl border-0 px-1 text-base font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             itemDiscountMode === 'percent' && itemDiscountValue === String(v)
                               ? 'text-blue-500'
                               : 'text-gray-600'
@@ -13494,17 +13926,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 rounded-2xl p-3" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
-                    <div className="text-xs font-bold text-emerald-500 mb-2 flex items-center gap-1">
+                  <div className="flex-1 rounded-2xl p-4" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                    <div className="mb-3 flex items-center gap-1 text-xs font-bold text-emerald-500">
                       <span className="rounded-lg px-2 py-0.5 text-xs font-bold text-emerald-500" style={{ background: '#e0e5ec', boxShadow: '2px 2px 4px #b8bec7, -2px -2px 4px #ffffff' }}>$</span>
                       Amount
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-3">
                       {[1, 2, 5, 10, 20, 25, 50, 100].map(v => (
                         <button
                           key={`amt-${v}`}
                           onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
+                          className={`flex min-h-[3.3rem] items-center justify-center rounded-xl border-0 px-1 text-base font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             itemDiscountMode === 'amount' && itemDiscountValue === String(v)
                               ? 'text-emerald-500'
                               : 'text-gray-600'
@@ -13517,8 +13949,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       ))}
                       <button
+                        type="button"
                         onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(Number(itemOriginalPrice.toFixed(2)))); }}
-                        className={`py-3 rounded-xl border-0 text-base font-bold transition-all active:scale-95 ${
+                        className={`flex min-h-[3.3rem] items-center justify-center rounded-xl border-0 px-1 text-base font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                           itemDiscountMode === 'amount' && Number(itemDiscountValue) === Number(itemOriginalPrice.toFixed(2))
                             ? 'text-orange-500'
                             : 'text-orange-400'
@@ -13534,8 +13967,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="rounded-2xl p-3" style={{ background: '#e0e5ec' }}>
-                  <div className="grid grid-cols-5 gap-2">
+                <div className="rounded-2xl p-4" style={{ background: '#e0e5ec' }}>
+                  <div className="grid grid-cols-5 gap-3">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
                       const isDollar = key === '$';
@@ -13558,7 +13991,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               appendDiscountDigit(key);
                             }
                           }}
-                          className={`h-12 rounded-xl border-0 font-bold text-lg transition-all active:scale-95 ${
+                          className={`h-[3.3rem] min-h-[3.3rem] rounded-xl border-0 text-lg font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             isPercent
                               ? itemDiscountMode === 'percent'
                                 ? 'text-blue-500'
@@ -13585,17 +14018,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-3">
+                <div className="flex gap-5 pt-1">
                   <button 
+                    type="button"
                     onClick={handleCancelItemDiscount} 
-                    className="flex-1 py-3 rounded-2xl border-0 text-gray-500 font-bold transition-all text-base active:scale-95"
+                    className={`flex-1 rounded-2xl border-0 py-[0.9625rem] text-base font-bold text-gray-500 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                     style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                   >
                     Cancel
                   </button>
                   <button 
+                    type="button"
                     onClick={handleApplyItemDiscount} 
-                    className="flex-1 py-3 rounded-2xl border-0 text-orange-500 font-bold transition-all text-base active:scale-95"
+                    className={`flex-1 rounded-2xl border-0 py-[0.9625rem] text-base font-bold text-orange-500 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                     style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
                   >
                     Apply Discount
@@ -13671,7 +14106,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         isOpen={showPaymentCompleteModal}
         onClose={handlePaymentCompleteClose}
         mode={paymentCompleteData?.isPartialPayment ? 'full' : 'receiptOnly'}
-        onAddTips={(receiptCount) => {
+        onAddTips={(receiptCount: number) => {
           setPendingReceiptCountForTip(receiptCount);
           setShowPaymentCompleteModal(false);
           setShowTipEntryModal(true);
@@ -13716,13 +14151,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="rounded-3xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)', background: 'linear-gradient(145deg, #e6ebf2, #dce1e8)', boxShadow: '12px 12px 24px rgba(0,0,0,0.3)' }}>
+            <div className="max-h-[95vh] w-[min(640px,96vw)] overflow-hidden rounded-3xl" style={{ transform: 'translateY(-20px)', background: 'linear-gradient(145deg, #e6ebf2, #dce1e8)', boxShadow: '12px 12px 24px rgba(0,0,0,0.3)' }}>
               {/* Header */}
-              <div className="px-4 py-2.5 flex justify-between items-center rounded-t-3xl" style={{ background: 'linear-gradient(135deg, #e2e7ee, #d8dde4)', boxShadow: 'inset 2px 2px 5px #c8cdd6, inset -2px -2px 5px #f0f5fc' }}>
-                <h3 className="text-base font-bold text-gray-700 tracking-wide">Order Discount</h3>
+              <div className="flex items-center justify-between rounded-t-3xl px-5 py-3" style={{ background: 'linear-gradient(135deg, #e2e7ee, #d8dde4)', boxShadow: 'inset 2px 2px 5px #c8cdd6, inset -2px -2px 5px #f0f5fc' }}>
+                <h3 className="text-base font-bold tracking-wide text-gray-700">Order Discount</h3>
                 <button 
+                  type="button"
                   onClick={handleCancelDiscount} 
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-red-400 hover:text-red-500 text-lg font-bold leading-none transition-all active:scale-90"
+                  className={`flex h-[1.925rem] w-[1.925rem] min-h-[1.925rem] min-w-[1.925rem] items-center justify-center rounded-lg text-lg font-bold leading-none text-red-400 hover:text-red-500 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}
                   style={{ background: 'linear-gradient(145deg, #e8edf4, #d8dde4)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
                 >
                   &times;
@@ -13730,16 +14166,16 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               </div>
               
               {/* Order Subtotal Info */}
-              <div className="px-3 py-1.5 mx-3 mt-2 rounded-2xl" style={{ background: 'linear-gradient(145deg, #dce1e8, #e6ebf2)', boxShadow: 'inset 2px 2px 5px #c0c5ce, inset -2px -2px 5px #f4f9ff' }}>
-                <div className="flex justify-between items-center">
+              <div className="mx-4 mt-2.5 rounded-2xl px-4 py-2" style={{ background: 'linear-gradient(145deg, #dce1e8, #e6ebf2)', boxShadow: 'inset 2px 2px 5px #c0c5ce, inset -2px -2px 5px #f4f9ff' }}>
+                <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-gray-600">Order Subtotal</span>
                   <span className="text-sm font-bold text-gray-700">${orderSubtotal.toFixed(2)}</span>
                 </div>
               </div>
 
-              <div className="p-3 space-y-2">
+              <div className="space-y-3.5 p-5">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className="rounded-2xl p-2 border-0" style={discountInputMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                <div className="rounded-2xl border-0 p-3" style={discountInputMode === 'percent' ? { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' } : { background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
@@ -13760,13 +14196,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Discount Type */}
-                <div className="grid grid-cols-4 gap-1.5">
+                <div className="grid grid-cols-4 gap-2.5">
                   {discountTypes.filter(type => type !== 'Custom').sort((a, b) => a.localeCompare(b)).map(type => (
                     <button
                       key={type}
                       type="button"
                       onClick={() => setSelectedDiscountType(type)}
-                      className={`h-10 px-1 rounded-xl border-0 text-sm font-bold text-center transition-all duration-200 active:scale-95 ${
+                      className={`h-11 min-h-[2.75rem] rounded-xl border-0 px-1 text-center text-sm font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                         selectedDiscountType === type
                           ? 'text-purple-600'
                           : 'text-gray-600 hover:text-gray-700'
@@ -13781,19 +14217,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Percent & Amount Presets - Side by Side */}
-                <div className="flex gap-2">
+                <div className="flex gap-5">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: 'inset 3px 3px 6px #b0b8c9, inset -3px -3px 6px #ffffff' }}>
-                    <div className="text-xs font-bold text-blue-500 mb-1 flex items-center gap-1">
+                  <div className="flex-1 rounded-2xl p-3.5" style={{ background: 'linear-gradient(145deg, #d2ddf5, #e6eefb)', boxShadow: 'inset 3px 3px 6px #aab6ca, inset -3px -3px 6px #ffffff' }}>
+                    <div className="mb-2 flex items-center gap-1 text-xs font-bold text-blue-500">
                       <span className="rounded-lg px-1.5 py-0.5 text-xs font-bold text-blue-500" style={{ background: 'linear-gradient(145deg, #e8edf6, #d8ddf0)', boxShadow: '2px 2px 4px #b0b8c9, -2px -2px 4px #ffffff' }}>%</span>
                       Percent
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(v => (
                         <button
                           key={`dc-pct-${v}`}
                           onClick={() => { setDiscountInputMode('percent'); setDiscountPercentage(`${v}%`); setCustomDiscountPercentage(''); }}
-                          className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
+                          className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl border-0 text-sm font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             discountInputMode === 'percent' && discountPercentage === `${v}%`
                               ? 'text-blue-600'
                               : 'text-gray-600 hover:text-blue-400'
@@ -13809,17 +14245,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
-                    <div className="text-xs font-bold text-emerald-500 mb-1 flex items-center gap-1">
+                  <div className="flex-1 rounded-2xl p-3.5" style={{ background: 'linear-gradient(145deg, #ddf0e4, #e4f4ea)', boxShadow: 'inset 3px 3px 6px #b0c9b8, inset -3px -3px 6px #ffffff' }}>
+                    <div className="mb-2 flex items-center gap-1 text-xs font-bold text-emerald-500">
                       <span className="rounded-lg px-1.5 py-0.5 text-xs font-bold text-emerald-500" style={{ background: 'linear-gradient(145deg, #e4f4ea, #d8ece0)', boxShadow: '2px 2px 4px #b0c9b8, -2px -2px 4px #ffffff' }}>$</span>
                       Amount
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[1, 2, 5, 10, 20, 25, 50, 100].map(v => (
                         <button
                           key={`dc-amt-${v}`}
                           onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(v)); }}
-                          className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
+                          className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl border-0 text-sm font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             discountInputMode === 'amount' && discountAmountValue === String(v)
                               ? 'text-emerald-600'
                               : 'text-gray-600 hover:text-emerald-400'
@@ -13832,8 +14268,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       ))}
                       <button
+                        type="button"
                         onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(Number(orderSubtotal.toFixed(2)))); }}
-                        className={`h-10 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 ${
+                        className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl border-0 text-sm font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                           discountInputMode === 'amount' && Number(discountAmountValue) === Number(orderSubtotal.toFixed(2))
                             ? 'text-orange-600'
                             : 'text-orange-400 hover:text-orange-500'
@@ -13849,8 +14286,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="rounded-2xl p-2" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
-                  <div className="grid grid-cols-5 gap-1.5">
+                <div className="rounded-2xl p-3.5" style={{ background: 'linear-gradient(145deg, #e2e7ee, #dce1e8)', boxShadow: 'inset 2px 2px 4px #c8cdd6, inset -2px -2px 4px #f0f5fc' }}>
+                  <div className="grid grid-cols-5 gap-2.5">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
                       const isDollar = key === '$';
@@ -13894,7 +14331,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               }
                             }
                           }}
-                          className={`h-10 rounded-xl border-0 font-bold text-base transition-all duration-200 active:scale-95 ${
+                          className={`h-[2.8293375rem] min-h-[2.8293375rem] rounded-xl border-0 text-base font-bold touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS} ${
                             isPercent
                               ? discountInputMode === 'percent'
                                 ? 'text-blue-600'
@@ -13925,17 +14362,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-3">
+                <div className="flex gap-5 pt-1">
                   <button 
+                    type="button"
                     onClick={handleCancelDiscount} 
-                    className="flex-1 py-2.5 rounded-2xl border-0 text-gray-500 font-bold transition-all duration-200 text-sm active:scale-95 hover:text-gray-600"
+                    className={`flex-1 rounded-2xl border-0 py-[0.825rem] text-sm font-bold text-gray-500 touch-manipulation hover:brightness-[1.02] hover:text-gray-600 ${ORDER_VOID_PAD_PRESS}`}
                     style={{ background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '6px 6px 12px #b8bec7, -6px -6px 12px #ffffff' }}
                   >
                     Cancel
                   </button>
                   <button 
+                    type="button"
                     onClick={handleApplyDiscount} 
-                    className="flex-[2] py-2.5 rounded-2xl border-0 text-orange-500 font-extrabold transition-all duration-200 text-sm active:scale-95 hover:text-orange-600"
+                    className={`flex-[2] rounded-2xl border-0 py-[0.825rem] text-sm font-extrabold text-orange-500 touch-manipulation hover:brightness-[1.02] hover:text-orange-600 ${ORDER_VOID_PAD_PRESS}`}
                     style={{ background: 'linear-gradient(145deg, #f6eee8, #eee4dc)', boxShadow: '6px 6px 12px #c9beb8, -6px -6px 12px #ffffff' }}
                   >
                     Apply Discount
@@ -13950,14 +14389,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {/* Custom Discount Modal */}
       {showCustomDiscountModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-96">
-            <div className="flex justify-between items-center mb-4">
+          <div className="w-[min(420px,96vw)] rounded-xl bg-white p-7">
+            <div className="mb-5 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-800">Custom Discount</h3>
-              <button onClick={handleCustomDiscountCancel} className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-10 h-10 flex items-center justify-center">×</button>
+              <button type="button" onClick={handleCustomDiscountCancel} className={`flex h-11 w-11 min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded-xl text-3xl font-bold text-gray-600 hover:text-gray-800 hover:brightness-[1.02] touch-manipulation ${ORDER_VOID_PAD_PRESS}`}>×</button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <label className="block text-sm text-gray-700 mb-2">Enter Discount Percentage</label>
+                <label className="mb-2 block text-sm text-gray-700">Enter Discount Percentage</label>
                 <input
                   ref={customDiscountInputRef}
                   type="text"
@@ -13970,9 +14409,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   className="w-full border border-gray-300 rounded px-3 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button onClick={handleCustomDiscountCancel} className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 text-gray-800">Cancel</button>
-                <button onClick={handleCustomDiscountSave} className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white">Save</button>
+              <div className="flex justify-end gap-4 pt-3">
+                <button type="button" onClick={handleCustomDiscountCancel} className={`rounded-xl border-0 bg-gray-200 px-[1.65rem] py-[0.6875rem] text-gray-800 touch-manipulation hover:brightness-[1.02] ${ORDER_VOID_PAD_PRESS}`}>Cancel</button>
+                <button type="button" onClick={handleCustomDiscountSave} className={`rounded-xl border-0 px-[1.65rem] py-[0.6875rem] text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`} style={PAY_NEO_PRIMARY_BLUE}>Save</button>
               </div>
             </div>
           </div>
@@ -14573,7 +15012,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             <div className="mt-4 flex flex-shrink-0 items-center justify-end gap-3 border-0 px-4 pb-4 pt-0" style={{ background: PAY_NEO_CANVAS }}>
               <button
                 type="button"
-                onClick={() => setShowTogoInfoAfterModal(false)}
+                onClick={() => {
+                  void handleTogoInfoAfterCancel();
+                }}
                 className={`rounded-[14px] border-0 px-5 py-3 font-bold text-gray-700 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
                 style={PAY_NEO.inset}
               >

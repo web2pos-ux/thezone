@@ -31,6 +31,25 @@ module.exports = (db) => {
     db.all(sql, params, (err, rows) => { if (err) reject(err); else resolve(rows || []); });
   });
 
+  /** 웨이팅 마감 이력: Day Closing 시 `waiting_list` 전부를 여기로 복사한 뒤 용 테이블만 비움 */
+  const ensureWaitingListArchiveTable = async () => {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS waiting_list_archive (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_date TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        phone_number TEXT,
+        party_size INTEGER NOT NULL,
+        notes TEXT,
+        outcome TEXT NOT NULL,
+        table_number TEXT,
+        joined_at TEXT,
+        archived_at TEXT NOT NULL,
+        source_waiting_id INTEGER
+      )
+    `);
+  };
+
   // ===== Printer helper (Front receipt printer) =====
   const printEscPosTextToFront = async (text, { openDrawer = false } = {}) => {
     if (!text) throw new Error('No text provided');
@@ -650,7 +669,7 @@ module.exports = (db) => {
     // Refund details
     const rTf = tfPrefixed('r');
     const refundDetails = await dbAll(`
-      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.created_at,
+      SELECT r.id, r.order_id, r.original_order_number, r.refund_type, r.total, r.payment_method, r.reason, r.refunded_by, r.created_at,
              o.order_number
       FROM refunds r LEFT JOIN orders o ON r.order_id = o.id
       WHERE ${rTf.where}
@@ -722,6 +741,26 @@ module.exports = (db) => {
       discountOrderCount = Number(adjCnt?.cnt || 0) + Number(jsonCnt?.cnt || 0);
     } catch (e) {
       discountOrderCount = 0;
+    }
+
+    let discountDetails = [];
+    try {
+      const oAdjTf = tfPrefixed('o');
+      discountDetails = await dbAll(`
+        SELECT oa.id, oa.order_id, oa.kind, oa.amount_applied, oa.label, oa.created_at,
+               o.order_number,
+               COALESCE(oa.applied_by_employee_id, '') AS applied_by_employee_id,
+               COALESCE(oa.applied_by_name, '') AS applied_by_name
+        FROM order_adjustments oa
+        JOIN orders o ON oa.order_id = o.id
+        WHERE ${oAdjTf.where}
+          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          AND COALESCE(oa.amount_applied, 0) > 0
+          AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
+        ORDER BY oa.created_at ASC
+      `, oAdjTf.params);
+    } catch (e) {
+      discountDetails = [];
     }
 
     // Payment order counts (Cash/Card/Other) for PAYMENT BREAKDOWN aligned counts
@@ -801,6 +840,41 @@ module.exports = (db) => {
       totalTipOrderCount = 0;
     }
 
+    // Tips by server (Z-Report — shown only when select_server_on_entry is ON)
+    let tipsByServer = [];
+    try {
+      const tbsRows = await dbAll(`
+        SELECT server_name, SUM(tips) as tips FROM (
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+          UNION ALL
+          SELECT COALESCE(o.server_name, 'Unknown') as server_name,
+            COALESCE(SUM(t.amount), 0) as tips
+          FROM tips t
+          JOIN orders o ON t.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          GROUP BY COALESCE(o.server_name, 'Unknown')
+        ) combined
+        GROUP BY server_name
+        HAVING SUM(tips) > 0.0001
+        ORDER BY tips DESC
+      `, [...tf.params, ...tf.params]);
+      tipsByServer = (tbsRows || []).map(r => ({
+        server_name: r.server_name || 'Unknown',
+        tips: Number(Number(r.tips || 0).toFixed(2)),
+      }));
+    } catch (e) {
+      tipsByServer = [];
+    }
+
     // Gift Card data
     let giftCardSold = 0, giftCardSoldCount = 0, giftCardPayment = 0, giftCardPaymentCount = 0;
     try {
@@ -850,7 +924,7 @@ module.exports = (db) => {
     return {
       salesData, guestCount, gratuityTotal, paymentData, paymentMethods,
       refundData, cashRefundTotal, voidData, refundDetails, voidDetails,
-      discountData, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
+      discountData, discountDetails, giftCardSold, giftCardSoldCount, giftCardPayment, giftCardPaymentCount,
       reservationFeeReceived, reservationFeeReceivedCount, reservationFeeApplied, reservationFeeAppliedCount,
       noShowForfeited, noShowForfeitedCount,
       gstTotal, pstTotal,
@@ -862,11 +936,23 @@ module.exports = (db) => {
       cashTipOrderCount,
       cardTipOrderCount,
       totalTipOrderCount,
+      tipsByServer,
       // Correct cash drawer values (change excluded)
       actualCashSales,   // = order totals - non-cash payments
       actualCashTips,    // = cash tips in drawer
       nonCashNet         // = total non-cash payment net
     };
+  };
+
+  const getSelectServerOnEntry = async () => {
+    try {
+      const row = await dbGet(`SELECT settings_data FROM layout_settings ORDER BY updated_at DESC LIMIT 1`);
+      if (row?.settings_data) {
+        const s = JSON.parse(row.settings_data);
+        return !!s.selectServerOnEntry;
+      }
+    } catch (e) { /* */ }
+    return false;
   };
 
   // ============ GET Z-REPORT DATA ============
@@ -901,6 +987,7 @@ module.exports = (db) => {
       const startTime = session.opened_at;
       const endTime = session.closed_at || getLocalDatetimeString();
       const q = await querySalesData(startTime, endTime);
+      const selectServerOnEntry = await getSelectServerOnEntry();
 
       const openingCash = session.opening_cash || 0;
       // CORRECT: actual cash = order totals - non-cash payments (change excluded)
@@ -961,6 +1048,8 @@ module.exports = (db) => {
           mastercard_tips: q.paymentData?.mastercard_tips || 0,
           debit_tips: q.paymentData?.debit_tips || 0,
           other_card_tips: q.paymentData?.other_card_tips || 0,
+          tips_by_server: q.tipsByServer || [],
+          select_server_on_entry: selectServerOnEntry,
           // Dynamic payment methods
           payment_methods: (q.paymentMethods || []).map(pm => ({
             method: pm.payment_method, count: pm.count,
@@ -994,13 +1083,24 @@ module.exports = (db) => {
             id: r.id, order_id: r.order_id,
             order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
             type: r.refund_type || 'FULL', total: r.total || 0,
-            payment_method: r.payment_method || '', reason: r.reason || '', created_at: r.created_at
+            payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
           })),
           void_details: (q.voidDetails || []).map(v => ({
             id: v.id, order_id: v.order_id,
             order_number: v.order_number || `#${v.order_id}`,
             total: v.grand_total || 0, source: v.source || 'partial',
             reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+          })),
+          discount_details: (q.discountDetails || []).map(d => ({
+            id: d.id,
+            order_id: d.order_id,
+            order_number: d.order_number || `#${d.order_id}`,
+            kind: d.kind || '',
+            amount_applied: d.amount_applied || 0,
+            label: d.label || '',
+            applied_by_employee_id: d.applied_by_employee_id || '',
+            applied_by_name: d.applied_by_name || '',
+            created_at: d.created_at
           })),
           // Status
           status: session.status,
@@ -1129,15 +1229,112 @@ module.exports = (db) => {
     }
   });
 
+  // ============ CHECK SERVER UNPAID ORDERS ============
+  router.post('/check-server-unpaid', async (req, res) => {
+    try {
+      const { serverId } = req.body;
+      if (!serverId) return res.status(400).json({ success: false, error: 'serverId required' });
+
+      const unpaidOrders = await dbAll(`
+        SELECT id, order_number, order_type, total, status, table_id, server_id, server_name, created_at
+        FROM orders
+        WHERE COALESCE(server_id, '') = ?
+          AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+        ORDER BY created_at DESC
+      `, [String(serverId)]);
+
+      res.json({
+        success: true,
+        hasUnpaid: (unpaidOrders || []).length > 0,
+        count: (unpaidOrders || []).length,
+        orders: unpaidOrders || []
+      });
+    } catch (error) {
+      console.error('Check server unpaid error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // ============ TRANSFER ORDERS (server → server) ============
+  router.post('/transfer-orders', async (req, res) => {
+    try {
+      const { fromServerId, fromServerName, toServerId, toServerName } = req.body;
+      if (!fromServerId || !toServerId) {
+        return res.status(400).json({ success: false, error: 'fromServerId and toServerId required' });
+      }
+
+      const unpaid = await dbAll(`
+        SELECT id FROM orders
+        WHERE COALESCE(server_id, '') = ?
+          AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+      `, [String(fromServerId)]);
+
+      if (!unpaid || unpaid.length === 0) {
+        return res.json({ success: true, transferred: 0, message: 'No unpaid orders to transfer' });
+      }
+
+      const orderIds = unpaid.map(o => o.id);
+      const placeholders = orderIds.map(() => '?').join(',');
+
+      // 단일 트랜잭션: 주문·결제·팁 소유를 A→B로 한 번에 이전 (부분 적용 방지)
+      await dbRun('BEGIN TRANSACTION');
+      try {
+        await dbRun(`
+          UPDATE orders SET server_id = ?, server_name = ? WHERE id IN (${placeholders})
+        `, [String(toServerId), toServerName || '', ...orderIds]);
+
+        await dbRun(`
+          UPDATE payments SET server_id = ? WHERE order_id IN (${placeholders}) AND UPPER(status) NOT IN ('REFUNDED','VOIDED')
+        `, [String(toServerId), ...orderIds]);
+
+        await dbRun(`
+          UPDATE tips SET employee_id = ? WHERE order_id IN (${placeholders})
+        `, [String(toServerId), ...orderIds]);
+
+        await dbRun('COMMIT');
+      } catch (txErr) {
+        await dbRun('ROLLBACK').catch(() => {});
+        throw txErr;
+      }
+
+      console.log(`[Transfer] ${orderIds.length} orders transferred: ${fromServerName}(${fromServerId}) → ${toServerName}(${toServerId})`);
+
+      res.json({
+        success: true,
+        transferred: orderIds.length,
+        orderIds,
+        message: `${orderIds.length} order(s) transferred from ${fromServerName || fromServerId} to ${toServerName || toServerId}`
+      });
+    } catch (error) {
+      console.error('Transfer orders error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   // ============ SHIFT CLOSE ============
   router.post('/shift-close', async (req, res) => {
     try {
-      const { countedCash = 0, cashDetails = {}, closedBy = '' } = req.body;
+      const { countedCash = 0, cashDetails = {}, closedBy = '', serverId = '', serverPin = '' } = req.body;
       const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
         return res.status(400).json({ success: false, error: 'No active session found' });
+      }
+
+      // Block if server still has unpaid orders
+      if (serverId) {
+        const unpaidCheck = await dbGet(`
+          SELECT COUNT(*) as cnt FROM orders
+          WHERE COALESCE(server_id, '') = ?
+            AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
+        `, [String(serverId)]);
+        if (unpaidCheck && unpaidCheck.cnt > 0) {
+          return res.status(400).json({
+            success: false,
+            error: `Server still has ${unpaidCheck.cnt} unpaid order(s). Transfer or complete them first.`
+          });
+        }
       }
 
       // Determine shift start time (after last shift close, or session open)
@@ -1153,7 +1350,7 @@ module.exports = (db) => {
       const endTime = now;
       const tf = { where: 'created_at >= ? AND created_at <= ?', params: [startTime, endTime] };
 
-      console.log(`[Shift-Close] time range: ${startTime} ~ ${endTime}`);
+      console.log(`[Shift-Close] server=${closedBy}(${serverId}), time range: ${startTime} ~ ${endTime}`);
 
       const salesDataOrders = await dbGet(`
         SELECT COUNT(*) as order_count FROM orders WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
@@ -1182,7 +1379,7 @@ module.exports = (db) => {
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
       `, tf.params);
 
-      // Channel sales (Sales by Type)
+      // Channel sales (Sales by Type) — with tips
       const channelRows = await dbAll(`
         SELECT
           CASE
@@ -1193,7 +1390,8 @@ module.exports = (db) => {
             ELSE 'OTHER'
           END as ch,
           COUNT(DISTINCT o.id) as cnt,
-          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
         FROM payments p
         JOIN orders o ON p.order_id = o.id
         WHERE o.created_at >= ? AND o.created_at <= ?
@@ -1203,7 +1401,45 @@ module.exports = (db) => {
         GROUP BY ch
       `, tf.params);
       const chMap = {};
-      (channelRows || []).forEach(r => { chMap[r.ch] = { sales: Number(r.sales), count: Number(r.cnt) }; });
+      (channelRows || []).forEach(r => { chMap[r.ch] = { sales: Number(r.sales), count: Number(r.cnt), tips: Number(r.tips) }; });
+
+      // Payment method breakdown (amount, tips per method)
+      const paymentBreakdownRows = await dbAll(`
+        SELECT
+          UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+          COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as amount,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+        GROUP BY method
+        ORDER BY amount DESC
+      `, tf.params);
+      const paymentBreakdown = (paymentBreakdownRows || []).map(r => ({
+        method: r.method, amount: Number(r.amount), tips: Number(r.tips)
+      }));
+
+      // Tip breakdown by payment method
+      const tipBreakdownRows = await dbAll(`
+        SELECT
+          UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+          COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+        FROM payments p
+        JOIN orders o ON p.order_id = o.id
+        WHERE o.created_at >= ? AND o.created_at <= ?
+          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+          AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          AND COALESCE(p.tip, 0) > 0
+        GROUP BY method
+        ORDER BY tips DESC
+      `, tf.params);
+      const tipBreakdown = (tipBreakdownRows || []).map(r => ({
+        method: r.method, tips: Number(r.tips)
+      }));
 
       // CORRECT: Actual cash = Order totals - Non-cash payments (change excluded automatically)
       const totalOrderSales = salesData?.total_sales || 0;
@@ -1223,7 +1459,7 @@ module.exports = (db) => {
       const expectedCash = shiftOpeningCash + actualCashSales + cashTips - cashRefundTotal;
       const cashDifference = countedCash - expectedCash;
 
-      // Save shift record
+      // Save shift record with locked flag
       await dbRun(`
         INSERT INTO shift_closings (session_id, shift_number, shift_start, shift_end, closed_by,
           total_sales, order_count, cash_sales, card_sales, other_sales, tip_total,
@@ -1258,6 +1494,38 @@ module.exports = (db) => {
         serverTipTotal = Number(serverTipData?.server_tips || 0);
       }
 
+      // Auto Clock-Out: reuse the server's PIN
+      let clockOutResult = null;
+      if (serverId && serverPin) {
+        try {
+          const today = now.substring(0, 10);
+          const emp = await dbGet('SELECT id FROM employees WHERE id = ? AND pin = ? AND status = "active"', [serverId, serverPin]);
+          if (emp) {
+            const clockRec = await dbGet(
+              'SELECT * FROM clock_records WHERE employee_id = ? AND date(clock_in_time) = ? AND clock_out_time IS NULL',
+              [serverId, today]
+            );
+            if (clockRec) {
+              const clockInTime = new Date(clockRec.clock_in_time);
+              const totalHours = ((new Date(now)) - clockInTime) / (1000 * 60 * 60);
+              await dbRun(`
+                UPDATE clock_records SET clock_out_time = ?, total_hours = ?, status = 'clocked_out', updated_at = datetime('now')
+                WHERE id = ?
+              `, [now, totalHours.toFixed(2), clockRec.id]);
+              await dbRun(`
+                UPDATE server_shifts SET clock_out_time = ?, status = 'closed', updated_at = datetime('now')
+                WHERE server_id = ? AND business_date = ? AND clock_record_id = ? AND status = 'open'
+              `, [now, serverId, today, clockRec.id]);
+              clockOutResult = { success: true, totalHours: totalHours.toFixed(2) };
+              console.log(`[Shift-Close] Auto clock-out: ${closedBy}(${serverId}), hours=${totalHours.toFixed(2)}`);
+            }
+          }
+        } catch (coErr) {
+          console.error('[Shift-Close] Auto clock-out failed:', coErr.message);
+          clockOutResult = { success: false, error: coErr.message };
+        }
+      }
+
       res.json({
         success: true,
         message: `Shift #${shiftNumber} closed successfully`,
@@ -1265,14 +1533,21 @@ module.exports = (db) => {
           ...shiftRecord,
           dine_in_sales: chMap['DINE_IN']?.sales || 0,
           dine_in_count: chMap['DINE_IN']?.count || 0,
+          dine_in_tips: chMap['DINE_IN']?.tips || 0,
           togo_sales: chMap['TOGO']?.sales || 0,
           togo_count: chMap['TOGO']?.count || 0,
+          togo_tips: chMap['TOGO']?.tips || 0,
           online_sales: chMap['ONLINE']?.sales || 0,
           online_count: chMap['ONLINE']?.count || 0,
+          online_tips: chMap['ONLINE']?.tips || 0,
           delivery_sales: chMap['DELIVERY']?.sales || 0,
           delivery_count: chMap['DELIVERY']?.count || 0,
+          delivery_tips: chMap['DELIVERY']?.tips || 0,
+          payment_breakdown: paymentBreakdown,
+          tip_breakdown: tipBreakdown,
           session_opened_at: activeSession.opened_at,
-          server_tip_total: serverTipTotal
+          server_tip_total: serverTipTotal,
+          clock_out: clockOutResult
         }
       });
     } catch (error) {
@@ -1373,6 +1648,29 @@ module.exports = (db) => {
         await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
         console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
       } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
+
+      // 웨이팅: 마감 영업일·고객·인원·Assigned/Canceled/Not Assigned 이력을 archive에 보관 후 당일용 waiting_list만 비움
+      try {
+        await ensureWaitingListArchiveTable();
+        const businessDate = String(activeSession.date || '').trim() || getLocalDate();
+        await dbRun(`
+          INSERT INTO waiting_list_archive (
+            business_date, customer_name, phone_number, party_size, notes,
+            outcome, table_number, joined_at, archived_at, source_waiting_id
+          )
+          SELECT
+            ?, customer_name, phone_number, party_size, notes,
+            CASE
+              WHEN status = 'seated' THEN 'Assigned'
+              WHEN status = 'cancelled' THEN 'Canceled'
+              ELSE 'Not Assigned'
+            END,
+            table_number, joined_at, ?, id
+          FROM waiting_list
+        `, [businessDate, now]);
+        const del = await dbRun(`DELETE FROM waiting_list`);
+        console.log('[daily-closings] waiting_list archived for', businessDate, 'then cleared, rows removed:', del?.changes ?? 0);
+      } catch (e) { console.warn('Failed to archive/clear waiting_list on closing:', e?.message || e); }
 
       // Firebase 동기화
       try {
@@ -1580,8 +1878,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       const paidStatusesNoAlias = "UPPER(status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
-      const dateFilterO = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const dateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilterO = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const dateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Overall summary - Paid 주문만 (Subtotal + Tax + Tip = Total 정확히 일치)
       const paidOrders = await dbGet(`
@@ -1599,11 +1897,11 @@ module.exports = (db) => {
       const tipData = await dbGet(`
         SELECT COALESCE(
           (SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) FROM payments p JOIN orders o ON p.order_id = o.id
-           WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
              AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID'))
           +
           (SELECT COALESCE(SUM(t.amount), 0) FROM tips t JOIN orders o ON t.order_id = o.id
-           WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+           WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
              AND ${paidStatuses})
         , 0) as total_tip
       `, [startDate, endDate, startDate, endDate]);
@@ -1615,7 +1913,7 @@ module.exports = (db) => {
             COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips,
             COUNT(DISTINCT o.id) as order_count
           FROM payments p JOIN orders o ON p.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           GROUP BY COALESCE(o.server_name, 'Unknown')
           UNION ALL
@@ -1623,7 +1921,7 @@ module.exports = (db) => {
             COALESCE(SUM(t.amount), 0) as tips,
             COUNT(DISTINCT o.id) as order_count
           FROM tips t JOIN orders o ON t.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
           GROUP BY COALESCE(o.server_name, 'Unknown')
         ) combined
@@ -1637,14 +1935,14 @@ module.exports = (db) => {
         SELECT payment_method, SUM(tips) as tips, SUM(cnt) as count FROM (
           SELECT p.payment_method, COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips, COUNT(*) as cnt
           FROM payments p JOIN orders o ON p.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND COALESCE(p.tip, 0) > 0
           GROUP BY p.payment_method
           UNION ALL
           SELECT t.payment_method, COALESCE(SUM(t.amount), 0) as tips, COUNT(*) as cnt
           FROM tips t JOIN orders o ON t.order_id = o.id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
           GROUP BY t.payment_method
         ) combined
@@ -1655,7 +1953,6 @@ module.exports = (db) => {
       // 1b) 개별 세금 항목 (GST, PST 등 동적 조회)
       let taxDetails = [];
       try {
-        // First try: tax_group_links 기반 (아이템에 tax_group_id가 있는 경우)
         const taxRows = await dbAll(`
           SELECT t.name as tax_name,
             t.rate as tax_rate,
@@ -1664,9 +1961,8 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
-            AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY t.tax_id, t.name, t.rate
           ORDER BY t.name
         `, [startDate, endDate]);
@@ -1675,9 +1971,14 @@ module.exports = (db) => {
           rate: Number(r.tax_rate || 0),
           amount: Number(Number(r.tax_amount || 0).toFixed(2)),
         }));
+      } catch (e) { /* tax_group_links may not exist */ }
 
-        // Fallback: order_items에 tax_group_id가 없는 경우 orders.tax + taxes 테이블로 분리
-        if (taxDetails.length === 0) {
+      // Fallback: tax_group_id가 없거나 부분적으로만 있는 경우 orders.tax를 세금 비율로 분배
+      const taxDetailSum = taxDetails.reduce((s, t) => s + t.amount, 0);
+      const dbTaxTotal = Number(paidOrders?.tax_total || 0);
+      const needsFallback = taxDetails.length === 0 || (dbTaxTotal > 0 && taxDetailSum < dbTaxTotal * 0.5);
+      if (needsFallback) {
+        try {
           const activeTaxes = await dbAll(`
             SELECT DISTINCT t.name, t.rate 
             FROM taxes t 
@@ -1694,11 +1995,10 @@ module.exports = (db) => {
           });
 
           if (uniqueTaxes.length > 0) {
-            const totalRateSum = uniqueTaxes.reduce((s, t) => s + t.rate, 0);
             const orders = await dbAll(`
               SELECT o.subtotal, o.tax
               FROM orders o
-              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
                 AND ${paidStatuses} AND COALESCE(o.tax, 0) > 0
             `, [startDate, endDate]);
 
@@ -1711,7 +2011,6 @@ module.exports = (db) => {
               if (sub <= 0 || totalTax <= 0) return;
               const effRate = (totalTax / sub) * 100;
 
-              // 각 주문의 effective rate에 맞는 세금만 분배
               const matchedTaxes = uniqueTaxes.filter(t => t.rate <= effRate + 0.5);
               const matchedRateSum = matchedTaxes.reduce((s, t) => s + t.rate, 0);
               if (matchedRateSum <= 0) return;
@@ -1726,8 +2025,8 @@ module.exports = (db) => {
               .filter(t => t.amount > 0.001)
               .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
           }
-        }
-      } catch (e) { /* taxes/tax_group_links may not exist */ }
+        } catch (e) { /* taxes table may not exist */ }
+      }
 
       const paidOrderCount = paidOrders?.order_count || 0;
 
@@ -1822,7 +2121,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
         GROUP BY oi.name ORDER BY total_revenue DESC LIMIT 50
@@ -1834,7 +2133,7 @@ module.exports = (db) => {
                SUM(oi.quantity * oi.price) as total_revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) > 0
         GROUP BY oi.name ORDER BY total_revenue ASC LIMIT 20
@@ -1846,7 +2145,7 @@ module.exports = (db) => {
                COUNT(DISTINCT oi.name) as unique_items
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ? AND ${paidStatuses}
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ? AND ${paidStatuses}
           AND oi.name IS NOT NULL AND oi.name != ''
           AND COALESCE(oi.price, 0) >= 0
       `, [startDate, endDate]);
@@ -1890,9 +2189,8 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id AND COALESCE(t.is_deleted, 0) = 0
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${unpaidStatuses}
-            AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY t.tax_id, t.name, t.rate
           ORDER BY t.name
         `, [startDate, endDate]);
@@ -1901,8 +2199,10 @@ module.exports = (db) => {
           rate: Number(r.tax_rate || 0),
           amount: Number(Number(r.tax_amount || 0).toFixed(2)),
         }));
+      } catch (e) { /* tax_group_links may not exist */ }
 
-        if (unpaidTaxDetails.length === 0) {
+      if (unpaidTaxDetails.length === 0) {
+        try {
           const activeTaxes = await dbAll(`
             SELECT DISTINCT t.name, t.rate 
             FROM taxes t 
@@ -1922,7 +2222,7 @@ module.exports = (db) => {
             const orders = await dbAll(`
               SELECT o.subtotal, o.tax
               FROM orders o
-              WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+              WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
                 AND ${unpaidStatuses} AND COALESCE(o.tax, 0) > 0
             `, [startDate, endDate]);
 
@@ -1946,8 +2246,8 @@ module.exports = (db) => {
               .filter(t => t.amount > 0.001)
               .map(t => ({ name: t.name, rate: t.rate, amount: Number(t.amount.toFixed(2)) }));
           }
-        }
-      } catch (e) { /* taxes/tax_group_links may not exist */ }
+        } catch (e) { /* taxes table may not exist */ }
+      }
 
       // 7) Hourly sales
       const hourlySales = await dbAll(`
@@ -1956,7 +2256,7 @@ module.exports = (db) => {
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as revenue
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
@@ -1972,7 +2272,7 @@ module.exports = (db) => {
           COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND ${paidStatuses}
         GROUP BY p.payment_method
@@ -1989,7 +2289,7 @@ module.exports = (db) => {
           ), 0) as avg_duration_min
         FROM orders o
         LEFT JOIN table_map_elements t ON o.table_id = t.element_id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND o.table_id IS NOT NULL AND o.table_id != ''
         GROUP BY COALESCE(t.name, o.table_id)
@@ -2004,7 +2304,7 @@ module.exports = (db) => {
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) / MAX(COUNT(DISTINCT o.id), 1) as avg_check
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
@@ -2015,10 +2315,10 @@ module.exports = (db) => {
       // 11) Refunds & Voids
       const refundsVoids = await dbAll(`
         SELECT 'refund' as type, COUNT(*) as count, COALESCE(SUM(total), 0) as total
-        FROM refunds WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+        FROM refunds WHERE date(created_at) >= ? AND date(created_at) <= ?
         UNION ALL
         SELECT 'void' as type, COUNT(*) as count, COALESCE(SUM(grand_total), 0) as total
-        FROM voids WHERE date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?
+        FROM voids WHERE date(created_at) >= ? AND date(created_at) <= ?
       `, [startDate, endDate, startDate, endDate]);
 
       // 12) Category Sales
@@ -2032,7 +2332,7 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
           LEFT JOIN menu_categories c ON mi.category_id = c.category_id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
             AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY c.category_id
@@ -2059,7 +2359,7 @@ module.exports = (db) => {
           JOIN orders o ON oi.order_id = o.id
           JOIN tax_group_links tgl ON tgl.tax_group_id = oi.tax_group_id
           JOIN taxes t ON t.tax_id = tgl.tax_id
-          WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+          WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses}
             AND COALESCE(oi.is_voided, 0) = 0
             AND COALESCE(t.is_deleted, 0) = 0
@@ -2176,7 +2476,7 @@ module.exports = (db) => {
           COALESCE(SUM(oi.price * oi.quantity), 0) as revenue
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+        WHERE date(o.created_at) >= ? AND date(o.created_at) <= ?
           AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
         GROUP BY oi.item_id
         ORDER BY ${type === 'bottom' ? 'revenue ASC' : 'revenue DESC'}
@@ -2199,7 +2499,7 @@ module.exports = (db) => {
           FROM order_items oi
           JOIN orders o ON oi.order_id = o.id
           WHERE oi.item_id IN (${placeholders})
-            AND date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?
+            AND date(o.created_at) >= ? AND date(o.created_at) <= ?
             AND ${paidStatuses} AND COALESCE(oi.is_voided, 0) = 0
           GROUP BY oi.item_id
         `, [...itemIds, p.start, p.end]);
@@ -2254,6 +2554,7 @@ module.exports = (db) => {
         } catch (e) { /* */ }
 
         const q = await querySalesData(startTime, endTime);
+        const selectServerOnEntry = await getSelectServerOnEntry();
         const openingCash = session.opening_cash || 0;
         const actualCash = q.actualCashSales || 0;
         const actualCashTips = q.actualCashTips || 0;
@@ -2279,6 +2580,8 @@ module.exports = (db) => {
             expected_cash: expectedCash,
             closing_cash: closingCash,
             cash_breakdown: cashBreakdown,
+            tips_by_server: q.tipsByServer || [],
+            select_server_on_entry: selectServerOnEntry,
             total_sales: q.salesData?.total_sales || 0,
             subtotal: q.salesData?.subtotal || 0,
             order_count: q.salesData?.order_count || 0,
@@ -2329,8 +2632,29 @@ module.exports = (db) => {
             gift_card_sold_count: q.giftCardSoldCount,
             gift_card_payment: q.giftCardPayment,
             gift_card_payment_count: q.giftCardPaymentCount,
-            refund_details: q.refundDetails || [],
-            void_details: q.voidDetails || [],
+            refund_details: (q.refundDetails || []).map(r => ({
+              id: r.id, order_id: r.order_id,
+              order_number: r.original_order_number || r.order_number || `#${r.order_id}`,
+              type: r.refund_type || 'FULL', total: r.total || 0,
+              payment_method: r.payment_method || '', reason: r.reason || '', refunded_by: r.refunded_by || '', created_at: r.created_at
+            })),
+            void_details: (q.voidDetails || []).map(v => ({
+              id: v.id, order_id: v.order_id,
+              order_number: v.order_number || `#${v.order_id}`,
+              total: v.grand_total || 0, source: v.source || 'partial',
+              reason: v.reason || '', created_by: v.created_by || '', created_at: v.created_at
+            })),
+            discount_details: (q.discountDetails || []).map(d => ({
+              id: d.id,
+              order_id: d.order_id,
+              order_number: d.order_number || `#${d.order_id}`,
+              kind: d.kind || '',
+              amount_applied: d.amount_applied || 0,
+              label: d.label || '',
+              applied_by_employee_id: d.applied_by_employee_id || '',
+              applied_by_name: d.applied_by_name || '',
+              created_at: d.created_at
+            })),
             status: session.status,
             opened_at: session.opened_at,
             closed_at: session.closed_at,
@@ -2360,8 +2684,8 @@ module.exports = (db) => {
       }
       const paidStatuses = "UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')";
       // Use localtime so the UI's local date range matches DB filtering.
-      const dateFilter = "date(o.created_at,'localtime') >= ? AND date(o.created_at,'localtime') <= ?";
-      const eventDateFilter = "date(created_at,'localtime') >= ? AND date(created_at,'localtime') <= ?";
+      const dateFilter = "date(o.created_at) >= ? AND date(o.created_at) <= ?";
+      const eventDateFilter = "date(created_at) >= ? AND date(created_at) <= ?";
 
       // 1) Channel breakdown - payments 기반 실결제 매출
       const channelRows = await dbAll(`
@@ -2585,7 +2909,7 @@ module.exports = (db) => {
       // 4) Daily breakdown - payments 기반
       const dailyRows = await dbAll(`
         SELECT
-          date(o.created_at,'localtime') as sale_date,
+          date(o.created_at) as sale_date,
           COUNT(DISTINCT o.id) as order_count,
           COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales
         FROM payments p
@@ -2620,6 +2944,34 @@ module.exports = (db) => {
         `, [startDate, endDate]);
       } catch (e) { /* tables may not exist */ }
 
+      // 6) Hourly sales (for print output)
+      let hourlySales = [];
+      try {
+        hourlySales = await dbAll(`
+          SELECT strftime('%H', o.created_at) as hour,
+            COUNT(*) as order_count,
+            COALESCE(SUM(o.subtotal + o.tax), 0) as revenue
+          FROM orders o
+          WHERE ${dateFilter} AND ${paidStatuses}
+          GROUP BY hour ORDER BY hour
+        `, [startDate, endDate]);
+      } catch (e) { /* ignore */ }
+
+      // 7) Table turnover (for print output)
+      let tableTurnover = [];
+      try {
+        tableTurnover = await dbAll(`
+          SELECT COALESCE(t.name, o.table_id) as table_name,
+            COUNT(*) as order_count,
+            AVG((julianday(COALESCE(o.closed_at, o.updated_at)) - julianday(o.created_at)) * 1440) as avg_duration_min
+          FROM orders o
+          LEFT JOIN table_map_elements t ON o.table_id = t.element_id
+          WHERE ${dateFilter} AND ${paidStatuses}
+            AND o.table_id IS NOT NULL AND o.table_id != ''
+          GROUP BY o.table_id ORDER BY order_count DESC
+        `, [startDate, endDate]);
+      } catch (e) { /* ignore */ }
+
       res.json({
         success: true,
         period: { startDate, endDate },
@@ -2644,6 +2996,8 @@ module.exports = (db) => {
         },
         dailyBreakdown,
         categorySales: (categorySales || []).map(r => ({ category: r.category, quantity: r.quantity || 0, revenue: Number(r.revenue || 0) })),
+        hourlySales: (hourlySales || []).map(h => ({ hour: h.hour, order_count: h.order_count, revenue: Number(h.revenue || 0) })),
+        tableTurnover: (tableTurnover || []).map(t => ({ table_name: t.table_name, order_count: t.order_count, avg_duration_min: Number(t.avg_duration_min || 0) })),
       });
     } catch (error) {
       console.error('Item report error:', error);

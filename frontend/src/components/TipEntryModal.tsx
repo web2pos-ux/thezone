@@ -27,7 +27,7 @@ const TipEntryModal: React.FC<TipEntryModalProps> = ({ isOpen, onClose, onSave }
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!isSaving) onClose(); }} />
+      <div className="absolute inset-0 bg-black/60" onClick={() => { if (!isSaving) onClose(); }} />
       <div className="relative bg-white rounded-2xl shadow-2xl w-[420px] overflow-hidden animate-in zoom-in-95 duration-200">
         <div className="bg-gradient-to-r from-emerald-600 to-emerald-700 px-6 py-4 text-center">
           <h2 className="text-2xl font-bold text-white">Add Tips</h2>

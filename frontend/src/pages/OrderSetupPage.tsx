@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import { getLocalDatetimeString } from '../utils/datetimeUtils';
@@ -28,7 +28,10 @@ const orderTypes = [
   { id: 'kiosk', label: 'Kiosk Order' }
 ];
 
+type SetupSection = 'order-channel' | 'closing';
+
 const OrderSetupPage = () => {
+  const [activeSection, setActiveSection] = useState<SetupSection>('order-channel');
   const [menus, setMenus] = useState<Menu[]>([]);
   const [selectedOrderType, setSelectedOrderType] = useState<string>('');
   const [selectedMenu, setSelectedMenu] = useState<number | null>(null);
@@ -44,11 +47,55 @@ const OrderSetupPage = () => {
   const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
     try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch {} return true;
   });
+  const [shiftServerSelection, setShiftServerSelection] = useState<boolean>(() => {
+    try { return localStorage.getItem('closingShiftServerSelection') !== 'false'; } catch { return true; }
+  });
+  const [selectServerOnEntry, setSelectServerOnEntry] = useState<boolean>(false);
+  const [closingSettingsLoaded, setClosingSettingsLoaded] = useState(false);
+
+  const loadClosingSettings = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/layout-settings`);
+      if (res.ok) {
+        const result = await res.json();
+        if (result?.success && result?.data) {
+          setSelectServerOnEntry(result.data.selectServerOnEntry ?? false);
+        }
+      }
+    } catch { /* ignore */ }
+    setClosingSettingsLoaded(true);
+  }, []);
+
+  const saveSelectServerOnEntry = useCallback(async (value: boolean) => {
+    setSelectServerOnEntry(value);
+    try {
+      let existing: Record<string, any> = {};
+      const cur = await fetch(`${API_URL}/layout-settings`);
+      if (cur.ok) {
+        const r = await cur.json();
+        if (r?.success && r?.data) existing = r.data;
+      }
+      await fetch(`${API_URL}/layout-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...existing, selectServerOnEntry: value }),
+      });
+    } catch (e) {
+      console.error('Failed to save selectServerOnEntry:', e);
+    }
+  }, []);
+
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [savedSetups, setSavedSetups] = useState<OrderPageSetup[]>([]);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (activeSection === 'closing' && !closingSettingsLoaded) {
+      loadClosingSettings();
+    }
+  }, [activeSection, closingSettingsLoaded, loadClosingSettings]);
 
   // Fetch menu list
   useEffect(() => {
@@ -282,6 +329,26 @@ const OrderSetupPage = () => {
           <p className="text-gray-600">Select order channel and menu to configure the order screen</p>
         </div>
 
+        {/* Section Tab Bar */}
+        <div className="flex gap-2 mb-6">
+          <button type="button" onClick={() => setActiveSection('order-channel')}
+            className={`px-5 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+              activeSection === 'order-channel'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+            }`}>
+            Order Channel
+          </button>
+          <button type="button" onClick={() => setActiveSection('closing')}
+            className={`px-5 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+              activeSection === 'closing'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+            }`}>
+            Closing
+          </button>
+        </div>
+
         {/* Save Message */}
         {saveMessage && (
           <div className={`mb-6 p-4 rounded-lg ${
@@ -293,6 +360,8 @@ const OrderSetupPage = () => {
           </div>
         )}
 
+        {/* ===== ORDER CHANNEL SECTION ===== */}
+        {activeSection === 'order-channel' && (<>
         <div className="grid md:grid-cols-2 gap-8">
           {/* Order Channel Selection */}
           <div className="bg-white rounded-lg shadow-md p-6">
@@ -650,6 +719,98 @@ const OrderSetupPage = () => {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+        {/* END: Order Channel Section */}
+        </>
+        )}
+
+        {/* ===== CLOSING SECTION ===== */}
+        {activeSection === 'closing' && (
+          <div className="bg-white rounded-lg shadow-md p-6 max-w-2xl">
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Closing Settings</h2>
+            <p className="text-sm text-gray-500 mb-6">Configure settings for Shift Close and Day Close</p>
+
+            {/* Order Entry Settings */}
+            <div className="space-y-5">
+              <h3 className="text-base font-semibold text-gray-800 border-b border-gray-200 pb-2">Order Entry</h3>
+
+              {/* Select Server on Entry Toggle */}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex-1 mr-4">
+                  <p className="font-medium text-gray-900 text-sm">Select Server</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Show server selection modal when entering Table / ToGo orders
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => saveSelectServerOnEntry(!selectServerOnEntry)}
+                  className={`relative w-14 h-7 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                    selectServerOnEntry ? 'bg-blue-600' : 'bg-gray-300'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform duration-200 ${
+                    selectServerOnEntry ? 'translate-x-7' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Shift Close Settings */}
+            <div className="space-y-5 mt-8">
+              <h3 className="text-base font-semibold text-gray-800 border-b border-gray-200 pb-2">Shift Close</h3>
+
+              {/* Require server before Shift Close */}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex-1 mr-4">
+                  <p className="font-medium text-gray-900 text-sm">Require server before Shift Close</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {shiftServerSelection
+                      ? 'Server must be selected before Shift Close. Transfer of unpaid orders is available.'
+                      : 'Shift Close starts immediately without server selection. Transfer is disabled.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !shiftServerSelection;
+                    setShiftServerSelection(next);
+                    localStorage.setItem('closingShiftServerSelection', String(next));
+                  }}
+                  className={`relative w-14 h-7 rounded-full transition-colors duration-200 flex-shrink-0 ${
+                    shiftServerSelection ? 'bg-blue-600' : 'bg-gray-300'
+                  }`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform duration-200 ${
+                    shiftServerSelection ? 'translate-x-7' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+
+              {/* Transfer auto-disabled notice */}
+              {!shiftServerSelection && (
+                <div className="flex items-start gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <span className="text-amber-500 text-sm mt-0.5">&#9888;</span>
+                  <p className="text-xs text-amber-700">
+                    Transfer feature is automatically disabled when this option is turned off.
+                    Unpaid orders will remain assigned to the current server.
+                  </p>
+                </div>
+              )}
+
+              {/* Transfer behavior when required */}
+              {shiftServerSelection && (
+                <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wide">Unpaid order transfer</p>
+                  <ul className="text-xs text-slate-600 space-y-1.5 list-disc list-inside pl-0.5">
+                    <li>Until you transfer, open orders belong to the closing server (server A).</li>
+                    <li>When you confirm transfer to another clocked-in server (server B), ownership updates in one step: orders, payments, and tip rows tied to those orders move to B.</li>
+                    <li>After transfer, sales and tips for those orders count only toward B, not A.</li>
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}

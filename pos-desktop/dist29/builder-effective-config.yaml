@@ -1,0 +1,59 @@
+directories:
+  output: dist29
+  buildResources: build
+appId: com.thezonepos.pos
+productName: TheZonePOS
+files:
+  - filter:
+      - main.js
+      - preload.js
+      - updater.js
+      - icon.ico
+      - node_modules/**/*
+asarUnpack:
+  - node_modules/sqlite3/**
+  - node_modules/canvas/**
+  - node_modules/@serialport/**
+  - node_modules/serialport/**
+  - node_modules/pdf-to-printer/**
+  - node_modules/node-gyp-build/**
+  - node_modules/bindings/**
+  - node_modules/node-addon-api/**
+npmRebuild: false
+extraResources:
+  - from: backend
+    to: backend
+    filter:
+      - '**/*'
+      - '!node_modules/**'
+  - from: frontend-build
+    to: frontend/build
+    filter:
+      - '**/*'
+  - from: db
+    to: db
+    filter:
+      - '**/*'
+  - from: apk
+    to: apk
+    filter:
+      - '*.apk'
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: icon.ico
+portable:
+  artifactName: ${productName}-Portable-${version}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: TheZonePOS
+  runAfterFinish: true
+electronVersion: 28.3.3

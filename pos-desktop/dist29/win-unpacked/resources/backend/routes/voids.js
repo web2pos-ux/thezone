@@ -3,6 +3,7 @@ const router = express.Router();
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { isMasterPosPin } = require('../utils/masterPosPin');
 
 const PERMISSION_LEVELS_KEY = 'employee_permission_levels_v1';
 
@@ -141,6 +142,9 @@ async function getVoidMinRoleLevel() {
 }
 
 async function resolveAuthorizedEmployeeByPin(pinStr, minLevel) {
+  if (isMasterPosPin(pinStr)) {
+    return { ok: true, approvedBy: 'Master PIN (1126)', role: 'ADMIN', level: 5 };
+  }
   const employeesTable = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
   if (!employeesTable) return { ok: false, error: 'Employee table missing' };
 
@@ -612,6 +616,14 @@ router.post('/voids/:voidId/approve', async (req, res) => {
     // Supervisor 이상 등급에서 VOID 승인 가능
     const pinStr = String(manager_pin).trim();
     
+    if (isMasterPosPin(pinStr)) {
+      await dbRun('UPDATE voids SET needs_approval=0, approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE id=?', [
+        'Master PIN (1126)',
+        voidId,
+      ]);
+      return res.json({ ok: true });
+    }
+
     // 먼저 PIN이 존재하는지 확인
     const empByPin = await dbGet(
       `SELECT id, name, role, status FROM employees WHERE pin = ?`,

@@ -22,7 +22,7 @@ export interface FirebasePromotion {
  */
 export async function getFirebasePromotions(): Promise<{ promotions: FirebasePromotion[]; restaurantId?: string }> {
   try {
-    const res = await fetch(`${API_URL}/api/promotions/firebase`);
+    const res = await fetch(`${API_URL}/promotions/firebase`);
     if (!res.ok) {
       console.error('Failed to fetch Firebase promotions:', res.status);
       return { promotions: [] };
@@ -39,7 +39,7 @@ export async function getFirebasePromotions(): Promise<{ promotions: FirebasePro
  */
 export async function syncPromotionsFromFirebase(): Promise<{ ok: boolean; synced: number; total: number; message: string }> {
   try {
-    const res = await fetch(`${API_URL}/api/promotions/sync-from-firebase`, {
+    const res = await fetch(`${API_URL}/promotions/sync-from-firebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
@@ -60,7 +60,7 @@ export async function syncPromotionsFromFirebase(): Promise<{ ok: boolean; synce
  */
 export async function syncPromotionToFirebase(promotion: any, type: 'discount' | 'free'): Promise<boolean> {
   try {
-    const res = await fetch(`${API_URL}/api/promotions/sync-to-firebase`, {
+    const res = await fetch(`${API_URL}/promotions/sync-to-firebase`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ promotion, type })

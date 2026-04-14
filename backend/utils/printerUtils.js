@@ -344,7 +344,7 @@ function buildKitchenTicketText(orderData) {
   const isKitchenPrinter = orderData.isKitchenPrinter || false;
   output += CENTER + DOUBLE_HEIGHT + BOLD_ON;
   if (isReprint) {
-    output += '** REPRINT **' + LF;
+    output += (orderData.reprintBannerText || '** REPRINT **') + LF;
   } else if (isAdditionalOrder) {
     output += '** ADDITIONAL **' + LF;
   } else if (!isKitchenPrinter && isPaid) {
@@ -1193,7 +1193,7 @@ function getElementValue(key, data) {
     case 'deliveryAddress':
       return oi.deliveryAddress || '';
     case 'paidStatus':
-      if (data.isReprint) return '** REPRINT **';
+      if (data.isReprint) return (data.orderData && data.orderData.reprintBannerText) || '** REPRINT **';
       if (data.isAdditionalOrder) return '** ADDITIONAL **';
       if (data.isPaid) return 'PAID';
       return 'UNPAID';

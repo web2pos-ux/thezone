@@ -3,14 +3,32 @@
 // Updated: 2026-01-20 v3
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import type { CSSProperties } from 'react';
 import {
   PAY_NEO,
-  PAY_NEO_CANVAS,
   PAY_NEO_PRIMARY_BLUE,
   NEO_COLOR_BTN_PRESS,
   NEO_MODAL_BTN_PRESS,
   SOFT_NEO,
 } from '../utils/softNeumorphic';
+
+/** Online 패널 본문·헤더·목록 등 공통 배경 */
+const ONLINE_PANEL_BG = '#ffffff';
+
+/** 헤더 — 흰 배경 + 하단 구분선 (회색 네오 캔버스 톤 제거) */
+const ONLINE_PANEL_HEADER_RAISED: CSSProperties = {
+  background: ONLINE_PANEL_BG,
+  boxShadow: 'none',
+  borderBottom: '1px solid #e5e7eb',
+};
+
+/** 우측 상단 닫기 — 볼록 네오; 하이라이트를 패널 배경과 동일 톤으로 */
+const ONLINE_PANEL_CLOSE_BTN: CSSProperties = {
+  background: ONLINE_PANEL_BG,
+  borderRadius: 12,
+  border: 0,
+  boxShadow: `5px 5px 10px #babecc, -5px -5px 10px ${ONLINE_PANEL_BG}`,
+};
 
 // Order status labels
 const STATUS_LABELS: Record<string, { label: string; color: string; bgColor: string }> = {
@@ -368,6 +386,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       className="fixed right-0 top-0 z-50 flex h-full w-96 flex-col overflow-hidden"
       style={{
         ...PAY_NEO.modalShell,
+        background: ONLINE_PANEL_BG,
         borderRadius: '16px 0 0 16px',
       }}
       onClick={handlePanelClick}
@@ -375,7 +394,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       {/* Header */}
       <div
         className="relative flex shrink-0 items-center justify-between p-4 pr-16 text-slate-800"
-        style={PAY_NEO.raised}
+        style={ONLINE_PANEL_HEADER_RAISED}
       >
         <div className="flex items-center gap-2">
           <span className="text-xl">🌐</span>
@@ -400,10 +419,10 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
             onClose();
           }}
           aria-label="Close"
-          className="absolute top-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
-          style={SOFT_NEO.btnRound}
+          className={`absolute top-4 right-4 z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-0 touch-manipulation ${NEO_MODAL_BTN_PRESS}`}
+          style={ONLINE_PANEL_CLOSE_BTN}
         >
-          <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="h-5 w-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
@@ -412,7 +431,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       {/* 필터 탭 */}
       <div
         className="flex shrink-0 gap-1 border-b border-transparent p-1.5"
-        style={{ ...PAY_NEO.inset, borderRadius: 0, background: PAY_NEO_CANVAS }}
+        style={{ ...PAY_NEO.inset, borderRadius: 0, background: ONLINE_PANEL_BG }}
       >
         {['pending', 'confirmed', 'preparing', 'ready'].map((status) => (
           <button
@@ -428,7 +447,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       </div>
 
       {/* 주문 목록 */}
-      <div className="flex-1 overflow-y-auto" style={{ background: PAY_NEO_CANVAS }}>
+      <div className="flex-1 overflow-y-auto" style={{ background: ONLINE_PANEL_BG }}>
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
@@ -490,7 +509,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       {selectedOrder && (
         <div
           className="max-h-80 overflow-y-auto border-t border-transparent p-4"
-          style={{ ...PAY_NEO.inset, borderRadius: 0, background: PAY_NEO_CANVAS }}
+          style={{ ...PAY_NEO.inset, borderRadius: 0, background: ONLINE_PANEL_BG }}
         >
           <div className="mb-3 flex items-start justify-between">
             <div>
@@ -692,7 +711,7 @@ export const OnlineOrderPanel: React.FC<OnlineOrderPanelProps> = ({
       )}
 
       {/* Refresh button */}
-      <div className="border-t border-transparent p-2" style={{ background: PAY_NEO_CANVAS }}>
+      <div className="border-t border-transparent p-2" style={{ background: ONLINE_PANEL_BG }}>
         <button
           type="button"
           onClick={fetchOrders}

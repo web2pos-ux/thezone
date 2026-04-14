@@ -302,6 +302,35 @@ router.get('/reservations', async (req, res) => {
   }
 });
 
+// Get upcoming reservations within N minutes (for Hold auto-detection)
+router.get('/reservations/upcoming-hold', async (req, res) => {
+  try {
+    await ensureTablesExist();
+    const minutesBefore = Number(req.query.minutes_before || 45);
+    const now = new Date();
+    const todayDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    const windowEnd = currentMins + minutesBefore;
+
+    const rows = await dbAll(`
+      SELECT id, reservation_number, customer_name, phone_number,
+             reservation_date, reservation_time, party_size, table_number,
+             status, tables_needed
+      FROM reservations
+      WHERE reservation_date = ?
+        AND status NOT IN ('cancelled', 'completed')
+        AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) > ?
+        AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
+      ORDER BY reservation_time ASC
+    `, [todayDate, currentMins, windowEnd]);
+
+    res.json(rows || []);
+  } catch (error) {
+    console.error('Error in GET /reservations/upcoming-hold:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get reservation by ID
 router.get('/reservations/:id', async (req, res) => {
   try {
@@ -379,9 +408,9 @@ router.post('/reservations', async (req, res) => {
         SELECT party_size FROM reservations
         WHERE reservation_date = ?
           AND status NOT IN ('cancelled', 'no_show', 'completed')
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
-      `, [reservation_date, targetMins, dwellMinutes, targetMins]);
+          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+          AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
+      `, [reservation_date, targetMins + dwellMinutes, targetMins, dwellMinutes]);
 
       // 현재 점유 중인 테이블 수 합산
       let currentOccupiedTables = 0;
@@ -403,10 +432,10 @@ router.post('/reservations', async (req, res) => {
             SELECT party_size FROM reservations
             WHERE reservation_date = ?
               AND status NOT IN ('cancelled', 'no_show', 'completed')
-              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
+              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+              AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
               AND UPPER(COALESCE(json_extract(special_requests,'$.channel'),'')) = ?
-          `, [reservation_date, targetMins, dwellMinutes, targetMins, channel]);
+          `, [reservation_date, targetMins + dwellMinutes, targetMins, dwellMinutes, channel]);
           let channelOccupied = 0;
           for (const r of channelReservations) {
             channelOccupied += calcTablesNeeded(r.party_size);
@@ -424,13 +453,14 @@ router.post('/reservations', async (req, res) => {
     
     const reservation_number = generateReservationNumber();
     
+    const tables_needed = calcTablesNeeded(party_size);
     const result = await dbRun(`
       INSERT INTO reservations 
       (reservation_number, customer_name, phone_number, reservation_date, 
-       reservation_time, party_size, table_number, special_requests) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       reservation_time, party_size, table_number, special_requests, tables_needed) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [reservation_number, customer_name, phone_number, reservation_date, 
-         reservation_time, party_size, table_number, special_requests]);
+         reservation_time, party_size, table_number, special_requests, tables_needed]);
     
     const newReservation = await dbGet('SELECT * FROM reservations WHERE id = ?', [result.lastID]);
     
@@ -448,6 +478,7 @@ router.post('/reservations', async (req, res) => {
             reservation_date: newReservation.reservation_date,
             reservation_time: newReservation.reservation_time,
             party_size: newReservation.party_size,
+            tables_needed: newReservation.tables_needed || 1,
             table_number: newReservation.table_number || '',
             status: newReservation.status || 'pending',
             special_requests: newReservation.special_requests || '',
@@ -823,9 +854,9 @@ router.patch('/reservations/:id/reschedule', async (req, res) => {
         WHERE reservation_date = ?
           AND id != ?
           AND status NOT IN ('cancelled', 'no_show', 'completed')
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
-      `, [reservation_date, id, targetMins, rescheduleDwell, targetMins]);
+          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+          AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
+      `, [reservation_date, id, targetMins + rescheduleDwell, targetMins, rescheduleDwell]);
 
       let currentOccupiedTables = 0;
       for (const r of overlappingReservations) {
@@ -848,6 +879,24 @@ router.patch('/reservations/:id/reschedule', async (req, res) => {
       SET reservation_date = ?, reservation_time = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `, [reservation_date, reservation_time, id]);
+
+    // Firebase 동기화
+    try {
+      const restaurantId = getRestaurantId();
+      if (restaurantId && firebaseService) {
+        const firestore = firebaseService.getFirestore ? firebaseService.getFirestore() : null;
+        if (firestore) {
+          await firestore.collection('restaurants').doc(restaurantId)
+            .collection('reservations').doc(String(id)).update({
+              reservation_date,
+              reservation_time,
+              updated_at: new Date().toISOString(),
+            });
+        }
+      }
+    } catch (fbErr) {
+      console.warn('[Reservations] Firebase sync failed for reschedule:', fbErr.message);
+    }
 
     res.json({ ok: true });
   } catch (error) {

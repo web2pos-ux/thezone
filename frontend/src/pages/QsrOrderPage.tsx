@@ -51,7 +51,14 @@ import {
   SOFT_NEO,
   PAY_KEYPAD_KEY,
   NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS_SNAP,
+  NEO_COLOR_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
   OH_ACTION_NEO,
+  MODAL_CLOSE_X_RAISED_STYLE,
+  MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE,
+  NEO_PRESS_INSET_ONLY_NO_SHIFT,
 } from '../utils/softNeumorphic';
 import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
@@ -73,6 +80,9 @@ import {
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
+
+/** Void 모달 — 패드·±·푸터 오목 눌림 (PinInputModal과 동일 결합) */
+const QSR_VOID_PAD_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
 
 // FSR에서 복제한 유틸리티 함수들
 const formatPickupDateLabel = (date = new Date()) => {
@@ -1500,9 +1510,14 @@ const QsrOrderPage = () => {
   const [menuHideSelectedItem, setMenuHideSelectedItem] = useState<string | null>(null);
   const [menuHideEditMode, setMenuHideEditMode] = useState<'online' | 'delivery' | null>(null);
   // Utility Settings (Bag Fee, Utensils) - Firebase 연동
-  const [utilitySettings, setUtilitySettings] = useState<{ bagFee: { enabled: boolean; amount: number }; utensils: { enabled: boolean } }>({
+  const [utilitySettings, setUtilitySettings] = useState<{
+    bagFee: { enabled: boolean; amount: number };
+    utensils: { enabled: boolean };
+    preOrderReprint: { enabled: boolean };
+  }>({
     bagFee: { enabled: false, amount: 0.10 },
     utensils: { enabled: false },
+    preOrderReprint: { enabled: false },
   });
   const [savingUtility, setSavingUtility] = useState<boolean>(false);
   
@@ -3705,6 +3720,7 @@ const handleVoidPinClear = useCallback(() => {
         setUtilitySettings({
           bagFee: nextBag,
           utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+          preOrderReprint: { enabled: s.utilitySettings.preOrderReprint?.enabled ?? false },
         });
         syncPosBagFeeLocalFromUtilityBagFee(nextBag);
       }
@@ -3744,6 +3760,7 @@ const handleVoidPinClear = useCallback(() => {
             utensils: {
               enabled: data.utilitySettings.utensils?.enabled ?? false,
             },
+            preOrderReprint: { enabled: data.utilitySettings.preOrderReprint?.enabled ?? false },
           });
           syncPosBagFeeLocalFromUtilityBagFee(nextBag);
         }
@@ -3847,6 +3864,7 @@ const handleVoidPinClear = useCallback(() => {
           setUtilitySettings({
             bagFee: nextBag,
             utensils: { enabled: s.utilitySettings.utensils?.enabled ?? false },
+            preOrderReprint: { enabled: s.utilitySettings.preOrderReprint?.enabled ?? false },
           });
           syncPosBagFeeLocalFromUtilityBagFee(nextBag);
         }
@@ -5617,12 +5635,14 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const pushBagFeeUtilityToFirebase = useCallback(async (bagFee: { enabled: boolean; amount: number }) => {
     const restaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
     let utensils = { enabled: false };
+    let preOrderReprint = { enabled: false };
     try {
       const url = restaurantId ? `${API_URL}/online-orders/utility-settings?restaurantId=${restaurantId}` : `${API_URL}/online-orders/utility-settings`;
       const r = await fetch(url);
       if (r.ok) {
         const d = await r.json();
         if (d.success && d.utilitySettings?.utensils) utensils = { enabled: !!d.utilitySettings.utensils.enabled };
+        if (d.success && d.utilitySettings?.preOrderReprint) preOrderReprint = { enabled: !!d.utilitySettings.preOrderReprint.enabled };
       }
     } catch {}
     const res = await fetch(`${API_URL}/online-orders/utility-settings`, {
@@ -5632,6 +5652,7 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
         utilitySettings: {
           bagFee: { enabled: bagFee.enabled, amount: Number(Number(bagFee.amount || 0).toFixed(2)) },
           utensils,
+          preOrderReprint,
         },
         restaurantId,
       }),
@@ -12829,7 +12850,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         Sold Out
                       </button>
                       <button
-                        className="w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                        className={`w-full h-[50px] rounded-xl bg-[#e0e5ec] text-gray-700 text-[13px] font-bold flex items-center justify-center text-center leading-tight select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:text-gray-500 ${NEO_PREP_TIME_BTN_PRESS_SNAP}`}
                         onClick={handleOpenKitchenMemo}
                       >
                         Kitchen Note
@@ -13500,7 +13521,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           <div className="text-lg font-bold text-gray-800">Void Items</div>
           <button
             type="button"
-            className="flex h-11 w-11 items-center justify-center text-2xl font-bold text-gray-700 transition-[filter] active:brightness-95 touch-manipulation border-0"
+            className={`flex h-11 w-11 items-center justify-center rounded-xl border-0 text-2xl font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
             style={PAY_NEO.raised}
             onClick={()=>setShowVoidModal(false)}
             title="Close"
@@ -13546,7 +13567,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <button
                         type="button"
-                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${QSR_VOID_PAD_PRESS}`}
                         style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.max(1, sel.qty - 1);
@@ -13557,7 +13578,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                       <button
                         type="button"
-                        className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                        className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${QSR_VOID_PAD_PRESS}`}
                         style={PAY_NEO.key}
                         onClick={()=>{
                           const newQty = Math.min(maxQty, sel.qty + 1);
@@ -13604,7 +13625,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               <button
                                 type="button"
-                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${QSR_VOID_PAD_PRESS}`}
                                 style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.max(1, sel.qty - 1);
@@ -13615,7 +13636,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               <span className="w-9 text-center text-base font-bold">{sel.qty}</span>
                               <button
                                 type="button"
-                                className="flex h-11 w-11 items-center justify-center border-0 text-gray-700 font-bold text-2xl transition-[filter] active:brightness-95 touch-manipulation disabled:pointer-events-none disabled:opacity-35"
+                                className={`flex h-11 w-11 items-center justify-center rounded-[10px] border-0 text-gray-700 font-bold text-2xl touch-manipulation hover:brightness-[1.02] disabled:pointer-events-none disabled:opacity-35 ${QSR_VOID_PAD_PRESS}`}
                                 style={PAY_NEO.key}
                                 onClick={()=>{
                                   const newQty = Math.min(maxQty, sel.qty + 1);
@@ -13677,7 +13698,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   />
                   <button
                     type="button"
-                    className="absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 transition-[filter] active:brightness-95"
+                    className={`absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                     style={PAY_NEO.key}
                     onClick={() => {
                       try {
@@ -13718,7 +13739,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       <button
                         key={`void-pin-${num}`}
                         type="button"
-                        className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                        className={`h-12 rounded-[10px] font-semibold text-gray-800 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
+                        style={PAY_KEYPAD_KEY}
                         onClick={() => handleVoidPinDigit(String(num))}
                       >
                         {num}
@@ -13726,21 +13748,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     ))}
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className={`h-12 rounded-[10px] text-sm font-semibold text-white hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                      style={{ ...OH_ACTION_NEO.red, borderRadius: 10 }}
                       onClick={handleVoidPinClear}
                     >
                       Clear
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className={`h-12 rounded-[10px] font-semibold text-gray-800 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
+                      style={PAY_KEYPAD_KEY}
                       onClick={() => handleVoidPinDigit('0')}
                     >
                       0
                     </button>
                     <button
                       type="button"
-                      className="h-12 rounded-lg bg-white hover:bg-gray-100 active:bg-gray-200 font-semibold text-gray-800 shadow border border-gray-200"
+                      className={`h-12 rounded-[10px] text-lg font-semibold text-white hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                      style={{ ...OH_ACTION_NEO.orange, borderRadius: 10 }}
                       onClick={handleVoidPinBackspace}
                     >
                       ←
@@ -13754,8 +13779,25 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           </div>
         </div>
         <div className="mt-3 flex items-center justify-end gap-3">
-          <button className="px-5 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 active:bg-gray-400 text-sm font-bold transition-colors min-w-[110px]" onClick={()=>setShowVoidModal(false)}>Cancel</button>
-          <button className="px-5 py-2.5 rounded-lg bg-red-600 text-white hover:bg-red-700 active:bg-red-800 disabled:bg-gray-300 disabled:text-gray-600 text-sm font-bold transition-colors min-w-[110px]" disabled={!canConfirmVoid} onClick={handleConfirmVoid}>Void</button>
+          <button
+            type="button"
+            className={`min-w-[110px] rounded-[14px] px-5 py-2.5 text-sm font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
+            style={PAY_NEO.key}
+            onClick={()=>setShowVoidModal(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={`min-w-[110px] rounded-[14px] px-5 py-2.5 text-sm font-bold touch-manipulation hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-60 ${
+              canConfirmVoid ? `${NEO_COLOR_BTN_PRESS_NO_SHIFT} text-white` : `${QSR_VOID_PAD_PRESS} text-slate-500`
+            }`}
+            style={canConfirmVoid ? { ...OH_ACTION_NEO.red, borderRadius: 14 } : { ...PAY_NEO.inset }}
+            disabled={!canConfirmVoid}
+            onClick={handleConfirmVoid}
+          >
+            Void
+          </button>
         </div>
       </div>
     </div>
@@ -13774,7 +13816,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
-                className="flex h-9 w-9 items-center justify-center border-0 text-lg font-bold text-gray-700 transition-[filter] active:brightness-[0.95]"
+                className={`flex h-9 w-9 items-center justify-center rounded-xl border-0 text-lg font-bold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                 style={PAY_NEO.raised}
                 title="Close"
               >
@@ -13813,7 +13855,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                     <button
                       type="button"
-                      className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      className={`absolute inset-y-1 right-1 flex w-12 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                       style={PAY_NEO.key}
                       onClick={() => {
                         try {
@@ -13871,7 +13913,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     </div>
                     <button
                       type="button"
-                      className="absolute inset-y-1 right-1 flex w-10 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                      className={`absolute inset-y-1 right-1 flex w-10 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                       style={PAY_NEO.keyPad}
                       onClick={() => {
                         setSoftKbTarget('openPriceAmount');
@@ -13919,7 +13961,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
                   <button
                     type="button"
-                    className="absolute inset-y-1 right-1 flex w-12 items-center justify-center border-0 text-gray-600 transition-[filter] active:brightness-[0.95]"
+                    className={`absolute inset-y-1 right-1 flex w-12 items-center justify-center rounded-[10px] border-0 text-gray-600 hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                     style={PAY_NEO.key}
                     onClick={() => {
                       try {
@@ -13950,7 +13992,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         key={opt.id}
                         type="button"
                         onClick={() => setSelectedTaxGroupId(opt.id)}
-                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${selectedTaxGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
                         style={selectedTaxGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Rate: ${opt.totalRate}%`}
                       >
@@ -13970,7 +14012,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         key={opt.id}
                         type="button"
                         onClick={() => setSelectedPrinterGroupId(opt.id)}
-                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left transition-[filter] active:brightness-95 touch-manipulation ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
+                        className={`min-h-12 rounded-[10px] border-0 px-3 py-2 text-left touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${selectedPrinterGroupId === opt.id ? 'ring-2 ring-blue-400/70 ring-offset-2 ring-offset-[#e0e5ec]' : ''}`}
                         style={selectedPrinterGroupId === opt.id ? PAY_NEO.inset : PAY_NEO.key}
                         title={`Printers: ${opt.count}`}
                       >
@@ -13991,7 +14033,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); setShowOpenPriceModal(false); }}
-                className="border-0 py-3 text-base font-semibold text-gray-900 transition-[filter] active:brightness-95 touch-manipulation"
+                className={`rounded-[14px] border-0 py-3 text-base font-semibold text-gray-900 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                 style={PAY_NEO.key}
               >
                 Cancel
@@ -13999,7 +14041,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               <button
                 type="button"
                 onClick={() => { setSoftKbTarget(null); handleSubmitOpenPrice(); }}
-                className="border-0 py-3 text-base font-semibold transition-[filter] active:brightness-95 touch-manipulation"
+                className={`rounded-[14px] border-0 py-3 text-base font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
                 style={PAY_NEO_PRIMARY_BLUE}
               >
                 Add
@@ -15571,24 +15613,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden" style={{ transform: 'translateY(-70px)' }}>
+            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-xl bg-white shadow-2xl" style={{ transform: 'translateY(-70px)' }}>
               {/* Header */}
-              <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-4 py-3 flex justify-between items-center">
+              <div className="flex items-center justify-between bg-gradient-to-r from-blue-600 to-blue-700 px-5 py-3.5">
                 <h3 className="text-lg font-bold text-white">Item Discount</h3>
-                <button onClick={handleCancelItemDiscount} className="text-white hover:text-gray-200 text-2xl font-bold leading-none">&times;</button>
+                <button type="button" onClick={handleCancelItemDiscount} className={`flex min-h-[1.925rem] min-w-[1.925rem] items-center justify-center rounded-xl px-[0.55rem] py-[0.275rem] text-2xl font-bold leading-none text-white hover:text-gray-200 hover:brightness-[1.05] touch-manipulation ${QSR_VOID_PAD_PRESS}`}>&times;</button>
               </div>
               
               {/* Item Info */}
-              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-gray-700 truncate max-w-[280px]">{itemName}</span>
+              <div className="border-b border-gray-200 bg-gray-50 px-5 py-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="max-w-[min(320px,70vw)] truncate text-sm font-medium text-gray-700">{itemName}</span>
                   <span className="text-base font-bold text-gray-900">${itemOriginalPrice.toFixed(2)}</span>
                 </div>
               </div>
 
-              <div className="p-4 space-y-3">
+              <div className="space-y-4 p-5">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className={`rounded-lg p-2 ${itemDiscountMode === 'percent' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
+                <div className={`rounded-lg border p-3 ${itemDiscountMode === 'percent' ? 'border-blue-200 bg-blue-50' : 'border-green-200 bg-green-50'}`}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
@@ -15609,19 +15651,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Percent & Amount Presets - Side by Side */}
-                <div className="flex gap-3">
+                <div className="flex gap-5">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 bg-blue-50 rounded-lg p-3 border border-blue-200">
-                    <div className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1">
+                  <div className="flex-1 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                    <div className="mb-3 flex items-center gap-1 text-xs font-semibold text-blue-700">
                       <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-xs">%</span>
                       Percent
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-3">
                       {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(v => (
                         <button
                           key={`pct-${v}`}
                           onClick={() => { setItemDiscountMode('percent'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded text-base font-semibold transition-all ${
+                          className={`flex min-h-[3.3rem] items-center justify-center rounded-xl px-1 text-base font-semibold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             itemDiscountMode === 'percent' && itemDiscountValue === String(v)
                               ? 'bg-blue-600 text-white shadow-md'
                               : 'bg-white hover:bg-blue-100 text-gray-700 border border-gray-300'
@@ -15634,17 +15676,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 bg-green-50 rounded-lg p-3 border border-green-200">
-                    <div className="text-xs font-semibold text-green-700 mb-2 flex items-center gap-1">
+                  <div className="flex-1 rounded-lg border border-green-200 bg-green-50 p-4">
+                    <div className="mb-3 flex items-center gap-1 text-xs font-semibold text-green-700">
                       <span className="bg-green-600 text-white px-2 py-0.5 rounded text-xs">$</span>
                       Amount
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-3 gap-3">
                       {[1, 2, 5, 10, 20, 25, 50, 100].map(v => (
                         <button
                           key={`amt-${v}`}
                           onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(v)); }}
-                          className={`py-3 rounded text-base font-semibold transition-all ${
+                          className={`flex min-h-[3.3rem] items-center justify-center rounded-xl px-1 text-base font-semibold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             itemDiscountMode === 'amount' && itemDiscountValue === String(v)
                               ? 'bg-green-600 text-white shadow-md'
                               : 'bg-white hover:bg-green-100 text-gray-700 border border-gray-300'
@@ -15654,8 +15696,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       ))}
                       <button
+                        type="button"
                         onClick={() => { setItemDiscountMode('amount'); setItemDiscountValue(String(Number(itemOriginalPrice.toFixed(2)))); }}
-                        className={`py-3 rounded text-base font-bold transition-all ${
+                        className={`flex min-h-[3.3rem] items-center justify-center rounded-xl px-1 text-base font-bold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                           itemDiscountMode === 'amount' && Number(itemDiscountValue) === Number(itemOriginalPrice.toFixed(2))
                             ? 'bg-yellow-500 text-white shadow-md'
                             : 'bg-yellow-400 hover:bg-yellow-500 text-white'
@@ -15668,8 +15711,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="bg-gray-100 rounded-lg p-3">
-                  <div className="grid grid-cols-5 gap-2">
+                <div className="rounded-lg bg-gray-100 p-4">
+                  <div className="grid grid-cols-5 gap-3">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
                       const isDollar = key === '$';
@@ -15692,7 +15735,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               appendDiscountDigit(key);
                             }
                           }}
-                          className={`h-12 rounded font-semibold text-lg transition-all ${
+                          className={`h-[3.3rem] min-h-[3.3rem] rounded-xl font-semibold text-lg touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             isPercent
                               ? itemDiscountMode === 'percent'
                                 ? 'bg-blue-600 text-white'
@@ -15714,16 +15757,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-3">
+                <div className="flex gap-5 pt-1">
                   <button 
+                    type="button"
                     onClick={handleCancelItemDiscount} 
-                    className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all text-base"
+                    className={`flex-1 rounded-xl border-0 bg-gray-200 py-[0.9625rem] text-base font-semibold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                   >
                     Cancel
                   </button>
                   <button 
+                    type="button"
                     onClick={handleApplyItemDiscount} 
-                    className="flex-1 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-all text-base"
+                    className={`flex-1 rounded-xl border-0 bg-blue-600 py-[0.9625rem] text-base font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
                   >
                     Apply Discount
                   </button>
@@ -15805,24 +15850,24 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[95vh] overflow-hidden relative" style={{ transform: 'translateY(-70px)' }}>
-              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={handleCancelDiscount} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            <div className="relative max-h-[95vh] w-[min(640px,96vw)] overflow-hidden rounded-xl bg-white shadow-2xl" style={{ transform: 'translateY(-20px)' }}>
+              <button type="button" className={`absolute right-2 top-2 z-10 flex h-[3.3rem] w-[3.3rem] min-h-[3.3rem] min-w-[3.3rem] items-center justify-center rounded-lg border-2 border-red-500 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`} style={{ background: 'rgba(156,163,175,0.25)' }} onClick={handleCancelDiscount} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="h-[1.925rem] w-[1.925rem]" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
               {/* Header */}
-              <div className="bg-gradient-to-r from-purple-600 to-purple-700 px-3 py-2 flex justify-between items-center">
+              <div className="flex items-center justify-between bg-gradient-to-r from-purple-600 to-purple-700 px-4 py-3">
                 <h3 className="text-base font-bold text-white">Order Discount</h3>
               </div>
               
               {/* Order Subtotal Info */}
-              <div className="bg-gray-50 px-3 py-3 border-b border-gray-200">
-                <div className="flex justify-center items-center gap-3">
+              <div className="border-b border-gray-200 bg-gray-50 px-4 py-3.5">
+                <div className="flex items-center justify-center gap-4">
                   <span className="text-lg font-medium text-gray-700">Order Subtotal</span>
                   <span className="text-xl font-bold text-gray-900">${orderSubtotal.toFixed(2)}</span>
                 </div>
               </div>
 
-              <div className="p-3 space-y-2">
+              <div className="space-y-3.5 p-5">
                 {/* Combined Display Area - Final Price (Left) + Discount (Right) */}
-                <div className={`rounded-lg p-1 ${discountInputMode === 'percent' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
+                <div className={`rounded-lg border p-2.5 ${discountInputMode === 'percent' ? 'border-blue-200 bg-blue-50' : 'border-green-200 bg-green-50'}`}>
                   <div className="flex justify-between items-center">
                     <div className="text-center flex-1">
                       <div className="text-xs text-gray-500">Final Price</div>
@@ -15843,13 +15888,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Discount Type */}
-                <div className="grid grid-cols-4 gap-1">
+                <div className="grid grid-cols-4 gap-2.5">
                   {discountTypes.filter(type => type !== 'Custom').sort((a, b) => a.localeCompare(b)).map(type => (
                     <button
                       key={type}
                       type="button"
                       onClick={() => setSelectedDiscountType(type)}
-                      className={`h-10 px-1 rounded text-sm font-semibold text-center transition-all ${
+                      className={`h-11 min-h-[2.75rem] rounded-xl px-1 text-center text-sm font-semibold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                         selectedDiscountType === type
                           ? 'bg-purple-600 text-white shadow-md'
                           : 'bg-purple-50 text-gray-800 border border-purple-200 hover:bg-purple-100'
@@ -15861,19 +15906,19 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Percent & Amount Presets - Side by Side */}
-                <div className="flex gap-2">
+                <div className="flex gap-5">
                   {/* Percent Presets - Left */}
-                  <div className="flex-1 bg-blue-50 rounded-lg p-2 border border-blue-200">
-                    <div className="text-xs font-semibold text-blue-700 mb-1 flex items-center gap-1">
-                      <span className="bg-blue-600 text-white px-1.5 py-0.5 rounded text-xs">%</span>
+                  <div className="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 p-3.5">
+                    <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-indigo-800">
+                      <span className="bg-indigo-600 text-white px-1.5 py-0.5 rounded text-xs">%</span>
                       Percent
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[5, 10, 15, 20, 25, 30, 50, 75, 100].map(v => (
                         <button
                           key={`dc-pct-${v}`}
                           onClick={() => { setDiscountInputMode('percent'); setDiscountPercentage(`${v}%`); setCustomDiscountPercentage(''); }}
-                          className={`h-10 rounded text-sm font-semibold transition-all ${
+                          className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl text-sm font-semibold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             discountInputMode === 'percent' && discountPercentage === `${v}%`
                               ? 'bg-blue-600 text-white shadow-md'
                               : 'bg-blue-100 hover:bg-blue-200 text-gray-800 border border-blue-200'
@@ -15886,17 +15931,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   </div>
 
                   {/* Amount Presets - Right */}
-                  <div className="flex-1 bg-green-50 rounded-lg p-2 border border-green-200">
-                    <div className="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1">
+                  <div className="flex-1 rounded-lg border border-green-200 bg-green-50 p-3.5">
+                    <div className="mb-2 flex items-center gap-1 text-xs font-semibold text-green-700">
                       <span className="bg-green-600 text-white px-1.5 py-0.5 rounded text-xs">$</span>
                       Amount
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[1, 2, 5, 10, 20, 25, 50, 100].map(v => (
                         <button
                           key={`dc-amt-${v}`}
                           onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(v)); }}
-                          className={`h-10 rounded text-sm font-semibold transition-all ${
+                          className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl text-sm font-semibold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             discountInputMode === 'amount' && discountAmountValue === String(v)
                               ? 'bg-green-600 text-white shadow-md'
                               : 'bg-green-100 hover:bg-green-200 text-gray-800 border border-green-200'
@@ -15906,8 +15951,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         </button>
                       ))}
                       <button
+                        type="button"
                         onClick={() => { setDiscountInputMode('amount'); setDiscountAmountValue(String(Number(orderSubtotal.toFixed(2)))); }}
-                        className={`h-10 rounded text-sm font-bold transition-all ${
+                        className={`h-[2.6125rem] min-h-[2.6125rem] rounded-xl text-sm font-bold touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                           discountInputMode === 'amount' && Number(discountAmountValue) === Number(orderSubtotal.toFixed(2))
                             ? 'bg-yellow-500 text-white shadow-md'
                             : 'bg-yellow-400 hover:bg-yellow-500 text-white'
@@ -15920,8 +15966,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Numpad for Custom Input */}
-                <div className="bg-gray-100 rounded-lg p-2">
-                  <div className="grid grid-cols-5 gap-1">
+                <div className="rounded-lg bg-gray-100 p-3.5">
+                  <div className="grid grid-cols-5 gap-2.5">
                     {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '00', '.', '⌫', '%', '$'].map((key, idx) => {
                       const isPercent = key === '%';
                       const isDollar = key === '$';
@@ -15965,7 +16011,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               }
                             }
                           }}
-                          className={`h-10 rounded font-semibold text-base transition-all ${
+                          className={`h-[2.8293375rem] min-h-[2.8293375rem] rounded-xl font-semibold text-base touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS} ${
                             isPercent
                               ? discountInputMode === 'percent'
                                 ? 'bg-blue-600 text-white'
@@ -15987,16 +16033,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 </div>
 
                 {/* Action Buttons */}
-                <div className="flex gap-2">
+                <div className="flex gap-5 pt-1">
                   <button 
+                    type="button"
                     onClick={handleCancelDiscount} 
-                    className="flex-1 py-2.5 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all text-sm"
+                    className={`flex-1 rounded-xl border-0 bg-gray-200 py-[0.825rem] text-sm font-semibold text-gray-700 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}
                   >
                     Cancel
                   </button>
                   <button 
+                    type="button"
                     onClick={handleApplyDiscount} 
-                    className="flex-1 py-2.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold transition-all text-sm"
+                    className={`flex-1 rounded-xl border-0 bg-purple-600 py-[0.825rem] text-sm font-semibold text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
                   >
                     Apply Discount
                   </button>
@@ -16010,14 +16058,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {/* Custom Discount Modal */}
       {showCustomDiscountModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-96">
-            <div className="flex justify-between items-center mb-4">
+          <div className="w-[min(420px,96vw)] rounded-xl bg-white p-7">
+            <div className="mb-5 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-800">Custom Discount</h3>
-              <button onClick={handleCustomDiscountCancel} className="text-gray-600 hover:text-gray-800 text-3xl font-bold w-10 h-10 flex items-center justify-center">×</button>
+              <button type="button" onClick={handleCustomDiscountCancel} className={`flex h-11 w-11 min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded-xl text-3xl font-bold text-gray-600 hover:text-gray-800 hover:brightness-[1.02] touch-manipulation ${QSR_VOID_PAD_PRESS}`}>×</button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <label className="block text-sm text-gray-700 mb-2">Enter Discount Percentage</label>
+                <label className="mb-2 block text-sm text-gray-700">Enter Discount Percentage</label>
                 <input
                   ref={customDiscountInputRef}
                   type="text"
@@ -16030,9 +16078,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   className="w-full border border-gray-300 rounded px-3 py-2 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button onClick={handleCustomDiscountCancel} className="px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 text-gray-800">Cancel</button>
-                <button onClick={handleCustomDiscountSave} className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white">Save</button>
+              <div className="flex justify-end gap-4 pt-3">
+                <button type="button" onClick={handleCustomDiscountCancel} className={`rounded-xl border-0 bg-gray-200 px-[1.65rem] py-[0.6875rem] text-gray-800 touch-manipulation hover:brightness-[1.02] ${QSR_VOID_PAD_PRESS}`}>Cancel</button>
+                <button type="button" onClick={handleCustomDiscountSave} className={`rounded-xl border-0 px-[1.65rem] py-[0.6875rem] text-white touch-manipulation hover:brightness-[1.02] ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`} style={PAY_NEO_PRIMARY_BLUE}>Save</button>
               </div>
             </div>
           </div>
@@ -16087,7 +16135,17 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 w-[798px] max-h-[80vh] overflow-y-auto relative">
-              <button className="w-12 h-12 flex items-center justify-center rounded-full border-2 border-red-500 hover:border-red-600 active:border-red-700 absolute z-10" style={{ background: 'rgba(156,163,175,0.25)', top: '2px', right: '2px' }} onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }} title="Close"><svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="red" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+              <button
+                type="button"
+                className={`absolute right-3 top-3 z-10 flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-full border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                style={MODAL_CLOSE_X_RAISED_STYLE}
+                aria-label="Close"
+                onClick={() => { setShowSoldOutModal(false); setSelectedExtendItemId(null); }}
+              >
+                <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
               <div className="flex justify-between items-center mb-4">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-800">Sold Out Options</h3>
@@ -16192,10 +16250,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-300 bg-slate-700 rounded-t-xl flex-shrink-0 relative">
                 <button
+                  type="button"
                   onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); setOrderListVoidLines([]); setOrderListOpenMode('history'); }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 border-2 border-red-500 bg-white/30 hover:bg-red-50/50 rounded-full flex items-center justify-center transition-colors z-[99999] shadow-lg backdrop-blur-sm"
+                  className={`absolute right-3 top-1/2 z-[99999] flex h-12 w-12 -translate-y-1/2 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                  style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
+                  aria-label="Close"
+                  title="Close"
                 >
-                  <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
@@ -17894,19 +17956,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       {showPrepTimeModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-[644px] relative" onClick={(e) => e.stopPropagation()}>
-            {/* Header */}
-            <div className="relative flex items-center justify-between px-5 py-3 bg-slate-700 rounded-t-xl">
-              <div className="w-12" />
-              <h2 className="text-lg font-bold text-white" style={{ marginRight: '50px' }}>Online Settings</h2>
-              {/* Gift Card 모달과 동일한 닫기 X (PaymentModal.tsx showGiftCardModal 버튼) */}
+            {/* Header — 네오 볼록 사각 닫기 (빨간 테두리 없음) */}
+            <div className="flex shrink-0 items-center justify-between px-5 py-3.5 bg-slate-700 rounded-t-xl">
+              <h2 className="text-lg font-bold text-white">Online Settings</h2>
               <button
                 type="button"
                 onClick={() => setShowPrepTimeModal(false)}
                 aria-label="Close"
-                className="absolute right-3 top-1/2 z-[99999] flex h-9 w-9 -translate-y-1/2 shrink-0 items-center justify-center rounded-full border-2 border-red-500 touch-manipulation transition-transform active:scale-95"
-                style={SOFT_NEO.btnRound}
+                title="Close"
+                className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
               >
-                <svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
@@ -17924,13 +17985,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               {/* Prep Time Tab */}
               {onlineModalTab === 'preptime' && (
                 <div className="flex flex-col h-full">
-                  <table className="w-full border-collapse flex-1">
+                  <table className="mx-auto w-[95%] max-w-full border-collapse flex-1">
                     <thead>
                       <tr className="text-xs text-gray-500 border-b">
-                        <th className="text-left py-2 font-medium">Service</th>
-                        <th className="text-center py-2 font-medium">Mode</th>
-                        <th className="text-center py-2 font-medium">Prep Time</th>
-                        <th className="w-16"></th>
+                        <th className="text-left py-[0.475rem] font-medium">Service</th>
+                        <th className="text-center py-[0.475rem] font-medium">Mode</th>
+                        <th className="text-center py-[0.475rem] font-medium">Prep Time</th>
+                        <th className="w-[3.8rem]"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -17938,23 +17999,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const labels: Record<string, string> = { thezoneorder: 'TheZoneOrder', ubereats: 'UberEats', doordash: 'DoorDash', skipthedishes: 'SkipTheDishes' };
                         return (
                           <tr key={channel} className="border-b border-gray-200">
-                            <td className="py-4"><span className="text-base font-bold text-gray-800">{labels[channel]}</span></td>
-                            <td className="py-4">
+                            <td className="py-[0.95rem]"><span className="text-[0.95rem] font-bold text-gray-800">{labels[channel]}</span></td>
+                            <td className="py-[0.95rem]">
                               <div className="flex justify-center">
-                                <div className="inline-flex bg-gray-100 rounded-lg p-1">
-                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'auto' } }))} className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings[channel].mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Auto</button>
-                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'manual' } }))} className={`px-5 py-2.5 rounded-md text-sm font-semibold transition-all ${prepTimeSettings[channel].mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Manual</button>
+                                <div className="inline-flex bg-gray-100 rounded-lg p-[0.2375rem]">
+                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'auto' } }))} className={`px-[1.1875rem] py-[0.59375rem] rounded-md text-[0.83125rem] font-semibold transition-all ${prepTimeSettings[channel].mode === 'auto' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Auto</button>
+                                  <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], mode: 'manual' } }))} className={`px-[1.1875rem] py-[0.59375rem] rounded-md text-[0.83125rem] font-semibold transition-all ${prepTimeSettings[channel].mode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-700'}`}>Manual</button>
                                 </div>
                               </div>
                             </td>
-                            <td className="py-4">
-                              <select value={prepTimeSettings[channel].time} onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], time: e.target.value } }))} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-base font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500">
+                            <td className="py-[0.95rem]">
+                              <select value={prepTimeSettings[channel].time} onChange={(e) => setPrepTimeSettings(prev => ({ ...prev, [channel]: { ...prev[channel], time: e.target.value } }))} className="mx-auto w-[95%] px-[0.95rem] py-[0.59375rem] border border-gray-300 rounded-lg text-[0.95rem] font-semibold text-center bg-white focus:outline-none focus:ring-2 focus:ring-gray-500">
                                 {['10m', '15m', '20m', '25m', '30m', '45m', '1h'].map((time) => <option key={time} value={time}>{time}</option>)}
                               </select>
                             </td>
-                            <td className="py-4 pl-3">
+                            <td className="py-[0.95rem] pl-[0.7125rem]">
                               {idx === 0 && (
-                                <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, time: prev.thezoneorder.time }, doordash: { ...prev.doordash, time: prev.thezoneorder.time }, skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time } }))} className="px-3 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-semibold whitespace-nowrap">Apply All</button>
+                                <button onClick={() => setPrepTimeSettings(prev => ({ ...prev, ubereats: { ...prev.ubereats, time: prev.thezoneorder.time }, doordash: { ...prev.doordash, time: prev.thezoneorder.time }, skipthedishes: { ...prev.skipthedishes, time: prev.thezoneorder.time } }))} className="px-[0.7125rem] py-[0.59375rem] bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-[0.83125rem] font-semibold whitespace-nowrap">Apply All</button>
                               )}
                             </td>
                           </tr>
@@ -18138,6 +18199,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                       </button>
                     </div>
                   </div>
+                  <div className="border border-gray-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-base font-bold text-gray-800">🖨️ Pre Order Reprint</div>
+                        <div className="text-xs text-gray-500 mt-0.5 max-w-[280px]">
+                          Pre orders or pickups 2+ hours out: kitchen prints &quot;Pre Order Reprint&quot; 30 minutes before pickup.
+                        </div>
+                      </div>
+                      <button
+                        onClick={() =>
+                          setUtilitySettings((prev) => ({
+                            ...prev,
+                            preOrderReprint: { enabled: !prev.preOrderReprint.enabled },
+                          }))
+                        }
+                        className={`w-14 h-7 rounded-full border-none cursor-pointer transition-colors relative ${utilitySettings.preOrderReprint.enabled ? 'bg-violet-500' : 'bg-gray-300'}`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${utilitySettings.preOrderReprint.enabled ? 'left-7' : 'left-0.5'}`}
+                        />
+                      </button>
+                    </div>
+                  </div>
                   <button onClick={saveUtilitySettings} disabled={savingUtility} className={`w-full py-3 rounded-lg font-bold text-base transition-all ${savingUtility ? 'bg-gray-400 text-white cursor-wait' : 'bg-violet-500 hover:bg-violet-600 text-white'}`}>
                     {savingUtility ? 'Saving...' : 'Save Utility Settings'}
                   </button>
@@ -18210,7 +18294,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         isOpen={showPaymentCompleteModal}
         onClose={handlePaymentCompleteClose}
         mode={paymentCompleteData?.isPartialPayment ? 'full' : 'receiptOnly'}
-        onAddTips={(receiptCount) => {
+        onAddTips={(receiptCount: number) => {
           setPendingReceiptCountForTip(receiptCount);
           setShowPaymentCompleteModal(false);
           setShowTipEntryModal(true);

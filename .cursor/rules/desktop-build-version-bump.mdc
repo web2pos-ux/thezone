@@ -1,0 +1,27 @@
+---
+description: POS 데스크톱 실행앱 빌드 시 버전 패치 업 필수
+globs:
+alwaysApply: true
+---
+
+# Desktop 실행앱 빌드 — 버전 업 (WEB2POS)
+
+## 규칙
+
+사용자가 **프론트엔드 빌드 + TheZonePOS 실행앱(설치파일/포터블) 생성**을 요청하면:
+
+1. **반드시** `pos-desktop/package.json`의 **`version` 패치를 1 올린 뒤** 패키징한다.  
+   - 수동으로 올려도 되고, 아래 일괄 스크립트를 쓰면 된다.
+2. 권장 절차: **`pos-desktop\build-release.bat`** 실행  
+   - `node scripts\bump-desktop-version.mjs` → `build.bat` → `npm run build:win`
+3. `build.bat`만 쓰고 `npm run build:win`만 하는 경우에도, **그 전에** `node pos-desktop/scripts/bump-desktop-version.mjs`를 실행했다고 가정하거나 사용자에게 버전업을 안내한다.
+
+## 참고
+
+- 설치파일/포터블 이름은 `package.json`의 `version`을 따른다 (`TheZonePOS Setup x.y.z.exe` 등).
+- `backend/config/app-version.json`은 별도 표시용일 수 있음. 데스크톱 **바이너리 버전**의 단일 소스는 **`pos-desktop/package.json`**.
+
+## 에이전트 행동
+
+- “빌드하고 실행앱 만들어” 류 요청 시 **먼저 버전 패치 업**을 수행한 다음 `build-release.bat`을 실행하거나, 동일 순서의 명령을 직접 실행한다.
+- 사용자가 “버전 올리지 마”라고 명시한 경우에만 생략한다.

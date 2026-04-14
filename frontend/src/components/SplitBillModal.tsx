@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { OrderItem } from '../pages/order/orderTypes';
-import { DndContext, PointerSensor, useSensor, useSensors, DragEndEvent, useDraggable, useDroppable, DragOverlay, defaultDropAnimationSideEffects, useDndContext } from '@dnd-kit/core';
+import { DndContext, PointerSensor, TouchSensor, useSensor, useSensors, DragEndEvent, useDraggable, useDroppable, DragOverlay, defaultDropAnimationSideEffects, useDndContext } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { X } from 'lucide-react';
 
@@ -29,6 +29,7 @@ const DraggableRow: React.FC<{ id: string; rowIndex: number; className?: string;
 		opacity: isDragging ? 0.6 : 1,
 		transition: isDragging ? 'transform 150ms cubic-bezier(0.2, 0, 0, 1)' : undefined,
 		cursor: disabled ? ('default' as const) : (isDragging ? ('grabbing' as const) : ('grab' as const)),
+		touchAction: 'none' as const,
 	};
 			return (
 		<div ref={setNodeRef} style={style} className={className} onClick={onClick} {...(!disabled ? listeners : {})} {...(!disabled ? attributes : {})}>
@@ -181,10 +182,12 @@ const SplitBillPayCard: React.FC<{
     return (
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 overflow-y-auto p-3 text-center text-base font-semibold">
-          <span className="block text-lg font-bold text-blue-600 mb-2">Total : ${formatMoney(allTotal)}</span>
-          <div className="border-t border-gray-300 pt-2 mt-2">
-            <span className="block">Remaining : ${formatMoney(remaining)}</span>
-            <span className="block text-xs text-gray-600 mt-0.5">Remaining Tax : ${formatMoney(remainingTax)}</span>
+          <div className="rounded-2xl p-2 mb-2" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
+            <span className="block text-lg font-bold text-blue-500">Total : ${formatMoney(allTotal)}</span>
+          </div>
+          <div className="rounded-2xl p-2 mt-2" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
+            <span className="block text-gray-600">Remaining : ${formatMoney(remaining)}</span>
+            <span className="block text-xs text-gray-500 mt-0.5">Remaining Tax : ${formatMoney(remainingTax)}</span>
           </div>
           {paidGuests.length > 0 && (
             <div className="mt-1 space-y-0.5">
@@ -194,7 +197,7 @@ const SplitBillPayCard: React.FC<{
             </div>
           )}
         </div>
-        <div className="mt-auto shrink-0 p-0 border-t">
+        <div className="mt-auto shrink-0 p-1.5">
           <button
             onClick={(e) => {
               if (isShareActionActive) {
@@ -210,9 +213,10 @@ const SplitBillPayCard: React.FC<{
               onClose();
             }}
             disabled={isShareActionActive}
-            className={`w-full h-12 rounded-b-lg flex items-center justify-center px-3 text-sm font-semibold transition ${
-              isShareActionActive ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'
+            className={`w-full h-12 rounded-2xl border-0 flex items-center justify-center px-3 text-sm font-bold transition-all active:scale-95 ${
+              isShareActionActive ? 'text-gray-400 cursor-not-allowed' : 'text-blue-500'
             }`}
+            style={isShareActionActive ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
             aria-disabled={isShareActionActive}
           >
             {label} {`$${formatMoney(remaining)}`}
@@ -583,7 +587,10 @@ const payLayout = useMemo(() => {
 		return { whole: w, num: Math.floor(n / g), den: Math.floor(den / g) };
 	};
 
-	const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+	const sensors = useSensors(
+		useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+		useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
+	);
 
 	// Selection state for equal-split flow
 	const [isSplitSelectMode, setIsSplitSelectMode] = useState<boolean>(false);
@@ -704,31 +711,34 @@ const payLayout = useMemo(() => {
 		<div className={`fixed inset-0 z-[9999] ${isOpen ? '' : 'hidden'}`} role="dialog" aria-modal="true" style={{ transform: 'none' }}>
 			<div className={`absolute inset-0 bg-black/60 flex items-center justify-center`} />
 			<div className="relative w-full h-full flex items-center justify-center p-3">
-				<div className="relative bg-white rounded-2xl shadow-2xl overflow-hidden" style={{ width: `${Math.floor(Math.max(640, Math.min((modalWidth || 1024), (typeof window !== 'undefined' ? window.innerWidth * 0.92 : 1280))))}px`, height: `${Math.floor(Math.max(480, Math.min((modalHeight || 720), (typeof window !== 'undefined' ? window.innerHeight * 0.88 : 800))))}px` }}>
+				<div className="relative rounded-2xl shadow-2xl overflow-hidden" style={{ width: `${Math.floor(Math.max(640, Math.min((modalWidth || 1024), (typeof window !== 'undefined' ? window.innerWidth * 0.92 : 1280))))}px`, height: `${Math.floor(Math.max(480, Math.min((modalHeight || 720), (typeof window !== 'undefined' ? window.innerHeight * 0.88 : 800))))}px`, background: '#e0e5ec' }}>
 					{/* Close button inside modal (on white background) */}
 					<button
 						onClick={onClose}
-						className="absolute top-[3px] right-[3px] z-10 p-2 rounded-full bg-white/30 hover:bg-white/50 shadow-xl hover:shadow-2xl transition-all border-[3px] border-red-500 ring-3 ring-red-300/50 pointer-events-auto"
+						className="absolute top-[3px] right-[3px] z-10 p-2 rounded-full border-0 transition-all active:scale-95 pointer-events-auto"
+						style={{ background: '#e0e5ec', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
 						aria-label="Close modal"
 					>
-						<X size={28} className="text-red-600" strokeWidth={3} />
+						<X size={28} className="text-red-400" strokeWidth={3} />
 					</button>
 					<DndContext sensors={sensors} onDragEnd={handleDragEnd}>
 						<div className="grid grid-cols-1 md:grid-cols-[10fr_70fr] items-stretch h-full">
 
 						{/* Middle: Vertical function buttons */}
-						<div className="border-r overflow-visible p-3 bg-white">
-							<div className="h-2 rounded bg-gray-50 mb-2" style={{ backgroundImage: 'radial-gradient(rgba(148,163,184,0.25) 1px, transparent 1px)', backgroundSize: '6px 6px' }}></div>
+						<div className="overflow-visible p-3" style={{ background: '#e0e5ec' }}>
+							<div className="h-2 rounded mb-2" style={{ background: '#e0e5ec' }}></div>
 							<div className="flex flex-col gap-2 mt-3">
 								<button
 									onClick={() => { if (onPayInFull) { onPayInFull(); } else { onSelectGuest('ALL'); onClose(); } }}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-2xl border-0 text-base font-bold text-center text-gray-600 transition-all active:scale-95"
+									style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 								>
 									Pay in Full
 								</button>
 								<button
 									onClick={() => { if (preselectedRowIndex !== null) { onSplitItemEqual(preselectedRowIndex); setIsSplitSelectMode(false); } else { setIsSplitSelectMode(true); } }}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isSplitSelectMode ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-2xl border-0 text-base font-bold text-center transition-all active:scale-95 ${isSplitSelectMode ? 'text-orange-500' : 'text-gray-600'}`}
+									style={isSplitSelectMode ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 									aria-pressed={isSplitSelectMode}
 									>
 									Share Evenly
@@ -757,7 +767,8 @@ const payLayout = useMemo(() => {
 											setShareTargetGuests(new Set());
 										}
 									}}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isShareSelectedMode ? 'bg-gradient-to-r from-orange-700 to-orange-800 text-white hover:from-orange-800 hover:to-orange-900 border border-orange-700 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-2xl border-0 text-base font-bold text-center transition-all active:scale-95 ${isShareSelectedMode ? 'text-orange-500' : 'text-gray-600'}`}
+									style={isShareSelectedMode ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 									aria-pressed={isShareSelectedMode}
 									>
 									Share Selected
@@ -774,28 +785,32 @@ const payLayout = useMemo(() => {
 											setMoveTargetGuest(null);
 										}
 									}}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isMoveMode ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-2xl border-0 text-base font-bold text-center transition-all active:scale-95 ${isMoveMode ? 'text-orange-500' : 'text-gray-600'}`}
+									style={isMoveMode ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 									aria-pressed={isMoveMode}
 									>
 									Move
 								</button>
 								<button
 									onClick={() => { setIsShowShare(true); }}
-									className={`w-full h-14 rounded-lg text-base font-semibold text-center transform transition-all duration-300 active:translate-y-[1px] ${isShowShare ? 'bg-gradient-to-l from-orange-600 to-orange-400 text-white hover:from-orange-700 hover:to-orange-500 border border-orange-500 shadow-md hover:shadow-lg active:shadow' : 'bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow'}`}
+									className={`w-full h-14 rounded-2xl border-0 text-base font-bold text-center transition-all active:scale-95 ${isShowShare ? 'text-orange-500' : 'text-gray-600'}`}
+									style={isShowShare ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 									aria-pressed={isShowShare}
 									>
 									Show Share
 								</button>
 								<button
 									onClick={() => { if (onResetSplit) onResetSplit(); setIsSplitSelectMode(false); setIsShareSelectedMode(false); setShareSelectedIndices(new Set()); setShareTargetGuests(new Set()); setIsMoveMode(false); setMoveSelectedRowIndex(null); setMoveTargetGuest(null); setIsShowShare(false); setShowShareBlinkOn(false); }}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border border-orange-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-2xl border-0 text-base font-bold text-center text-gray-600 transition-all active:scale-95"
+									style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 								>
 									Reset Split
 								</button>
-								<div className="h-px bg-gray-200 my-1" />
+								<div className="h-px my-1" style={{ background: 'linear-gradient(to right, #b8bec7, #ffffff, #b8bec7)' }} />
 								<button
 									onClick={onClose}
-									className="w-full h-14 rounded-lg text-base font-semibold text-center bg-gradient-to-r from-orange-400 to-orange-600 text-white hover:from-orange-500 hover:to-orange-700 border-2 border-red-500 shadow-md hover:shadow-lg active:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 transition-all duration-300 transform active:translate-y-[1px]"
+									className="w-full h-14 rounded-2xl border-0 text-base font-bold text-center text-red-500 transition-all active:scale-95"
+									style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 								>
 									Back to Order
 								</button>
@@ -803,8 +818,8 @@ const payLayout = useMemo(() => {
 						</div>
 
 						{/* Right: 4xN guest grid */}
-						<div className="overflow-hidden p-3 h-full flex flex-col">
-							<div className="h-2 rounded bg-gray-50 mb-2 shrink-0" style={{ backgroundImage: 'radial-gradient(rgba(148,163,184,0.25) 1px, transparent 1px)', backgroundSize: '6px 6px' }}></div>
+						<div className="overflow-hidden p-3 h-full flex flex-col" style={{ background: '#e0e5ec' }}>
+							<div className="h-2 rounded mb-2 shrink-0" style={{ background: '#e0e5ec' }}></div>
 							<div className="flex-1 overflow-y-auto min-h-0">
 								<div ref={rightGridRef} className="grid grid-cols-4 gap-2 items-stretch">
 								{payLayout.guestSlots.map((slot, slotIndex) => {
@@ -823,9 +838,10 @@ const payLayout = useMemo(() => {
 											data-rowcard="1"
 											key={`cell-${cellKey}-${slotIndex}`}
 											guest={Number(cell)}
-											className={`relative border rounded-lg ${rowBg} min-h-[114px] flex flex-col ${
-												isPaid ? 'opacity-60' : 'transition'
-											} ${isMoveMode && moveSelectedRowIndex !== null && !isPaid ? 'cursor-pointer hover:shadow-lg' : ''}`}
+											className={`relative rounded-2xl min-h-[114px] flex flex-col border-0 ${
+												isPaid ? 'opacity-60' : 'transition-all'
+											} ${isMoveMode && moveSelectedRowIndex !== null && !isPaid ? 'cursor-pointer' : ''}`}
+											style={{ background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 											onClick={(e) => {
 												const target = e.target as HTMLElement;
 												const isPayButton = target.closest('button');
@@ -839,7 +855,8 @@ const payLayout = useMemo(() => {
 											}}
 										>
 											<div 
-															className={`${isShareSelectedMode && shareTargetGuests.has(Number(cell)) ? 'bg-indigo-600 text-white' : isMoveMode && moveSelectedRowIndex !== null ? 'bg-purple-100 text-purple-900' : (isPaid ? 'bg-green-600 text-white' : 'bg-gray-300 text-gray-700')} px-2 py-1 border-b text-xs md:text-sm font-bold text-center tracking-wide ${isShareSelectedMode && !isPaid ? 'cursor-pointer hover:bg-indigo-700' : ''}`}
+															className={`${isShareSelectedMode && shareTargetGuests.has(Number(cell)) ? 'text-orange-500' : isMoveMode && moveSelectedRowIndex !== null ? 'text-purple-600' : (isPaid ? 'text-green-600' : 'text-gray-500')} px-2 py-2.5 text-sm md:text-base font-bold text-center tracking-wide rounded-t-2xl ${isShareSelectedMode && !isPaid ? 'cursor-pointer' : ''}`}
+															style={{ background: '#e0e5ec', boxShadow: 'inset 2px 2px 4px #b8bec7, inset -2px -2px 4px #ffffff' }}
 															onClick={(e) => { 
 																if (isPaid) return;
 																if (isShareSelectedMode) { 
@@ -971,14 +988,15 @@ const payLayout = useMemo(() => {
 												));
 											})()}
 											</div>
-											<div className="mt-auto shrink-0 p-0 border-t">
+											<div className="mt-auto shrink-0 p-1.5">
 												{isPaid ? (
-													<div className="w-full h-14 rounded-b-lg flex items-center justify-center px-3 text-sm font-bold bg-green-600 text-white select-none">PAID</div>
+													<div className="w-full h-14 rounded-2xl flex items-center justify-center px-3 text-sm font-bold text-green-600 select-none" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>PAID</div>
 												) : (
 													<button 
 														onClick={(e) => { if (isShareActionActive || !hasItems) { e.stopPropagation(); return; } e.stopPropagation(); onSelectGuest(Number(cell)); onClose(); }}
 														disabled={isShareActionActive || !hasItems}
-														className={`w-full h-12 rounded-b-lg flex items-center justify-center px-3 text-sm font-semibold transition ${(isShareActionActive || !hasItems) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+														className={`w-full h-12 rounded-2xl border-0 flex items-center justify-center px-3 text-sm font-bold transition-all active:scale-95 ${(isShareActionActive || !hasItems) ? 'text-gray-400 cursor-not-allowed' : 'text-blue-500'}`}
+														style={(isShareActionActive || !hasItems) ? { background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' } : { background: '#e0e5ec', boxShadow: '5px 5px 10px #b8bec7, -5px -5px 10px #ffffff' }}
 														aria-disabled={isShareActionActive || !hasItems}
 													>
 														Pay

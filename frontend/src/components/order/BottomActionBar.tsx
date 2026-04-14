@@ -30,6 +30,18 @@ const btnStyle: React.CSSProperties = {
   wordBreak: 'keep-all',
 };
 
+/** Kitchen Note — 클릭 즉시 오목(inset) 눌림 (duration-0) */
+const kitchenNoteBtnClass = [
+  'w-full py-1 flex items-center justify-center rounded-xl font-bold',
+  'bg-[#e0e5ec] text-gray-600 touch-manipulation',
+  'transition-[box-shadow,transform,filter,color] duration-0 ease-out',
+  'shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff]',
+  'hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff]',
+  'active:shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff]',
+  'active:text-gray-500 active:scale-[0.98] active:brightness-[0.93]',
+  '[-webkit-tap-highlight-color:transparent]',
+].join(' ');
+
 const BottomActionBar: React.FC<BottomActionBarProps> = ({
   onVoid,
   onSplitOrder,
@@ -63,7 +75,7 @@ const BottomActionBar: React.FC<BottomActionBarProps> = ({
           D/C
         </button>
 
-        <button className={btnClass} onClick={onItemMemo} style={btnStyle}>
+        <button className={kitchenNoteBtnClass} onClick={onItemMemo} style={btnStyle}>
           Kitchen<br/>Note
         </button>
 

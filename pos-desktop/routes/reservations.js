@@ -379,9 +379,9 @@ router.post('/reservations', async (req, res) => {
         SELECT party_size FROM reservations
         WHERE reservation_date = ?
           AND status NOT IN ('cancelled', 'no_show', 'completed')
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
-      `, [reservation_date, targetMins, dwellMinutes, targetMins]);
+          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+          AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
+      `, [reservation_date, targetMins + dwellMinutes, targetMins, dwellMinutes]);
 
       // 현재 점유 중인 테이블 수 합산
       let currentOccupiedTables = 0;
@@ -403,10 +403,10 @@ router.post('/reservations', async (req, res) => {
             SELECT party_size FROM reservations
             WHERE reservation_date = ?
               AND status NOT IN ('cancelled', 'no_show', 'completed')
-              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
+              AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+              AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
               AND UPPER(COALESCE(json_extract(special_requests,'$.channel'),'')) = ?
-          `, [reservation_date, targetMins, dwellMinutes, targetMins, channel]);
+          `, [reservation_date, targetMins + dwellMinutes, targetMins, dwellMinutes, channel]);
           let channelOccupied = 0;
           for (const r of channelReservations) {
             channelOccupied += calcTablesNeeded(r.party_size);
@@ -823,9 +823,9 @@ router.patch('/reservations/:id/reschedule', async (req, res) => {
         WHERE reservation_date = ?
           AND id != ?
           AND status NOT IN ('cancelled', 'no_show', 'completed')
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) <= ?
-          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?) > ?
-      `, [reservation_date, id, targetMins, rescheduleDwell, targetMins]);
+          AND (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER)) < ?
+          AND ? < (CAST(substr(reservation_time,1,2) AS INTEGER) * 60 + CAST(substr(reservation_time,4,2) AS INTEGER) + ?)
+      `, [reservation_date, id, targetMins + rescheduleDwell, targetMins, rescheduleDwell]);
 
       let currentOccupiedTables = 0;
       for (const r of overlappingReservations) {
@@ -848,6 +848,24 @@ router.patch('/reservations/:id/reschedule', async (req, res) => {
       SET reservation_date = ?, reservation_time = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `, [reservation_date, reservation_time, id]);
+
+    // Firebase 동기화
+    try {
+      const restaurantId = getRestaurantId();
+      if (restaurantId && firebaseService) {
+        const firestore = firebaseService.getFirestore ? firebaseService.getFirestore() : null;
+        if (firestore) {
+          await firestore.collection('restaurants').doc(restaurantId)
+            .collection('reservations').doc(String(id)).update({
+              reservation_date,
+              reservation_time,
+              updated_at: new Date().toISOString(),
+            });
+        }
+      }
+    } catch (fbErr) {
+      console.warn('[Reservations] Firebase sync failed for reschedule:', fbErr.message);
+    }
 
     res.json({ ok: true });
   } catch (error) {

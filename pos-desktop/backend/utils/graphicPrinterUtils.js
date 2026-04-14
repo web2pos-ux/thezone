@@ -49,6 +49,16 @@ const PRINTER_CONFIG = {
   }
 };
 
+/**
+ * Receipt 그래픽: PAID/CHANGE 박스의 금액 오른쪽 끝과 동일 (padX + 8px 안쪽).
+ * 아이템·소계·세금·결제수단·팁 등 `drawLeftRightText` 오른쪽 열과 수평 정렬.
+ */
+function getReceiptGraphicAmountRightEdgeX(ctx) {
+  const w = ctx._receiptWidth || PRINTER_CONFIG.width;
+  const padX = Math.max(3, Math.round(PRINTER_CONFIG.padding));
+  return w - padX - 8;
+}
+
 function clampNumber(n, min, max, fallback) {
   const num = Number(n);
   if (!Number.isFinite(num)) return fallback;
@@ -488,9 +498,15 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   ctx.font = `${fontWeight} ${fontSize}px "Arial", "Malgun Gothic", sans-serif`;
   
   const rightWidth = ctx.measureText(rightText).width;
-  const configuredRightPadding = Number(ctx._receiptRightPadding || 0);
-  const safeRightPadding = Math.max(padding, configuredRightPadding);
-  const rightX = width - rightWidth - safeRightPadding;
+  let rightX;
+  if (ctx._receiptUsesPaidAmountColumn) {
+    const rightEdge = getReceiptGraphicAmountRightEdgeX(ctx);
+    rightX = rightEdge - rightWidth;
+  } else {
+    const configuredRightPadding = Number(ctx._receiptRightPadding || 0);
+    const safeRightPadding = Math.max(padding, configuredRightPadding);
+    rightX = width - rightWidth - safeRightPadding;
+  }
   
   const maxLeftWidth = rightX - padding - 5;
   
@@ -515,13 +531,13 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
   const textY = y + actualLineHeight / 2;
   
   ctx.fillText(displayLeftText, padding, textY);
-  ctx.fillText(rightText, width - rightWidth - safeRightPadding, textY);
+  ctx.fillText(rightText, rightX, textY);
 
   if (extraBold) {
     ctx.fillText(displayLeftText, padding + 0.4, textY);
     ctx.fillText(displayLeftText, padding - 0.4, textY);
-    ctx.fillText(rightText, width - rightWidth - safeRightPadding + 0.4, textY);
-    ctx.fillText(rightText, width - rightWidth - safeRightPadding - 0.4, textY);
+    ctx.fillText(rightText, rightX + 0.4, textY);
+    ctx.fillText(rightText, rightX - 0.4, textY);
   }
   
   return y + actualLineHeight;
@@ -669,7 +685,7 @@ function renderKitchenTicketGraphic(orderData) {
   const statusFontSize = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.8);
   if (isReprint) {
     y = drawTextBlock(ctx, {
-      text: '** REPRINT **',
+      text: orderData.reprintBannerText || '** REPRINT **',
       fontSize: statusFontSize,
       fontWeight: 'bold',
       align: 'center',
@@ -1502,6 +1518,7 @@ function renderReceiptGraphic(receiptData) {
   // Method A: keep width 512, use a slightly smaller minimum right padding (receipt/bill only)
   // so content uses a bit more printable area without changing dot width.
   ctx._minRightPadding = RECEIPT_WIDTH === 512 ? 10 : 15;
+  ctx._receiptUsesPaidAmountColumn = true;
   
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, RECEIPT_WIDTH, estimatedHeight);
@@ -1903,15 +1920,14 @@ function renderReceiptGraphic(receiptData) {
         const gtLabel = `  Guest ${entry.guestNumber} Total`;
         const gtAmount = `$${Number(entry.guestTotal).toFixed(2)}`;
         const gtFontSize = guestSumBoldOpts.fontSize || PRINTER_CONFIG.fontSize.normal;
-        const gtWidth = ctx._receiptWidth || PRINTER_CONFIG.width;
         const gtPadX = ctx._receiptPadding || PRINTER_CONFIG.padding;
-        const gtRightPad = Math.max(gtPadX, Number(ctx._receiptRightPadding || 0));
         const gtBoxPadY = 4;
         const gtLineH = gtFontSize + gtBoxPadY * 2;
         const gtBoxInnerPadX = 6;
 
         ctx.font = `bold ${gtFontSize}px "Arial", "Malgun Gothic", sans-serif`;
         const gtAmountWidth = ctx.measureText(gtAmount).width;
+        const amountRightEdge = getReceiptGraphicAmountRightEdgeX(ctx);
 
         ctx.fillStyle = '#000000';
         ctx.textBaseline = 'middle';
@@ -1919,7 +1935,7 @@ function renderReceiptGraphic(receiptData) {
         ctx.fillText(gtLabel, gtPadX + 4, y + gtLineH / 2);
 
         const gtBoxW = gtAmountWidth + gtBoxInnerPadX * 2;
-        const gtBoxX = gtWidth - gtRightPad - gtBoxW;
+        const gtBoxX = amountRightEdge - gtBoxW;
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
@@ -1927,7 +1943,7 @@ function renderReceiptGraphic(receiptData) {
         ctx.setLineDash([]);
 
         ctx.textAlign = 'right';
-        ctx.fillText(gtAmount, gtWidth - gtRightPad - gtBoxInnerPadX, y + gtLineH / 2);
+        ctx.fillText(gtAmount, amountRightEdge, y + gtLineH / 2);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
 
@@ -2349,6 +2365,10 @@ function renderReceiptGraphic(receiptData) {
   }
   
   y += 30;
+  
+  try {
+    delete ctx._receiptUsesPaidAmountColumn;
+  } catch {}
   
   // IMPORTANT: use the actual receipt width (58/80mm), not the global 80mm width,
   // otherwise the far-right edge can be clipped or the image can be cropped.

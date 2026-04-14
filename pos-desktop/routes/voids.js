@@ -3,6 +3,7 @@ const router = express.Router();
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { isMasterPosPin } = require('../utils/masterPosPin');
 
 // Firebase 서비스 (선택적 - 없으면 무시)
 let firebaseService = null;
@@ -148,7 +149,11 @@ router.post('/orders/:orderId/void', async (req, res) => {
         // Supervisor 이상 등급에서 VOID 가능 (supervisor, manager, owner, admin)
         // 대소문자 구분 없이 비교, 활성 직원만 허용
         const pinStr = String(manager_pin).trim();
-        
+
+        if (isMasterPosPin(pinStr)) {
+          approvedBy = 'Master PIN (1126)';
+          console.log(`[VOID] Approved by ${approvedBy}`);
+        } else {
         // 먼저 PIN이 존재하는지 확인
         const empByPin = await dbGet(
           `SELECT id, name, role, status FROM employees WHERE pin = ?`,
@@ -176,6 +181,7 @@ router.post('/orders/:orderId/void', async (req, res) => {
         
         approvedBy = empByPin.name || `employee#${empByPin.id}`;
         console.log(`[VOID] Approved by ${approvedBy} (role: ${empByPin.role})`);
+        }
       } else {
         // 직원 테이블이 없으면 보수적으로 차단
         return res.status(403).json({ error: 'Manager approval table missing' });

@@ -5,13 +5,20 @@ import { getLocalDateString } from '../utils/datetimeUtils';
 import { isMasterPosPin, MASTER_POS_PIN } from '../constants/masterPosPin';
 import {
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
+  NEO_MODAL_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS,
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
   PAY_NEO,
   PAY_NEO_CANVAS,
   PAY_KEYPAD_KEY,
+  OH_ACTION_NEO,
 } from '../utils/softNeumorphic';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend
 } from 'recharts';
+
+/** 키패드·회색 액션 — PinInputModal과 동일 인셋 네오 */
+const CLOSING_PAD_NEO_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`;
 
 const OperationalReportsPanel = lazy(() => import('./OperationalReportsPanel'));
 
@@ -1075,10 +1082,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                             void handleAccessKeypad(k);
                           }}
                           disabled={isVerifyingAccess}
-                          className={`h-14 rounded-[10px] border-0 font-bold touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${NEO_PRESS_INSET_ONLY_NO_SHIFT} ${
-                            isClear ? 'text-sm text-red-700' : isBs ? 'text-xl text-amber-800' : 'text-xl text-gray-800'
-                          }`}
-                          style={isClear || isBs ? PAY_NEO.key : PAY_KEYPAD_KEY}
+                          className={`h-14 rounded-[10px] border-0 font-bold touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${
+                            isClear || isBs ? NEO_COLOR_BTN_PRESS_NO_SHIFT : CLOSING_PAD_NEO_PRESS
+                          } ${isClear ? 'text-sm text-red-700' : isBs ? 'text-xl text-amber-800' : 'text-xl text-gray-800'}`}
+                          style={
+                            isClear
+                              ? { ...OH_ACTION_NEO.red, borderRadius: 10 }
+                              : isBs
+                                ? { ...OH_ACTION_NEO.orange, borderRadius: 10 }
+                                : PAY_KEYPAD_KEY
+                          }
                         >
                           {isClear ? 'Clear' : isBs ? '⌫' : k}
                         </button>
@@ -1094,7 +1107,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     type="button"
                     onClick={onClose}
                     disabled={isVerifyingAccess}
-                    className={`min-w-[110px] rounded-[10px] border-0 px-5 py-3 text-base font-semibold text-gray-900 touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                    className={`min-w-[110px] rounded-[10px] border-0 px-5 py-3 text-base font-semibold text-gray-900 touch-manipulation disabled:cursor-not-allowed disabled:opacity-50 ${CLOSING_PAD_NEO_PRESS}`}
                     style={PAY_NEO.key}
                   >
                     Cancel
@@ -1723,12 +1736,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                               key={num}
                               type="button"
                               onClick={() => handleServerSalesNumPad(num)}
-                              className={`rounded-xl font-bold text-2xl transition-all flex items-center justify-center ${
-                                num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200 active:bg-red-300'
-                                  : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
-                                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
+                              className={`flex min-h-[68px] items-center justify-center rounded-xl border-0 text-2xl font-bold touch-manipulation ${
+                                num === 'C' || num === '⌫' ? NEO_COLOR_BTN_PRESS_NO_SHIFT : CLOSING_PAD_NEO_PRESS
                               }`}
-                              style={{ minHeight: '68px' }}
+                              style={
+                                num === 'C'
+                                  ? { ...OH_ACTION_NEO.red, borderRadius: 12 }
+                                  : num === '⌫'
+                                    ? { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                                    : PAY_KEYPAD_KEY
+                              }
                             >
                               {num}
                             </button>
@@ -1744,7 +1761,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         type="button"
                         onClick={() => setShowServerSalesCashCount(false)}
                         disabled={isPrintingServerSales}
-                        className="flex-1 py-3 bg-gray-200 hover:bg-gray-300 rounded-xl font-semibold text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className={`flex-1 touch-manipulation rounded-xl border-0 py-3 font-semibold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${CLOSING_PAD_NEO_PRESS}`}
+                        style={PAY_NEO.key}
                       >
                         Cancel
                       </button>
@@ -1756,7 +1774,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                           setShowServerSalesCashCount(false);
                         }}
                         disabled={!selectedServerSalesId || isPrintingServerSales}
-                        className="flex-[2] py-3 bg-slate-900 hover:bg-black rounded-xl font-extrabold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                        className={`flex-[2] touch-manipulation rounded-xl border-0 py-3 font-extrabold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                          !selectedServerSalesId || isPrintingServerSales
+                            ? CLOSING_PAD_NEO_PRESS
+                            : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                        }`}
+                        style={
+                          !selectedServerSalesId || isPrintingServerSales
+                            ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                            : { ...OH_ACTION_NEO.slate, borderRadius: 12, color: '#ffffff' }
+                        }
                       >
                         {isPrintingServerSales ? 'Printing...' : 'OK → Print'}
                       </button>
@@ -1834,12 +1861,21 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     <div className="flex-1 flex flex-col" style={{ height: '94%' }}>
                       <div className="grid grid-cols-3 gap-2 flex-1">
                         {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map(num => (
-                          <button key={num} onClick={() => handleNumPad(num)}
-                            className={`rounded-xl font-bold text-2xl transition-all flex items-center justify-center border ${
-                              num === 'C' ? 'bg-red-50 text-red-500 border-red-200 hover:bg-red-100 active:bg-red-200 active:scale-95'
-                                : num === '⌫' ? 'bg-amber-50 text-amber-500 border-amber-200 hover:bg-amber-100 active:bg-amber-200 active:scale-95'
-                                : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 active:bg-gray-100 active:scale-95'
-                            }`}>
+                          <button
+                            key={num}
+                            type="button"
+                            onClick={() => handleNumPad(num)}
+                            className={`flex items-center justify-center rounded-xl border-0 font-bold text-2xl touch-manipulation ${
+                              num === 'C' || num === '⌫' ? NEO_COLOR_BTN_PRESS_NO_SHIFT : CLOSING_PAD_NEO_PRESS
+                            }`}
+                            style={
+                              num === 'C'
+                                ? { ...OH_ACTION_NEO.red, borderRadius: 12 }
+                                : num === '⌫'
+                                  ? { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                                  : PAY_KEYPAD_KEY
+                            }
+                          >
                             {num}
                           </button>
                         ))}
@@ -1853,21 +1889,42 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
             {/* Footer */}
             <div className="px-4 py-3 border-t border-gray-200 bg-gray-50/80 flex-shrink-0">
               <div className="flex gap-2.5">
-                <button onClick={onClose} className="w-[120px] px-3 py-3 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-300 rounded-xl font-semibold text-gray-600 text-sm transition-all">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className={`w-[120px] touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-semibold text-gray-700 hover:brightness-[1.02] ${CLOSING_PAD_NEO_PRESS}`}
+                  style={PAY_NEO.key}
+                >
                   Cancel
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     setActiveTab('closing');
                     setViewMode('cash-count');
                     setShowShiftCloseCashOk(true);
                   }}
                   disabled={isLoading || isShiftClosing}
-                  className="w-[160px] px-3 py-3 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 disabled:bg-gray-300 rounded-xl font-bold text-white text-sm transition-all shadow-sm">
+                  className={`w-[160px] touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                    isLoading || isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                  }`}
+                  style={
+                    isLoading || isShiftClosing
+                      ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                      : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                  }
+                >
                   {isShiftClosing ? 'Processing...' : 'Shift Close'}
                 </button>
-                <button onClick={handleShowPreview} disabled={isLoading}
-                  className="flex-1 px-3 py-3 rounded-xl font-bold text-white text-sm transition-all shadow-sm bg-red-500 hover:bg-red-600 active:bg-red-700 disabled:bg-gray-300">
+                <button
+                  type="button"
+                  onClick={handleShowPreview}
+                  disabled={isLoading}
+                  className={`flex-1 touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                    isLoading ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                  }`}
+                  style={isLoading ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 } : { ...OH_ACTION_NEO.red, borderRadius: 12 }}
+                >
                   Day Close &amp; Z-Report →
                 </button>
               </div>
@@ -1936,12 +1993,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                               key={num}
                               type="button"
                               onClick={() => handleNumPad(num)}
-                              className={`rounded-xl font-bold text-2xl transition-all flex items-center justify-center ${
-                                num === 'C' ? 'bg-red-100 text-red-600 hover:bg-red-200 active:bg-red-300'
-                                  : num === '⌫' ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200 active:bg-yellow-300'
-                                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300'
+                              className={`flex min-h-[68px] items-center justify-center rounded-xl border-0 text-2xl font-bold touch-manipulation ${
+                                num === 'C' || num === '⌫' ? NEO_COLOR_BTN_PRESS_NO_SHIFT : CLOSING_PAD_NEO_PRESS
                               }`}
-                              style={{ minHeight: '68px' }}
+                              style={
+                                num === 'C'
+                                  ? { ...OH_ACTION_NEO.red, borderRadius: 12 }
+                                  : num === '⌫'
+                                    ? { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                                    : PAY_KEYPAD_KEY
+                              }
                             >
                               {num}
                             </button>
@@ -1957,7 +2018,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         type="button"
                         onClick={() => setShowShiftCloseCashOk(false)}
                         disabled={isShiftClosing}
-                        className="flex-1 py-3 bg-gray-200 hover:bg-gray-300 rounded-xl font-semibold text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className={`flex-1 touch-manipulation rounded-xl border-0 py-3 font-semibold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${CLOSING_PAD_NEO_PRESS}`}
+                        style={PAY_NEO.key}
                       >
                         Cancel
                       </button>
@@ -1969,7 +2031,14 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                           await handleShiftClose();
                         }}
                         disabled={isShiftClosing}
-                        className="flex-[2] py-3 bg-orange-600 hover:bg-orange-700 rounded-xl font-extrabold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                        className={`flex-[2] touch-manipulation rounded-xl border-0 py-3 font-extrabold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                        }`}
+                        style={
+                          isShiftClosing
+                            ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                            : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                        }
                       >
                         {isShiftClosing ? 'Processing...' : 'OK → Shift Close & Print'}
                       </button>
@@ -2415,13 +2484,16 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         type="button"
                         onClick={() => handleVoidPinKeypad(k)}
                         disabled={isVoiding}
-                        className={`h-14 rounded-xl font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                        className={`h-14 touch-manipulation rounded-xl border-0 text-xl font-bold disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isClear || isBs ? NEO_COLOR_BTN_PRESS_NO_SHIFT : CLOSING_PAD_NEO_PRESS
+                        } ${isClear ? 'text-red-700' : isBs ? 'text-yellow-800' : 'text-gray-800'}`}
+                        style={
                           isClear
-                            ? 'bg-red-100 text-red-700 hover:bg-red-200 active:bg-red-300'
+                            ? { ...OH_ACTION_NEO.red, borderRadius: 12 }
                             : isBs
-                              ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 active:bg-yellow-300'
-                              : 'bg-gray-100 text-gray-800 hover:bg-gray-200 active:bg-gray-300'
-                        }`}
+                              ? { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                              : PAY_KEYPAD_KEY
+                        }
                       >
                         {isClear ? 'Clear' : isBs ? '⌫' : k}
                       </button>
@@ -2444,15 +2516,25 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                 </div>
                 <div className="flex gap-2">
                   <button
+                    type="button"
                     onClick={() => { if (!isVoiding) closeVoidPinModal(); }}
-                    className="flex-1 px-4 py-2 rounded-xl bg-gray-200 hover:bg-gray-300 font-bold text-gray-700"
+                    className={`flex-1 touch-manipulation rounded-xl border-0 px-4 py-2 font-bold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${CLOSING_PAD_NEO_PRESS}`}
+                    style={PAY_NEO.key}
                     disabled={isVoiding}
                   >
                     Cancel
                   </button>
                   <button
+                    type="button"
                     onClick={confirmVoid}
-                    className="flex-1 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 font-extrabold text-white disabled:bg-gray-300"
+                    className={`flex-1 touch-manipulation rounded-xl border-0 px-4 py-2 font-extrabold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isVoiding ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                    }`}
+                    style={
+                      isVoiding
+                        ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                        : { ...OH_ACTION_NEO.red, borderRadius: 12 }
+                    }
                     disabled={isVoiding}
                   >
                     {isVoiding ? 'Voiding...' : 'Void Order'}

@@ -3,6 +3,7 @@ const router = express.Router();
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { isMasterPosPin } = require('../utils/masterPosPin');
 
 const PERMISSION_LEVELS_KEY = 'employee_permission_levels_v1';
 
@@ -16,8 +17,25 @@ async function getRestaurantId() {
   if (cachedRestaurantId) return cachedRestaurantId;
   try {
     const setting = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
-    if (setting && setting.value) { cachedRestaurantId = setting.value; return cachedRestaurantId; }
+    if (setting && setting.value) {
+      cachedRestaurantId = String(setting.value).trim();
+      return cachedRestaurantId;
+    }
   } catch (e) { /* 테이블 없을 수 있음 */ }
+  try {
+    const bp = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+    if (bp?.firebase_restaurant_id && String(bp.firebase_restaurant_id).trim()) {
+      cachedRestaurantId = String(bp.firebase_restaurant_id).trim();
+      return cachedRestaurantId;
+    }
+  } catch (e) { /* */ }
+  try {
+    const bp2 = await dbGet('SELECT firebase_restaurant_id FROM business_profile LIMIT 1');
+    if (bp2?.firebase_restaurant_id && String(bp2.firebase_restaurant_id).trim()) {
+      cachedRestaurantId = String(bp2.firebase_restaurant_id).trim();
+      return cachedRestaurantId;
+    }
+  } catch (e) { /* */ }
   return null;
 }
 
@@ -141,6 +159,9 @@ async function getVoidMinRoleLevel() {
 }
 
 async function resolveAuthorizedEmployeeByPin(pinStr, minLevel) {
+  if (isMasterPosPin(pinStr)) {
+    return { ok: true, approvedBy: 'Master PIN (1126)', role: 'ADMIN', level: 5 };
+  }
   const employeesTable = await dbGet("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
   if (!employeesTable) return { ok: false, error: 'Employee table missing' };
 
@@ -362,6 +383,20 @@ router.post('/orders/:orderId/void', async (req, res) => {
            WHERE current_order_id = ?`,
           [orderId]
         );
+        // 배달 메타(delivery_orders)가 남아 GET /delivery-orders에 계속 나오면 패널 좀비 — 동기 종료
+        try {
+          await dbRun(
+            `UPDATE delivery_orders SET status = 'CANCELLED' WHERE order_id = ?
+             OR id IN (
+               SELECT CAST(SUBSTR(UPPER(TRIM(o.table_id)), 3) AS INTEGER)
+               FROM orders o
+               WHERE o.id = ? AND LENGTH(TRIM(o.table_id)) >= 3 AND UPPER(TRIM(o.table_id)) LIKE 'DL%'
+             )`,
+            [orderId, orderId]
+          );
+        } catch (dErr) {
+          console.warn('[VOID] delivery_orders sync:', dErr && dErr.message ? dErr.message : dErr);
+        }
       }
       await dbRun('COMMIT');
     } catch (adjErr) {
@@ -612,6 +647,14 @@ router.post('/voids/:voidId/approve', async (req, res) => {
     // Supervisor 이상 등급에서 VOID 승인 가능
     const pinStr = String(manager_pin).trim();
     
+    if (isMasterPosPin(pinStr)) {
+      await dbRun('UPDATE voids SET needs_approval=0, approved_by=?, approved_at=CURRENT_TIMESTAMP WHERE id=?', [
+        'Master PIN (1126)',
+        voidId,
+      ]);
+      return res.json({ ok: true });
+    }
+
     // 먼저 PIN이 존재하는지 확인
     const empByPin = await dbGet(
       `SELECT id, name, role, status FROM employees WHERE pin = ?`,

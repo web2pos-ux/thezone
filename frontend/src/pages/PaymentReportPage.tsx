@@ -123,7 +123,7 @@ const PaymentReportPage = () => {
       }
 
       // 3. Weekly Sales Trend (for daily data)
-      const trendRes = await fetch(`${API_URL}/reports/weekly-sales-trend?startDate=${endDate}&endDate=${endDate}`);
+      const trendRes = await fetch(`${API_URL}/reports/weekly-sales-trend?startDate=${startDate}&endDate=${endDate}`);
       if (trendRes.ok) {
         const trendResult = await trendRes.json();
         if (trendResult.data?.chartData) {

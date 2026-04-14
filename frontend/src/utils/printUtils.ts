@@ -5,7 +5,40 @@
 
 import { API_URL } from '../config/constants';
 
+/** Sales 투고/온라인 패널 Unpaid → 결제 모달: 이 구간에서는 Kitchen(print-order) 금지 */
+const PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY = 'panelTogoPaySuppressKitchenUntil';
+
 const SUB_POS_MODE_KEY = 'sub-pos-mode-active';
+
+export function armPanelTogoPayKitchenSuppress(durationMs = 10 * 60 * 1000): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY, String(Date.now() + Math.max(60_000, durationMs)));
+  } catch {}
+}
+
+export function disarmPanelTogoPayKitchenSuppress(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.removeItem(PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY);
+  } catch {}
+}
+
+export function isPanelTogoPayKitchenSuppressActive(): boolean {
+  try {
+    if (typeof sessionStorage === 'undefined') return false;
+    const raw = sessionStorage.getItem(PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY);
+    if (!raw) return false;
+    const until = Number(raw);
+    if (!Number.isFinite(until) || until <= Date.now()) {
+      sessionStorage.removeItem(PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY);
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let _subPosPrintAllowed: boolean | null = null;
 let _subPosPrintCheckedAt = 0;
@@ -175,6 +208,10 @@ export async function printReceipt(data: ReceiptData, copies: number = 2): Promi
  * Kitchen Ticket 출력 (FSR/QSR 공통)
  */
 export async function printKitchenTicket(data: KitchenTicketData, copies: number = 1): Promise<void> {
+  if (isPanelTogoPayKitchenSuppressActive()) {
+    console.log('ℹ️ Kitchen ticket suppressed (Sales panel togo/online payment flow)');
+    return;
+  }
   if (!(await isSubPosPrintEnabled())) {
     console.log('ℹ️ Sub POS print disabled — skipping kitchen ticket');
     return;

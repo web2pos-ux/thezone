@@ -1,7 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { OrderItem } from '../pages/order/orderTypes';
 import { API_URL } from '../config/constants';
+import { PAY_NEO, PAY_NEO_CANVAS, SOFT_NEO } from '../utils/softNeumorphic';
 
 interface PaymentCompleteData {
 	change: number;
@@ -65,6 +67,12 @@ function calcFairShare(totalCents: number, n: number, guestIdx: number): number 
   return (baseShare + (guestIdx <= rem ? 1 : 0)) / 100;
 }
 
+/** 카드·직불: 입력 금액이 Due를 넘기면 초과분을 팁으로 흡수(현금처럼 Change Due 단계 없이 확정 가능) */
+function isCardPaymentMethod(m: string): boolean {
+  const u = String(m || '').toUpperCase();
+  return u === 'DEBIT' || u === 'VISA' || u === 'MC' || u === 'OTHER_CARD';
+}
+
 const methods = [
 	{ key: 'CASH', label: 'Cash', emoji: '💵' },
 	{ key: 'DEBIT', label: 'Debit', emoji: '🏧' },
@@ -74,6 +82,24 @@ const methods = [
 	{ key: 'GIFT', label: 'Gift Card', emoji: '🎁' },
 	{ key: 'OTHER', label: 'Other', emoji: '✳️' },
 ];
+
+/** 가운데 키패드 — 배경·그림자를 살짝 진하게 */
+const PAY_KEYPAD_KEY: React.CSSProperties = {
+	...PAY_NEO.key,
+	background: '#d4d9e4',
+	boxShadow: '5px 5px 10px #b0b6c4, -4px -4px 9px #ffffff',
+};
+
+/** 결제모달 내 모든 `<button>` — 눌림 시 오목(inset); 모달 shell `<style>`의 `.payneo-inset-press` */
+const PAY_BTN_INSET =
+	'payneo-inset-press touch-manipulation select-none transition-[transform,box-shadow] duration-100 ease-out';
+/** Due $ / Change Due $ / Tip $ 행 — 오목이 transition 지연 없이 바로 보이도록 duration-0 */
+const PAY_BTN_INSET_SNAP =
+	'payneo-inset-press touch-manipulation select-none transition-[transform,box-shadow] duration-0 ease-out';
+const PAY_KEYPAD_PRESS = PAY_BTN_INSET;
+const PAY_SPLIT_PRESS = PAY_BTN_INSET;
+const PAY_CANCEL_PRESS = PAY_BTN_INSET;
+const PAY_OK_PRESS = PAY_BTN_INSET;
 
 const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, taxLines, total, onConfirm, onComplete, onPaymentComplete, channel, customerName, tableName, onSplitBill, guestCount, guestMode, onSelectGuestMode, forceGuestMode, showAllButton, outstandingDue, paidSoFar, payments, paidGuests = [], onVoidPayment, onClearAllPayments, onClearScopedPayments, prefillDueNonce, prefillUseTotalOnceNonce, offsetTopPx, onCreateAdhocGuests, orderItems = [], onShareSelected, zIndexClassName }) => {
 	const [method, setMethod] = useState<string>('');
@@ -105,6 +131,8 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [isProcessing, setIsProcessing] = useState<boolean>(false);  // 더블 클릭 방지용
   const [cashReadyForOk, setCashReadyForOk] = useState<boolean>(false);
   const cashReadyDataRef = useRef<{ rawAmt: number; scopeDueNow: number; effectiveMethod: string; isFinalizeFlow: boolean } | null>(null);
+  /** 스플릿(1/N) 게스트: 결제수단 클릭(commitDraft)으로 해당 게스트 몫이 끝난 뒤, 부모 payments 반영이 한 박자 늦어 canComplete가 false로 남는 경우 OK 시 onPaymentComplete 보장 */
+  const splitGuestAwaitingOkForReceiptRef = useRef<boolean>(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);  // Cancel 확인 팝업
   const [selectedReceiptCount, setSelectedReceiptCount] = useState<number>(2);  // 영수증 출력 매수 (0: No Receipt, 1: 1 Receipt, 2: 2 Receipts)
   
@@ -121,12 +149,16 @@ const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, subtotal, 
   const [giftCardLoading, setGiftCardLoading] = useState<boolean>(false);
   const [giftCardPayAmount, setGiftCardPayAmount] = useState<string>('');
   const [giftCardInputFocus, setGiftCardInputFocus] = useState<'card' | 'amount'>('card');
+  /** Split Bill(하단) 진입 시 할인·1/N 분할 잠금용 */
+  const [splitBillLaunchTouched, setSplitBillLaunchTouched] = useState(false);
 
   // Discount states (order-level percent; applied within this modal only)
-  const DISCOUNT_PRESETS = [5, 10, 15, 20, 25, 30, 50, 75, 100] as const;
+  const DISCOUNT_PRESETS = [5, 10, 15, 20] as const;
   const [discountPreset, setDiscountPreset] = useState<number | null>(null);
   const [isCustomDiscount, setIsCustomDiscount] = useState<boolean>(false);
   const [customDiscountDigits, setCustomDiscountDigits] = useState<string>(''); // integer percent, 1..100
+  const [discountBump5Pressed, setDiscountBump5Pressed] = useState(false);
+  const [discountBump10Pressed, setDiscountBump10Pressed] = useState(false);
 
   // 초기 금액 고정 (Items, Tax, Total은 결제 후에도 절대 변경되지 않아야 함)
   const initialSubtotalRef = useRef<number | null>(null);
@@ -237,12 +269,16 @@ useEffect(() => {
     setDiscountPreset(null);
     setIsCustomDiscount(false);
     setCustomDiscountDigits('');
+    setDiscountBump5Pressed(false);
+    setDiscountBump10Pressed(false);
     setSplitNActive(0);
     setSplitNCustomMode(false);
     setSplitNCustomDigits('');
     setChangeDueDigits('');
     changeDueTotalRef.current = 0;
     committedChangeRef.current = 0;
+    splitGuestAwaitingOkForReceiptRef.current = false;
+    setSplitBillLaunchTouched(false);
   }
 }, [isOpen, resetGiftCard]);
 	useEffect(() => {
@@ -323,6 +359,30 @@ useEffect(() => {
     return n;
   }, [isCustomDiscount, customDiscountDigits, discountPreset]);
 
+  const bumpDiscountBy = useCallback(
+    (delta: number) => {
+      const base = selectedDiscountPercent;
+      const next = Math.min(100, base + delta);
+      if (next < 1) {
+        setDiscountPreset(null);
+        setIsCustomDiscount(false);
+        setCustomDiscountDigits('');
+      } else if ((DISCOUNT_PRESETS as readonly number[]).includes(next)) {
+        setDiscountPreset(next);
+        setIsCustomDiscount(false);
+        setCustomDiscountDigits('');
+      } else {
+        setDiscountPreset(null);
+        setIsCustomDiscount(true);
+        setCustomDiscountDigits(String(next));
+      }
+      setLastChange(null);
+      setInputTarget('AMOUNT');
+      setIsTipFocused(false);
+    },
+    [selectedDiscountPercent]
+  );
+
   const pricingEffective = useMemo(() => {
     const baseSubtotal = Number(fixedSubtotal || 0);
     const baseTaxLines = (fixedTaxLines || []).map(t => ({ name: String(t.name || 'Tax'), amount: Number(t.amount || 0) }));
@@ -377,6 +437,9 @@ useEffect(() => {
       setLastChange(null);
       setProceedArmed(false);
       setOptimisticPayments([]);
+      setMethod('');
+      setCashReadyForOk(false);
+      cashReadyDataRef.current = null;
       // 게스트 전환 시 고정된 금액 ref를 리셋하여 새 게스트 금액으로 갱신
       initialSubtotalRef.current = null;
       initialTaxTotalRef.current = null;
@@ -699,10 +762,15 @@ useEffect(() => {
 
         let finalAmount: number;
         let t: number;
-        
+        const cardOverpayToTip =
+          !isCashLikeMethod && isCardPaymentMethod(effectiveMethod) && rawAmt > scopeDueNow + 0.0005;
+
         if (isCashLikeMethod) {
           finalAmount = Math.min(rawAmt, scopeDueNow);
           t = rawTip;
+        } else if (cardOverpayToTip) {
+          finalAmount = Number(scopeDueNow.toFixed(2));
+          t = Number((rawTip + Math.max(0, rawAmt - scopeDueNow)).toFixed(2));
         } else {
           finalAmount = Math.min(rawAmt, scopeDueNow);
           t = rawTip;
@@ -728,7 +796,7 @@ useEffect(() => {
         setRawAmountDigits('');
         await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
-        if (!isCashLikeMethod && rawAmt > finalAmount) {
+        if (!isCashLikeMethod && rawAmt > finalAmount + 0.0005 && !cardOverpayToTip) {
           const upper = String(effectiveMethod || '').toUpperCase();
           if (upper === 'GIFT' || upper === 'COUPON' || upper === 'OTHER') {
             showInfoPopup('Overcharging is not allowed');
@@ -788,7 +856,10 @@ useEffect(() => {
           });
           return;
         }
-      } else if (canComplete) {
+      } else if (canComplete || (splitGuestAwaitingOkForReceiptRef.current && !cashReadyForOk)) {
+        if (splitGuestAwaitingOkForReceiptRef.current) {
+          splitGuestAwaitingOkForReceiptRef.current = false;
+        }
         // 별도 Payment Complete 모달 표시
         if (onPaymentComplete) {
           const paymentsData = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
@@ -874,8 +945,42 @@ useEffect(() => {
   // Paid $ 합계는 확정 결제만 합산 (Processing/optimistic 제외)
   const displayPaidTotal = useMemo(() => parseFloat(((paidTotal)).toFixed(2)), [paidTotal]);
   const isSplitActive = useMemo(() => (typeof effectiveGuestMode === 'number') || ((guestCount || 0) > 1), [effectiveGuestMode, guestCount]);
-	const maxGuestButtons = useMemo(() => Math.min(8, (guestCount || 8)), [guestCount]);
- 
+	// 게스트 수만큼 버튼 표시 (8명 상한 제거 — 8명 이상도 스크롤로 전부 표기)
+	const maxGuestButtons = useMemo(() => {
+		if (typeof guestCount === 'number' && guestCount >= 1) return guestCount;
+		return 8;
+	}, [guestCount]);
+
+	// Due·금액(표시/키패드/퀵)·결제도구·Gift·Split Bill·Cash 대기·Change Due 입력·기결제 입력 후 → 할인·1/N 분할·Split 버튼 비활성
+	const freezeDiscountAndSplit = useMemo(() => {
+		if (showGiftCardModal) return true;
+		if (cashReadyForOk) return true;
+		if (splitBillLaunchTouched) return true;
+		if (typeof method === 'string' && method.trim() !== '') return true;
+		if (rawAmountDigits.length > 0) return true;
+		const pa = parseFloat(String(amount ?? '0'));
+		if (Number.isFinite(pa) && pa > 0.0001) return true;
+		const payList = Array.isArray(payments) ? payments : [];
+		const scopedPayLen =
+			typeof effectiveGuestMode === 'number'
+				? payList.filter((p: { guestNumber?: number }) => Number(p?.guestNumber) === Number(effectiveGuestMode)).length
+				: payList.length;
+		if (scopedPayLen > 0) return true;
+		if (optimisticPayments.length > 0) return true;
+		if (String(changeDueDigits || '').length > 0) return true;
+		return false;
+	}, [
+		showGiftCardModal,
+		cashReadyForOk,
+		splitBillLaunchTouched,
+		method,
+		rawAmountDigits,
+		amount,
+		payments,
+		effectiveGuestMode,
+		optimisticPayments.length,
+		changeDueDigits,
+	]);
 
 	// Change calculation based on confirmed payments across methods
 	const paymentsInScope = useMemo(() => {
@@ -961,6 +1066,12 @@ useEffect(() => {
         setShowCancelConfirm(false);
         setCashReadyForOk(false);
         cashReadyDataRef.current = null;
+        setSplitBillLaunchTouched(false);
+        setChangeDueDigits('');
+        changeDueTotalRef.current = 0;
+        committedChangeRef.current = 0;
+        splitGuestAwaitingOkForReceiptRef.current = false;
+        setInputTarget('AMOUNT');
 
         // Reset auxiliary modes
         setIsSplitCountMode(false);
@@ -1010,7 +1121,9 @@ useEffect(() => {
         const isCashLikeMethod2 = effectiveMethod === 'CASH';
         let finalAmount: number;
         let t: number;
-        
+        const cardOverpayToTip2 =
+          !isCashLikeMethod2 && isCardPaymentMethod(effectiveMethod) && currentAmt > scopeDueNow + 0.0005;
+
         if (isCashLikeMethod2) {
           finalAmount = Math.min(currentAmt, scopeDueNow);
           t = currentTip;
@@ -1026,6 +1139,10 @@ useEffect(() => {
             setLastChange(nextChange > 0 ? nextChange : null);
             committedChangeRef.current = nextChange;
           }
+        } else if (cardOverpayToTip2) {
+          finalAmount = Number(scopeDueNow.toFixed(2));
+          t = Number((currentTip + Math.max(0, currentAmt - scopeDueNow)).toFixed(2));
+          setLastChange(null);
         } else {
           finalAmount = Math.min(currentAmt, scopeDueNow);
           t = currentTip;
@@ -1037,7 +1154,7 @@ useEffect(() => {
         setRawAmountDigits('');
         await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
-        if (!isCashLikeMethod2 && currentAmt > finalAmount) {
+        if (!isCashLikeMethod2 && currentAmt > finalAmount + 0.0005 && !cardOverpayToTip2) {
           const upper = String(effectiveMethod || '').toUpperCase();
           if (upper === 'GIFT' || upper === 'COUPON' || upper === 'OTHER') {
             showInfoPopup('Overcharging is not allowed');
@@ -1136,6 +1253,12 @@ useEffect(() => {
     if (lastChange == null) return change;
     return Number(((lastChange as number) || 0).toFixed(2));
   }, [lastChange, change]);
+
+  /** Change 금액은 디스플레이 최우선 — 폭이 넓을 때는 항상 기존 최대(4.71 / 5.09rem), 좁을 때만 cqw로 축소 */
+  const changeAmountDisplayString = useMemo(
+    () => formatMoney(displayChange),
+    [displayChange]
+  );
  
   // canComplete: 잔액이 0에 충분히 근접하면 완료 가능
   const canComplete = useMemo(() => Math.abs(due) < 0.005, [due]);
@@ -1439,6 +1562,7 @@ const addQuick = async (q: number) => {
 			setLastChange(null);
 			setCashReadyForOk(false);
 			cashReadyDataRef.current = null;
+			splitGuestAwaitingOkForReceiptRef.current = false;
 			onClose();
 		}
 	};
@@ -1516,10 +1640,17 @@ const addQuick = async (q: number) => {
         }
 
 				const parsedTipVal = currentTip;
+        const cardOverpayToTipDraft =
+          !isCashLikeMethodDraft && isCardPaymentMethod(effectiveMethod) && currentAmt > scopeDueNow + 0.0005;
         let finalAmount: number;
         let tipToSend: number;
-        finalAmount = Math.min(currentAmt, scopeDueNow);
-        tipToSend = parsedTipVal;
+        if (cardOverpayToTipDraft) {
+          finalAmount = Number(scopeDueNow.toFixed(2));
+          tipToSend = Number((parsedTipVal + Math.max(0, currentAmt - scopeDueNow)).toFixed(2));
+        } else {
+          finalAmount = Math.min(currentAmt, scopeDueNow);
+          tipToSend = parsedTipVal;
+        }
 
         if (changeDueDigits && isCashMethodDraft) {
           const totalChange = Math.max(0, Number((currentAmt - scopeDueNow).toFixed(2)));
@@ -1550,7 +1681,7 @@ const addQuick = async (q: number) => {
 				
 				setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
 				
-        if (!isCashLikeMethodDraft && currentAmt > finalAmount) {
+        if (!isCashLikeMethodDraft && currentAmt > finalAmount + 0.0005 && !cardOverpayToTipDraft) {
           const upper = String(effectiveMethod || '').toUpperCase();
           if (upper === 'GIFT' || upper === 'COUPON' || upper === 'OTHER') {
             showInfoPopup('Overcharging is not allowed');
@@ -1573,34 +1704,16 @@ const addQuick = async (q: number) => {
 				setIsProcessing(false);
 
         const remainingDraft = scopeDueNow - finalAmount;
-        if (Math.abs(remainingDraft) < 0.005 && onPaymentComplete) {
-          const draftDisplayAmount = isCashLikeMethodDraft
-            ? (currentAmt > 0 ? currentAmt : Number((finalAmount + tipToSend).toFixed(2)))
-            : Number((finalAmount + tipToSend).toFixed(2));
-          const prevPayments = (payments || []).map(p => ({ method: p.method, amount: p.amount }));
-          const allPayments = [...prevPayments, { method: effectiveMethod, amount: draftDisplayAmount }];
-          const hasCash = allPayments.some(p => (p.method || '').toUpperCase() === 'CASH');
-          let draftChange = committedChangeRef.current;
-          const totalTip = (payments || []).reduce((sum, p) => sum + ((p as any).tip || 0), 0) + tipToSend;
-          const totalPaidAfter = (paidSoFar || 0) + finalAmount;
-          const isPartial = Math.abs(totalPaidAfter - grand) > 0.01;
-          onPaymentComplete({
-            change: draftChange > 0 ? draftChange : 0,
-            total: grand,
-            tip: totalTip,
-            payments: allPayments,
-            hasCashPayment: hasCash,
-            isPartialPayment: isPartial,
-            discount: pricingEffective.discountPercent > 0 ? {
-              percent: pricingEffective.discountPercent,
-              amount: pricingEffective.discountAmount,
-              originalSubtotal: pricingEffective.baseSubtotal,
-              discountedSubtotal: pricingEffective.subtotal,
-              taxLines: pricingEffective.taxLines,
-              taxesTotal: pricingEffective.taxesTotal,
-            } : undefined,
-          });
+        if (
+          onCreateAdhocGuests &&
+          isSplitActive &&
+          splitNActive >= 2 &&
+          typeof effectiveGuestMode === 'number' &&
+          Math.abs(remainingDraft) < 0.005
+        ) {
+          splitGuestAwaitingOkForReceiptRef.current = true;
         }
+        // Payment Complete(onPaymentComplete)는 OK(finalizeAndComplete)에서만 호출 — 결제수단 클릭(commitDraft)만으로는 열지 않음
 			} else {
 				setMethod(clickedMethod);
 			}
@@ -1617,21 +1730,45 @@ const addQuick = async (q: number) => {
 		}
 	};
 
-	return (
-		<div className={`fixed inset-0 bg-black/60 ${zIndexClassName || 'z-50'} flex items-start justify-center`} style={{ paddingTop: '103px' }}>
-			<div className="bg-white rounded-2xl shadow-2xl p-0 overflow-hidden relative" onClick={(e) => e.stopPropagation()} style={{ width: '960px', height: 'min(755px, calc(100vh - 16px))', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined }}>
+	return createPortal(
+		<div
+			className={`fixed inset-0 ${zIndexClassName || 'z-50'} flex items-start justify-center`}
+			style={{
+				paddingTop: '103px',
+				backgroundColor: 'rgba(0, 0, 0, 0.55)',
+				WebkitBackdropFilter: 'none',
+				backdropFilter: 'none',
+			}}
+		>
+			<div className="rounded-2xl p-0 overflow-hidden relative border-0" onClick={(e) => e.stopPropagation()} style={{ width: '960px', height: 'min(755px, calc(100vh - 16px))', transform: (typeof offsetTopPx === 'number' && offsetTopPx !== 0) ? `translateY(-${offsetTopPx}px)` : undefined, ...PAY_NEO.modalShell }}>
+				<style>{`
+					.payneo-inset-press:active:not(:disabled) {
+						box-shadow: inset 5px 5px 14px rgba(0,0,0,0.22), inset -4px -4px 12px rgba(255,255,255,0.52) !important;
+						transform: translateY(1px);
+					}
+					/* Tip $ 행: 내부 input 때문에 div에 :active가 안 잡힐 때 pointerdown으로 즉시 오목 */
+					[data-payneo-press="1"].payneo-inset-press {
+						box-shadow: inset 5px 5px 14px rgba(0,0,0,0.22), inset -4px -4px 12px rgba(255,255,255,0.52) !important;
+						transform: translateY(1px);
+					}
+				`}</style>
 				{/* X Close Button */}
 				<button
+					type="button"
 					onClick={handleCancelClick}
-					className="absolute top-[28px] right-[3px] z-10 p-2 rounded-full bg-white/30 hover:bg-white/50 shadow-xl hover:shadow-2xl transition-all border-[3px] border-red-500 ring-3 ring-red-300/50"
+					className={`absolute top-[28px] right-[3px] z-10 flex h-12 w-12 items-center justify-center rounded-full border-[3px] border-red-500 ${PAY_BTN_INSET} hover:brightness-105`}
+					style={PAY_NEO.raised}
 					aria-label="Close modal"
 				>
 					<X size={28} className="text-red-600" strokeWidth={3} />
 				</button>
 				<div className={`px-3 ${isSplitActive ? 'pt-3' : 'pt-3'}`}>
-					<div className={`flex items-center gap-2 border rounded-full shadow px-3 overflow-x-auto whitespace-nowrap transition-all ${
-						isSplitActive ? 'bg-blue-50 border-blue-300 py-1.5 min-h-[44px]' : 'bg-gray-50 border-gray-200 py-1.5 min-h-[44px]'
-					}`}>
+					<div
+						className={`flex min-h-[44px] items-center gap-2 overflow-x-auto whitespace-nowrap rounded-full px-3 py-1.5 transition-all ring-offset-[#e0e5ec] ${
+							isSplitActive ? 'ring-2 ring-blue-400/40 ring-offset-2' : ''
+						}`}
+						style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+					>
 						{Array.from({ length: maxGuestButtons }, (_, i) => i + 1).map((n) => {
               const isActive = effectiveGuestMode === n || (effectiveGuestMode === 'ALL' && n === 1 && !isSplitActive);
               const isPaidGuest = Array.isArray(paidGuests) && paidGuests.includes(n);
@@ -1640,7 +1777,19 @@ const addQuick = async (q: number) => {
 									key={n}
                   disabled={isPaidGuest}
                   onClick={() => { if (isPaidGuest) return; setForceAllMode(false); if (onSelectGuestMode) onSelectGuestMode(n); }}
-                  className={`${isActive ? 'bg-blue-600 text-white' : (isPaidGuest ? 'bg-gray-100 text-gray-400' : 'bg-white text-gray-800')} border border-gray-300 rounded-full px-4 py-1.5 text-sm font-bold ${isPaidGuest ? 'cursor-not-allowed' : 'hover:bg-gray-50'} min-h-[36px]`}
+                  className={`rounded-full border-0 px-4 py-1.5 text-sm font-bold min-h-[36px] ${PAY_BTN_INSET} ${isPaidGuest ? 'cursor-not-allowed text-gray-500' : isActive ? 'text-white' : 'text-gray-800'}`}
+                  style={
+                    isPaidGuest
+                      ? { ...PAY_NEO.inset, borderRadius: 9999, opacity: 0.85 }
+                      : isActive
+                        ? {
+                            background: '#2563eb',
+                            color: '#fff',
+                            borderRadius: 9999,
+                            boxShadow: '4px 4px 10px rgba(37,99,235,0.35), -2px -2px 8px rgba(255,255,255,0.3)',
+                          }
+                        : { ...PAY_NEO.raised, borderRadius: 9999 }
+                  }
                   aria-pressed={isActive}
 								>
 									{isPaidGuest ? `Guest ${n} ✓` : `Guest ${n}`}
@@ -1653,7 +1802,7 @@ const addQuick = async (q: number) => {
 					{/* Middle (first column): Totals / Inputs OR Payment Complete Screen */}
 					{proceedArmed ? (
 						/* ===== Payment Complete Screen ===== */
-						<div className="p-3 md:order-1 bg-gradient-to-b from-green-50 to-green-100 h-full flex flex-col">
+						<div className="p-3 md:order-1 h-full flex flex-col" style={{ background: PAY_NEO_CANVAS }}>
 							{/* Payment Complete Header */}
 							<div className="flex flex-col items-center justify-center py-4">
 								<div className="text-4xl mb-2">✓</div>
@@ -1662,14 +1811,14 @@ const addQuick = async (q: number) => {
 							
 							{/* Change Display (현금 결제시 거스름돈 표시) */}
 							{(lastChange != null && lastChange > 0) && (
-								<div className="w-full rounded-lg bg-red-50 border-2 border-red-300 px-4 py-4 mb-4 flex flex-col items-center">
+								<div className="mb-4 flex w-full flex-col items-center px-4 py-4" style={PAY_NEO.inset}>
 									<span className="text-lg font-bold text-red-700">Change</span>
 									<span className="text-5xl font-extrabold text-red-600">${formatMoney(lastChange)}</span>
 								</div>
 							)}
 							
 							{/* Payment Summary */}
-							<div className="w-full rounded-lg bg-white border border-gray-300 px-4 py-3 mb-4">
+							<div className="mb-4 w-full px-4 py-3" style={PAY_NEO.inset}>
 								<div className="flex justify-between items-center mb-2 pb-2 border-b">
 									<span className="text-lg font-semibold text-gray-700">Total</span>
 									<span className="text-xl font-bold text-gray-900">${formatMoney(grand)}</span>
@@ -1691,24 +1840,27 @@ const addQuick = async (q: number) => {
 								</div>
 								<div className="grid grid-cols-3 gap-2">
 									<button
+										type="button"
 										onClick={() => setSelectedReceiptCount(0)}
-										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 0 
+										className={`py-3 px-2 rounded-lg font-bold text-sm ${PAY_BTN_INSET} ${selectedReceiptCount === 0 
 											? 'bg-gray-700 text-white border-2 border-gray-900' 
 											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
 									>
 										No Receipt
 									</button>
 									<button
+										type="button"
 										onClick={() => setSelectedReceiptCount(1)}
-										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 1 
+										className={`py-3 px-2 rounded-lg font-bold text-sm ${PAY_BTN_INSET} ${selectedReceiptCount === 1 
 											? 'bg-blue-600 text-white border-2 border-blue-700' 
 											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
 									>
 										1 Receipt
 									</button>
 									<button
+										type="button"
 										onClick={() => setSelectedReceiptCount(2)}
-										className={`py-3 px-2 rounded-lg font-bold text-sm transition-all ${selectedReceiptCount === 2 
+										className={`py-3 px-2 rounded-lg font-bold text-sm ${PAY_BTN_INSET} ${selectedReceiptCount === 2 
 											? 'bg-green-600 text-white border-2 border-green-700' 
 											: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'}`}
 									>
@@ -1719,35 +1871,47 @@ const addQuick = async (q: number) => {
 						</div>
 					) : (
 						/* ===== Normal Payment Input Screen ===== */
-						<div className={`p-3 space-y-3 md:order-1 bg-gray-100 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
-							{/* Totals area must stay fixed-height so Change/Due/Paid/Tip positions don't shift
-							    even when tax lines vary by region/item. */}
-								<div className="h-[110px] flex flex-col">
-								<div className="text-sm">
-									<div className="flex justify-between"><span>Items</span><span>${formatMoney(displayPricing.baseSubtotal)}</span></div>
-                  {displayPricing.discountPercent > 0 && (
-                    <div className="flex justify-between text-red-700 font-semibold">
-                      <span>Discount ({displayPricing.discountPercent}%)</span>
-                      <span>- ${formatMoney(displayPricing.discountAmount)}</span>
-                    </div>
-                  )}
-									{/* Tax lines (scrollable, fixed space) */}
-									<div className="mt-1 max-h-[44px] overflow-y-auto space-y-1 pr-1">
-										{displayPricing.taxLines && displayPricing.taxLines.length > 0 ? (
-											displayPricing.taxLines.map((taxLine, idx) => (
-												<div key={idx} className="flex justify-between"><span>{taxLine.name}</span><span>${formatMoney(taxLine.amount)}</span></div>
-											))
-										) : (
-											<div className="flex justify-between"><span>Tax</span><span>${formatMoney(displayPricing.taxesTotal)}</span></div>
-										)}
+						<div className={`p-3 space-y-3 md:order-1 h-full flex flex-col duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none' : ''}`} style={{ background: PAY_NEO_CANVAS }}>
+							{/* Items·D/C·세금 = 고정 높이(스크롤), 줄간격은 1 미만 금지(글리프 잘림 방지), 여백만 2/3 축소 */}
+								<div className="flex shrink-0 flex-col overflow-hidden rounded-xl px-2.5 py-[calc(0.375rem*1.15*2/3)] text-sm" style={PAY_NEO.inset}>
+									<div className="h-[calc(6.5rem*1.05)] min-h-[calc(6.5rem*1.05)] max-h-[calc(6.5rem*1.05)] shrink-0 overflow-x-hidden overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+										<div className="flex justify-between font-semibold leading-[1.35] text-gray-800">
+											<span>Items</span>
+											<span>${formatMoney(displayPricing.baseSubtotal)}</span>
+										</div>
+										<div
+											className={`mt-[calc(0.25rem*1.15*2/3)] flex justify-between gap-2 text-xs font-semibold leading-[1.35] ${displayPricing.discountPercent > 0 ? '' : 'pointer-events-none select-none opacity-0'}`}
+											aria-hidden={displayPricing.discountPercent <= 0}
+										>
+											<span className="min-w-0 break-words text-red-800">Discount ({displayPricing.discountPercent}%)</span>
+											<span className="shrink-0 font-bold text-red-700">- ${formatMoney(displayPricing.discountAmount)}</span>
+										</div>
+										<div className="mt-[calc(0.25rem*1.15*2/3)] space-y-[calc(0.125rem*1.15*2/3)]">
+											{displayPricing.taxLines && displayPricing.taxLines.length > 0 ? (
+												displayPricing.taxLines.map((taxLine, idx) => (
+													<div key={idx} className="flex justify-between gap-2 leading-[1.35] text-gray-800">
+														<span className="min-w-0 flex-1 break-words pr-1">{taxLine.name}</span>
+														<span className="shrink-0 self-start tabular-nums">${formatMoney(taxLine.amount)}</span>
+													</div>
+												))
+											) : (
+												<div className="flex justify-between leading-[1.35] text-gray-800">
+													<span>Tax</span>
+													<span className="tabular-nums">${formatMoney(displayPricing.taxesTotal)}</span>
+												</div>
+											)}
+										</div>
+									</div>
+									<div className="mt-[calc(0.5rem*1.15*2/3)] flex shrink-0 justify-between gap-2 text-lg font-bold leading-snug text-gray-900">
+										<span>Total</span>
+										<span className="shrink-0 tabular-nums">${formatMoney(displayPricing.total)}</span>
 									</div>
 								</div>
-								<div className="mt-auto flex justify-between text-xl font-bold border-t pt-1.5"><span>Total</span><span>${formatMoney(displayPricing.total)}</span></div>
-							</div>
 						<div className="mt-3 text-base flex-1 flex flex-col min-h-0">
 							{/* Change container at top */}
                                 <div
-                                    className={`w-full px-0 rounded-md flex flex-col items-center justify-center py-[0.6rem] mb-3 bg-red-50 border border-red-200 ${(displayChange > 0 && !changeDueDigits) ? 'cursor-pointer hover:opacity-90' : 'cursor-default'}`}
+                                    className={`mb-3 flex w-full min-w-0 max-w-full flex-col items-center justify-center overflow-hidden rounded-xl px-2 py-[calc(0.6rem-7.5px)] sm:px-3 ${(displayChange > 0 && !changeDueDigits) ? 'cursor-pointer hover:brightness-[1.02]' : 'cursor-default'}`}
+                                    style={displayChange > 0.005 ? PAY_NEO.key : PAY_NEO.inset}
                                     onClick={() => {
                                       if (displayChange <= 0 || changeDueDigits) return;
                                       setTip(prev => {
@@ -1777,10 +1941,14 @@ const addQuick = async (q: number) => {
                                       }
                                     }}
                                 >
-                                    <div className="flex flex-col items-center -translate-y-[10px] translate-x-[35px]">
-                                        <span className={`text-2xl font-bold text-red-700`}>Change $</span>
-                                        <span className={`font-extrabold leading-none tracking-tight text-[4.71rem] md:text-[5.09rem] text-red-600`}>{formatMoney(displayChange)}</span>
-                                        <span className="mt-[9px] text-sm font-semibold text-red-500">
+                                    <div className="flex w-full min-w-0 max-w-full flex-col items-center [container-type:inline-size] -translate-y-[10px]">
+                                        <span className="mt-[5px] max-w-full truncate text-center text-lg font-bold text-red-700 md:text-xl">
+                                          Change $
+                                        </span>
+                                        <span className="mt-[calc(0.125rem+5px)] block w-full min-w-0 max-w-full text-center font-extrabold leading-none tracking-tight text-red-600 tabular-nums [font-size:clamp(1.35rem,40cqw,4.71rem)] md:[font-size:clamp(1.5rem,44cqw,5.09rem)]">
+                                          {changeAmountDisplayString}
+                                        </span>
+                                        <span className="mt-[14px] max-w-full truncate px-1 text-center text-sm font-semibold text-red-500">
                                           {changeDueDigits ? `Tip: $${formatMoney(parsedTip)}` : 'Tap to add tip'}
                                         </span>
                                     </div>
@@ -1790,26 +1958,42 @@ const addQuick = async (q: number) => {
 								<div className="-mt-[10px]">
 								{/* Amounts group */}
 								<div className="space-y-1.5">
-																{/* Due container: tap to fill display with remaining due for confirmation */}
-										<div className="w-full rounded-md border border-blue-200 bg-blue-50 px-4 py-2 h-[5.15rem] flex flex-col items-center justify-center cursor-pointer relative" onClick={handleFillDue}>
+																{/* Due container: tap to fill display with remaining due for confirmation (button → 즉시 :active 오목) */}
+										<button
+											type="button"
+											className={`relative flex h-[calc(5.15rem-5px)] w-full cursor-pointer flex-col items-center justify-center rounded-xl border-0 px-4 py-2 ${PAY_BTN_INSET_SNAP}`}
+											style={due > 0.005 ? PAY_NEO.key : PAY_NEO.inset}
+											onClick={handleFillDue}
+											aria-label="Fill payment amount with due balance"
+										>
 											<div className="w-full flex items-center justify-between">
 												<span className="text-2xl text-blue-700 whitespace-nowrap font-bold leading-none">Due $</span>
 												<span className="text-4xl font-bold text-blue-700 leading-none">{formatMoney(due)}</span>
 											</div>
-											<span className="text-sm font-semibold text-blue-500 mt-1 w-full text-center">Tap to fill payment amount</span>
-									</div>
-							{/* Change Due input: 항상 표시, Cash 거스름돈 발생 시 활성화 */}
+											<span className="text-sm font-semibold text-blue-500 mt-1 w-full text-center">Tap to pay</span>
+										</button>
+							{/* Change Due input: 항상 표시, Cash 거스름돈 발생 시 활성화 — Change $와 동일하게 볼록(key)으로 표시 */}
 							{(() => {
 								const changeDueEnabled = displayChange > 0 && (lastChange != null && lastChange > 0);
+								const changeDueRaised = displayChange > 0.005;
 								return (
-									<div
-										className={`w-full rounded-md border-2 px-4 py-2 h-[3.51rem] flex items-center justify-between transition ${
+									<button
+										type="button"
+										disabled={!changeDueEnabled}
+										className={`flex h-[3.51rem] w-full items-center justify-between rounded-xl border-0 px-4 py-2 ${PAY_BTN_INSET_SNAP} ${
 											!changeDueEnabled
-												? 'border-gray-200 bg-gray-100 cursor-not-allowed opacity-50'
+												? 'cursor-not-allowed opacity-50'
 												: inputTarget === 'CHANGE_DUE'
-													? 'border-orange-500 bg-orange-50 shadow ring-2 ring-orange-200 cursor-pointer'
-													: 'border-orange-300 bg-orange-50 hover:bg-orange-100 cursor-pointer'
+													? 'cursor-pointer ring-2 ring-orange-300 ring-offset-2 ring-offset-[#e0e5ec]'
+													: 'cursor-pointer hover:brightness-[1.02]'
 										}`}
+										style={
+											!changeDueEnabled
+												? changeDueRaised
+													? { ...PAY_NEO.key, filter: 'grayscale(0.15)' }
+													: { ...PAY_NEO.inset, filter: 'grayscale(0.15)' }
+												: { ...PAY_NEO.key }
+										}
 										onClick={() => {
 											if (!changeDueEnabled) return;
 											const totalChange = displayChange > 0 ? displayChange : (lastChange != null ? lastChange : 0);
@@ -1817,6 +2001,7 @@ const addQuick = async (q: number) => {
 											setInputTarget('CHANGE_DUE');
 											setIsTipFocused(false);
 										}}
+										aria-label="Enter change due amount"
 									>
 										<span className={`text-2xl font-bold whitespace-nowrap ${changeDueEnabled ? 'text-orange-700' : 'text-gray-400'}`}>Change Due $</span>
 										<span className={`text-3xl font-extrabold tabular-nums ${
@@ -1825,11 +2010,11 @@ const addQuick = async (q: number) => {
 										}`}>
 											{changeDueDigits ? formatMoney(parseInt(changeDueDigits, 10) / 100) : '0.00'}
 										</span>
-									</div>
+									</button>
 								);
 							})()}
 							{/* Pay container */}
-													<div className="w-full px-4 py-2 rounded-md border bg-white h-[7.02rem] flex flex-col">
+													<div className="flex h-[7.02rem] w-full flex-col rounded-xl px-4 py-2" style={PAY_NEO.inset}>
 									<div className="flex items-center justify-between gap-2">
 										<span className="text-2xl text-gray-700 whitespace-nowrap font-bold leading-none h-10 flex items-center">Paid $</span>
                     <div className="flex items-center gap-2">
@@ -1837,7 +2022,8 @@ const addQuick = async (q: number) => {
                         type="button"
                         onClick={handleClearPaidBox}
                         disabled={isClearingPaidBox}
-                        className="h-8 px-3 rounded-md border border-red-300 bg-red-50 text-red-700 text-sm font-bold hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        className={`h-8 rounded-lg border-0 px-3 text-sm font-bold text-red-700 ${PAY_BTN_INSET} hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40`}
+                        style={PAY_NEO.raised}
                         title="Clear all payments and reset"
                       >
                         Clear
@@ -1868,7 +2054,22 @@ const addQuick = async (q: number) => {
 									</div>
 									</div>
 									{/* Tip container */}
-								<div className="h-[calc(4.29rem-10px)] w-full px-4 rounded-md bg-red-50 border border-red-200 flex items-center justify-between" onClick={() => setInputTarget('TIP')}>
+								<div
+									className={`flex h-[calc(4.29rem-10px)] w-full items-center justify-between rounded-xl px-4 ${PAY_BTN_INSET_SNAP}`}
+									style={due > 0.005 ? PAY_NEO.inset : PAY_NEO.key}
+									onClick={() => setInputTarget('TIP')}
+									onPointerDown={(e) => {
+										const el = e.currentTarget as HTMLDivElement;
+										el.setAttribute('data-payneo-press', '1');
+										const clear = () => {
+											el.removeAttribute('data-payneo-press');
+											window.removeEventListener('pointerup', clear);
+											window.removeEventListener('pointercancel', clear);
+										};
+										window.addEventListener('pointerup', clear);
+										window.addEventListener('pointercancel', clear);
+									}}
+								>
 									<span className="text-2xl font-bold text-red-700 whitespace-nowrap">Tip $</span>
 									<input
                     inputMode="decimal"
@@ -1898,27 +2099,28 @@ const addQuick = async (q: number) => {
 
 								</div>
 					)}
-						{/* Right: Keypad & Quick */}
-						<div className="p-3 md:order-2 bg-gray-300 h-full flex flex-col">
+						{/* Right: Keypad & Quick — 소프트 네오 */}
+						<div className="p-3 md:order-2 h-full flex flex-col" style={{ background: PAY_NEO_CANVAS }}>
 							{/* Customer info moved here */}
-                            <div className={`mb-2 flex items-center ${isCenterHeader ? 'justify-center' : 'justify-between'} text-2xl rounded-md px-4 py-4 bg-gray-300 border border-gray-400`}>
+                            <div className={`mb-2 flex items-center rounded-xl px-4 py-[calc(1rem*1.1)] text-2xl ${isCenterHeader ? 'justify-center' : 'justify-between'}`} style={PAY_NEO.inset}>
                                 <span className="text-gray-800 font-extrabold text-2xl">{headerLeftLabel}</span>
                                 {!isCenterHeader && (
                                   <span className="text-gray-800 font-semibold text-2xl">{headerRightLabel}</span>
                                 )}
                             </div>
 					
-							{/* Keypad + Quick amounts unified grid - 8 columns */}
-							<div className="grid grid-cols-8 gap-2 mb-2">
+							{/* 금액 디스플레이 + 안내 */}
+							<div className="grid grid-cols-8 gap-2">
 								{/* Row 1: Display */}
 								<div
-                  className={`col-span-8 h-[3.96rem] px-3 rounded-md border-2 flex items-center justify-end text-[2.7rem] font-extrabold leading-none tracking-tight tabular-nums overflow-hidden cursor-pointer ${
+                  className={`col-span-8 flex h-[calc(3.96rem*1.1)] cursor-pointer items-center justify-end overflow-hidden rounded-xl px-3 text-[2.7rem] font-extrabold leading-none tracking-tight tabular-nums ring-offset-2 ring-offset-[#e0e5ec] ${
                     cashReadyForOk
-                      ? 'border-green-400 bg-green-50 text-green-800 shadow-[0_0_0_3px_rgba(74,222,128,0.25)]'
+                      ? 'text-green-800 ring-2 ring-green-400/45'
                       : inputTarget === 'DISCOUNT'
-                      ? 'border-amber-400 bg-amber-50 text-amber-900 shadow-[0_0_0_3px_rgba(251,191,36,0.25)]'
-                      : 'border-red-300 bg-red-50 text-red-700'
+                      ? 'text-amber-900 ring-2 ring-amber-400/45'
+                      : 'text-red-700'
                   }`}
+                  style={PAY_NEO.inset}
                   onClick={() => { setInputTarget('AMOUNT'); setIsTipFocused(false); }}
                   title="Tap to enter payment amount"
                 >
@@ -1928,43 +2130,48 @@ const addQuick = async (q: number) => {
                       ? (customDiscountDigits ? `${customDiscountDigits}%` : '—%')
                       : formatInput(inputTarget === 'TIP' ? tip : amount))}
                 </div>
-                {isSplitCountMode && (
-                  <div className="col-span-8 -mt-1 mb-0.5 text-center text-sm font-bold text-gray-700">
-                    Equal Split — Enter guest count, then press OK / Enter
-                  </div>
-                )}
-                {cashReadyForOk && !isSplitCountMode && (
-                  <div className="col-span-8 -mt-1 mb-0.5 text-center text-sm font-bold text-green-700">
-                    Cash ${formatMoney(cashReadyDataRef.current?.rawAmt || 0)} — Enter Tip or Change Due, then press OK
-                  </div>
-                )}
-								{/* Row 2: 1 2 3 $5 */}
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('1')}>1</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('2')}>2</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('3')}>3</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(5)}>$5</button>
+							</div>
+							{/* 디스플레이 ↔ 패드 사이 오목(인셋) 구분선 + 상하 여백 */}
+							<div className="my-[10px] px-1" aria-hidden>
+								<div
+									className="h-[7px] w-full rounded-full"
+									style={{
+										background: PAY_NEO_CANVAS,
+										boxShadow: 'inset 0 2px 4px #babecc, inset 0 -2px 4px #ffffff',
+									}}
+								/>
+							</div>
+							{/* 숫자 패드 + 퀵금액 */}
+							<div className="grid grid-cols-8 gap-[10px]">
+								{/* Row 1: 1 2 3 $5 */}
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('1')}>1</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('2')}>2</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('3')}>3</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-xl font-bold text-blue-700 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={() => addQuick(5)}>$5</button>
 
 								{/* Row 3: 4 5 6 $10 */}
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('4')}>4</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('5')}>5</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('6')}>6</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(10)}>$10</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('4')}>4</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('5')}>5</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('6')}>6</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-xl font-bold text-blue-700 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={() => addQuick(10)}>$10</button>
 
 								{/* Row 4: 7 8 9 $20 */}
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('7')}>7</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('8')}>8</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('9')}>9</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(20)}>$20</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('7')}>7</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('8')}>8</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('9')}>9</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-xl font-bold text-blue-700 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={() => addQuick(20)}>$20</button>
 
 								{/* Row 5: 0 00 . $50 */}
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border ${isSplitCountMode ? 'border-2 border-emerald-400 bg-white text-gray-900 shadow-md ring-2 ring-emerald-200 font-extrabold text-3xl hover:bg-emerald-50' : 'text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100'}`} onClick={()=>appendDigit('0')}>0</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-500 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('00')}>00</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-3xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={()=>appendDigit('.')}>.</button>
-                <button className={`col-span-2 h-[4.07rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(50)}>$50</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'text-3xl font-extrabold text-gray-900 ring-2 ring-emerald-300' : 'text-2xl font-bold text-gray-800'}`} style={isSplitCountMode ? { ...PAY_KEYPAD_KEY, background: '#e5f5ec' } : PAY_KEYPAD_KEY} onClick={()=>appendDigit('0')}>0</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-2xl font-bold text-gray-800 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={()=>appendDigit('00')}>00</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-3xl font-bold text-gray-800 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={()=>appendDigit('.')}>.</button>
+                <button type="button" className={`col-span-2 h-[calc(4.07rem+5px)] w-full border-0 text-xl font-bold text-blue-700 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={() => addQuick(50)}>$50</button>
 
 								{/* Row 6: Clear (3col) ← (3col) $100 (2col) */}
                 <button
-                  className="col-span-3 h-[3.37rem] w-full rounded-md border-2 text-lg font-semibold bg-white text-gray-600 border-gray-400 hover:bg-gray-100"
+                  type="button"
+                  className={`col-span-3 h-[calc(3.37rem+5px)] w-full border-0 text-lg font-bold text-gray-800 ${PAY_KEYPAD_PRESS}`}
+                  style={PAY_KEYPAD_KEY}
                   onClick={() => {
                     if (isSplitCountMode) { setSplitCountInput(''); return; }
                     if (inputTarget === 'DISCOUNT') { setCustomDiscountDigits(''); setLastChange(null); return; }
@@ -1981,20 +2188,37 @@ const addQuick = async (q: number) => {
                 >
                   Clear
                 </button>
-                <button className="col-span-3 h-[3.37rem] w-full rounded-md border text-2xl font-semibold bg-white text-gray-600 border-gray-300 hover:bg-gray-100" onClick={()=>appendDigit('BS')}>←</button>
-                <button className={`col-span-2 h-[3.37rem] w-full rounded-md border text-xl font-semibold bg-blue-50 border-blue-200 text-blue-500 hover:bg-blue-100 ${isSplitCountMode ? 'opacity-35 pointer-events-none' : ''}`} onClick={() => addQuick(100)}>$100</button>
+                <button type="button" className={`col-span-3 h-[calc(3.37rem+5px)] w-full border-0 text-2xl font-bold text-gray-800 ${PAY_KEYPAD_PRESS}`} style={PAY_KEYPAD_KEY} onClick={()=>appendDigit('BS')}>←</button>
+                <button type="button" className={`col-span-2 h-[calc(3.37rem+5px)] w-full border-0 text-xl font-bold text-blue-700 ${PAY_KEYPAD_PRESS} ${isSplitCountMode ? 'pointer-events-none opacity-35' : ''}`} style={PAY_KEYPAD_KEY} onClick={() => addQuick(100)}>$100</button>
 							</div>
-							<div className="h-3" />
+							{/* 패드 ↔ Cancel/OK — 하단은 Cancel/OK와 간격 3px 타이트 */}
+							<div className="mt-[10px] mb-[7px] px-1" aria-hidden>
+								<div
+									className="h-[7px] w-full rounded-full"
+									style={{
+										background: PAY_NEO_CANVAS,
+										boxShadow: 'inset 0 2px 4px #babecc, inset 0 -2px 4px #ffffff',
+									}}
+								/>
+							</div>
             <div className="mt-0 mb-0 grid grid-cols-2 gap-2">
                 <button 
+                  type="button"
                   onClick={isSplitCountMode ? handleSplitCountCancel : handleCancelClick} 
-                  className="h-[4.00rem] w-full rounded-md bg-gray-700 text-white hover:bg-gray-800 active:bg-red-600 active:text-white font-bold"
+                  className={`h-[calc(4.00rem+10px)] w-full rounded-xl border-0 text-xl font-bold text-white ${PAY_CANCEL_PRESS}`}
+                  style={{ ...PAY_NEO.raised, background: '#374151', color: '#fff', boxShadow: '5px 5px 12px rgba(55,65,81,0.45), -3px -3px 10px rgba(255,255,255,0.25)' }}
                 >
                   {isSplitCountMode ? 'Cancel Split' : 'Cancel'}
                 </button>
                 <button 
+                  type="button"
                   onClick={isSplitCountMode ? handleSplitCountConfirm : (proceedArmed ? proceedNext : finalizeAndComplete)} 
-                  className={`${(isSplitCountMode ? splitCountInput.length > 0 : canClickOk) ? 'h-[4.00rem] w-full rounded-md bg-green-600 text-white hover:bg-green-700 active:bg-red-600' : 'h-[4.00rem] w-full rounded-md bg-green-200 text-green-700 cursor-not-allowed'} font-bold`} 
+                  className={`h-[calc(4.00rem+10px)] w-full rounded-xl border-0 text-xl font-bold ${PAY_OK_PRESS} ${(isSplitCountMode ? splitCountInput.length > 0 : canClickOk) ? 'text-white' : 'cursor-not-allowed text-green-800 opacity-60'}`}
+                  style={
+                    (isSplitCountMode ? splitCountInput.length > 0 : canClickOk)
+                      ? { ...PAY_NEO.raised, background: '#16a34a', color: '#fff', boxShadow: '5px 5px 12px rgba(22,101,52,0.4), -3px -3px 10px rgba(255,255,255,0.25)' }
+                      : { ...PAY_NEO.inset, background: '#c8e6c9' }
+                  }
                   disabled={isSplitCountMode ? splitCountInput.length === 0 : !canClickOk}
                 >
                   {isSplitCountMode ? 'Confirm' : (proceedArmed ? 'Next' : 'OK')}
@@ -2004,11 +2228,17 @@ const addQuick = async (q: number) => {
 					</div>
 
 					{/* Methods + Discount (right column) */}
-					<div className={`bg-gray-100 border-l p-2 md:order-3 flex flex-col h-full duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none filter blur-[1px]' : ''}`}>
+					<div className={`border-l border-l-gray-300/50 p-2 md:order-3 flex flex-col h-full duration-200 transition-opacity ${isSplitCountMode ? 'opacity-30 pointer-events-none' : ''}`} style={{ background: PAY_NEO_CANVAS }}>
             {/* Payment tools (8 buttons, 4 cols x 2 rows) */}
-            <div className="mb-2 rounded-lg border border-gray-300 bg-white p-2">
-              <div className="text-xs font-extrabold text-gray-600 mb-1">PAYMENT</div>
-              <div className="grid grid-cols-2 gap-1">
+            <div
+              className="mb-2 rounded-[14px] p-2"
+              style={{
+                ...PAY_NEO.inset,
+                background: 'linear-gradient(155deg, #dbeafe 0%, #bfdbfe 48%, #93c5fd 100%)',
+              }}
+            >
+              <div className="mb-1 flex items-center py-[4px] text-xs font-extrabold text-blue-800">PAYMENT</div>
+              <div className="grid grid-cols-2 gap-2">
                 {[
                   ...methods.filter(m => m.key !== 'GIFT' && m.key !== 'OTHER').map(m => ({ key: m.key, label: m.label, onClick: () => commitDraft(m.key) })),
                   { key: 'GIFT', label: 'Gift', onClick: openGiftCardModal },
@@ -2016,11 +2246,13 @@ const addQuick = async (q: number) => {
                   { key: 'OTHER', label: 'Other', onClick: () => commitDraft('OTHER') },
                 ].slice(0, 8).map(btn => (
                   <button
+                    type="button"
                     key={btn.key}
                     onClick={btn.onClick}
-                    className={`min-h-[40px] rounded-lg border transition active:bg-red-600 active:text-white active:border-red-600 font-extrabold text-sm px-2 ${
-                      method===btn.key ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'
+                    className={`min-h-[calc(40px*1.15*1.1*1.05+1px)] rounded-[10px] border-0 px-2 text-base font-extrabold ${PAY_BTN_INSET} ${
+                      method === btn.key ? 'text-gray-600' : 'text-gray-500'
                     }`}
+                    style={method === btn.key ? PAY_NEO.inset : PAY_NEO.key}
                     title={btn.label}
                   >
                     {btn.key === 'MC' ? (
@@ -2037,19 +2269,45 @@ const addQuick = async (q: number) => {
               </div>
             </div>
 
-            {/* Discount panel */}
-            <div className="mb-2 rounded-lg border border-gray-300 bg-white p-2">
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs font-extrabold text-gray-600">DISCOUNT</div>
-                <div className={`text-xs font-extrabold ${pricingEffective.discountPercent > 0 ? 'text-red-700' : 'text-gray-500'}`}>
-                  {pricingEffective.discountPercent > 0 ? `-${pricingEffective.discountPercent}%` : 'OFF'}
-                </div>
+            {/* Discount panel — 잠금 시 레이아웃·네오모픽 유지, 채도·불투명만 낮춤 */}
+            <div
+              className={`mb-2 rounded-[14px] p-2 transition-[opacity,filter,box-shadow] duration-200 ${
+                freezeDiscountAndSplit
+                  ? 'pointer-events-none select-none opacity-[0.6] saturate-[0.62] ring-1 ring-inset ring-black/[0.07]'
+                  : ''
+              }`}
+              style={{
+                ...PAY_NEO.inset,
+                background: 'linear-gradient(155deg, #fef2f2 0%, #ffe4e6 42%, #fecdd3 100%)',
+              }}
+              aria-disabled={freezeDiscountAndSplit}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2 py-[4px]">
+                <div className="shrink-0 text-xs font-extrabold text-red-800">DISCOUNT</div>
+                <button
+                  type="button"
+                  disabled={pricingEffective.discountPercent <= 0}
+                  className={`shrink-0 rounded-md border-0 bg-transparent px-1.5 py-0.5 text-[10px] font-bold text-red-600 ${PAY_BTN_INSET} hover:text-red-800 disabled:pointer-events-none disabled:opacity-35`}
+                  onClick={() => {
+                    setDiscountPreset(null);
+                    setIsCustomDiscount(false);
+                    setCustomDiscountDigits('');
+                    setDiscountBump5Pressed(false);
+                    setDiscountBump10Pressed(false);
+                    setLastChange(null);
+                    setInputTarget('AMOUNT');
+                    setIsTipFocused(false);
+                  }}
+                >
+                  Clear
+                </button>
               </div>
-              <div className="grid grid-cols-3 gap-1">
+              <div className="grid grid-cols-3 gap-2">
                 {DISCOUNT_PRESETS.map((p) => {
                   const active = (!isCustomDiscount) && discountPreset === p;
                   return (
                     <button
+                      type="button"
                       key={p}
                       onClick={() => {
                         // Toggle: press same preset again to cancel discount
@@ -2069,38 +2327,99 @@ const addQuick = async (q: number) => {
                         setInputTarget('AMOUNT');
                         setIsTipFocused(false);
                       }}
-                      className={`min-h-[40px] rounded-lg border font-extrabold text-sm transition active:bg-red-600 active:text-white active:border-red-600 ${
-                        active ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-800 border-gray-300 hover:bg-gray-50'
+                      className={`min-h-[43px] rounded-[10px] border-0 text-sm font-extrabold ${PAY_BTN_INSET} ${
+                        active ? 'text-red-900' : 'text-gray-500'
                       }`}
+                      style={active ? PAY_NEO.inset : PAY_NEO.key}
                     >
                       {p}%
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDiscountBump5Pressed(true);
+                    bumpDiscountBy(5);
+                  }}
+                  className={`min-h-[43px] rounded-[10px] border-0 text-sm font-extrabold ${PAY_BTN_INSET} ${
+                    discountBump5Pressed ? 'text-red-500' : 'text-red-400'
+                  }`}
+                  style={discountBump5Pressed ? PAY_NEO.inset : PAY_NEO.key}
+                >
+                  +5%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDiscountBump10Pressed(true);
+                    bumpDiscountBy(10);
+                  }}
+                  className={`min-h-[43px] rounded-[10px] border-0 text-sm font-extrabold ${PAY_BTN_INSET} ${
+                    discountBump10Pressed ? 'text-red-500' : 'text-red-400'
+                  }`}
+                  style={discountBump10Pressed ? PAY_NEO.inset : PAY_NEO.key}
+                >
+                  +10%
+                </button>
               </div>
             </div>
 
-            {/* 1/N Split panel */}
-            <div className="mb-2 rounded-lg border border-emerald-300 bg-emerald-50 p-2">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-bold text-emerald-700">1/N Split</span>
-                {splitNActive > 0 && (
-                  <button className="text-[10px] font-bold text-red-500 hover:text-red-700" onClick={() => {
-                    setSplitNActive(0); setSplitNCustomMode(false); setSplitNCustomDigits('');
-                    setInputTarget('AMOUNT'); setLastChange(null);
-                    setAmount('0.00'); setRawAmountDigits(''); setTip('0'); setMethod('');
+            {/* 1/N Split panel — 잠금 시 동일 스타일 + 채도·불투명만 낮춤 */}
+            <div
+              className={`mb-2 rounded-[14px] p-2 transition-[opacity,filter,box-shadow] duration-200 ${
+                freezeDiscountAndSplit
+                  ? 'pointer-events-none select-none opacity-[0.6] saturate-[0.62] ring-1 ring-inset ring-black/[0.07]'
+                  : ''
+              }`}
+              style={{ ...PAY_NEO.inset, background: '#dcefe4' }}
+              aria-disabled={freezeDiscountAndSplit}
+            >
+              <div className="mb-1 flex items-center justify-between gap-2 py-[4px]">
+                <span className="shrink-0 text-xs font-bold text-emerald-700">1/N Split</span>
+                <button
+                  type="button"
+                  disabled={splitNActive <= 0}
+                  className={`shrink-0 rounded-md border-0 bg-transparent px-1.5 py-0.5 text-[10px] font-bold text-red-600 ${PAY_BTN_INSET} hover:text-red-800 disabled:pointer-events-none disabled:opacity-35`}
+                  onClick={async () => {
+                    if (splitNActive <= 0) return;
+                    if (onClearAllPayments) {
+                      try {
+                        await onClearAllPayments();
+                      } catch {
+                        /* ignore */
+                      }
+                    }
+                    setSplitNActive(0);
+                    setSplitNCustomMode(false);
+                    setSplitNCustomDigits('');
+                    setInputTarget('AMOUNT');
+                    setLastChange(null);
+                    setAmount('0.00');
+                    setRawAmountDigits('');
+                    setTip('0');
+                    setMethod('');
+                    setOptimisticPayments([]);
                     if (onCreateAdhocGuests) onCreateAdhocGuests(0);
-                  }}>Clear</button>
-                )}
+                    try {
+                      if (onSelectGuestMode) onSelectGuestMode('ALL');
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
+                  Clear
+                </button>
               </div>
-              <div className="grid grid-cols-3 gap-1">
-                {[2,3,4,5,6,7,8,9].map(n => {
+              <div className="grid grid-cols-3 gap-2">
+                {[2, 3, 4, 5, 6].map(n => {
                   const active = splitNActive === n && !splitNCustomMode;
                   return (
                     <button key={n} type="button"
-                      className={`min-h-[40px] rounded-lg border-2 text-xs font-extrabold transition ${
-                        active ? 'border-emerald-600 bg-emerald-600 text-white shadow' : 'border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-100'
+                      className={`min-h-[43px] rounded-[10px] border-0 text-xs font-extrabold ${PAY_BTN_INSET} ${
+                        active ? 'text-emerald-900' : 'text-gray-500'
                       }`}
+                      style={active ? PAY_NEO.inset : PAY_NEO.key}
                       onClick={async () => {
                         if (active) {
                           if (onClearAllPayments) { try { await onClearAllPayments(); } catch {} }
@@ -2126,51 +2445,59 @@ const addQuick = async (q: number) => {
                     </button>
                   );
                 })}
-                <button type="button"
-                  className={`min-h-[40px] rounded-lg border-2 text-xs font-extrabold transition ${
-                    splitNCustomMode ? 'border-amber-500 bg-amber-500 text-white shadow' : 'border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-100'
+                <button
+                  type="button"
+                  disabled={splitNActive >= 20}
+                  className={`min-h-[43px] rounded-[10px] border-0 text-sm font-black leading-none ${PAY_BTN_INSET} disabled:pointer-events-none disabled:opacity-40 ${
+                    splitNActive > 6 ? 'text-emerald-900' : 'text-emerald-700'
                   }`}
-                  onClick={() => {
-                    if (splitNCustomMode) {
-                      setSplitNCustomMode(false); setSplitNActive(0); setSplitNCustomDigits('');
-                      return;
+                  style={splitNActive > 6 ? PAY_NEO.inset : PAY_NEO.key}
+                  onClick={async () => {
+                    if (splitNActive >= 20) return;
+                    const nextN = splitNActive < 2 ? 2 : splitNActive + 1;
+                    setSplitNCustomMode(false);
+                    setSplitNCustomDigits('');
+                    setSplitNActive(nextN);
+                    if (onCreateAdhocGuests) {
+                      onCreateAdhocGuests(nextN);
+                      try { setForceAllMode(false); } catch {}
+                      try { if (onSelectGuestMode) onSelectGuestMode(1); } catch {}
                     }
-                    setSplitNCustomMode(true); setSplitNActive(0); setSplitNCustomDigits('');
-                    setInputTarget('SPLIT_N'); setIsTipFocused(false); setLastChange(null);
-                  }}>
-                  Custom
+                    setAmount('0.00'); setRawAmountDigits('');
+                    setInputTarget('AMOUNT'); setIsTipFocused(false); setLastChange(null);
+                    setTip('0'); setMethod('');
+                  }}
+                >
+                  +1
                 </button>
               </div>
-              {splitNCustomMode && (
-                <div className="mt-1.5 flex items-center gap-2">
-                  <span className="text-xs font-bold text-amber-700">Guests:</span>
-                  <span className="text-lg font-extrabold text-amber-900 tabular-nums min-w-[2rem] text-center">
-                    {splitNCustomDigits || '—'}
-                  </span>
-                  <span className="text-[10px] text-amber-600">Use keypad, then press a payment method</span>
-                </div>
-              )}
-              {splitNActive > 0 && (() => {
-                const gc = Math.round(grand * 100);
-                const hi = calcFairShare(gc, splitNActive, 1);
-                const lo = calcFairShare(gc, splitNActive, splitNActive);
-                return (
-                  <div className="mt-1 text-[11px] font-bold text-emerald-700">
-                    {formatMoney(grand)} ÷ {splitNActive} = {hi === lo
-                      ? <>{formatMoney(hi)} per person</>
-                      : <>{formatMoney(hi)} ~ {formatMoney(lo)} per person</>
-                    }
-                  </div>
-                );
-              })()}
             </div>
 
-            {/* Split Bill button */}
+            {/* Split Bill button — freezeDiscountAndSplit 시 할인·1/N Split과 동일 비활성 */}
             {typeof onSplitBill === 'function' && (
-              <div className="rounded-lg border border-gray-300 bg-white p-2">
+              <div
+                className={`rounded-[14px] p-2 transition-[opacity,filter,box-shadow] duration-200 ${
+                  freezeDiscountAndSplit
+                    ? 'pointer-events-none select-none opacity-[0.6] saturate-[0.62] ring-1 ring-inset ring-black/[0.07]'
+                    : ''
+                }`}
+                style={PAY_NEO.inset}
+                aria-disabled={freezeDiscountAndSplit}
+              >
                 <button
-                  className="w-full flex items-center justify-center px-3 py-[0.68rem] rounded-lg border-2 border-purple-500 bg-purple-50 text-purple-700 hover:bg-purple-100 shadow font-bold"
-                  onClick={() => onSplitBill()}
+                  type="button"
+                  disabled={freezeDiscountAndSplit}
+                  className={`flex w-full items-center justify-center rounded-xl border-0 px-3 py-[0.68rem] font-extrabold text-violet-900 ${PAY_SPLIT_PRESS} disabled:pointer-events-none`}
+                  style={{
+                    ...PAY_KEYPAD_KEY,
+                    background: 'linear-gradient(160deg, #ddd6fe 0%, #c4b5fd 55%, #a78bfa 100%)',
+                    boxShadow: '5px 5px 10px #a78bfa99, -4px -4px 9px #ffffff',
+                  }}
+                  onClick={() => {
+                    if (freezeDiscountAndSplit) return;
+                    setSplitBillLaunchTouched(true);
+                    onSplitBill();
+                  }}
                 >
                   Split
                 </button>
@@ -2203,6 +2530,7 @@ const addQuick = async (q: number) => {
 					<div className="pointer-events-auto bg-white rounded-xl shadow-2xl border-2 border-blue-500 px-6 py-4 text-center min-w-[320px] max-w-[480px]">
 						<div className="text-lg font-bold text-gray-800 mb-3">{alertMessage}</div>
 						<button
+							type="button"
 							onClick={() => {
 								setAlertMessage(null);
 								if (alertTimerRef.current) {
@@ -2210,7 +2538,7 @@ const addQuick = async (q: number) => {
 									alertTimerRef.current = null;
 								}
 							}}
-							className="px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+							className={`px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold ${PAY_BTN_INSET} hover:bg-blue-700`}
 						>
 							OK
 						</button>
@@ -2237,14 +2565,16 @@ const addQuick = async (q: number) => {
 							</p>
 							<div className="flex gap-3">
 								<button
+									type="button"
 									onClick={handleCancelDismiss}
-									className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all"
+									className={`flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold ${PAY_BTN_INSET}`}
 								>
 									Go Back
 								</button>
 								<button
+									type="button"
 									onClick={handleCancelConfirmed}
-									className="flex-1 py-3 rounded-lg bg-red-500 hover:bg-red-600 text-white font-semibold transition-all"
+									className={`flex-1 py-3 rounded-lg bg-red-500 hover:bg-red-600 text-white font-semibold ${PAY_BTN_INSET}`}
 								>
 									Yes, Cancel All
 								</button>
@@ -2254,59 +2584,63 @@ const addQuick = async (q: number) => {
 				</div>
 			)}
 
-			{/* Gift Card Payment Modal */}
+			{/* Gift Card Payment Modal — soft neumorphic shell (결제/Change 로직 미변경) */}
 			{showGiftCardModal && (
 				<div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-					<div className="bg-white rounded-xl shadow-2xl w-[420px] overflow-hidden">
-						{/* Header */}
-						<div className="bg-gradient-to-r from-amber-500 to-amber-600 px-3 py-2 flex justify-between items-center">
-							<h3 className="text-base font-bold text-white">Gift Card Payment</h3>
-							<button 
+					<div className="rounded-2xl w-[420px] overflow-hidden" style={SOFT_NEO.shell}>
+						<div className="flex shrink-0 items-center justify-between border-b border-gray-400/20 px-3 py-2">
+							<h3 className="text-base font-bold text-gray-800">Gift Card Payment</h3>
+							<button
+								type="button"
 								onClick={() => { setShowGiftCardModal(false); resetGiftCard(); }}
-								className="text-white hover:text-gray-200 text-xl font-bold leading-none"
+								aria-label="Close"
+								className={`flex h-9 w-9 items-center justify-center rounded-full border-2 border-red-500 ${PAY_BTN_INSET}`}
+								style={SOFT_NEO.btnRound}
 							>
-								&times;
+								<svg className="h-4 w-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+								</svg>
 							</button>
 						</div>
 
 						<div className="p-3 space-y-2">
-							{/* Remaining Due */}
-							<div className="bg-blue-50 border border-blue-200 rounded-lg py-1.5 px-2 text-center">
-								<div className="text-xs text-blue-600">Remaining Due</div>
-								<div className="text-lg font-bold text-blue-700">${remainingDue.toFixed(2)}</div>
+							<div className="rounded-xl py-2 px-2 text-center" style={SOFT_NEO.insetWell}>
+								<div className="text-xs font-semibold text-blue-700/90">Remaining Due</div>
+								<div className="text-lg font-bold text-blue-800">${remainingDue.toFixed(2)}</div>
 							</div>
 
-							{/* Card Number Display */}
-							<div 
+							<div
 								onClick={() => setGiftCardInputFocus('card')}
-								className={`py-2 px-3 rounded-lg cursor-pointer transition-all ${giftCardInputFocus === 'card' ? 'bg-amber-50 border-2 border-amber-400' : 'bg-gray-100 border-2 border-gray-200'}`}
+								className={`cursor-pointer rounded-xl px-3 py-2 transition-all ${giftCardInputFocus === 'card' ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e8ecf2]' : ''}`}
+								style={SOFT_NEO.insetWell}
 							>
 								<div className="text-xs font-semibold text-gray-600 mb-0.5">Card Number</div>
 								<div className="text-xl font-mono tracking-wide text-center text-gray-800">
-									{giftCardNumber.slice(0, 4) || <span className="text-gray-300">____</span>}
+									{giftCardNumber.slice(0, 4) || <span className="text-gray-400">____</span>}
 									{'-'}
-									{giftCardNumber.slice(4, 8) || <span className="text-gray-300">____</span>}
+									{giftCardNumber.slice(4, 8) || <span className="text-gray-400">____</span>}
 									{'-'}
-									{giftCardNumber.slice(8, 12) || <span className="text-gray-300">____</span>}
+									{giftCardNumber.slice(8, 12) || <span className="text-gray-400">____</span>}
 									{'-'}
-									{giftCardNumber.slice(12, 16) || <span className="text-gray-300">____</span>}
+									{giftCardNumber.slice(12, 16) || <span className="text-gray-400">____</span>}
 								</div>
 							</div>
 
-							{/* Balance & Pay Amount Row */}
 							<div className="flex gap-2">
-								{/* Balance Display */}
-								<div className={`flex-1 py-1.5 px-2 rounded-lg text-center ${giftCardBalance !== null ? 'bg-green-50 border border-green-200' : 'bg-gray-50 border border-gray-200'}`}>
+								<div
+									className="flex-1 rounded-xl py-1.5 px-2 text-center"
+									style={SOFT_NEO.insetWell}
+								>
 									<div className="text-xs text-gray-600">Balance</div>
 									<div className={`text-lg font-bold ${giftCardBalance !== null ? 'text-green-700' : 'text-gray-400'}`}>
 										{giftCardBalance !== null ? `$${giftCardBalance.toFixed(2)}` : '---'}
 									</div>
 								</div>
 
-								{/* Pay Amount */}
-								<div 
+								<div
 									onClick={() => giftCardBalance !== null && setGiftCardInputFocus('amount')}
-									className={`flex-1 py-1.5 px-2 rounded-lg text-center cursor-pointer transition-all ${giftCardInputFocus === 'amount' && giftCardBalance !== null ? 'bg-amber-50 border-2 border-amber-400' : 'bg-gray-50 border-2 border-gray-200'}`}
+									className={`flex-1 cursor-pointer rounded-xl py-1.5 px-2 text-center transition-all ${giftCardInputFocus === 'amount' && giftCardBalance !== null ? 'ring-2 ring-amber-400/90 ring-offset-2 ring-offset-[#e8ecf2]' : ''}`}
+									style={SOFT_NEO.insetWell}
 								>
 									<div className="text-xs text-gray-600">Pay Amount</div>
 									<div className="text-lg font-bold text-gray-800">
@@ -2315,21 +2649,24 @@ const addQuick = async (q: number) => {
 								</div>
 							</div>
 
-							{/* Quick Pay Buttons - always show space to prevent modal height change */}
 							<div className="flex gap-2 h-[48px]">
 								{giftCardBalance !== null && (
 									<>
 										{giftCardBalance >= remainingDue ? (
 											<button
+												type="button"
 												onClick={() => { setGiftCardPayAmount(remainingDue.toFixed(2)); }}
-												className="flex-1 py-3 rounded-lg bg-green-500 hover:bg-green-600 text-white font-semibold transition-all"
+												className={`flex-1 rounded-xl py-3 text-sm font-bold text-white ${PAY_BTN_INSET}`}
+												style={SOFT_NEO.btnSuccess}
 											>
 												Full ${remainingDue.toFixed(2)}
 											</button>
 										) : (
 											<button
+												type="button"
 												onClick={() => { setGiftCardPayAmount(giftCardBalance.toFixed(2)); }}
-												className="flex-1 py-3 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-semibold transition-all"
+												className={`flex-1 rounded-xl py-3 text-sm font-bold text-white ${PAY_BTN_INSET}`}
+												style={SOFT_NEO.btnWarn}
 											>
 												Use All ${giftCardBalance.toFixed(2)}
 											</button>
@@ -2338,51 +2675,54 @@ const addQuick = async (q: number) => {
 								)}
 							</div>
 
-							{/* Numpad */}
-							<div className="bg-gray-100 p-1.5 rounded-lg">
-								<div className="grid grid-cols-3 gap-1">
+							<div className="rounded-xl p-2" style={SOFT_NEO.insetWell}>
+								<div className="grid grid-cols-3 gap-1.5">
 									{['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'].map((key, idx) => (
-											<button
-												key={idx}
-												onClick={() => handleGiftCardKeypadPress(key)}
-												className={`py-3 rounded-lg text-lg font-semibold transition-all active:scale-95 ${
-													key === '⌫' ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' :
-													key === '.' ? 'bg-gray-200 text-gray-700 hover:bg-gray-300' :
-													'bg-white text-gray-800 hover:bg-gray-50 border border-gray-300'
-												}`}
-											>
-												{key}
-											</button>
+										<button
+											key={idx}
+											type="button"
+											onClick={() => handleGiftCardKeypadPress(key)}
+											className={`rounded-xl py-3 text-lg font-bold text-gray-800 ${PAY_BTN_INSET} ${
+												key === '⌫' ? 'text-amber-800' : key === '.' ? 'text-gray-600' : ''
+											}`}
+											style={SOFT_NEO.tabRaised}
+										>
+											{key}
+										</button>
 									))}
 								</div>
 							</div>
 
-							{/* Error Message */}
 							{giftCardError && (
-								<div className="bg-red-50 border border-red-200 rounded-lg py-1.5 px-2 text-center">
+								<div className="rounded-xl border border-red-200/80 bg-red-50/90 py-1.5 px-2 text-center">
 									<div className="text-red-600 text-xs font-medium">{giftCardError}</div>
 								</div>
 							)}
 
-							{/* Action Buttons - Balance, Cancel & Pay */}
 							<div className="flex gap-2">
 								<button
+									type="button"
 									onClick={handleCheckGiftCardBalance}
 									disabled={giftCardLoading || giftCardNumber.length !== 16}
-									className="w-1/4 py-3 rounded-lg bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 text-white font-semibold transition-all"
+									className={`w-1/4 rounded-xl py-3 text-sm font-bold text-white ${PAY_BTN_INSET} disabled:cursor-not-allowed disabled:opacity-45`}
+									style={SOFT_NEO.btnPrimary}
 								>
 									{giftCardLoading ? '...' : 'Balance'}
 								</button>
 								<button
+									type="button"
 									onClick={() => { setShowGiftCardModal(false); resetGiftCard(); }}
-									className="flex-1 py-3 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-700 font-semibold transition-all"
+									className={`flex-1 rounded-xl py-3 text-sm font-bold text-gray-700 ${PAY_BTN_INSET}`}
+									style={SOFT_NEO.tabRaised}
 								>
 									Cancel
 								</button>
 								<button
+									type="button"
 									onClick={handleGiftCardPay}
 									disabled={giftCardLoading || giftCardBalance === null || !giftCardPayAmount || parseFloat(giftCardPayAmount) <= 0}
-									className="flex-1 py-3 rounded-lg bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 text-white font-semibold transition-all"
+									className={`flex-1 rounded-xl py-3 text-sm font-bold text-white ${PAY_BTN_INSET} disabled:cursor-not-allowed disabled:opacity-45`}
+									style={SOFT_NEO.btnAmber}
 								>
 									{giftCardLoading ? '...' : 'Pay'}
 								</button>
@@ -2392,7 +2732,8 @@ const addQuick = async (q: number) => {
 				</div>
 			)}
 			</div>
-		</div>
+		</div>,
+		document.body
 	);
 };
 

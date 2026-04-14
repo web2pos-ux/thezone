@@ -236,7 +236,54 @@ router.patch('/elements/:id/status', (req, res) => {
   });
 });
 
-// 요소 단건 조회
+router.get('/elements/hold-candidates', (req, res) => {
+  const db = getDatabase();
+  const sql = `
+    SELECT
+      t.element_id AS id, t.name, t.floor, t.status, t.current_order_id,
+      o.created_at AS order_created_at,
+      CASE
+        WHEN t.status = 'Payment Pending' AND o.created_at IS NOT NULL
+             AND (julianday('now','localtime') - julianday(o.created_at)) * 24 * 60 >= 120 THEN 1
+        WHEN t.status = 'Payment Pending' AND o.created_at IS NOT NULL
+             AND (julianday('now','localtime') - julianday(o.created_at)) * 24 * 60 >= 60 THEN 2
+        WHEN t.status = 'Occupied' AND o.created_at IS NOT NULL
+             AND (julianday('now','localtime') - julianday(o.created_at)) * 24 * 60 >= 120 THEN 3
+        WHEN t.status = 'Payment Pending' THEN 4
+        WHEN t.status = 'Occupied' THEN 5
+        ELSE 6
+      END AS hold_priority,
+      CASE WHEN o.created_at IS NOT NULL
+        THEN ROUND((julianday('now','localtime') - julianday(o.created_at)) * 24 * 60)
+        ELSE 0
+      END AS order_age_mins
+    FROM table_map_elements t
+    LEFT JOIN orders o ON t.current_order_id = o.id
+    WHERE t.type IN ('rounded-rectangle', 'circle', 'bar', 'room')
+      AND t.status IN ('Occupied', 'Payment Pending')
+    ORDER BY hold_priority ASC, order_age_mins DESC
+  `;
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Hold candidates query error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows || []);
+  });
+});
+
+router.get('/elements/available-count', (req, res) => {
+  const db = getDatabase();
+  db.get(
+    `SELECT COUNT(*) AS count FROM table_map_elements WHERE type IN ('rounded-rectangle','circle','bar','room') AND status = 'Available'`,
+    [],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ count: row?.count || 0 });
+    }
+  );
+});
+
 router.get('/elements/:id', (req, res) => {
   const { id } = req.params;
   const db = getDatabase();

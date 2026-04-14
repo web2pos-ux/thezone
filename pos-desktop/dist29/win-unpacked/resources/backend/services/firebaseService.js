@@ -595,17 +595,25 @@ async function syncUtilitySettings(restaurantId, utilitySettings) {
   try {
     const firestore = getFirestore();
     const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
+    const snap = await settingsRef.get();
+    const prev = snap.exists ? (snap.data().utilitySettings || {}) : {};
+
+    const mergedUtility = {
+      bagFee: {
+        enabled: Boolean(utilitySettings?.bagFee?.enabled),
+        amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
+      },
+      utensils: {
+        enabled: Boolean(utilitySettings?.utensils?.enabled),
+      },
+      preOrderReprint:
+        utilitySettings && Object.prototype.hasOwnProperty.call(utilitySettings, 'preOrderReprint')
+          ? { enabled: Boolean(utilitySettings.preOrderReprint?.enabled) }
+          : (prev.preOrderReprint || { enabled: false }),
+    };
 
     await settingsRef.set({
-      utilitySettings: {
-        bagFee: {
-          enabled: Boolean(utilitySettings?.bagFee?.enabled),
-          amount: parseFloat(utilitySettings?.bagFee?.amount) || 0.10,
-        },
-        utensils: {
-          enabled: Boolean(utilitySettings?.utensils?.enabled),
-        },
-      },
+      utilitySettings: mergedUtility,
       updatedAt: new Date(),
     }, { merge: true });
 

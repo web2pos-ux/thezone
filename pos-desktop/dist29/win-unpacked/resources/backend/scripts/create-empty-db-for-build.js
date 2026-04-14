@@ -287,6 +287,8 @@ db.serialize(() => {
     value REAL DEFAULT 0,
     amount_applied REAL DEFAULT 0,
     label TEXT,
+    applied_by_employee_id TEXT,
+    applied_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
   )`);
@@ -707,8 +709,8 @@ db.serialize(() => {
   
   db.run(`CREATE TABLE IF NOT EXISTS system_pins (
     id INTEGER PRIMARY KEY CHECK(id=1),
-    backoffice_pin TEXT DEFAULT '0000',
-    sales_pin TEXT DEFAULT '0000',
+    backoffice_pin TEXT DEFAULT '1126',
+    sales_pin TEXT DEFAULT '1126',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
   
@@ -850,6 +852,20 @@ db.serialize(() => {
     cancelled_at DATETIME, expires_at DATETIME, sms_count INTEGER NOT NULL DEFAULT 0
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS waiting_list_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_date TEXT NOT NULL,
+    customer_name TEXT NOT NULL,
+    phone_number TEXT,
+    party_size INTEGER NOT NULL,
+    notes TEXT,
+    outcome TEXT NOT NULL,
+    table_number TEXT,
+    joined_at TEXT,
+    archived_at TEXT NOT NULL,
+    source_waiting_id INTEGER
+  )`);
+
   // ====== Insert Default Data ======
   
   console.log('Creating tables...');
@@ -865,16 +881,16 @@ db.serialize(() => {
   db.run("INSERT INTO channels (channel_id, name) VALUES (3, 'ONLINE')");
   db.run("INSERT INTO channels (channel_id, name) VALUES (4, 'DELIVERY')");
   
-  // Default admin (PIN: 0000)
-  db.run("INSERT INTO employees (employee_id, name, pin_hash, role) VALUES (5200, 'Admin', '0000', 'Admin')");
+  // Default admin (PIN: 1126)
+  db.run("INSERT INTO employees (employee_id, name, pin_hash, role) VALUES (5200, 'Admin', '1126', 'Admin')");
   
   // Default business hours (Mon-Sun, 9AM-9PM)
   for (let i = 0; i < 7; i++) {
     db.run(`INSERT INTO business_hours (day_of_week, open_time, close_time, is_open) VALUES (${i}, '09:00', '21:00', 1)`);
   }
   
-  // Default system PINs (BackOffice: 0000, Sales: 0000)
-  db.run("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '0000', '0000')");
+  // Default system PINs (BackOffice + Sales: 1126)
+  db.run("INSERT INTO system_pins (id, backoffice_pin, sales_pin) VALUES (1, '1126', '1126')");
   
   // ====== Default Tax Data ======
   
@@ -896,7 +912,7 @@ db.serialize(() => {
   db.run("INSERT INTO tax_group_links (tax_group_id, tax_id) VALUES (385002, 380003)");   // Canadian HST → HST 13%
   
   console.log('✅ Empty database created successfully!');
-  console.log('✅ Default data inserted (Admin PIN: 0000)');
+  console.log('✅ Default data inserted (Admin PIN: 1126)');
   console.log('✅ Default tax groups created: US Sales Tax, Canadian GST+PST, Canadian HST');
 });
 

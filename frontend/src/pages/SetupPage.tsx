@@ -97,7 +97,7 @@ const PinScreen: React.FC<{
     setDealerPinError('');
     
     try {
-      const response = await fetch(`${API_URL}/api/dealer-access/verify`, {
+      const response = await fetch(`${API_URL}/dealer-access/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: dealerPin })
@@ -187,7 +187,7 @@ const PinScreen: React.FC<{
       }}
     >
       {/* Blur Overlay */}
-      <div className="absolute inset-0 backdrop-blur-md bg-black/40"></div>
+      <div className="absolute inset-0 bg-black/40"></div>
       
       <div className="relative z-10 text-center">
         {/* Logo + Title - Long press to enter dealer mode (hidden - no cursor/indicator) */}
@@ -287,7 +287,7 @@ const PinScreen: React.FC<{
       
       {/* 🔐 Dealer PIN Modal */}
       {showDealerModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
           <div className="bg-gradient-to-br from-purple-900 to-slate-900 rounded-2xl p-8 shadow-2xl border border-purple-500/30 w-full max-w-sm mx-4">
             {/* Header */}
             <div className="text-center mb-6">
@@ -531,7 +531,7 @@ const SetupPage: React.FC = () => {
       const dealerRole = sessionStorage.getItem('dealer_role');
       
       if (dealerPin && dealerRole) {
-        const response = await fetch(`${API_URL}/api/dealer-access/store-settings`, {
+        const response = await fetch(`${API_URL}/dealer-access/store-settings`, {
           headers: {
             'X-Dealer-Role': dealerRole,
             'X-Dealer-Pin': dealerPin
@@ -575,7 +575,7 @@ const SetupPage: React.FC = () => {
   useEffect(() => {
     const checkSetupStatus = async () => {
       try {
-        const statusRes = await fetchWithTimeout(`${API_URL}/api/firebase-setup/status`, { cache: 'no-store' as any }, 5000);
+        const statusRes = await fetchWithTimeout(`${API_URL}/firebase-setup/status`, { cache: 'no-store' as any }, 5000);
         const statusPayload = await statusRes.json().catch(() => ({} as any));
         
         if (!statusPayload.success || !statusPayload.data) {
@@ -628,7 +628,7 @@ const SetupPage: React.FC = () => {
     setError('');
 
     try {
-      const response = await fetch(`${API_URL}/api/firebase-setup/verify-restaurant`, {
+      const response = await fetch(`${API_URL}/firebase-setup/verify-restaurant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ restaurantId: restaurantId.trim() })
@@ -681,7 +681,7 @@ const SetupPage: React.FC = () => {
       } else {
         setSetupProgress({ status: 'Preparing database...', progress: 20 });
         
-        await fetch(`${API_URL}/api/firebase-setup/clear-data`, {
+        await fetch(`${API_URL}/firebase-setup/clear-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -689,7 +689,7 @@ const SetupPage: React.FC = () => {
       
       setSetupProgress({ status: 'Saving restaurant info...', progress: 40 });
 
-      const saveResponse = await fetch(`${API_URL}/api/firebase-setup/save-restaurant`, {
+      const saveResponse = await fetch(`${API_URL}/firebase-setup/save-restaurant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -707,7 +707,7 @@ const SetupPage: React.FC = () => {
 
       setSetupProgress({ status: 'Setting up service mode...', progress: 60 });
 
-      await fetch(`${API_URL}/api/admin-settings/service-type`, {
+      await fetch(`${API_URL}/admin-settings/service-type`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Role': 'MANAGER' },
         body: JSON.stringify({ 
@@ -780,7 +780,7 @@ const SetupPage: React.FC = () => {
     
     // Verify BackOffice PIN (0888)
     try {
-      const backofficeResponse = await fetch(`${API_URL}/api/admin-settings/verify-backoffice-pin`, {
+      const backofficeResponse = await fetch(`${API_URL}/admin-settings/verify-backoffice-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin })
@@ -795,7 +795,7 @@ const SetupPage: React.FC = () => {
     
     // Employee PIN verification
     try {
-      const response = await fetch(`${API_URL}/api/employees/verify-pin`, {
+      const response = await fetch(`${API_URL}/employees/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin })
@@ -1038,7 +1038,7 @@ const SetupPage: React.FC = () => {
       
       {/* Dealer Mode Timeout Warning Modal */}
       {dealerTimeoutWarning && isDealerMode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
           <div className="bg-gradient-to-br from-red-900 to-orange-900 rounded-2xl p-8 shadow-2xl border border-red-500/50 w-full max-w-sm mx-4 animate-pulse">
             <div className="text-center">
               <div className="text-6xl mb-4">⏰</div>

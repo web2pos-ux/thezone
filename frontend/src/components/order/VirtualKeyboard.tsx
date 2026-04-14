@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { PAY_NEO, PAY_NEO_CANVAS } from '../../utils/softNeumorphic';
 
 export interface VirtualKeyboardProps {
   open: boolean;
@@ -20,13 +21,24 @@ export interface VirtualKeyboardProps {
   center?: boolean; // center on screen (ignore bottom offset)
   centerOffsetPx?: number; // when centered, shift down by pixels
   maxWidthPx?: number;
+  /** 모달 내부 등: #pos-canvas-anchor 기준 absolute 고정 대신 부모 플로우에 배치 */
+  layoutMode?: 'canvasBottom' | 'parentFlow';
 }
 
-const keyStyle =
-  'h-[53px] min-w-[48px] px-3 rounded bg-[#3a3a3a] hover:bg-[#4a4a4a] active:bg-red-600 text-white font-semibold select-none shadow-inner border-2 border-gray-300';
+/** 눌림: 볼록 → inset 그림자 + 살짝 하강 (인라인 boxShadow는 active를 막으므로 class로만 그림자 처리) */
+const keyPressFx =
+  'transition-[box-shadow,transform] duration-100 ease-out [-webkit-tap-highlight-color:transparent] active:shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.98]';
 
-const controlKeyStyle =
-  'h-[53px] min-w-[64px] px-3 rounded bg-[#111111] hover:bg-[#1f1f1f] active:bg-red-600 text-white font-semibold select-none shadow-inner border-2 border-gray-500';
+/** PAY_NEO.key와 동일 톤 */
+const keyClass = `h-[53px] min-w-[48px] px-3 text-[17px] font-semibold select-none border-0 outline-none text-gray-800 touch-manipulation rounded-[10px] bg-[#e0e5ec] shadow-[4px_4px_8px_#c4c8d4,-4px_-4px_8px_#ffffff] ${keyPressFx}`;
+
+/** PAY_NEO.raised와 동일 톤 */
+const raisedClass = `h-[53px] min-w-[64px] px-3 text-[17px] font-semibold select-none border-0 outline-none text-gray-800 touch-manipulation rounded-[12px] bg-[#e0e5ec] shadow-[5px_5px_10px_#babecc,-5px_-5px_10px_#ffffff] ${keyPressFx}`;
+
+/** PAY_KEYPAD_KEY와 동일 톤 (숫자 패드) */
+const numpadKeyClass = `h-[53px] min-w-[48px] px-3 text-[17px] font-semibold select-none border-0 outline-none text-gray-800 touch-manipulation rounded-[10px] bg-[#d4d9e4] shadow-[5px_5px_10px_#b0b6c4,-4px_-4px_9px_#ffffff] ${keyPressFx}`;
+
+const closeKeyClass = `flex h-9 min-w-[40px] items-center justify-center px-3 text-[15px] font-bold text-gray-700 touch-manipulation rounded-[12px] bg-[#e0e5ec] shadow-[5px_5px_10px_#babecc,-5px_-5px_10px_#ffffff] ${keyPressFx}`;
 
 export default function VirtualKeyboard({
   open,
@@ -48,6 +60,7 @@ export default function VirtualKeyboard({
   center = false,
   centerOffsetPx = 0,
   maxWidthPx = 900,
+  layoutMode = 'canvasBottom',
 }: VirtualKeyboardProps) {
   const [shift, setShift] = useState<boolean>(false);
   const [symbolMode, setSymbolMode] = useState<boolean>(false);
@@ -106,14 +119,26 @@ export default function VirtualKeyboard({
   if (!open) return null;
 
   // Anchor to logical screen (canvasRef container) if available to keep at BO screen bottom
-  const anchorEl = typeof document !== 'undefined' ? document.getElementById('pos-canvas-anchor') as HTMLElement | null : null;
+  const anchorEl =
+    layoutMode === 'parentFlow'
+      ? null
+      : typeof document !== 'undefined'
+        ? (document.getElementById('pos-canvas-anchor') as HTMLElement | null)
+        : null;
 
   const Wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    if (layoutMode === 'parentFlow') {
+      return (
+        <div className="w-full pointer-events-none" style={{ position: 'relative', zIndex }}>
+          {children}
+        </div>
+      );
+    }
     if (anchorEl) {
       return (
         <div
           className={'pointer-events-none'}
-          style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex, paddingBottom: 'env(safe-area-inset-bottom)' }}
+          style={{ position: 'absolute', left: 0, right: 0, bottom: bottomOffsetPx || 0, zIndex, paddingBottom: 'env(safe-area-inset-bottom)' }}
         >
           {children}
         </div>
@@ -133,13 +158,22 @@ export default function VirtualKeyboard({
     <Wrapper>
       <div className={'w-full px-0 pb-2 flex justify-center pointer-events-none'} style={{ paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
         <div
-          className="bg-[#1f1f1f] text-white rounded-t-xl shadow-2xl border border-[#333] mx-auto inline-block w-full max-w-[90vw] min-w-[600px] px-[2px] pointer-events-auto"
-          style={{ maxWidth: maxWidthPx ? `${maxWidthPx}px` : undefined }}
+          className="mx-auto inline-block w-full max-w-[90vw] min-w-[600px] px-[2px] pointer-events-auto border-0 overflow-hidden rounded-t-2xl"
+          style={{
+            maxWidth: maxWidthPx ? `${maxWidthPx}px` : undefined,
+            background: PAY_NEO_CANVAS,
+            ...PAY_NEO.modalShell,
+            borderTopLeftRadius: 16,
+            borderTopRightRadius: 16,
+            borderBottomLeftRadius: 0,
+            borderBottomRightRadius: 0,
+          }}
         >
           {onRequestClose && (
             <div className="flex justify-end px-2 pt-2">
               <button
-                className="h-8 px-3 rounded bg-[#2f2f2f] hover:bg-[#3a3a3a] active:bg-red-600 text-white text-sm border border-gray-500"
+                type="button"
+                className={closeKeyClass}
                 onClick={onRequestClose}
                 title="Close"
               >
@@ -158,7 +192,8 @@ export default function VirtualKeyboard({
                     return (
                       <button
                         key={raw}
-                        className={keyStyle}
+                        type="button"
+                        className={keyClass}
                         onMouseDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -175,8 +210,9 @@ export default function VirtualKeyboard({
                       >{key}</button>
                     );
                   })}
-                  <button 
-                    className={controlKeyStyle} 
+                  <button
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -194,7 +230,8 @@ export default function VirtualKeyboard({
                     return (
                       <button
                         key={raw}
-                        className={keyStyle}
+                        type="button"
+                        className={keyClass}
                         onMouseDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -211,8 +248,9 @@ export default function VirtualKeyboard({
                       >{key}</button>
                     );
                   })}
-                  <button 
-                    className={`${controlKeyStyle} w-[85px]`} 
+                  <button
+                    type="button"
+                    className={`${raisedClass} w-[85px]`}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -225,8 +263,9 @@ export default function VirtualKeyboard({
                   >ENTER</button>
                 </div>
                 <div className="mt-1.5 flex gap-1.5 justify-center">
-                  <button 
-                    className={controlKeyStyle} 
+                  <button
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -242,7 +281,8 @@ export default function VirtualKeyboard({
                     return (
                       <button
                         key={raw}
-                        className={keyStyle}
+                        type="button"
+                        className={keyClass}
                         onMouseDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -259,8 +299,9 @@ export default function VirtualKeyboard({
                       >{key}</button>
                     );
                   })}
-                  <button 
-                    className={controlKeyStyle} 
+                  <button
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -276,7 +317,8 @@ export default function VirtualKeyboard({
                 {/* Bottom row: Space and Clear */}
                 <div className="mt-3 flex gap-2 items-center justify-center w-full">
                   <button
-                    className={controlKeyStyle}
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -290,7 +332,8 @@ export default function VirtualKeyboard({
                     #
                   </button>
                   <button
-                    className={`${controlKeyStyle} flex-none w-[262px] px-6`}
+                    type="button"
+                    className={`${raisedClass} flex-none w-[262px] px-6`}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -304,7 +347,8 @@ export default function VirtualKeyboard({
                     Space
                   </button>
                   <button
-                    className={controlKeyStyle}
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -318,7 +362,8 @@ export default function VirtualKeyboard({
                     -
                   </button>
                   <button
-                    className={controlKeyStyle}
+                    type="button"
+                    className={raisedClass}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -351,7 +396,8 @@ export default function VirtualKeyboard({
                     return (
                       <button
                         key={`np-${idx}-${cell}`}
-                        className={isNumpadBackspace ? controlKeyStyle : keyStyle}
+                        type="button"
+                        className={isNumpadBackspace ? raisedClass : numpadKeyClass}
                         onMouseDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
