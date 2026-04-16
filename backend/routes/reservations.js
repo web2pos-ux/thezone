@@ -94,6 +94,7 @@ const initializeReservationTables = async () => {
     await dbRun(`ALTER TABLE reservations ADD COLUMN customer_email TEXT`).catch(() => {});
     await dbRun(`ALTER TABLE reservations ADD COLUMN tables_needed INTEGER DEFAULT 1`).catch(() => {});
     await dbRun(`ALTER TABLE reservations ADD COLUMN linked_order_id TEXT`).catch(() => {}); // 연결된 주문 ID (결제시 사용)
+    await dbRun(`ALTER TABLE reservations ADD COLUMN arrived_at DATETIME`).catch(() => {}); // 실제 방문(착석 완료) 시각
 
     console.log('Reservation tables initialized successfully');
   } catch (error) {
@@ -329,6 +330,48 @@ router.get('/reservations/upcoming-hold', async (req, res) => {
     res.json(rows || []);
   } catch (error) {
     console.error('Error in GET /reservations/upcoming-hold:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Last 2 years: no_show / cancelled rows for phone (digits) OR name (substring) — New Reservation alert */
+router.get('/reservations/customer-alert', async (req, res) => {
+  try {
+    await ensureTablesExist();
+    const rawPhone = String(req.query.phone || '').trim();
+    const rawName = String(req.query.name || '').trim();
+    const phoneDigits = rawPhone.replace(/\D/g, '');
+    if (phoneDigits.length < 10 && rawName.length < 2) {
+      return res.json({ noShow: [], cancelled: [] });
+    }
+    const conditions = [];
+    const params = [];
+    if (phoneDigits.length >= 10) {
+      conditions.push(`REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(phone_number, ''), '-', ''), ' ', ''), '(', ''), ')', '') = ?`);
+      params.push(phoneDigits);
+    }
+    if (rawName.length >= 2) {
+      conditions.push(`INSTR(LOWER(TRIM(IFNULL(customer_name, ''))), LOWER(?)) > 0`);
+      params.push(rawName.trim());
+    }
+    if (conditions.length === 0) {
+      return res.json({ noShow: [], cancelled: [] });
+    }
+    const sql = `
+      SELECT reservation_date, reservation_time, status, customer_name, phone_number
+      FROM reservations
+      WHERE date(reservation_date) >= date('now', '-2 years')
+        AND status IN ('no_show', 'cancelled')
+        AND (${conditions.join(' OR ')})
+      ORDER BY reservation_date DESC, reservation_time DESC
+      LIMIT 50
+    `;
+    const rows = await dbAll(sql, params);
+    const noShow = (rows || []).filter((r) => r.status === 'no_show');
+    const cancelled = (rows || []).filter((r) => r.status === 'cancelled');
+    res.json({ noShow, cancelled });
+  } catch (error) {
+    console.error('Error in GET /reservations/customer-alert:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -581,14 +624,34 @@ router.delete('/reservations/:id', async (req, res) => {
 router.patch('/reservations/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
-    
-    await dbRun(`
-      UPDATE reservations 
-      SET status = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [status, id]);
-    
+    const { status, arrived_at } = req.body || {};
+
+    if (!status) {
+      return res.status(400).json({ error: 'status is required' });
+    }
+
+    if (arrived_at) {
+      await dbRun(`
+        UPDATE reservations 
+        SET status = ?, arrived_at = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, arrived_at, id]);
+    } else if (status === 'completed') {
+      await dbRun(`
+        UPDATE reservations 
+        SET status = ?, arrived_at = COALESCE(arrived_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, id]);
+    } else {
+      await dbRun(`
+        UPDATE reservations 
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, id]);
+    }
+
+    const rowAfter = await dbGet(`SELECT arrived_at FROM reservations WHERE id = ?`, [id]).catch(() => null);
+
     // Firebase 동기화
     try {
       const restaurantId = getRestaurantId();
@@ -596,16 +659,20 @@ router.patch('/reservations/:id/status', async (req, res) => {
         const firestore = firebaseService.getFirestore ? firebaseService.getFirestore() : null;
         if (firestore) {
           const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
-          await restaurantRef.collection('reservations').doc(String(id)).update({
+          const fbUpdate = {
             status,
             updated_at: new Date().toISOString(),
-          });
+          };
+          if (rowAfter?.arrived_at) {
+            fbUpdate.arrived_at = rowAfter.arrived_at;
+          }
+          await restaurantRef.collection('reservations').doc(String(id)).update(fbUpdate);
         }
       }
     } catch (fbErr) {
       console.warn('[Firebase] Reservation status sync failed:', fbErr.message);
     }
-    
+
     res.json({ message: 'Reservation status updated successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });

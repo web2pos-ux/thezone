@@ -3,6 +3,7 @@ import { API_URL } from '../../config/constants';
 import VirtualKeyboard from '../order/VirtualKeyboard';
 import { Keyboard as KeyboardIcon } from 'lucide-react';
 import TableSelectionModal from './TableSelectionModal';
+import ReservationCustomerRiskAlertModal, { type CustomerRiskRow } from './ReservationCustomerRiskAlertModal';
 import {
 	PAY_NEO,
 	PAY_NEO_CANVAS,
@@ -131,6 +132,44 @@ const buildDayCountsFromRowsAllStatuses = (rows: any[]): Record<string, number> 
 
 const countAllReservationRows = (rows: any[] | null | undefined): number => (rows || []).length;
 
+/** special_requests JSON channel 또는 상위 channel → Online / Phone / Walk-in */
+function getChannelLabelFromReservation(r: any): string {
+	try {
+		const sp = typeof r?.special_requests === 'string' ? JSON.parse(r.special_requests || '{}') : {};
+		const ch = (sp && sp.channel) ?? r?.channel ?? '';
+		const s = String(ch).trim();
+		if (!s) return 'Walk-in';
+		const lower = s.toLowerCase();
+		if (lower === 'online') return 'Online';
+		if (lower === 'phone') return 'Phone';
+		if (lower === 'walk-in' || lower === 'walkin') return 'Walk-in';
+		return s;
+	} catch {
+		return 'Walk-in';
+	}
+}
+
+/** Reservation slot time → e.g. 3:00 PM */
+function formatReservationSlotEn(raw: string | undefined): string {
+	if (raw == null || raw === '') return '—';
+	const t = String(raw).trim();
+	const m = t.match(/^(\d{1,2}):(\d{2})/);
+	if (!m) return t;
+	const h = Number(m[1]);
+	const min = Number(m[2]);
+	const d = new Date();
+	d.setHours(h, min, 0, 0);
+	return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/** When the reservation was created (DB created_at) */
+function formatBookedAtEn(raw: string | undefined): string {
+	if (!raw) return '—';
+	const d = new Date(raw);
+	if (Number.isNaN(d.getTime())) return '—';
+	return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 interface ReservationCreateModalProps {
 	open: boolean;
 	onClose: () => void;
@@ -242,11 +281,28 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	// Slot save states
 	const [savingSlots, setSavingSlots] = useState<boolean>(false);
 	const [slotsSaved, setSlotsSaved] = useState<boolean>(false);
-	const [selectedReservationForTable, setSelectedReservationForTable] = useState<{ id: string; name: string; partySize: number; tablesNeeded?: number; tableIndex?: number; reservationTime?: string } | null>(null);
+	const [selectedReservationForTable, setSelectedReservationForTable] = useState<{
+		id: string;
+		name: string;
+		partySize: number;
+		tablesNeeded?: number;
+		tableIndex?: number;
+		reservationTime?: string;
+		customerPhone?: string;
+		channelLabel?: string;
+		/** DB created_at — when the guest booked */
+		bookedAtTime?: string;
+	} | null>(null);
 	// Track how many tables have been assigned per reservation ID
 	const [tableAssignmentCount, setTableAssignmentCount] = useState<Record<string, number>>({});
 	// Track assigned table names per reservation ID (for display on bars)
 	const [assignedTableNames, setAssignedTableNames] = useState<Record<string, string[]>>({});
+	/** New Reservation — 2년 내 No-show / Cancel 이력 알림 */
+	const [customerRiskAlertOpen, setCustomerRiskAlertOpen] = useState(false);
+	const [customerRiskNoShow, setCustomerRiskNoShow] = useState<CustomerRiskRow[]>([]);
+	const [customerRiskCancelled, setCustomerRiskCancelled] = useState<CustomerRiskRow[]>([]);
+	const customerRiskDismissedSigRef = useRef<string | null>(null);
+	const customerRiskDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// Availability generator - all days open with configurable max slots
 	const availabilityMonth = useMemo(() => {
@@ -448,6 +504,22 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		}
 	}, [loadMonthReservationCountsFromApi, today]);
 
+	/** 취소/노쇼 등 상태 변경 후 달력·오늘·선택일 타임라인 목록을 DB와 맞춤 */
+	const refreshReservationListsAfterStatusChange = useCallback(async () => {
+		await refreshMonthAndTodayReservations();
+		if (!date) return;
+		try {
+			const list = await fetchReservationsForDate(date);
+			const grouped: Record<string, any[]> = {};
+			(list || []).forEach((r: any) => {
+				const t = String(r?.reservation_time || '').slice(0, 5);
+				if (!grouped[t]) grouped[t] = [];
+				grouped[t].push(r);
+			});
+			setReservationsByTime(grouped);
+		} catch {}
+	}, [refreshMonthAndTodayReservations, date]);
+
 	// Return empty array (no mock data - real data only)
 	const generateMockDayReservations = (_ds: string) => {
 		return [];
@@ -496,6 +568,68 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 			setCustomerHistory([]);
 		}
 	}, [phone]);
+
+	/** Detail / Timeline New Reservation 폼이 닫히면 알림 상태 초기화 */
+	useEffect(() => {
+		if (!showDetailModal && !showTimelineForm) {
+			customerRiskDismissedSigRef.current = null;
+			if (customerRiskDebounceRef.current) {
+				clearTimeout(customerRiskDebounceRef.current);
+				customerRiskDebounceRef.current = null;
+			}
+			setCustomerRiskAlertOpen(false);
+		}
+	}, [showDetailModal, showTimelineForm]);
+
+	/** 이름·전화 입력 시 2년 내 no_show / cancelled 조회 후 알림 */
+	useEffect(() => {
+		if (!open || (!showDetailModal && !showTimelineForm)) return;
+		const rawPhone = showDetailModal ? phone : tlFormPhone;
+		const rawName = showDetailModal ? name : tlFormName;
+		const phoneDigits = onlyDigits(rawPhone);
+		const nameTrim = rawName.trim();
+		if (phoneDigits.length < 10 && nameTrim.length < 2) return;
+		const inputSig = `${phoneDigits}|${nameTrim.toLowerCase()}`;
+		if (customerRiskDismissedSigRef.current === inputSig) return;
+		if (customerRiskDebounceRef.current) clearTimeout(customerRiskDebounceRef.current);
+		customerRiskDebounceRef.current = setTimeout(() => {
+			customerRiskDebounceRef.current = null;
+			void (async () => {
+				try {
+					const qs = new URLSearchParams();
+					qs.set('phone', phoneDigits);
+					qs.set('name', nameTrim);
+					const res = await fetch(`${API_URL}/reservations/customer-alert?${qs.toString()}`);
+					if (!res.ok) return;
+					const data = (await res.json()) as { noShow?: CustomerRiskRow[]; cancelled?: CustomerRiskRow[] };
+					const noShow = Array.isArray(data.noShow) ? data.noShow : [];
+					const cancelled = Array.isArray(data.cancelled) ? data.cancelled : [];
+					if (noShow.length === 0 && cancelled.length === 0) return;
+					if (customerRiskDismissedSigRef.current === inputSig) return;
+					setCustomerRiskNoShow(noShow);
+					setCustomerRiskCancelled(cancelled);
+					setCustomerRiskAlertOpen(true);
+				} catch {
+					/* ignore */
+				}
+			})();
+		}, 450);
+		return () => {
+			if (customerRiskDebounceRef.current) {
+				clearTimeout(customerRiskDebounceRef.current);
+				customerRiskDebounceRef.current = null;
+			}
+		};
+	}, [open, showDetailModal, showTimelineForm, name, phone, tlFormName, tlFormPhone]);
+
+	const dismissCustomerRiskAlert = useCallback(() => {
+		const rawPhone = showDetailModal ? phone : tlFormPhone;
+		const rawName = showDetailModal ? name : tlFormName;
+		const phoneDigits = onlyDigits(rawPhone);
+		const nameTrim = rawName.trim();
+		customerRiskDismissedSigRef.current = `${phoneDigits}|${nameTrim.toLowerCase()}`;
+		setCustomerRiskAlertOpen(false);
+	}, [showDetailModal, phone, tlFormPhone, name, tlFormName]);
 
 	// Position slot modal: timeline = centered full-width; grid = docked right of main modal
     useEffect(() => {
@@ -562,6 +696,47 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		return mockPartySizes[reservationId] || 2;
 	};
 
+	/** 첫 테이블 배정 시점 — DB에 실제 방문 시각(arrived_at) + confirmed 저장 (다중 테이블용) */
+	const persistReservationArrivalStartedToDb = async (reservationId: string): Promise<boolean> => {
+		try {
+			const arrivedAt = new Date().toISOString();
+			const res = await fetch(`${API_URL}/reservations/${encodeURIComponent(reservationId)}/status`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: 'confirmed', arrived_at: arrivedAt }),
+			});
+			return res.ok;
+		} catch {
+			return false;
+		}
+	};
+
+	/** 실제 방문 완료(필요 테이블 모두 배정): DB에 completed 저장 — arrived_at은 기존 값 유지(COALESCE) */
+	const persistReservationVisitToDb = async (reservationId: string): Promise<boolean> => {
+		try {
+			const res = await fetch(`${API_URL}/reservations/${encodeURIComponent(reservationId)}/status`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: 'completed' }),
+			});
+			return res.ok;
+		} catch {
+			return false;
+		}
+	};
+
+	/** 테이블 선택 플로우 종료 시: Timeline·슬롯·타임라인 폼·Select Table 모달 정리 후 Reserve 모달(달력)까지 닫음 */
+	const closeReservationModalsAndParent = useCallback(() => {
+		setShowTableSelectionModal(false);
+		setSelectedReservationForTable(null);
+		setShowSlotModal(false);
+		setShowTimelineForm(false);
+		setSoftKbOpen(false);
+		setSoftKbTarget(null);
+		setTlFormError(null);
+		onClose();
+	}, [onClose]);
+
 	// Handle table selection for arrived guest
 	const handleTableSelect = async (tableId: number, tableName: string) => {
 		if (!selectedReservationForTable) return;
@@ -594,16 +769,24 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 				setTableAssignmentCount(prev => ({ ...prev, [reservationId]: newCount }));
 				setAssignedTableNames(prev => ({ ...prev, [reservationId]: [...(prev[reservationId] || []), tableName] }));
 
-				setShowTableSelectionModal(false);
-				setSelectedReservationForTable(null);
+				if (newCount === 1 && tablesNeeded > 1) {
+					void persistReservationArrivalStartedToDb(String(reservationId));
+				}
 
 				if (newCount >= tablesNeeded) {
-					setToastMsg(`All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`);
+					const visitOk = await persistReservationVisitToDb(String(reservationId));
+					setToastMsg(
+						visitOk
+							? `All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`
+							: `Tables assigned; saving visit failed — check connection.`
+					);
 					setShowToast(true);
 					setTimeout(() => setShowToast(false), 3000);
-					setShowSlotModal(false);
 					setTableAssignmentCount(prev => { const next = { ...prev }; delete next[reservationId]; return next; });
+					closeReservationModalsAndParent();
 				} else {
+					setShowTableSelectionModal(false);
+					setSelectedReservationForTable(null);
 					setToastMsg(`Table ${tableName} assigned (${newCount}/${tablesNeeded}) — select next table`);
 					setShowToast(true);
 					setTimeout(() => setShowToast(false), 3000);
@@ -652,16 +835,27 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 				setTableAssignmentCount(prev => ({ ...prev, [reservationId]: newCount }));
 				setAssignedTableNames(prev => ({ ...prev, [reservationId]: [...(prev[reservationId] || []), tableName] }));
 
-				setShowTableSelectionModal(false);
-				setSelectedReservationForTable(null);
+				if (newCount === 1 && tablesNeeded > 1 && status !== 'Hold') {
+					void persistReservationArrivalStartedToDb(String(reservationId));
+				}
 
 				if (newCount >= tablesNeeded) {
-					setToastMsg(`All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`);
+					let visitOk = true;
+					if (status !== 'Hold') {
+						visitOk = await persistReservationVisitToDb(String(reservationId));
+					}
+					setToastMsg(
+						visitOk
+							? `All ${tablesNeeded} tables assigned to ${selectedReservationForTable.name}`
+							: `Table updated; saving visit failed — check connection.`
+					);
 					setShowToast(true);
 					setTimeout(() => setShowToast(false), 3000);
-					setShowSlotModal(false);
 					setTableAssignmentCount(prev => { const next = { ...prev }; delete next[reservationId]; return next; });
+					closeReservationModalsAndParent();
 				} else {
+					setShowTableSelectionModal(false);
+					setSelectedReservationForTable(null);
 					setToastMsg(`Table ${tableName} assigned (${newCount}/${tablesNeeded}) — select next table`);
 					setShowToast(true);
 					setTimeout(() => setShowToast(false), 3000);
@@ -680,19 +874,49 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		}
 	};
 
-const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | 'rebook' | 'no_show' | 'to_waiting', customerName: string, phoneNumber: string, reservationId?: string) => {
-		// Handle cancel action immediately for demo reservations
+const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | 'rebook' | 'no_show' | 'to_waiting', customerName: string, phoneNumber: string, reservationId?: string): Promise<boolean | void> => {
+		// Cancel → DB에 cancelled 저장 + 목록 갱신
 		if (action === 'cancel' && reservationId) {
+			try {
+				const res = await fetch(`${API_URL}/reservations/${encodeURIComponent(reservationId)}/status`, {
+					method: 'PATCH',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ status: 'cancelled' }),
+				});
+				if (!res.ok) {
+					const msg = await res.text().catch(() => '');
+					setError(`Failed to cancel reservation. ${res.status} ${msg}`);
+					return false;
+				}
+			} catch {
+				setError('Failed to cancel reservation.');
+				return false;
+			}
 			setCancelledReservations(prev => new Set([...Array.from(prev), reservationId]));
-			return;
+			setCancelledLabelMap(prev => ({ ...prev, [reservationId]: 'Cancel' }));
+			await refreshReservationListsAfterStatusChange();
+			if (onCreated) onCreated();
+			return true;
 		}
 
-		// Handle no_show similar to cancel (strike-through) and tag
-        if (action === 'no_show' && reservationId) {
-            setCancelledReservations((prev: Set<string>) => new Set([...Array.from(prev), reservationId]));
-            setCancelledLabelMap((prev: Record<string, 'Cancel' | 'No Show'>) => ({ ...prev, [reservationId]: 'No Show' }));
-			try { await fetch(`${API_URL}/reservations/${encodeURIComponent(reservationId)}/no-show`, { method: 'PATCH' }); } catch {}
-			return;
+		// No Show → DB PATCH + 목록 갱신
+		if (action === 'no_show' && reservationId) {
+			try {
+				const res = await fetch(`${API_URL}/reservations/${encodeURIComponent(reservationId)}/no-show`, { method: 'PATCH' });
+				if (!res.ok) {
+					const msg = await res.text().catch(() => '');
+					setError(`Failed to mark no-show. ${res.status} ${msg}`);
+					return false;
+				}
+			} catch {
+				setError('Failed to mark no-show.');
+				return false;
+			}
+			setCancelledReservations((prev: Set<string>) => new Set([...Array.from(prev), reservationId]));
+			setCancelledLabelMap((prev: Record<string, 'Cancel' | 'No Show'>) => ({ ...prev, [reservationId]: 'No Show' }));
+			await refreshReservationListsAfterStatusChange();
+			if (onCreated) onCreated();
+			return true;
 		}
 
 		// Handle rebook action for demo reservations
@@ -724,13 +948,19 @@ const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | '
 			}
 		}
 		if (action === 'arrived' && reservationId) {
-			const partySize = getPartySizeFromReservation(reservationId);
+			const flat = [...Object.values(reservationsByTime).flat(), ...(todayReservations || [])];
+			const row = flat.find((x: any) => String(x?.id) === String(reservationId)) || null;
+			const partySize = row ? Number(row.party_size || 2) : getPartySizeFromReservation(reservationId);
 			const tablesNeeded = calcTablesNeeded(partySize);
 			setSelectedReservationForTable({
 				id: reservationId,
 				name: customerName,
-				partySize: partySize,
-				tablesNeeded
+				partySize,
+				tablesNeeded,
+				reservationTime: row?.reservation_time || '',
+				customerPhone: String(row?.phone_number || row?.phone || ''),
+				channelLabel: row ? getChannelLabelFromReservation(row) : 'Walk-in',
+				bookedAtTime: row?.created_at != null ? String(row.created_at) : '',
 			});
 			setShowTableSelectionModal(true);
 			return;
@@ -772,6 +1002,36 @@ const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | '
 			console.error(`Failed to ${action} reservation:`, error);
 			setError(`Failed to ${action} reservation`);
 		}
+	};
+
+	const resolvePhoneForReservationId = (id: string) => {
+		const flat = [...Object.values(reservationsByTime).flat(), ...(todayReservations || [])];
+		const r = flat.find((x: any) => String(x?.id) === String(id));
+		return String(r?.phone_number || r?.phone || '');
+	};
+
+	const handleTableSelectionCancel = async () => {
+		const sel = selectedReservationForTable;
+		if (!sel?.id) return;
+		const phone = resolvePhoneForReservationId(String(sel.id));
+		const ok = await handleReservationAction('cancel', sel.name || '', phone, String(sel.id));
+		if (ok === false) return;
+		setToastMsg('Reservation cancelled — saved.');
+		setShowToast(true);
+		setTimeout(() => setShowToast(false), 3000);
+		closeReservationModalsAndParent();
+	};
+
+	const handleTableSelectionNoShow = async () => {
+		const sel = selectedReservationForTable;
+		if (!sel?.id) return;
+		const phone = resolvePhoneForReservationId(String(sel.id));
+		const ok = await handleReservationAction('no_show', sel.name || '', phone, String(sel.id));
+		if (ok === false) return;
+		setToastMsg('Marked as no-show — saved.');
+		setShowToast(true);
+		setTimeout(() => setShowToast(false), 3000);
+		closeReservationModalsAndParent();
 	};
 
 // No external time slots UI; time is built from hour/minute/AMPM
@@ -1365,7 +1625,10 @@ const handleSave = async () => {
 																name: r.customer_name || 'Guest',
 																partySize: ps,
 																tablesNeeded: r.tables_needed || calcTablesNeeded(ps),
-																reservationTime: r.reservation_time || ''
+																reservationTime: r.reservation_time || '',
+																customerPhone: String(r.phone_number || r.phone || ''),
+																channelLabel: getChannelLabelFromReservation(r),
+																bookedAtTime: r.created_at != null ? String(r.created_at) : '',
 															});
 															setShowTableSelectionModal(true);
 														}}
@@ -1741,7 +2004,17 @@ const handleSave = async () => {
 																title={`${timeLabel}\n${rsvName} • ${rsvParty}ppl (T${tblIdx}/${tblTotal})${allTableDisplay ? `\nTables: ${allTableDisplay}` : ''}`}
 																onClick={(e) => {
 																	e.stopPropagation();
-																	setSelectedReservationForTable({ id: rsvId, name: rsvName, partySize: rsvParty, tablesNeeded: tblTotal, tableIndex: tblIdx, reservationTime: rsv._startTime });
+																	setSelectedReservationForTable({
+																		id: rsvId,
+																		name: rsvName,
+																		partySize: rsvParty,
+																		tablesNeeded: tblTotal,
+																		tableIndex: tblIdx,
+																		reservationTime: rsv._startTime || rsv.reservation_time || '',
+																		customerPhone: String(rsv.phone_number || rsv.phone || ''),
+																		channelLabel: getChannelLabelFromReservation(rsv),
+																		bookedAtTime: rsv.created_at != null ? String(rsv.created_at) : '',
+																	});
 																	setShowTableSelectionModal(true);
 																}}
 															>
@@ -1961,16 +2234,6 @@ const handleSave = async () => {
 								{channelInfo && <span>📌 {channelInfo}</span>}
 								{depositInfo && <span>💰 {depositInfo}</span>}
 							</div>
-						</div>
-						<div className="flex items-center gap-1 flex-shrink-0">
-							{!isOccupying && r.status !== 'cancelled' && r.status !== 'no_show' && r.status !== 'completed' && (
-								<button
-									type="button"
-									className={`rounded-[10px] border-0 px-2 py-1 text-xs font-semibold text-red-700 touch-manipulation select-none ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
-									style={{ ...PAY_NEO.key, background: '#f1d5d8' }}
-									onClick={() => { setConfirmTarget({ id: r.id, name: r.customer_name, phone: r.phone_number }); setConfirmModalOpen(true); }}
-								>Cancel</button>
-							)}
 						</div>
 					</div>
 				);
@@ -2426,16 +2689,27 @@ const handleSave = async () => {
 		)}
 
 		{/* Table Selection Modal */}
+		<ReservationCustomerRiskAlertModal
+			isOpen={customerRiskAlertOpen}
+			noShow={customerRiskNoShow}
+			cancelled={customerRiskCancelled}
+			onDismiss={dismissCustomerRiskAlert}
+		/>
+
 		<TableSelectionModal
 			isOpen={showTableSelectionModal}
-			onClose={() => {
-				setShowTableSelectionModal(false);
-				setSelectedReservationForTable(null);
-			}}
+			onClose={closeReservationModalsAndParent}
 			onTableSelect={handleTableSelect}
 			onTableStatusChange={handleTableStatusChange}
 			partySize={selectedReservationForTable?.partySize || 1}
 			customerName={selectedReservationForTable?.name || 'Guest'}
+			customerPhone={selectedReservationForTable?.customerPhone}
+			reservationSlotDisplay={formatReservationSlotEn(selectedReservationForTable?.reservationTime)}
+			bookedAtDisplay={formatBookedAtEn(selectedReservationForTable?.bookedAtTime)}
+			channelLabel={selectedReservationForTable?.channelLabel}
+			reservationId={selectedReservationForTable?.id}
+			onReservationCancel={handleTableSelectionCancel}
+			onReservationNoShow={handleTableSelectionNoShow}
 		/>
 		</>
 	);

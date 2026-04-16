@@ -1,304 +1,313 @@
 import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
 import { API_URL } from '../../config/constants';
+import {
+	NEO_COLOR_BTN_PRESS_SNAP,
+	NEO_PREP_TIME_BTN_PRESS_SNAP,
+	NEO_PRESS_INSET_ONLY_NO_SHIFT,
+	PAY_NEO,
+	PAY_NEO_CANVAS,
+} from '../../utils/softNeumorphic';
+
+/** 녹색 Seated 칩 — idle 볼록 유지, :active 시 인셋으로 확실한 오목 눌림 */
+const SEATED_GREEN_PRESS_INSET_SNAP =
+	'[-webkit-tap-highlight-color:transparent] transition-[box-shadow,transform,filter] duration-0 ease-out active:!shadow-[inset_8px_8px_20px_rgba(0,0,0,0.58),inset_-4px_-4px_14px_rgba(255,255,255,0.22)] active:translate-y-px active:scale-[0.95] active:brightness-[0.86] disabled:translate-y-0 disabled:scale-100 disabled:brightness-100';
 
 interface TableElement {
-  id: number;
-  type: string;
-  position: { x: number; y: number };
-  size: { width: number; height: number };
-  rotation: number;
-  text?: string;
-  fontSize?: number;
-  color?: string;
-  status?: string;
+	id: number;
+	type: string;
+	position: { x: number; y: number };
+	size: { width: number; height: number };
+	rotation: number;
+	text?: string;
+	fontSize?: number;
+	color?: string;
+	status?: string;
 }
 
 interface TableSelectionModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onTableSelect: (tableId: number, tableName: string) => void;
-  onTableStatusChange?: (tableId: number, tableName: string, status: 'Occupied' | 'Reserved' | 'Hold', customerName?: string) => void;
-  partySize?: number;
-  customerName?: string;
+	isOpen: boolean;
+	onClose: () => void;
+	onTableSelect: (tableId: number, tableName: string) => void;
+	onTableStatusChange?: (tableId: number, tableName: string, status: 'Occupied' | 'Reserved' | 'Hold', customerName?: string) => void;
+	partySize?: number;
+	customerName?: string;
+	customerPhone?: string;
+	/** English formatted slot time */
+	reservationSlotDisplay?: string;
+	/** When the reservation was created */
+	bookedAtDisplay?: string;
+	/** Online / Phone / Walk-in */
+	channelLabel?: string;
+	reservationId?: string;
+	onReservationCancel?: () => void | Promise<void>;
+	onReservationNoShow?: () => void | Promise<void>;
 }
 
 const TableSelectionModal: React.FC<TableSelectionModalProps> = ({
-  isOpen,
-  onClose,
-  onTableSelect,
-  onTableStatusChange,
-  partySize = 1,
-  customerName = 'Guest'
+	isOpen,
+	onClose,
+	onTableSelect,
+	onTableStatusChange,
+	partySize = 1,
+	customerName = 'Guest',
+	customerPhone,
+	reservationSlotDisplay,
+	bookedAtDisplay,
+	channelLabel,
+	reservationId,
+	onReservationCancel,
+	onReservationNoShow,
 }) => {
-  const [tables, setTables] = useState<TableElement[]>([]);
-  const [loading, setLoading] = useState(false);
+	const [tables, setTables] = useState<TableElement[]>([]);
+	const [loading, setLoading] = useState(false);
 
-  // 테이블 상태별 색상 정의
-  const getTableStatusColor = (status: string) => {
-    const normalizedStatus = (status || '').toLowerCase();
-    switch (normalizedStatus) {
-      case 'available':
-        return '#22C55E'; // 초록색
-      case 'preparing':
-        return '#F97316'; // 주황색
-      case 'occupied':
-        return '#EF4444'; // 빨간색
-      case 'reserved':
-        return '#EAB308'; // 노란색
-      case 'hold':
-        return '#EAB308'; // 노란색 (그라데이션 적용)
-      default:
-        return '#6B7280'; // 회색
-    }
-  };
+	// 테이블 상태별 색상 정의
+	const getTableStatusColor = (status: string) => {
+		const normalizedStatus = (status || '').toLowerCase();
+		switch (normalizedStatus) {
+			case 'available':
+				return '#22C55E';
+			case 'preparing':
+				return '#F97316';
+			case 'occupied':
+				return '#EF4444';
+			case 'reserved':
+				return '#EAB308';
+			case 'hold':
+				return '#EAB308';
+			default:
+				return '#6B7280';
+		}
+	};
 
-  const getTableStatusText = (status: string) => {
-    const normalizedStatus = (status || '').toLowerCase();
-    switch (normalizedStatus) {
-      case 'available':
-        return 'Available';
-      case 'preparing':
-        return 'Preparing';
-      case 'occupied':
-        return 'Occupied';
-      case 'reserved':
-        return 'Reserved';
-      default:
-        return status || 'Unknown';
-    }
-  };
+	// 테이블 목록 가져오기
+	const fetchTables = async () => {
+		setLoading(true);
+		try {
+			const response = await fetch(`${API_URL}/table-map/elements?floor=1F`);
 
-  // 테이블 목록 가져오기
-  const fetchTables = async () => {
-    setLoading(true);
-    try {
-      // 먼저 1F에서 테이블을 가져와보기
-      console.log('Fetching tables from floor 1F...');
-      const response = await fetch(`${API_URL}/table-map/elements?floor=1F`);
-      
-      if (!response.ok) {
-        console.error('API response not ok:', response.status, response.statusText);
-        throw new Error(`Failed to fetch tables: ${response.status} ${response.statusText}`);
-      }
-      
-      const allTables = await response.json();
-      console.log('Raw API response from 1F:', allTables);
-      console.log('Number of tables received:', allTables.length);
-      
-      if (!Array.isArray(allTables)) {
-        console.error('API response is not an array:', typeof allTables);
-        setTables([]);
-        return;
-      }
-      
-      // 각 테이블의 상세 정보 로그
-      allTables.forEach((table, index) => {
-        console.log(`Table ${index}:`, {
-          id: table.id,
-          text: table.text,
-          type: table.type,
-          status: table.status,
-          position: table.position,
-          size: table.size,
-          floor: table.floor
-        });
-      });
-      
-      // 테이블 타입 필터링 (rounded-rectangle 또는 circle)
-      const tableTypeFiltered = allTables.filter((table: TableElement) => {
-        const isValidType = table.type === 'rounded-rectangle' || table.type === 'circle';
-        console.log(`Table ${table.id} type check: "${table.type}" -> ${isValidType}`);
-        return isValidType;
-      });
-      console.log('Tables after type filtering:', tableTypeFiltered.length, 'tables');
-      
-      // Available과 Preparing 상태의 테이블만 필터링
-      const availableTables = tableTypeFiltered.filter((table: TableElement) => {
-        const originalStatus = table.status;
-        const status = (originalStatus || '').toLowerCase();
-        const isAvailableOrPreparing = status === 'available' || status === 'preparing';
-        console.log(`Table ${table.id} (${table.text}): originalStatus="${originalStatus}" -> normalized="${status}" -> isAvailableOrPreparing=${isAvailableOrPreparing}`);
-        return isAvailableOrPreparing;
-      });
-      
-      console.log('Final filtered tables count:', availableTables.length);
-      console.log('Final filtered tables:', availableTables);
-      
-      // 만약 필터링된 테이블이 없다면, 모든 테이블을 다시 확인
-      if (availableTables.length === 0) {
-        console.warn('No tables found after filtering. Checking all table statuses:');
-        tableTypeFiltered.forEach(table => {
-          console.warn(`Table ${table.id}: type="${table.type}", status="${table.status}"`);
-        });
-      }
-      
-      setTables(availableTables);
-    } catch (error) {
-      console.error('Error fetching tables:', error);
-      setTables([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+			if (!response.ok) {
+				throw new Error(`Failed to fetch tables: ${response.status} ${response.statusText}`);
+			}
 
-  useEffect(() => {
-    if (isOpen) {
-      fetchTables();
-    }
-  }, [isOpen]);
+			const allTables = await response.json();
 
+			if (!Array.isArray(allTables)) {
+				setTables([]);
+				return;
+			}
 
-  // 테이블 상태 변경 함수
-  const handleTableStatusChange = async (tableId: number, newStatus: 'Occupied' | 'Reserved' | 'Hold') => {
-    try {
-      const response = await fetch(`${API_URL}/table-map/elements/${tableId}/status`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus })
-      });
+			const tableTypeFiltered = allTables.filter((table: TableElement) => {
+				return table.type === 'rounded-rectangle' || table.type === 'circle';
+			});
 
-      if (response.ok) {
-        // 테이블 이름 찾기
-        const table = tables.find(t => t.id === tableId);
-        const tableName = table?.text || `Table ${tableId}`;
-        
-        // 부모 컴포넌트에 상태 변경 알림
-        if (onTableStatusChange) {
-          onTableStatusChange(tableId, tableName, newStatus, customerName);
-        }
-        
-        // 테이블 목록에서 해당 테이블 제거 (더 이상 선택 가능하지 않음)
-        setTables(prev => prev.filter(table => table.id !== tableId));
-      } else {
-        throw new Error('Failed to update table status');
-      }
-    } catch (error) {
-      console.error('Error updating table status:', error);
-      alert('Failed to update table status. Please try again.');
-    }
-  };
+			const availableTables = tableTypeFiltered.filter((table: TableElement) => {
+				const status = (table.status || '').toLowerCase();
+				return status === 'available' || status === 'preparing';
+			});
 
-  if (!isOpen) return null;
+			setTables(availableTables);
+		} catch (error) {
+			console.error('Error fetching tables:', error);
+			setTables([]);
+		} finally {
+			setLoading(false);
+		}
+	};
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[80]">
-      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">
-              Select Table for Arrived Guest
-            </h2>
-            <div className="mt-2 text-lg text-gray-600">
-              <span className="font-semibold">{customerName}</span> • Party of {partySize}
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-          >
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+	useEffect(() => {
+		if (isOpen) {
+			fetchTables();
+		}
+	}, [isOpen]);
 
-        {/* Content */}
-        <div className="flex-1 overflow-hidden">
-          {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="text-lg text-gray-600">Loading tables...</div>
-            </div>
-          ) : (
-            <div className="p-6">
-              <div className="mb-4">
-                <p className="text-sm text-gray-500">
-                  Select an available or preparing table for the arrived guest
-                </p>
-              </div>
+	// 테이블 상태 변경 함수
+	const handleTableStatusChange = async (tableId: number, newStatus: 'Occupied' | 'Reserved' | 'Hold') => {
+		try {
+			const response = await fetch(`${API_URL}/table-map/elements/${tableId}/status`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: newStatus }),
+			});
 
-              {tables.length === 0 ? (
-                <div className="text-center py-12">
-                  <div className="text-gray-500 text-lg mb-2">No available tables</div>
-                  <div className="text-gray-400 text-sm">
-                    All tables are currently occupied or reserved
-                  </div>
-                  <div className="text-gray-400 text-xs mt-2">
-                    Check console for debugging information
-                  </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-96 overflow-y-auto">
-                  {tables.map((table) => (
-                    <div
-                      key={table.id}
-                      className="relative p-4 border-2 border-gray-200 rounded-lg transition-all duration-200"
-                    >
-                      {/* Table Visual */}
-                      <div className="flex items-center justify-center mb-3">
-                        <div
-                          className={`
-                            ${table.type === 'circle' ? 'rounded-full' : 'rounded-lg'}
-                            border-4 flex items-center justify-center text-white font-bold
-                          `}
-                          style={{
-                            width: '80px',
-                            height: '80px',
-                            backgroundColor: getTableStatusColor(table.status || 'available'),
-                            background: (table.status || '').toLowerCase() === 'hold' ? 
-                              '#EAB308' :
-                              getTableStatusColor(table.status || 'available'),
-                            borderColor: (table.status || '').toLowerCase() === 'hold' ? '#F97316' : getTableStatusColor(table.status || 'available')
-                          }}
-                        >
-                          {table.text || table.id}
-                        </div>
-                      </div>
+			if (response.ok) {
+				const table = tables.find(t => t.id === tableId);
+				const tableName = table?.text || `Table ${tableId}`;
 
-                      {/* Action Buttons */}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleTableStatusChange(table.id, 'Occupied');
-                          }}
-                          className="w-20 px-2 py-4 text-xs font-semibold text-red-600 bg-transparent border-2 border-red-600 rounded-lg hover:bg-red-50 active:bg-red-100 transition-colors min-h-[48px] flex items-center justify-center"
-                        >
-                          Occupied
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            // Available 테이블은 Reserved로, Preparing 테이블은 Hold로 변경
-                            const currentStatus = (table.status || '').toLowerCase();
-                            const newStatus = currentStatus === 'available' ? 'Reserved' : 'Hold';
-                            handleTableStatusChange(table.id, newStatus);
-                          }}
-                          className="w-20 px-2 py-4 text-xs font-semibold text-yellow-600 bg-transparent border-2 border-yellow-600 rounded-lg hover:bg-yellow-50 active:bg-yellow-100 transition-colors min-h-[48px] flex items-center justify-center"
-                        >
-                          Hold
-                        </button>
-                      </div>
+				if (onTableStatusChange) {
+					onTableStatusChange(tableId, tableName, newStatus, customerName);
+				}
 
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+				setTables(prev => prev.filter(t => t.id !== tableId));
+			} else {
+				throw new Error('Failed to update table status');
+			}
+		} catch (error) {
+			console.error('Error updating table status:', error);
+			alert('Failed to update table status. Please try again.');
+		}
+	};
 
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t bg-gray-50">
-          <button
-            onClick={onClose}
-            className="px-6 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors font-semibold"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+	if (!isOpen) return null;
+
+	return (
+		<div
+			className="fixed inset-0 z-[110] flex items-center justify-center bg-black bg-opacity-50"
+			onClick={onClose}
+			role="presentation"
+		>
+			<div
+				className="flex w-full max-h-[85vh] max-w-[min(1024px,96vw)] flex-col overflow-hidden rounded-2xl border-0 p-4 sm:p-5"
+				style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS }}
+				onClick={e => e.stopPropagation()}
+			>
+				<div className="mb-3 flex shrink-0 items-center justify-between gap-3">
+					<h3 className="min-w-0 text-lg font-bold text-gray-800">Select Table for Arrived Guest</h3>
+					<button
+						type="button"
+						onClick={onClose}
+						className={`flex h-10 w-10 flex-shrink-0 items-center justify-center border-0 text-xl font-bold text-gray-700 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+						style={PAY_NEO.raised}
+						title="Close"
+					>
+						×
+					</button>
+				</div>
+
+				<div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+					<div className="space-y-2 rounded-[14px] p-2.5" style={PAY_NEO.inset}>
+						<div className="space-y-2 text-sm leading-snug text-gray-800">
+							<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+								<span className="font-semibold">{customerName}</span>
+								<span className="text-gray-400" aria-hidden>
+									·
+								</span>
+								<span>{customerPhone?.trim() ? customerPhone : '—'}</span>
+								<span className="text-gray-400" aria-hidden>
+									·
+								</span>
+								<span>{partySize}</span>
+							</div>
+							<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+								<span className="font-medium">{(channelLabel || '').trim() || '—'}</span>
+								<span className="text-gray-400" aria-hidden>
+									·
+								</span>
+								<span>{bookedAtDisplay ?? '—'}</span>
+								<span className="text-gray-400" aria-hidden>
+									·
+								</span>
+								<span>{reservationSlotDisplay ?? '—'}</span>
+							</div>
+						</div>
+					</div>
+
+					<div className="space-y-2 rounded-[14px] p-2.5" style={PAY_NEO.inset}>
+						<div className="text-sm font-semibold text-gray-800">Tables</div>
+						{loading ? (
+							<div className="flex items-center justify-center py-12 text-base text-gray-600">Loading tables...</div>
+						) : tables.length === 0 ? (
+							<div className="space-y-1 py-6 text-center">
+								<div className="text-base font-medium text-gray-700">No available tables</div>
+								<div className="text-sm text-gray-600">All tables are currently occupied or reserved</div>
+							</div>
+						) : (
+							<>
+								<p className="text-sm text-gray-600">Select an available or preparing table for the arrived guest</p>
+								<div className="grid grid-cols-5 gap-2">
+									{tables.map(table => {
+										const statusLower = (table.status || '').toLowerCase();
+										const isAvailable = statusLower === 'available';
+										const seatedPressClass = isAvailable ? SEATED_GREEN_PRESS_INSET_SNAP : NEO_COLOR_BTN_PRESS_SNAP;
+										const seatedChipStyle: React.CSSProperties = isAvailable
+											? {
+													background: 'linear-gradient(155deg, #4ade80 0%, #22c55e 42%, #15803d 100%)',
+													boxShadow:
+														'8px 8px 20px rgba(0, 64, 32, 0.55), -5px -5px 16px rgba(255, 255, 255, 0.35), inset 0 2px 0 rgba(255, 255, 255, 0.35)',
+												}
+											: {
+													backgroundColor: getTableStatusColor(table.status || 'available'),
+													background:
+														statusLower === 'hold'
+															? '#EAB308'
+															: getTableStatusColor(table.status || 'available'),
+													boxShadow: 'inset 2px 2px 6px rgba(0,0,0,0.15)',
+												};
+										return (
+										<div key={table.id} className="flex min-w-0 flex-col items-center space-y-2 rounded-[10px] p-1.5 sm:p-2" style={PAY_NEO.key}>
+											<button
+												type="button"
+												onClick={e => {
+													e.stopPropagation();
+													handleTableStatusChange(table.id, 'Occupied');
+												}}
+												className={`flex min-h-[96px] w-[96px] flex-col items-center justify-center gap-0.5 border-0 px-1 py-1.5 text-center touch-manipulation ${
+													table.type === 'circle' ? 'rounded-full' : 'rounded-lg'
+												} ${seatedPressClass}`}
+												style={seatedChipStyle}
+											>
+												<span className="max-w-[88px] truncate text-xl font-bold leading-tight text-white drop-shadow-sm">
+													{table.text || table.id}
+												</span>
+												<span className="text-xs font-semibold leading-tight text-white/95 drop-shadow-sm">Seated</span>
+											</button>
+											<button
+												type="button"
+												onClick={e => {
+													e.stopPropagation();
+													const currentStatus = (table.status || '').toLowerCase();
+													const newStatus = currentStatus === 'available' ? 'Reserved' : 'Hold';
+													handleTableStatusChange(table.id, newStatus);
+												}}
+												className={`flex w-full min-h-[44px] items-center justify-center border-0 px-1 py-2 text-xs font-semibold text-gray-900 touch-manipulation ${NEO_PREP_TIME_BTN_PRESS_SNAP}`}
+												style={PAY_NEO.key}
+											>
+												Hold
+											</button>
+										</div>
+										);
+									})}
+								</div>
+							</>
+						)}
+					</div>
+				</div>
+
+				<div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
+					<div className="flex flex-wrap gap-2">
+						{reservationId && onReservationCancel && (
+							<button
+								type="button"
+								onClick={() => void onReservationCancel()}
+								className={`min-w-[152px] whitespace-nowrap rounded-[10px] border-0 px-4 py-3 text-sm font-semibold text-red-800 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+								style={PAY_NEO.key}
+							>
+								Cancel Reservation
+							</button>
+						)}
+						{reservationId && onReservationNoShow && (
+							<button
+								type="button"
+								onClick={() => void onReservationNoShow()}
+								className={`min-w-[100px] rounded-[10px] border-0 px-4 py-3 text-sm font-semibold text-amber-900 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+								style={PAY_NEO.key}
+							>
+								No Show
+							</button>
+						)}
+					</div>
+					<button
+						type="button"
+						onClick={onClose}
+						className={`min-w-[110px] rounded-[10px] border-0 px-5 py-3 text-base font-semibold text-gray-900 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+						style={PAY_NEO.key}
+					>
+						Close
+					</button>
+				</div>
+			</div>
+		</div>
+	);
 };
 
 export default TableSelectionModal;
