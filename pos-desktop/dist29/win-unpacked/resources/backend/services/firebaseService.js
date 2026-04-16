@@ -56,6 +56,35 @@ function getFirestore() {
   return db;
 }
 
+/**
+ * POS가 대시보드 연동으로 `restaurants/{id}/orders`에 넣은 미러 문서(배달 DL·투고 TG 등, source=POS).
+ * 앱 온라인 주문과 같은 컬렉션이라 여기 들어오면 SSE/SQLite 온라인 INSERT·패널 중복 카드가 생긴다.
+ * 투고(TOGO)·픽업 등은 Thezone 앱 온라인 주문과 별개이므로 동일하게 제외한다.
+ */
+function isPosDeliveryMirrorFirestoreOrder(order) {
+  if (!order || typeof order !== 'object') return false;
+  const source = String(order.source || '').toUpperCase();
+  if (source !== 'POS') return false;
+  const orderType = String(order.orderType || order.type || '').toLowerCase().replace(/[\s_-]+/g, '');
+  const tableId = String(order.tableId || order.table_id || '').trim().toUpperCase();
+  const fulfillment = String(order.fulfillmentMode || order.fulfillment_mode || order.fulfillment || '')
+    .toLowerCase()
+    .trim();
+  if (orderType === 'delivery') return true;
+  if (tableId.startsWith('DL')) return true;
+  if (tableId.startsWith('TG')) return true;
+  if (fulfillment === 'togo' || fulfillment === 'pickup' || fulfillment === 'takeout') return true;
+  if (
+    orderType === 'togo' ||
+    orderType === 'takeout' ||
+    orderType === 'pickup' ||
+    orderType === 'togoorder'
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // 온라인 주문 실시간 리스너
 // restaurantId: Firebase의 레스토랑 ID
 // onNewOrder: 새 주문 콜백 함수
@@ -80,6 +109,10 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
       (snapshot) => {
         snapshot.docChanges().forEach((change) => {
           const order = { id: change.doc.id, ...change.doc.data() };
+
+          if (isPosDeliveryMirrorFirestoreOrder(order)) {
+            return;
+          }
           
           if (change.type === 'added') {
             // 초기 로딩 시의 added는 무시하고, 그 이후의 added만 알림 (새 주문)
@@ -134,13 +167,23 @@ async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   };
 
-  // 서브컬렉션 우선 시도
+  const docId = String(orderId);
+  // 실제 온라인 주문은 restaurants/{rid}/orders 가 대부분. rid가 틀리거나 레거시 루트 orders만 있으면 한쪽이 실패함.
   if (restaurantId) {
-    const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
-    await restaurantRef.collection('orders').doc(orderId).update(updateData);
+    const restaurantRef = firestore.collection('restaurants').doc(String(restaurantId));
+    try {
+      await restaurantRef.collection('orders').doc(docId).update(updateData);
+    } catch (subErr) {
+      console.warn(`[Firebase] updateOrderStatus subcollection failed (${subErr?.message || subErr}), trying root orders`);
+      await firestore.collection('orders').doc(docId).update(updateData);
+    }
   } else {
-    // fallback: 글로벌 컬렉션
-    await firestore.collection('orders').doc(orderId).update(updateData);
+    try {
+      await firestore.collection('orders').doc(docId).update(updateData);
+    } catch (rootErr) {
+      console.warn(`[Firebase] updateOrderStatus root failed (${rootErr?.message || rootErr})`);
+      throw rootErr;
+    }
   }
 
   console.log(`✅ 주문 상태 변경: ${orderId} → ${newStatus}`);
@@ -229,14 +272,19 @@ async function getOnlineOrders(restaurantId, options = {}) {
       orders.push({ id: doc.id, ...data });
     });
 
+    // POS 패널: 결제 완료(completed)·paid 상태는 픽업 전까지 카드 유지. 제외는 취소·픽업완료·병합·환불만.
+    const terminalFb = new Set(['cancelled', 'picked_up', 'merged', 'refunded']);
+    const activeOrders = orders.filter((o) => !terminalFb.has(String(o.status || '').toLowerCase()));
+    const activeWithoutPosMirror = activeOrders.filter((o) => !isPosDeliveryMirrorFirestoreOrder(o));
+
     // 결과를 createdAt 기준 내림차순 정렬 (클라이언트 사이드)
-    orders.sort((a, b) => {
+    activeWithoutPosMirror.sort((a, b) => {
       const aTime = a.createdAt?._seconds || 0;
       const bTime = b.createdAt?._seconds || 0;
       return bTime - aTime;
     });
 
-    return orders;
+    return activeWithoutPosMirror;
   } catch (error) {
     console.error('[getOnlineOrders] Error:', error.message);
     throw error;
@@ -1333,6 +1381,7 @@ async function saveVoidToFirebase(restaurantId, voidData) {
 module.exports = {
   initializeFirebase,
   getFirestore,
+  isPosDeliveryMirrorFirestoreOrder,
   listenToOnlineOrders,
   updateOrderStatus,
   updateOrderAsPaid,

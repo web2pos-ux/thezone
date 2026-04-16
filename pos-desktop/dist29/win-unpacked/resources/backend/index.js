@@ -888,6 +888,16 @@ if (frontendBuildPath) {
 }
 
 // --- Server Startup ---
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`\n[Backend] 포트 ${PORT} 는 이미 사용 중입니다 (다른 node/backend가 떠 있을 수 있습니다).`);
+    console.error('  사용 중인 PID 확인:  netstat -ano | findstr :' + PORT);
+    console.error('  강제 종료 예시:     taskkill /PID <PID> /F\n');
+    process.exit(1);
+  }
+  console.error('[Backend] 서버 소켓 오류:', err);
+});
+
 server.listen(PORT, async () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
   console.log(`🔌 Socket.io ready for real-time updates`);

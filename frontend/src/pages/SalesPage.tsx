@@ -34,7 +34,6 @@ import { fetchPickupDetailItemsPreferFirebase } from '../utils/onlineOrderPickup
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
 import { PartialSelectionPayload } from '../types/MoveMergeTypes';
-import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
 import TablePaymentModal from '../components/PaymentModal';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
@@ -42,6 +41,7 @@ import OrderDetailModal, { OrderData, OrderChannelType } from '../components/Ord
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
 import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
+import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
 import { PickupChannelGlassButton } from '../components/PickupChannelGlassButton';
 // SoldOutModal removed - Sold Out is handled in OrderPage
 
@@ -287,6 +287,133 @@ function resolveSqliteOrderIdForVoid(
   }
   const v = order?.id;
   return v != null && v !== '' ? v : null;
+}
+
+/** Pickup List 행 ↔ 투고패널 SQLite 행 매칭 */
+function pickupRowMatchesTogoPanelOrder(row: any, o: any): boolean {
+  if (row == null || o == null) return false;
+  const rid = String(row?.id ?? '').trim();
+  const oid = String(o?.id ?? '').trim();
+  if (rid && oid && rid === oid) return true;
+  const rOid = String(row?.order_id ?? row?.orderId ?? '').trim();
+  if (rOid && oid && rOid === oid) return true;
+  const dm = String((o as any)?.deliveryMetaId ?? (o as any)?.delivery_meta_id ?? '').trim();
+  const tid = String(row?.table_id ?? '').toUpperCase();
+  if (dm && tid.startsWith('DL') && tid.slice(2) === dm) return true;
+  return false;
+}
+
+/** Pickup List 행 ↔ 투고패널 온라인 카드 매칭 */
+function pickupRowMatchesOnlineCard(row: any, card: any): boolean {
+  if (row == null || card == null) return false;
+  const rid = String(row?.id ?? '').trim();
+  const fbRow = String(row?.firebase_order_id ?? row?.firebaseOrderId ?? '').trim();
+  const fo = card?.fullOrder || {};
+  const cid = String(card?.id ?? '').trim();
+  if (fbRow && cid && fbRow === cid) return true;
+  const loc = card?.localOrderId ?? fo?.localOrderId ?? fo?.order_id;
+  if (loc != null && String(loc).trim() !== '' && rid && String(loc) === rid) return true;
+  const foid = fo?.order_id != null ? String(fo.order_id).trim() : '';
+  if (foid && rid && foid === rid) return true;
+  return false;
+}
+
+function panelTogoOrderIsPaidForPickupSync(o: any): boolean {
+  const fo = o?.fullOrder || {};
+  const stUp = String(o?.status ?? fo?.status ?? '').toUpperCase();
+  const stLo = String(o?.status ?? '').toLowerCase();
+  const paySt = String(fo?.paymentStatus ?? fo?.payment_status ?? '').toLowerCase();
+  return (
+    stUp === 'PAID' ||
+    stUp === 'COMPLETED' ||
+    stUp === 'CLOSED' ||
+    stLo === 'paid' ||
+    stLo === 'completed' ||
+    stLo === 'closed' ||
+    paySt === 'paid' ||
+    paySt === 'completed' ||
+    fo?.paid === true ||
+    fo?.isPaid === true
+  );
+}
+
+function panelOnlineCardIsPaidForPickupSync(card: any): boolean {
+  const fo = card?.fullOrder || {};
+  const st = String(card?.status ?? fo?.status ?? '').toUpperCase();
+  const paySt = String(fo?.paymentStatus ?? fo?.payment_status ?? '').toLowerCase();
+  return (
+    st === 'PAID' ||
+    st === 'COMPLETED' ||
+    st === 'CLOSED' ||
+    paySt === 'paid' ||
+    paySt === 'completed' ||
+    fo?.paid === true ||
+    fo?.isPaid === true
+  );
+}
+
+function pickupRowHiddenBySwipeRemovedKeys(row: any, removedKeys: ReadonlySet<string>): boolean {
+  const hit = (v: any) => {
+    const t = String(v ?? '').trim();
+    return t !== '' && removedKeys.has(t);
+  };
+  if (hit(row?.id)) return true;
+  if (hit(row?.firebase_order_id)) return true;
+  if (hit(row?.firebaseOrderId)) return true;
+  if (hit(row?.online_order_number)) return true;
+  if (hit(row?.onlineOrderNumber)) return true;
+  if (hit(row?.order_id)) return true;
+  const tid = String(row?.table_id ?? '').toUpperCase();
+  if (tid.startsWith('DL') && hit(tid.slice(2))) return true;
+  return false;
+}
+
+/**
+ * Pickup List를 투고패널(togoOrders + onlineQueueCards)과 동기화.
+ * - 패널에서 결제 완료로 보이면 SQLite가 PENDING이어도 행 status를 PAID로 표시
+ * - 패널 스와이프 숨김 키와 맞는 행은 목록에서 제외(픽업 완료 직후 부활 방지)
+ */
+function applyPanelSyncToPickupListRows(
+  rows: any[],
+  togoPanel: any[],
+  onlinePanel: any[],
+  removedKeys: ReadonlySet<string>
+): any[] {
+  if (!Array.isArray(rows)) return rows;
+  const out: any[] = [];
+  for (const row of rows) {
+    if (pickupRowHiddenBySwipeRemovedKeys(row, removedKeys)) continue;
+    let paidFromPanel = false;
+    for (const o of togoPanel || []) {
+      if (pickupRowMatchesTogoPanelOrder(row, o) && panelTogoOrderIsPaidForPickupSync(o)) {
+        paidFromPanel = true;
+        break;
+      }
+    }
+    if (!paidFromPanel) {
+      for (const c of onlinePanel || []) {
+        if (pickupRowMatchesOnlineCard(row, c) && panelOnlineCardIsPaidForPickupSync(c)) {
+          paidFromPanel = true;
+          break;
+        }
+      }
+    }
+    if (paidFromPanel) {
+      const cur = String(row?.status || '').toUpperCase();
+      if (
+        cur !== 'PICKED_UP' &&
+        cur !== 'VOIDED' &&
+        cur !== 'VOID' &&
+        cur !== 'REFUNDED' &&
+        cur !== 'CANCELLED'
+      ) {
+        out.push({ ...row, status: 'PAID' });
+        continue;
+      }
+    }
+    out.push(row);
+  }
+  return out;
 }
 
 const VIRTUAL_TABLE_POOL: Record<VirtualOrderChannel, { prefix: string; limit: number }> = {
@@ -567,6 +694,9 @@ const SalesPage: React.FC = () => {
   const swipeDraggedRef = useRef<boolean>(false);
   /** 스와이프 픽업 직후 load*가 서버에 아직 PICKED_UP 반영 전인 행을 다시 넣는 것을 막기 위한 ID 집합 */
   const swipeRemovedPanelIdsRef = useRef<Set<string>>(new Set());
+  /** fetchOrderList 시점에 최신 패널 행을 참조(Pickup List ↔ 투고패널 동기) */
+  const togoOrdersPanelSyncRef = useRef<any[]>([]);
+  const onlineQueueCardsPanelSyncRef = useRef<OnlineQueueCard[]>([]);
   /** 데이 클로징 등에서 항상 최신 fetchOrderList 호출용 */
   const fetchOrderListRef = useRef<((date: string, mode?: 'history' | 'pickup') => void) | null>(null);
   const [swipeDragState, setSwipeDragState] = useState<{ id: string; offsetX: number; dismissing?: boolean } | null>(null);
@@ -2105,6 +2235,46 @@ const SalesPage: React.FC = () => {
   const [onlineQueueCards, setOnlineQueueCards] = useState<OnlineQueueCard[]>(() =>
     createInitialOnlineQueueCards()
   );
+
+  useEffect(() => {
+    togoOrdersPanelSyncRef.current = togoOrders;
+    onlineQueueCardsPanelSyncRef.current = onlineQueueCards;
+  }, [togoOrders, onlineQueueCards]);
+
+  /** Pickup List 모달 + Pickup 모드: 패널 결제/숨김 상태를 목록 행에 반영 */
+  useEffect(() => {
+    if (!showOrderListModal || orderListOpenMode !== 'pickup') return;
+    setOrderListOrders((prev) => {
+      const next = applyPanelSyncToPickupListRows(
+        prev,
+        togoOrders,
+        onlineQueueCards,
+        swipeRemovedPanelIdsRef.current
+      );
+      if (next.length !== prev.length) return next;
+      let changed = false;
+      for (let i = 0; i < next.length; i++) {
+        if (String(next[i]?.status || '') !== String(prev[i]?.status || '')) {
+          changed = true;
+          break;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [togoOrders, onlineQueueCards, showOrderListModal, orderListOpenMode]);
+
+  /** Pickup 모드: 목록 행 status가 패널 동기화로 바뀌면 선택 주문 상세의 status도 맞춤 */
+  useEffect(() => {
+    if (orderListOpenMode !== 'pickup' || !orderListSelectedOrder?.id) return;
+    const found = (orderListOrders || []).find((o: any) => String(o?.id) === String(orderListSelectedOrder.id));
+    if (!found) return;
+    const fs = String(found.status || '').toUpperCase();
+    const ss = String(orderListSelectedOrder.status || '').toUpperCase();
+    if (fs === ss) return;
+    setOrderListSelectedOrder((prev: any) =>
+      prev && String(prev.id) === String(found.id) ? { ...prev, status: found.status } : prev
+    );
+  }, [orderListOrders, orderListSelectedOrder?.id, orderListOpenMode]);
 
   /** 후 고객 인포 취소 시 OrderPage에서 전달: 임시 투고 패널 카드 제거 후 one-shot state 정리 */
   useEffect(() => {
@@ -6108,6 +6278,16 @@ const SalesPage: React.FC = () => {
       const deliveryMetaOrders = Array.isArray(deliveryMetaJson?.orders)
         ? deliveryMetaJson.orders
         : (Array.isArray(deliveryMetaJson) ? deliveryMetaJson : []);
+      const finalizeOrderListRows = (arr: any[]) => {
+        const merged = mergeOnlineCardsForPickup(arr, effectiveMode);
+        if (effectiveMode !== 'pickup') return merged;
+        return applyPanelSyncToPickupListRows(
+          merged,
+          togoOrdersPanelSyncRef.current,
+          onlineQueueCardsPanelSyncRef.current,
+          swipeRemovedPanelIdsRef.current
+        );
+      };
       console.log('[fetchOrderList] Response:', data);
       console.log('[fetchOrderList] Orders count:', data.orders?.length || 0);
       if (data.success && Array.isArray(data.orders)) {
@@ -6148,14 +6328,14 @@ const SalesPage: React.FC = () => {
               }
             }
           });
-          setOrderListOrders(mergeOnlineCardsForPickup(Array.from(orderMap.values()), effectiveMode));
+          setOrderListOrders(finalizeOrderListRows(Array.from(orderMap.values())));
         } else {
-          setOrderListOrders(mergeOnlineCardsForPickup(baseOrders, effectiveMode));
+          setOrderListOrders(finalizeOrderListRows(baseOrders));
         }
       } else if (Array.isArray(data)) {
-        setOrderListOrders(mergeOnlineCardsForPickup(data, effectiveMode));
+        setOrderListOrders(finalizeOrderListRows(data));
       } else {
-        setOrderListOrders(mergeOnlineCardsForPickup([], effectiveMode));
+        setOrderListOrders(finalizeOrderListRows([]));
       }
     } catch (error) {
       console.error('Failed to fetch order list:', error);
@@ -6385,6 +6565,7 @@ const SalesPage: React.FC = () => {
         void fetchOrderListRef.current?.(orderListDate, 'pickup');
       }
       void loadTogoOrders();
+      void loadOnlineOrders();
     };
 
     // ì»¤ìŠ¤í…€ ì´ë²¤íŠ¸ ë¦¬ìŠ¤ë„ˆ ë“±ë¡
@@ -6397,7 +6578,7 @@ const SalesPage: React.FC = () => {
       window.removeEventListener('orderPaid', handleOrderChange);
       window.removeEventListener('orderUpdated', handleOrderChange);
     };
-  }, [orderListTab, showOrderListModal, orderListOpenMode, orderListDate, fetchLiveOrders, loadTogoOrders]);
+  }, [orderListTab, showOrderListModal, orderListOpenMode, orderListDate, fetchLiveOrders, loadTogoOrders, loadOnlineOrders]);
 
   // 투고패널 카드 → Pay & Pickup 결제 완료 후: 패널에서 해당 투고/온라인 카드 제거
   useEffect(() => {
@@ -6435,10 +6616,11 @@ const SalesPage: React.FC = () => {
       );
       void loadTogoOrders();
       void loadOnlineOrders();
+      void fetchOrderListRef.current?.(orderListDate, 'pickup');
     };
     window.addEventListener('panelPickupOrderComplete', onPanelPickupComplete as EventListener);
     return () => window.removeEventListener('panelPickupOrderComplete', onPanelPickupComplete as EventListener);
-  }, [loadTogoOrders, loadOnlineOrders]);
+  }, [loadTogoOrders, loadOnlineOrders, orderListDate]);
 
   useEffect(() => {
     if (!showOrderListModal || orderListOpenMode !== 'pickup') return;

@@ -672,6 +672,23 @@ module.exports = (db) => {
     }
   });
 
+  /** Kitchen 실패 시 영수증(Front) 프린터로 동일 티켓 데이터 우회 출력 */
+  async function getReceiptFallbackPrinterName() {
+    try {
+      const row = await dbGet(
+        `SELECT selected_printer FROM printers
+         WHERE is_active = 1 AND selected_printer IS NOT NULL
+           AND (LOWER(COALESCE(type,'')) = 'receipt'
+             OR name LIKE '%Front%'
+             OR name LIKE '%Receipt%')
+         LIMIT 1`
+      );
+      return row?.selected_printer || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * 단일 프린터로 Kitchen Ticket 출력하는 내부 헬퍼
    * @param {string} targetPrinter - Windows 프린터명
@@ -679,8 +696,12 @@ module.exports = (db) => {
    * @param {string} printMode - 'graphic' | 'text'
    * @param {Object} orderInfo - 주문 정보 (레이아웃 결정용)
    * @param {Object} orderData - 원본 orderData (레이아웃 결정용)
+   * @param {{ skipReceiptFallback?: boolean }} [opts]
    */
-  async function sendKitchenTicketToPrinter(targetPrinter, ticketData, printMode, orderInfo, orderData) {
+  async function sendKitchenTicketToPrinter(targetPrinter, ticketData, printMode, orderInfo, orderData, opts = {}) {
+    const skipReceiptFallback = opts.skipReceiptFallback === true;
+
+    const runOnce = async (destPrinter) => {
     const { sendRawToPrinter } = require('../utils/printerUtils');
     const BEEP_CMD = Buffer.from([0x1B, 0x42, 0x03, 0x02]);
 
@@ -706,7 +727,7 @@ module.exports = (db) => {
     } catch (_e) { /* non-blocking */ }
 
     appendPrinterLog('KT_START', {
-      to: targetPrinter,
+      to: destPrinter,
       printMode,
       orderNumber: orderInfo?.orderNumber || orderData?.orderNumber || null,
       channel: orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || null,
@@ -716,19 +737,19 @@ module.exports = (db) => {
     let usedTextMode = false;
     if (printMode === 'graphic') {
       try {
-        console.log(`🍳 [Printer API] Printing Kitchen Ticket (GRAPHIC mode) → ${targetPrinter}`);
+        console.log(`🍳 [Printer API] Printing Kitchen Ticket (GRAPHIC mode) → ${destPrinter}`);
         const { buildGraphicKitchenTicket } = require('../utils/graphicPrinterUtils');
         const ticketBuffer = buildGraphicKitchenTicket(ticketData, false, true);
         console.log(`🍳 [Printer API] Graphic buffer size: ${ticketBuffer?.length || 0} bytes`);
-        appendPrinterLog('KT_GRAPHIC_BUFFER', { to: targetPrinter, bytes: ticketBuffer?.length || 0 });
+        appendPrinterLog('KT_GRAPHIC_BUFFER', { to: destPrinter, bytes: ticketBuffer?.length || 0 });
         
         const bufferWithBeep = Buffer.concat([BEEP_CMD, ticketBuffer]);
-        await sendRawToPrinter(targetPrinter, bufferWithBeep);
-        console.log(`✅ [Printer API] Kitchen Ticket printed (GRAPHIC) → ${targetPrinter}`);
-        appendPrinterLog('KT_GRAPHIC_OK', { to: targetPrinter, bytes: bufferWithBeep?.length || 0 });
+        await sendRawToPrinter(destPrinter, bufferWithBeep);
+        console.log(`✅ [Printer API] Kitchen Ticket printed (GRAPHIC) → ${destPrinter}`);
+        appendPrinterLog('KT_GRAPHIC_OK', { to: destPrinter, bytes: bufferWithBeep?.length || 0 });
       } catch (graphicErr) {
-        console.error(`❌ [Printer API] Graphic mode FAILED for ${targetPrinter}:`, graphicErr.message);
-        appendPrinterLog('KT_GRAPHIC_FAIL', { to: targetPrinter, error: graphicErr?.message || String(graphicErr) });
+        console.error(`❌ [Printer API] Graphic mode FAILED for ${destPrinter}:`, graphicErr.message);
+        appendPrinterLog('KT_GRAPHIC_FAIL', { to: destPrinter, error: graphicErr?.message || String(graphicErr) });
         usedTextMode = true;
       }
     } else {
@@ -736,8 +757,8 @@ module.exports = (db) => {
     }
     
     if (usedTextMode) {
-      console.log(`🍳 [Printer API] Printing Kitchen Ticket (TEXT mode) → ${targetPrinter}`);
-      appendPrinterLog('KT_TEXT_START', { to: targetPrinter });
+      console.log(`🍳 [Printer API] Printing Kitchen Ticket (TEXT mode) → ${destPrinter}`);
+      appendPrinterLog('KT_TEXT_START', { to: destPrinter });
       
       const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
       let ticketLayout = null;
@@ -746,7 +767,7 @@ module.exports = (db) => {
         try {
           const layoutSettings = JSON.parse(layoutRow.settings);
           const channel = (orderInfo?.channel || orderInfo?.orderType || orderData?.channel || orderData?.orderType || 'DINE-IN').toUpperCase();
-          appendPrinterLog('KT_TEXT_CHANNEL', { to: targetPrinter, channel });
+          appendPrinterLog('KT_TEXT_CHANNEL', { to: destPrinter, channel });
           if (channel === 'DELIVERY') {
             ticketLayout = layoutSettings.deliveryKitchen;
           } else if (channel === 'TOGO' || channel === 'ONLINE' || channel === 'PICKUP') {
@@ -769,9 +790,25 @@ module.exports = (db) => {
       
       const beepStr = '\x1B\x42\x03\x02';
       const ticketBuffer = Buffer.from(beepStr + ticketText, 'binary');
-      await sendRawToPrinter(targetPrinter, ticketBuffer);
-      console.log(`✅ [Printer API] Kitchen Ticket printed (TEXT) → ${targetPrinter}`);
-      appendPrinterLog('KT_TEXT_OK', { to: targetPrinter, bytes: ticketBuffer?.length || 0 });
+      await sendRawToPrinter(destPrinter, ticketBuffer);
+      console.log(`✅ [Printer API] Kitchen Ticket printed (TEXT) → ${destPrinter}`);
+      appendPrinterLog('KT_TEXT_OK', { to: destPrinter, bytes: ticketBuffer?.length || 0 });
+    }
+    };
+
+    try {
+      await runOnce(targetPrinter);
+    } catch (err) {
+      if (skipReceiptFallback) throw err;
+      const fb = await getReceiptFallbackPrinterName();
+      const same = fb && String(fb).trim() === String(targetPrinter).trim();
+      if (fb && !same) {
+        console.warn(`🍳 [Printer API] Kitchen printer failed (${targetPrinter}): ${err.message} — retry on receipt printer: ${fb}`);
+        appendPrinterLog('KT_FALLBACK_RECEIPT', { primary: targetPrinter, fallback: fb, error: err.message });
+        await runOnce(fb);
+      } else {
+        throw err;
+      }
     }
   }
 
@@ -1112,6 +1149,35 @@ module.exports = (db) => {
           error: 'No printer configured. Please set up a printer in the back office.' 
         });
       }
+
+      // 동일 Windows 프린터(spooler 이름)로 여러 printer_id가 잡히면 작업을 합쳐 한 번만 전송(이중 주방 방지)
+      const mergedBySpooler = new Map();
+      for (const [pid, job] of printerJobMap) {
+        const sp = String(job.selectedPrinter || '').trim();
+        if (!sp) continue;
+        if (!mergedBySpooler.has(sp)) {
+          mergedBySpooler.set(sp, {
+            printerId: pid,
+            selectedPrinter: job.selectedPrinter,
+            printerName: job.printerName,
+            printerType: job.printerType,
+            copies: 1,
+            groupName: job.groupName,
+            showLabel: job.showLabel,
+            graphicScale: job.graphicScale,
+            items: Array.isArray(job.items) ? [...job.items] : [],
+          });
+        } else {
+          const ex = mergedBySpooler.get(sp);
+          for (const it of job.items || []) {
+            if (!ex.items.some((x) => x === it)) ex.items.push(it);
+          }
+        }
+      }
+      printerJobMap.clear();
+      for (const [, mj] of mergedBySpooler) {
+        printerJobMap.set(mj.printerId, { ...mj, copies: 1 });
+      }
       
       // === 4. 각 프린터별로 Kitchen Ticket 빌드 & 전송 ===
       const printResults = [];
@@ -1222,15 +1288,16 @@ module.exports = (db) => {
           itemsCount: ticketData.items.length
         });
         
-        // copies만큼 반복 출력
-        for (let c = 0; c < job.copies; c++) {
+        // Kitchen: 동일 프린터로는 1회만 전송(그룹 copies가 2여도 주방 이중 출력 방지)
+        const sendCopies = 1;
+        for (let c = 0; c < sendCopies; c++) {
           try {
             await sendKitchenTicketToPrinter(job.selectedPrinter, ticketData, printMode, orderInfo, orderData);
-            console.log(`✅ [Printer API] Printed to "${job.printerName}" (copy ${c + 1}/${job.copies})`);
-            appendPrinterLog('PRINT_ORDER_OK', { to: job.selectedPrinter, printerName: job.printerName, copy: c + 1, copies: job.copies });
+            console.log(`✅ [Printer API] Printed to "${job.printerName}" (copy ${c + 1}/${sendCopies})`);
+            appendPrinterLog('PRINT_ORDER_OK', { to: job.selectedPrinter, printerName: job.printerName, copy: c + 1, copies: sendCopies });
           } catch (printErr) {
             console.error(`❌ [Printer API] Failed to print to "${job.printerName}" (copy ${c + 1}):`, printErr.message);
-            appendPrinterLog('PRINT_ORDER_FAIL', { to: job.selectedPrinter, printerName: job.printerName, copy: c + 1, copies: job.copies, error: printErr.message });
+            appendPrinterLog('PRINT_ORDER_FAIL', { to: job.selectedPrinter, printerName: job.printerName, copy: c + 1, copies: sendCopies, error: printErr.message });
           }
         }
         
@@ -1239,7 +1306,7 @@ module.exports = (db) => {
           printerName: job.printerName,
           groupName: job.groupName,
           itemCount: ticketData.items.length,
-          copies: job.copies
+          copies: sendCopies
         });
       }
       

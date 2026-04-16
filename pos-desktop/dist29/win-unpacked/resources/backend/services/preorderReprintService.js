@@ -65,6 +65,21 @@ function qualifiesForSchedule(order, pickupMs, createdMs) {
   return longLead || isPreOrderFlags(order);
 }
 
+/** online-orders print 경로와 동일: SQLite 일일 order_number 우선 */
+function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
+  if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
+    const t = String(localOrder.order_number).trim().replace(/^#/, '');
+    if (t) {
+      const display = /^\d+$/.test(t) && t.length < 3 ? t.padStart(3, '0') : t;
+      return `#${display}`;
+    }
+  }
+  const fb = firebaseOrder?.orderNumber != null ? String(firebaseOrder.orderNumber).trim() : '';
+  if (fb) return fb.startsWith('#') ? fb : `#${fb}`;
+  if (localOrder?.id != null) return `#${localOrder.id}`;
+  return firebaseOrderId ? `#${firebaseOrderId}` : '#';
+}
+
 async function ensureTable(dbRun) {
   if (tableReady) return;
   await dbRun(`
@@ -83,7 +98,7 @@ async function ensureTable(dbRun) {
 /**
  * 온라인 주문 print 핸들러와 동일하게 printItems 구성 + print-order 페이로드
  */
-async function buildPrintPayloadFromFirebaseOrder(order, localOrder, dbGet, dbAll) {
+async function buildPrintPayloadFromFirebaseOrder(order, localOrder, dbGet, dbAll, firebaseDocId) {
   const printItems = [];
   for (const item of order.items || []) {
     let printerGroupIds = [];
@@ -154,7 +169,13 @@ async function buildPrintPayloadFromFirebaseOrder(order, localOrder, dbGet, dbAl
     order.paid === true ||
     order.isPaid === true;
 
-  const localOrderNumber = localOrder?.id ? `#${localOrder.id}` : order.orderNumber;
+  const fidForHeader =
+    firebaseDocId != null && String(firebaseDocId).trim() !== ''
+      ? String(firebaseDocId).trim()
+      : order.id != null
+        ? String(order.id)
+        : '';
+  const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, fidForHeader);
   const tableVal =
     order.orderType === 'pickup' ? 'PICKUP' : order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE';
 
@@ -280,8 +301,8 @@ async function tick({ dbRun, dbGet, dbAll, port }) {
           continue;
         }
 
-        const localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [fid]);
-        const payload = await buildPrintPayloadFromFirebaseOrder(order, localOrder, dbGet, dbAll);
+        const localOrder = await dbGet('SELECT id, order_number FROM orders WHERE firebase_order_id = ?', [fid]);
+        const payload = await buildPrintPayloadFromFirebaseOrder(order, localOrder, dbGet, dbAll, fid);
         if (!payload.items || payload.items.length === 0) {
           await dbRun(`UPDATE preorder_reprint_schedule SET status = 'cancelled' WHERE id = ?`, [row.id]);
           continue;
