@@ -739,7 +739,7 @@ router.get('/:restaurantId', async (req, res) => {
             ]
           );
           localOrder = { id: result.lastID, order_number: null };
-
+          
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
               await dbRun(
