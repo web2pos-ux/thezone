@@ -457,8 +457,15 @@ function formatOrderForFrontend(order) {
     null;
 
   const paymentStatus = (order.paymentStatus || 'pending').toLowerCase();
-  const isPaid = paymentStatus === 'paid' || paymentStatus === 'completed' ||
-                 order.status === 'paid' || order.paid === true;
+  const statusLc = String(order.status || '').toLowerCase();
+  const isPaid =
+    paymentStatus === 'paid' ||
+    paymentStatus === 'completed' ||
+    statusLc === 'paid' ||
+    statusLc === 'completed' ||
+    statusLc === 'closed' ||
+    order.paid === true ||
+    order.isPaid === true;
 
   return {
     id: order.id,
@@ -684,9 +691,10 @@ router.get('/:restaurantId', async (req, res) => {
       limit: parseInt(limit) || 50
     });
 
+    // 결제 후 SQLite는 PAID 등 — 투고패널 온라인 카드는 픽업 전까지 유지(READY). 숨김은 픽업·VOID·머지 등만.
     const SQLITE_HIDE = new Set([
-      'MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED',
-      'VOIDED', 'VOID', 'CLOSED', 'PICKED_UP',
+      'MERGED', 'CANCELLED', 'REFUNDED',
+      'VOIDED', 'VOID', 'PICKED_UP',
     ]);
 
     // 각 온라인 주문에 대해 SQLite ID를 조회하거나 생성
@@ -783,6 +791,24 @@ router.get('/:restaurantId', async (req, res) => {
         formatted.posOrderNumber = localOrder.order_number;
         formatted.orderNumber = localOrder.order_number;
         formatted.order_number = localOrder.order_number;
+      }
+      if (localOrder?.id) {
+        try {
+          const sqliteRow = await dbGet(
+            'SELECT status, payment_status FROM orders WHERE id = ?',
+            [localOrder.id]
+          );
+          if (sqliteRow) {
+            const ss = String(sqliteRow.status || '').toUpperCase();
+            const ps = String(sqliteRow.payment_status || '').toLowerCase();
+            if (ss === 'PAID' || ps === 'paid' || ps === 'completed') {
+              formatted.paymentStatus = 'paid';
+              formatted.isPaid = true;
+            }
+          }
+        } catch (e) {
+          console.warn('[Online] GET list SQLite paid merge:', e.message);
+        }
       }
       return formatted;
     }));

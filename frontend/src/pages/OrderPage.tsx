@@ -233,6 +233,10 @@ const OrderPage = () => {
   const pendingTogoInfoRef = useRef<{ name: string; phone: string } | null>(null);
   /** 투고 정보 모달에서 Pay/OK로 결제만 연 경우 — 결제 완료 시점 처리 분기용 */
   const togoWalkInPayAfterInfoRef = useRef(false);
+  /** PaymentModal에서 결제 확정 후 PaymentCompleteModal로 넘어갔으면 true — 모달 닫기 취소와 구분 */
+  const paymentFlowEnteredCompleteRef = useRef(false);
+  /** 스플릿에서 게스트 Pay 선택 시 onClose가 뒤따름 — 투고 Pay/OK 취소 오탐 방지 */
+  const splitClosingToOpenPaymentRef = useRef(false);
   const togoAfterPhoneRef = useRef<HTMLInputElement>(null);
   const togoAfterNameRef = useRef<HTMLInputElement>(null);
   const togoAfterAddressRef = useRef<HTMLTextAreaElement>(null);
@@ -2146,8 +2150,7 @@ const handleVoidPinClear = useCallback(() => {
         const stPick = { ...(pickupNavSnapshotRef.current || {}), ...(location.state || {}) } as any;
         const autoPickupNavClose =
           stPick.autoPickup === true || stPick.autoPickup === 'true' || stPick.autoPickup === 1;
-        const pickedUpClose =
-          !!(stPick.fromOrderHistory && autoPickupNavClose) || togoWalkInPayAfterInfoRef.current;
+        const pickedUpClose = !!(stPick.fromOrderHistory && autoPickupNavClose);
         try {
           await fetch(`${API_URL}/orders/${orderId}/close`, {
             method: 'POST',
@@ -2423,16 +2426,16 @@ const handleVoidPinClear = useCallback(() => {
     setShowPaymentCompleteModal(false);
     setPaymentCompleteData(null);
 
-    /** Pay & Pickup: (1) Sales 카드에서 진입 (2) 투고 생성 화면에서 정보 모달 Pay — 둘 다 결제+픽업 완료로 처리 */
+    /** Pay & Pickup: Order History + autoPickup만 즉시 픽업. 투고 Pay/OK는 결제 후 Ready(패널·Pickup List)만 — 픽업 완료는 별도 */
     const locNavPickup = { ...(pickupNavSnapshotRef.current || {}), ...(location.state || {}) } as any;
-    const walkInPayAndPickupImmediate = togoWalkInPayAfterInfoRef.current;
-    if (walkInPayAndPickupImmediate) {
+    const walkInPayAfterInfo = togoWalkInPayAfterInfoRef.current;
+    if (walkInPayAfterInfo) {
       togoWalkInPayAfterInfoRef.current = false;
     }
+    paymentFlowEnteredCompleteRef.current = false;
     const autoPickupNav =
       locNavPickup.autoPickup === true || locNavPickup.autoPickup === 'true' || locNavPickup.autoPickup === 1;
-    const pickupImmediateFlow =
-      !!(locNavPickup.fromOrderHistory && autoPickupNav) || walkInPayAndPickupImmediate;
+    const pickupImmediateFlow = !!(locNavPickup.fromOrderHistory && autoPickupNav);
     const mergePanelSnapForPickup = (oid: number | null | undefined) => {
       const cur = panelTogoOnlinePickupRef.current;
       if (pickupImmediateFlow && cur && oid != null && String(cur.sqliteOrderId) === String(oid)) {
@@ -2538,6 +2541,25 @@ const handleVoidPinClear = useCallback(() => {
           const tableIdForMap = (location.state && (location.state as any).tableId) || null;
           const floor = (location.state && (location.state as any).floor) || null;
 
+          if (
+            walkInPayAfterInfo &&
+            (orderType || '').toLowerCase() === 'togo' &&
+            !kitchenTicketPrintedRef.current
+          ) {
+            const kitWalkInSplit = (orderItems || []).filter((it: any) => it && it.type === 'item');
+            if (kitWalkInSplit.length > 0) {
+              try {
+                if (!savedOrderIdRef.current) await saveOrderToBackend();
+                kitchenTicketPrintedRef.current = true;
+                await printKitchenOrders(false);
+                console.log('🖨️ Kitchen ticket printed (walk-in Pay/OK split, before receipt)');
+              } catch (e) {
+                kitchenTicketPrintedRef.current = false;
+                console.warn('Kitchen ticket walk-in Pay/OK split failed (ignored):', e);
+              }
+            }
+          }
+
           // Receipt count was chosen in PaymentCompleteModal; ensure we print BEFORE leaving to TableMap.
           // Pay In Full (ALL mode): print full order receipt instead of per-guest partial.
           // Per-guest partial uses paymentCompleteData which is already null at this point.
@@ -2603,9 +2625,11 @@ const handleVoidPinClear = useCallback(() => {
           }
 
           const chSplitFinalize = (orderType || '').toLowerCase();
+          const splitKitchenChannel =
+            chSplitFinalize === 'togo' || chSplitFinalize === 'online' || chSplitFinalize === 'delivery';
           if (
-            !skipPostPaymentKitchenForPanelChannels &&
-            (chSplitFinalize === 'togo' || chSplitFinalize === 'online' || chSplitFinalize === 'delivery') &&
+            splitKitchenChannel &&
+            (!skipPostPaymentKitchenForPanelChannels || walkInPayAfterInfo) &&
             !kitchenTicketPrintedRef.current
           ) {
             const kitItemsSplit = (orderItems || []).filter((it: any) => it && it.type === 'item');
@@ -2620,7 +2644,7 @@ const handleVoidPinClear = useCallback(() => {
                 console.warn('Kitchen ticket split finalize failed (ignored):', e);
               }
             }
-          } else if (skipPostPaymentKitchenForPanelChannels) {
+          } else if (skipPostPaymentKitchenForPanelChannels && splitKitchenChannel && !walkInPayAfterInfo) {
             kitchenTicketPrintedRef.current = true;
           }
 
@@ -2703,6 +2727,27 @@ const handleVoidPinClear = useCallback(() => {
     const orderId = savedOrderIdRef.current;
     const tableIdForMap = (location.state && (location.state as any).tableId) || null;
     const floor = (location.state && (location.state as any).floor) || null;
+
+    // 투고 Customer Information → Pay/OK: 주문 생성 = Kitchen 먼저(영수증 매수는 No Receipt여도 키친 출력)
+    if (
+      !hasSplitContextFallback &&
+      walkInPayAfterInfo &&
+      (orderType || '').toLowerCase() === 'togo' &&
+      !kitchenTicketPrintedRef.current
+    ) {
+      const kitWalkIn = (orderItems || []).filter((it: any) => it && it.type === 'item');
+      if (kitWalkIn.length > 0) {
+        try {
+          if (!savedOrderIdRef.current) await saveOrderToBackend();
+          kitchenTicketPrintedRef.current = true;
+          await printKitchenOrders(false);
+          console.log('🖨️ Kitchen ticket printed (walk-in Pay/OK, before receipt)');
+        } catch (e) {
+          kitchenTicketPrintedRef.current = false;
+          console.warn('Kitchen ticket walk-in Pay/OK failed (ignored):', e);
+        }
+      }
+    }
 
     // Print receipt (split 결제가 아닌 경우에만 전체 영수증 출력)
     if (!hasSplitContextFallback && !receiptPrintedRef.current && receiptCount > 0) {
@@ -2862,7 +2907,7 @@ const handleVoidPinClear = useCallback(() => {
       }
     }
 
-    // Pay/OK → PaymentCompleteModal: 투고·온라인·배달은 패널(/sales/order)에서 이미 주방 출력됨 — 여기서는 주방 출력하지 않음.
+    // 패널(/sales/order)에서 이미 주방 출력된 경우: 여기서는 생략. 투고 Pay/OK(walkInPayAfterInfo)는 위에서 이미 출력.
     const channelLcPayClose = (orderType || '').toLowerCase();
     const kitchenAfterChannel =
       channelLcPayClose === 'togo' ||
@@ -2870,7 +2915,7 @@ const handleVoidPinClear = useCallback(() => {
       channelLcPayClose === 'delivery';
     if (
       kitchenAfterChannel &&
-      !skipPostPaymentKitchenForPanelChannels &&
+      (!skipPostPaymentKitchenForPanelChannels || walkInPayAfterInfo) &&
       !hasSplitContextFallback &&
       !kitchenTicketPrintedRef.current
     ) {
@@ -2882,13 +2927,13 @@ const handleVoidPinClear = useCallback(() => {
             await saveOrderToBackend();
           }
           await printKitchenOrders(false);
-          console.log('🖨️ Kitchen ticket printed from PaymentCompleteClose (Pay/OK path)');
+          console.log('🖨️ Kitchen ticket printed from PaymentCompleteClose (panel channel path)');
         } catch (ktErr) {
           kitchenTicketPrintedRef.current = false;
           console.warn('Kitchen ticket from PaymentCompleteClose failed (ignored):', ktErr);
         }
       }
-    } else if (skipPostPaymentKitchenForPanelChannels && kitchenAfterChannel) {
+    } else if (skipPostPaymentKitchenForPanelChannels && kitchenAfterChannel && !walkInPayAfterInfo) {
       kitchenTicketPrintedRef.current = true;
     }
 
@@ -7327,6 +7372,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     setShowTogoInfoAfterModal(false);
     pendingTogoInfoRef.current = null;
     togoWalkInPayAfterInfoRef.current = true;
+    paymentFlowEnteredCompleteRef.current = false;
 
     try {
       setPrefillUseTotalOnceNonce(0);
@@ -11194,6 +11240,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   paymentModalProps={{
                     isOpen: showPaymentModal,
                     onClose: () => {
+                      if (togoWalkInPayAfterInfoRef.current && !paymentFlowEnteredCompleteRef.current) {
+                        void handleTogoInfoAfterCancel();
+                        return;
+                      }
+                      paymentFlowEnteredCompleteRef.current = false;
                       setShowPaymentModal(false);
                       setAdhocSplitCount(0); // Reset Even Split
                       try { setPrefillUseTotalOnceNonce(0); } catch {}
@@ -11223,6 +11274,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     onConfirm: handleAddPayment,
                     onComplete: handleCompletePayment,
                     onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; isPartialPayment?: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } }) => {
+                      paymentFlowEnteredCompleteRef.current = true;
                       const currentGuest = typeof guestPaymentMode === 'number' ? guestPaymentMode : undefined;
                       const hasSplitBill =
                         splitAllGuestsResolved.length > 1 || (orderItems || []).some(it => it.type === 'separator');
@@ -11316,11 +11368,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   }}
                   splitBillModalProps={{
                     isOpen: showSplitBillModal,
-                    onClose: () => setShowSplitBillModal(false),
+                    onClose: () => {
+                      if (splitClosingToOpenPaymentRef.current) {
+                        splitClosingToOpenPaymentRef.current = false;
+                        setShowSplitBillModal(false);
+                        return;
+                      }
+                      if (togoWalkInPayAfterInfoRef.current && !paymentFlowEnteredCompleteRef.current) {
+                        void handleTogoInfoAfterCancel();
+                        return;
+                      }
+                      setShowSplitBillModal(false);
+                    },
                     orderItems,
                     guestIds,
                     guestStatusMap,
                     onSelectGuest: (mode: 'ALL' | number) => {
+                      splitClosingToOpenPaymentRef.current = true;
                       allModeStickyRef.current = false;
                       payInFullFromSplitRef.current = false;
                       setGuestPaymentMode(mode);

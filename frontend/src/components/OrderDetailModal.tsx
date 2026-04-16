@@ -98,6 +98,8 @@ export interface OrderDetailModalProps {
   defaultTab?: OrderChannelType;  // 기본 선택 탭
   /** QSR Pickup List: Pay / Pay & Pickup 분리 (미결제 시 Pay 오른쪽에 Pay & Pickup) */
   splitPayAndPickupActions?: boolean;
+  /** splitPayAndPickupActions와 함께 사용: true면 Online 탭만 Pay / Pay & Pickup, Togo는 기존 단일 Pay/Pickup */
+  splitPayAndPickupOnlineOnly?: boolean;
 }
 
 const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
@@ -117,6 +119,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   showTabs = true,
   defaultTab = 'togo',
   splitPayAndPickupActions = false,
+  splitPayAndPickupOnlineOnly = false,
 }) => {
   // 현재 선택된 탭
   const [selectedOrderType, setSelectedOrderType] = useState<OrderChannelType>(
@@ -937,7 +940,13 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               </button>
             )}
             {/* Pay / Pay & Pickup (QSR split) 또는 단일 Pay/Pickup */}
-            {(!splitPayAndPickupActions || selectedOrderType === 'delivery') ? (
+            {(() => {
+              const showSplitPayPickup =
+                splitPayAndPickupActions &&
+                selectedOrderType !== 'delivery' &&
+                (!splitPayAndPickupOnlineOnly || selectedOrderType === 'online');
+              return !showSplitPayPickup;
+            })() ? (
               <button
                 type="button"
                 onClick={handlePayPickup}

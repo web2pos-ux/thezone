@@ -337,19 +337,36 @@ function panelTogoOrderIsPaidForPickupSync(o: any): boolean {
   );
 }
 
-function panelOnlineCardIsPaidForPickupSync(card: any): boolean {
+/**
+ * 투고패널 온라인 카드: Pay 완료 후 READY 라벨 + 스와이프 픽업(삭제) 동일 기준.
+ * Firebase status·paymentStatus·SQLite 반영 전에도 맞추기 위해 소문자 status·READY 계열도 포함.
+ */
+function onlineQueueCardIsPaidReady(card: any): boolean {
   const fo = card?.fullOrder || {};
-  const st = String(card?.status ?? fo?.status ?? '').toUpperCase();
+  const raw = card?.status ?? fo?.status ?? '';
+  const st = String(raw).toUpperCase();
+  const stLo = String(raw).toLowerCase();
   const paySt = String(fo?.paymentStatus ?? fo?.payment_status ?? '').toLowerCase();
   return (
     st === 'PAID' ||
     st === 'COMPLETED' ||
     st === 'CLOSED' ||
+    st === 'READY' ||
+    st === 'READY_FOR_PICKUP' ||
+    st === 'PREPARED' ||
     paySt === 'paid' ||
     paySt === 'completed' ||
     fo?.paid === true ||
-    fo?.isPaid === true
+    fo?.isPaid === true ||
+    stLo === 'completed' ||
+    stLo === 'paid' ||
+    stLo === 'closed' ||
+    stLo === 'ready'
   );
+}
+
+function panelOnlineCardIsPaidForPickupSync(card: any): boolean {
+  return onlineQueueCardIsPaidReady(card);
 }
 
 function pickupRowHiddenBySwipeRemovedKeys(row: any, removedKeys: ReadonlySet<string>): boolean {
@@ -4927,7 +4944,9 @@ const SalesPage: React.FC = () => {
     swipeDragRef.current = null;
     setTimeout(() => { swipeDraggedRef.current = false; }, 50);
 
-    if (amount < cardWidth * 2 / 3) {
+    const swipeThreshold =
+      orderType === 'online' ? cardWidth * 0.45 : (cardWidth * 2) / 3;
+    if (amount < swipeThreshold) {
       setSwipeDragState(null);
       return;
     }
@@ -4972,22 +4991,8 @@ const SalesPage: React.FC = () => {
       } else if (orderType === 'online') {
         const card = onlineQueueCards.find(c => String(c.id) === String(id));
         if (card) {
+          if (!onlineQueueCardIsPaidReady(card)) return;
           const fo = (card as any).fullOrder || {};
-          const oSt = String(card.status || fo.status || '').toUpperCase();
-          const paySt = String(fo.paymentStatus || fo.payment_status || '').toLowerCase();
-          // 카드 READY 라벨(oIsPaid)과 동일: 주문 status만 보면 카드결제 완료 건이 pending/confirmed로 남아 스와이프가 무동작함
-          const oReady =
-            oSt === 'PAID' ||
-            oSt === 'COMPLETED' ||
-            oSt === 'CLOSED' ||
-            oSt === 'READY' ||
-            oSt === 'READY_FOR_PICKUP' ||
-            oSt === 'PREPARED' ||
-            paySt === 'paid' ||
-            paySt === 'completed' ||
-            fo.paid === true ||
-            fo.isPaid === true;
-          if (!oReady) return;
           const localOrderIdRaw =
             fo.localOrderId ??
             fo.order_id ??
@@ -5022,21 +5027,7 @@ const SalesPage: React.FC = () => {
         } else {
           const panelOrder = togoOrders.find(o => String(o.id) === String(id));
           if (!panelOrder || orderListGetPickupChannel(panelOrder) !== 'online') return;
-          const tFo = (panelOrder as any).fullOrder || {};
-          const tSt = String(panelOrder.status || tFo.status || '').toUpperCase();
-          const tPaySt = String(tFo.paymentStatus || tFo.payment_status || '').toLowerCase();
-          const tReady =
-            tSt === 'PAID' ||
-            tSt === 'COMPLETED' ||
-            tSt === 'CLOSED' ||
-            tSt === 'READY' ||
-            tSt === 'READY_FOR_PICKUP' ||
-            tSt === 'PREPARED' ||
-            tPaySt === 'paid' ||
-            tPaySt === 'completed' ||
-            tFo.paid === true ||
-            tFo.isPaid === true;
-          if (!tReady) return;
+          if (!onlineQueueCardIsPaidReady(panelOrder)) return;
           const actualOrderId = panelOrder.order_id || panelOrder.id;
           if (Number.isFinite(Number(actualOrderId))) {
             await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
@@ -10198,7 +10189,13 @@ const SalesPage: React.FC = () => {
     }
 
     try {
-    const { orderType, orderId, orderDetail, paymentOrder, sessionPayments } = completionData;
+    const { orderType: orderTypeFromRef, orderId, orderDetail, paymentOrder, sessionPayments } = completionData;
+    const orderType =
+      (paymentOrder as any)?.orderType ??
+      orderTypeFromRef;
+    const completePickupAfterPay =
+      !!(paymentOrder as any)?.__completePickupAfterPay ||
+      completionData?.completePickupAfterPay === true;
     // IMPORTANT: completionData.sessionPayments is a snapshot taken when payment completed.
     // If tip was added after completion (TipEntryModal / Add Cash Tip), use the latest state.
     const sessionPaymentsFresh = (Array.isArray(onlineTogoSessionPayments) && onlineTogoSessionPayments.length > 0)
@@ -10532,11 +10529,21 @@ const SalesPage: React.FC = () => {
       console.error('Payment status update error:', error);
     }
     
-    // Remove from order list
+    // Remove from order list (온라인 Pay만: 패널 카드 유지 → 아래에서 map 갱신)
     if (paymentOrder) {
       setSelectedOrderDetail(null);
       if (orderType === 'online') {
-        setOnlineQueueCards(prev => prev.filter(card => card.id !== paymentOrder.id));
+        if (completePickupAfterPay) {
+          setOnlineQueueCards(prev => prev.filter(card => card.id !== paymentOrder.id));
+        } else {
+          setOnlineQueueCards(prev =>
+            prev.map((card) => {
+              if (String(card.id) !== String(paymentOrder.id)) return card;
+              const fo = { ...(card.fullOrder || {}), status: 'completed', paymentStatus: 'paid' };
+              return { ...card, status: 'completed', fullOrder: fo };
+            })
+          );
+        }
       } else if (orderType === 'togo') {
         setTogoOrders(prev => prev.filter(order => order.id !== paymentOrder.id));
       } else if (orderType === 'delivery') {
@@ -10555,23 +10562,24 @@ const SalesPage: React.FC = () => {
     // Cash drawer는 onPaymentComplete 콜백에서 이미 열었으므로 여기서는 생략
     // (Dine-in도 동일: onPaymentComplete에서 1회만 오픈)
     
-    // Auto Pickup Complete (no confirm modal) for TOGO/ONLINE pickup flow
+    // Auto Pickup Complete — 온라인은 Pay & Pickup일 때만 (Pay만 결제 시 카드·픽업 목록 유지)
     try {
       const orderId = paymentOrder?.id;
       const localOrderId = paymentOrder?.localOrderId || paymentOrder?.fullOrder?.localOrderId;
       if (orderId) {
         if (orderType === 'online') {
-          // 온라인 주문: Firebase picked_up + local DB (if exists)
-          await fetch(`${API_URL}/online-orders/order/${orderId}/pickup`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-          });
-          if (localOrderId) {
-            await fetch(`${API_URL}/orders/${localOrderId}/status`, {
-              method: 'PATCH',
+          if (completePickupAfterPay) {
+            await fetch(`${API_URL}/online-orders/order/${orderId}/pickup`, {
+              method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: 'PICKED_UP' }),
             });
+            if (localOrderId) {
+              await fetch(`${API_URL}/orders/${localOrderId}/status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'PICKED_UP' }),
+              });
+            }
           }
         } else if (orderType === 'togo' || orderType === 'pickup') {
           await fetch(`${API_URL}/orders/${orderId}/status`, {
@@ -10622,18 +10630,20 @@ const SalesPage: React.FC = () => {
       (typeof paymentOrder?.table_id === 'string' && String(paymentOrder.table_id).toUpperCase().startsWith('DL')
         ? String(paymentOrder.table_id).substring(2)
         : null);
-    registerSwipeRemovedPanelIds(
-      paymentOrder?.id,
-      orderId,
-      orderDetail?.fullOrder?.id,
-      closeTargetId,
-      localOrderIdRaw,
-      savedSqliteOrderId,
-      paymentOrder?.order_id,
-      (paymentOrder as any)?.onlineOrderNumber,
-      (orderDetail?.fullOrder as any)?.onlineOrderNumber,
-      dmHide
-    );
+    if (!(orderType === 'online' && !completePickupAfterPay)) {
+      registerSwipeRemovedPanelIds(
+        paymentOrder?.id,
+        orderId,
+        orderDetail?.fullOrder?.id,
+        closeTargetId,
+        localOrderIdRaw,
+        savedSqliteOrderId,
+        paymentOrder?.order_id,
+        (paymentOrder as any)?.onlineOrderNumber,
+        (orderDetail?.fullOrder as any)?.onlineOrderNumber,
+        dmHide
+      );
+    }
 
     // orderPaid는 loadTogoOrders만 호출 — 온라인 큐는 여기서 즉시 갱신
     void loadOnlineOrders();
@@ -11365,15 +11375,7 @@ const SalesPage: React.FC = () => {
                           !!sourceOnlineOrder);
                       const fo = (card as any).fullOrder || {};
                       const oStatus = String(card.status || fo.status || '').toUpperCase();
-                      const paySt = String(fo.paymentStatus || fo.payment_status || '').toLowerCase();
-                      const oIsPaid =
-                        oStatus === 'PAID' ||
-                        oStatus === 'COMPLETED' ||
-                        oStatus === 'CLOSED' ||
-                        paySt === 'paid' ||
-                        paySt === 'completed' ||
-                        fo.paid === true ||
-                        fo.isPaid === true;
+                      const oIsPaid = onlineQueueCardIsPaidReady(card);
                       const oIsPickedUp = oStatus === 'PICKED_UP';
                       const onlineCanSwipePickup = oIsPaid && !oIsPickedUp;
                       /** 카드 좌측: 주문 접수 시각이 아니라 픽업/준비 완료 예정 시각(프렙 반영) */
@@ -13628,7 +13630,7 @@ const SalesPage: React.FC = () => {
                   <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
                     <div
                       className={`bg-slate-700 px-2 font-bold text-white flex items-center flex-shrink-0 ${
-                        orderListOpenMode === 'pickup' ? 'py-2 text-sm' : 'py-2.5 text-base'
+                        orderListOpenMode === 'pickup' ? 'py-[0.6rem] text-sm' : 'py-2.5 text-base'
                       }`}
                     >
                       {orderListOpenMode === 'pickup' ? (
@@ -15451,11 +15453,12 @@ const SalesPage: React.FC = () => {
           
           // ì™„ë£Œ ë°ì´í„° ì €ìž¥ (close handlerì—ì„œ ì‚¬ìš©)
           onlineTogoCompletionRef.current = {
-            orderType: selectedOrderType,
+            orderType: onlineTogoPaymentOrder?.orderType ?? selectedOrderType,
             orderId: onlineTogoPaymentOrder?.id,
             orderDetail: selectedOrderDetail,
             paymentOrder: { ...onlineTogoPaymentOrder },
             sessionPayments: [...onlineTogoSessionPayments],
+            completePickupAfterPay: !!(onlineTogoPaymentOrder as any)?.__completePickupAfterPay,
           };
           
           // PaymentModal ë‹«ê³  PaymentCompleteModal ì—´ê¸°
@@ -15490,11 +15493,12 @@ const SalesPage: React.FC = () => {
           
           // Save completion data for the close handler
           onlineTogoCompletionRef.current = {
-            orderType: selectedOrderType,
+            orderType: onlineTogoPaymentOrder?.orderType ?? selectedOrderType,
             orderId: onlineTogoPaymentOrder?.id,
             orderDetail: selectedOrderDetail,
             paymentOrder: { ...onlineTogoPaymentOrder },
             sessionPayments: [...onlineTogoSessionPayments],
+            completePickupAfterPay: !!(onlineTogoPaymentOrder as any)?.__completePickupAfterPay,
           };
           
           // Close PaymentModal, open PaymentCompleteModal
@@ -16109,6 +16113,8 @@ const SalesPage: React.FC = () => {
           setSelectedOrderDetail(null);
           setSelectedOrderType(null);
         }}
+        splitPayAndPickupActions
+        splitPayAndPickupOnlineOnly
         onBackToOrder={handleBackToOrderFromDetailModal}
         onlineOrders={onlineQueueCards as OrderData[]}
         togoOrders={togoOrders.filter(o => String(o.fulfillment || '').toLowerCase() !== 'delivery' && String(o.type || '').toLowerCase() !== 'delivery' && !o.deliveryCompany && String(o.fulfillment || '').toLowerCase() !== 'online' && String(o.type || '').toLowerCase() !== 'online') as OrderData[]}
@@ -16228,6 +16234,7 @@ const SalesPage: React.FC = () => {
                 localOrderId: working.localOrderId || working.fullOrder?.localOrderId || working.number,
                 fullOrder: working.fullOrder,
                 status: working.fullOrder?.status || working.status || 'pending',
+                __completePickupAfterPay: !!(working as any).__completePickupAfterPay,
               };
 
               flushSync(() => {
