@@ -1129,31 +1129,26 @@ const TableMapManagerPage = () => {
   // 오늘의 예약 현황 상태
   const [todayReservations, setTodayReservations] = useState<any[]>([]);
   
-  // 오늘의 예약 현황 로드
+  const loadTodayReservations = useCallback(async () => {
+    try {
+      const today = getLocalDateString();
+      const res = await fetch(`${API_URL}/reservations?date=${today}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const reservations = Array.isArray(data) ? data : (data.reservations || []);
+      reservations.sort((a: any, b: any) => {
+        const timeA = a.reservation_time || a.time || '';
+        const timeB = b.reservation_time || b.time || '';
+        return timeA.localeCompare(timeB);
+      });
+      setTodayReservations(reservations);
+    } catch (err) {
+      console.error('Failed to load reservations:', err);
+    }
+  }, []);
+
   useEffect(() => {
-    const loadTodayReservations = async () => {
-      try {
-        const today = getLocalDateString();
-        const res = await fetch(`${API_URL}/reservations?date=${today}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const reservations = Array.isArray(data) ? data : (data.reservations || []);
-        // 시간순 정렬
-        reservations.sort((a: any, b: any) => {
-          const timeA = a.reservation_time || a.time || '';
-          const timeB = b.reservation_time || b.time || '';
-          return timeA.localeCompare(timeB);
-        });
-        setTodayReservations(reservations);
-      } catch (err) {
-        console.error('Failed to load reservations:', err);
-      }
-    };
-    
-    // 앱 실행/새로고침 시 로드
     loadTodayReservations();
-    
-    // 오후 2시 업데이트 체크 (1분마다 확인)
     const checkScheduledUpdate = () => {
       const now = new Date();
       if (now.getHours() === 14 && now.getMinutes() === 0) {
@@ -1162,7 +1157,7 @@ const TableMapManagerPage = () => {
     };
     const interval = setInterval(checkScheduledUpdate, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadTodayReservations]);
 
   // Occupied 테이블의 시간 업데이트
   useEffect(() => {
@@ -3948,6 +3943,7 @@ const TableMapManagerPage = () => {
         onClose={() => setShowReservationModal(false)}
         onCreated={() => {
           try { setShowReservationModal(false); } catch {}
+          void loadTodayReservations();
         }}
       />
       {showAddFloorModal && (

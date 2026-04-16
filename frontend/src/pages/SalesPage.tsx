@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_URL } from '../config/constants';
@@ -206,6 +206,31 @@ function computeCardDetailModalTotals(cdOrder: any, cdItems: any[]) {
       }
     }
   );
+}
+
+/** 투고 패널 Today's Reservations: 예약 시각 기준 15분 초과 지난 항목은 스크롤로 밀어 다음 예약이 보이게 (예약 4건 이하는 자동 스크롤 없음) */
+const TOGO_TODAY_RES_STALE_AFTER_MS = 15 * 60 * 1000;
+
+function togoReservationTimeToMs(res: any, todayStr: string): number | null {
+  const t = String(res?.reservation_time ?? res?.time ?? '').trim();
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const hh = String(m[1]).padStart(2, '0');
+  const mm = String(m[2]).padStart(2, '0');
+  const d = new Date(`${todayStr}T${hh}:${mm}:00`);
+  const ms = d.getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** 첫 번째로 뷰포트 상단에 두고 싶은 인덱스: 예약 시각+15분이 아직 안 지난 첫 항목. 파싱 불가면 0, 전부 지났으면 length */
+function getTogoTodayReservationScrollToIndex(reservations: any[], todayStr: string): number {
+  const now = Date.now();
+  for (let i = 0; i < reservations.length; i++) {
+    const ms = togoReservationTimeToMs(reservations[i], todayStr);
+    if (ms == null) return i;
+    if (now <= ms + TOGO_TODAY_RES_STALE_AFTER_MS) return i;
+  }
+  return reservations.length;
 }
 
 interface TableElement {
@@ -1577,31 +1602,29 @@ const SalesPage: React.FC = () => {
   
   // ì˜¤ëŠ˜ì˜ ì˜ˆì•½ í˜„í™© ìƒíƒœ
   const [todayReservations, setTodayReservations] = useState<any[]>([]);
-  
-  // ì˜¤ëŠ˜ì˜ ì˜ˆì•½ í˜„í™© ë¡œë“œ
+  const togoTodayReservationsScrollRef = useRef<HTMLDivElement | null>(null);
+  const [togoTodayResScrollTick, setTogoTodayResScrollTick] = useState(0);
+
+  const loadTodayReservations = useCallback(async () => {
+    try {
+      const today = getLocalDateString();
+      const res = await fetch(`${API_URL}/reservations?date=${today}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const reservations = Array.isArray(data) ? data : (data.reservations || []);
+      reservations.sort((a: any, b: any) => {
+        const timeA = a.reservation_time || a.time || '';
+        const timeB = b.reservation_time || b.time || '';
+        return timeA.localeCompare(timeB);
+      });
+      setTodayReservations(reservations);
+    } catch (err) {
+      console.error('Failed to load reservations:', err);
+    }
+  }, []);
+
   useEffect(() => {
-    const loadTodayReservations = async () => {
-      try {
-        const today = getLocalDateString();
-        const res = await fetch(`${API_URL}/reservations?date=${today}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const reservations = Array.isArray(data) ? data : (data.reservations || []);
-        reservations.sort((a: any, b: any) => {
-          const timeA = a.reservation_time || a.time || '';
-          const timeB = b.reservation_time || b.time || '';
-          return timeA.localeCompare(timeB);
-        });
-        setTodayReservations(reservations);
-      } catch (err) {
-        console.error('Failed to load reservations:', err);
-      }
-    };
-    
-    // ì•± ì‹¤í–‰/ìƒˆë¡œê³ ì¹¨ ì‹œ ë¡œë“œ
     loadTodayReservations();
-    
-    // ì˜¤í›„ 2ì‹œ ì—…ë°ì´íŠ¸ ì²´í¬ (1ë¶„ë§ˆë‹¤ í™•ì¸)
     const checkScheduledUpdate = () => {
       const now = new Date();
       if (now.getHours() === 14 && now.getMinutes() === 0) {
@@ -1610,7 +1633,38 @@ const SalesPage: React.FC = () => {
     };
     const interval = setInterval(checkScheduledUpdate, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadTodayReservations]);
+
+  useEffect(() => {
+    if (todayReservations.length <= 4) return;
+    const id = window.setInterval(() => void setTogoTodayResScrollTick(t => t + 1), 60000);
+    return () => window.clearInterval(id);
+  }, [todayReservations.length]);
+
+  useLayoutEffect(() => {
+    const container = togoTodayReservationsScrollRef.current;
+    if (!container) return;
+    if (todayReservations.length <= 4) {
+      container.scrollTop = 0;
+      return;
+    }
+    const todayStr = getLocalDateString();
+    const idx = getTogoTodayReservationScrollToIndex(todayReservations, todayStr);
+    if (idx === 0) {
+      container.scrollTop = 0;
+      return;
+    }
+    if (idx >= todayReservations.length) {
+      container.scrollTop = container.scrollHeight;
+      return;
+    }
+    const el = container.querySelector(`[data-togo-residx="${idx}"]`) as HTMLElement | null;
+    if (!el) return;
+    const elRect = el.getBoundingClientRect();
+    const contRect = container.getBoundingClientRect();
+    const nextTop = container.scrollTop + (elRect.top - contRect.top);
+    container.scrollTop = Math.max(0, nextTop);
+  }, [todayReservations, togoTodayResScrollTick]);
   // ============================================
   // 온라인 예약 Accept/Reject 시스템
   // ============================================
@@ -1689,15 +1743,7 @@ const SalesPage: React.FC = () => {
         processedOnlineReservationIds.current.add(pendingOnlineReservation.firebase_doc_id);
         setShowOnlineReservationPopup(false);
         setPendingOnlineReservation(null);
-        // Reload today reservations
-        const today = getLocalDateString();
-        const rRes = await fetch(`${API_URL}/reservations?date=${today}`);
-        if (rRes.ok) {
-          const rData = await rRes.json();
-          const reservations = Array.isArray(rData) ? rData : (rData.reservations || []);
-          reservations.sort((a: any, b: any) => (a.reservation_time || '').localeCompare(b.reservation_time || ''));
-          setTodayReservations(reservations);
-        }
+        await loadTodayReservations();
         // Reload table map to show reserved status
         if (data.assignedTable) {
           window.location.reload();
@@ -11503,24 +11549,59 @@ const SalesPage: React.FC = () => {
               </div>
             </div>
 
-            {/* í•˜ë‹¨ í”Œë¡œíŒ… ì˜ˆì•½ í˜„í™© - Online+Togo ê·¸ë¦¬ë“œì™€ ë™ì¼í•œ ë„ˆë¹„ */}
-            <div className="absolute bg-amber-50/95 border border-amber-300 rounded-lg px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.15)] z-[100] backdrop-blur-sm" style={{ height: '72px', left: '8px', right: '20px', bottom: '3px' }}>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-amber-800 text-xs font-bold flex items-center gap-1.5">
+            {/* í•˜ë‹¨ í”Œë¡œíŒ… ì˜ˆì•½ í˜„í™© - Online+Togo ê·¸ë¦¬ë“œì™€ ë™ì¼í•œ ë„ˆë¹„ — 소프트 네오모픽 입체 패널 */}
+            <div
+              className="absolute z-[100] flex min-h-0 max-h-[82.32px] flex-col rounded-[14px] border-0 px-3 py-2"
+              style={{
+                left: '3px',
+                right: '15px',
+                bottom: '3px',
+                background: 'linear-gradient(165deg, #fffbeb 0%, #fef3c7 48%, #fde68a 100%)',
+                boxShadow:
+                  '6px 6px 14px rgba(184, 180, 170, 0.52), -5px -5px 12px rgba(255, 255, 255, 0.94), inset 0 1px 1px rgba(255, 255, 255, 0.88), inset 0 -1px 1px rgba(146, 110, 50, 0.07)',
+              }}
+            >
+              <div className="mb-1 flex flex-shrink-0 items-center justify-between">
+                <div className="flex items-center gap-1.5 text-[13px] font-extrabold leading-tight text-amber-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.45)]">
                   Today's Reservations ({todayReservations.length})
                 </div>
               </div>
               {todayReservations.length === 0 ? (
-                <div className="text-[10px] text-amber-600/60 italic text-center py-1">No reservations for today</div>
+                <div className="text-[11px] font-semibold text-amber-600/70 italic text-center py-1">No reservations for today</div>
               ) : (
-                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                  {todayReservations.map((res: any, idx: number) => (
-                    <div key={res.id || idx} className="flex-shrink-0 flex items-center gap-2 bg-white/80 px-2.5 py-1 rounded-lg border border-amber-200 shadow-sm min-w-[140px]">
-                      <span className="font-extrabold text-amber-900 text-xs">{res.reservation_time || res.time || '--:--'}</span>
-                      <span className="text-gray-800 text-xs font-bold truncate max-w-[70px]">{res.customer_name || res.name || '—'}</span>
-                      <span className="bg-amber-100 text-amber-800 text-[9px] font-black px-1 py-0.5 rounded">p{res.party_size || res.guests || 0}</span>
-                    </div>
-                  ))}
+                <div
+                  ref={togoTodayReservationsScrollRef}
+                  className={`min-h-0 overflow-x-hidden pr-0 max-h-[60.48px] sm:max-h-[64.68px] ${
+                    todayReservations.length > 4 ? 'overflow-y-auto' : 'overflow-hidden'
+                  } [scrollbar-width:thin] [scrollbar-color:rgba(120,53,15,0.38)_transparent] [&::-webkit-scrollbar]:w-[5px] [&::-webkit-scrollbar-button]:hidden [&::-webkit-scrollbar-button]:h-0 [&::-webkit-scrollbar-button]:w-0 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-0 [&::-webkit-scrollbar-thumb]:bg-amber-900/35 [&::-webkit-scrollbar-thumb]:hover:bg-amber-900/50`}
+                  style={{ WebkitOverflowScrolling: 'touch' }}
+                >
+                  <ul className="m-0 list-none p-0 grid grid-cols-2 gap-x-0 gap-y-[2.1px] pb-[1.4px]">
+                    {todayReservations.map((res: any, idx: number) => {
+                      const isCol1 = idx % 2 === 0;
+                      return (
+                      <li
+                        key={res.id || idx}
+                        data-togo-residx={idx}
+                        className={`pointer-events-none cursor-default select-none flex min-h-[18px] min-w-0 items-baseline gap-1 py-[1.4px] text-[12px] leading-tight pl-0.5 ${
+                          isCol1
+                            ? 'border-r border-amber-300/90 pr-2 mr-1'
+                            : 'pl-1.5 pr-0.5'
+                        }`}
+                      >
+                        <span className="w-[2.85rem] shrink-0 font-bold tabular-nums text-amber-900">
+                          {res.reservation_time || res.time || '--:--'}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-bold text-gray-800">
+                          {res.customer_name || res.name || '—'}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-[10px] font-bold text-amber-700/90">
+                          p{res.party_size || res.guests || 0}
+                        </span>
+                      </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               )}
             </div>
@@ -16791,6 +16872,7 @@ const SalesPage: React.FC = () => {
         onClose={() => setShowReservationModal(false)}
         onCreated={() => {
           setShowReservationModal(false);
+          void loadTodayReservations();
         }}
         onTableStatusChanged={handleGuestFlowTableStatusChanged}
       />

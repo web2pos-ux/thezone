@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { API_URL } from '../../config/constants';
 import VirtualKeyboard from '../order/VirtualKeyboard';
 import { Keyboard as KeyboardIcon } from 'lucide-react';
@@ -47,6 +47,90 @@ const formatPhone = (raw: string) => {
 	return `${d.slice(0,3)}-${d.slice(3,6)}-${d.slice(6)}`;
 };
 
+/** API reservation_date (TEXT / ISO / unix) → YYYY-MM-DD — 달력 셀 키와 동일 */
+const normalizeReservationDateKey = (raw: unknown): string | null => {
+	if (raw == null || raw === '') return null;
+	if (typeof raw === 'number' && Number.isFinite(raw)) {
+		const ms = raw > 1e12 ? raw : raw * 1000;
+		const d = new Date(ms);
+		if (!Number.isNaN(d.getTime())) {
+			return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+		}
+	}
+	const s = String(raw).trim();
+	const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+	if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+	return null;
+};
+
+const parseReservationListPayload = (body: unknown): any[] => {
+	if (Array.isArray(body)) return body;
+	if (body && typeof body === 'object' && Array.isArray((body as { reservations?: unknown }).reservations)) {
+		return (body as { reservations: any[] }).reservations;
+	}
+	return [];
+};
+
+const buildDayCountsFromRows = (rows: any[]): Record<string, number> => {
+	const counts: Record<string, number> = {};
+	rows.forEach((r: any) => {
+		if (r.status === 'cancelled' || r.status === 'no_show') return;
+		const d = normalizeReservationDateKey(r.reservation_date);
+		if (!d) return;
+		counts[d] = (counts[d] || 0) + 1;
+	});
+	return counts;
+};
+
+/** 월 범위 예약 목록 — 라우트 마운트 차이 대비 URL 2종 시도 */
+const fetchMonthRangeReservations = async (firstDay: string, lastDay: string): Promise<any[]> => {
+	const qs = `start_date=${encodeURIComponent(firstDay)}&end_date=${encodeURIComponent(lastDay)}`;
+	const urls = [`${API_URL}/reservations/reservations?${qs}`, `${API_URL}/reservations?${qs}`];
+	for (const url of urls) {
+		try {
+			const res = await fetch(url);
+			if (!res.ok) continue;
+			const body = await res.json();
+			return parseReservationListPayload(body);
+		} catch {
+			continue;
+		}
+	}
+	return [];
+};
+
+const fetchReservationsForDate = async (day: string): Promise<any[]> => {
+	const q = `date=${encodeURIComponent(day)}`;
+	const urls = [`${API_URL}/reservations/reservations?${q}`, `${API_URL}/reservations?${q}`];
+	for (const url of urls) {
+		try {
+			const res = await fetch(url);
+			if (!res.ok) continue;
+			const body = await res.json();
+			return parseReservationListPayload(body);
+		} catch {
+			continue;
+		}
+	}
+	return [];
+};
+
+const countActiveReservations = (rows: any[] | null | undefined): number =>
+	(rows || []).filter((r: any) => r.status !== 'cancelled' && r.status !== 'no_show').length;
+
+/** 달력 배지용: 해당일 DB 예약 행 전체(취소·노쇼 등 상태 포함, 날짜 키 불가 행만 제외) */
+const buildDayCountsFromRowsAllStatuses = (rows: any[]): Record<string, number> => {
+	const counts: Record<string, number> = {};
+	rows.forEach((r: any) => {
+		const d = normalizeReservationDateKey(r.reservation_date);
+		if (!d) return;
+		counts[d] = (counts[d] || 0) + 1;
+	});
+	return counts;
+};
+
+const countAllReservationRows = (rows: any[] | null | undefined): number => (rows || []).length;
+
 interface ReservationCreateModalProps {
 	open: boolean;
 	onClose: () => void;
@@ -94,6 +178,7 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	const [timeSlotsDef, setTimeSlotsDef] = useState<Array<{ time_slot: string; is_available: number; max_reservations: number }> | null>(null);
 	const [recents, setRecents] = useState<any[]>([]);
 	const [showSlotModal, setShowSlotModal] = useState<boolean>(false); // legacy overlay (unused)
+	const prevShowSlotModalRef = useRef(false);
 	const [customerHistory, setCustomerHistory] = useState<any[]>([]);
 	const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
 	const [showDetailModal, setShowDetailModal] = useState<boolean>(false);
@@ -152,6 +237,8 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 	const [tlFormChannel, setTlFormChannel] = useState<'Walk-in' | 'Phone' | 'Online'>('Walk-in');
 	const [tlFormSaving, setTlFormSaving] = useState(false);
 	const [tlFormError, setTlFormError] = useState<string | null>(null);
+	const [tlNativeFocus, setTlNativeFocus] = useState<null | 'party' | 'hour' | 'minute' | 'ampm'>(null);
+	const tlSelectBlurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	// Slot save states
 	const [savingSlots, setSavingSlots] = useState<boolean>(false);
 	const [slotsSaved, setSlotsSaved] = useState<boolean>(false);
@@ -180,24 +267,28 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 
 	// Today's reservations (flat list)
 	const [todayReservations, setTodayReservations] = useState<any[]>([]);
-	useEffect(() => {
-		if (!open) return;
-		let abort = false;
-		(async () => {
-			try {
-				const res = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(today)}`);
-				if (!res.ok) { setTodayReservations([]); return; }
-				const list = await res.json();
-				if (!abort) setTodayReservations(Array.isArray(list) ? list : []);
-			} catch { setTodayReservations([]); }
-		})();
-		return () => { abort = true; };
-	}, [open, today]);
+	const todayReservationsRef = useRef<any[]>([]);
+	const reservationsByTimeRef = useRef<Record<string, any[]>>({});
+	const dateRef = useRef<string>('');
+	todayReservationsRef.current = todayReservations;
+	reservationsByTimeRef.current = reservationsByTime;
+	dateRef.current = date;
 
-	// Fetch reservation counts for the visible calendar month
-	useEffect(() => {
-		if (!open) return;
-		let abort = false;
+	/** 월 API 집계(일별 전체 행) + 화면에 이미 로드된 오늘/선택일 목록 건수와 병합(비동기 완료 시점 기준 최신) */
+	const mergeMonthCountsWithDetail = useCallback((list: any[]) => {
+		const api = buildDayCountsFromRowsAllStatuses(list);
+		const todayN = countAllReservationRows(todayReservationsRef.current);
+		const sel = dateRef.current;
+		const timelineN = sel ? countAllReservationRows(Object.values(reservationsByTimeRef.current).flat()) : 0;
+		const out: Record<string, number> = { ...api };
+		out[today] = Math.max(api[today] ?? 0, todayN);
+		if (sel) {
+			out[sel] = Math.max(api[sel] ?? 0, timelineN);
+		}
+		return out;
+	}, [today]);
+
+	const loadMonthReservationCountsFromApi = useCallback(async () => {
 		const base = new Date();
 		base.setMonth(base.getMonth() + availMonthOffset, 1);
 		const year = base.getFullYear();
@@ -205,25 +296,73 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		const firstDay = `${year}-${String(month + 1).padStart(2, '0')}-01`;
 		const lastDate = new Date(year, month + 1, 0);
 		const lastDay = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDate.getDate()).padStart(2, '0')}`;
+		try {
+			const list = await fetchMonthRangeReservations(firstDay, lastDay);
+			setMonthReservationCounts(mergeMonthCountsWithDetail(list));
+		} catch {
+			setMonthReservationCounts(mergeMonthCountsWithDetail([]));
+		}
+	}, [availMonthOffset, mergeMonthCountsWithDetail]);
+
+	useEffect(() => {
+		if (!open) return;
+		let abort = false;
 		(async () => {
 			try {
-				const res = await fetch(`${API_URL}/reservations/reservations?start_date=${encodeURIComponent(firstDay)}&end_date=${encodeURIComponent(lastDay)}`);
-				if (!res.ok || abort) return;
-				const list = await res.json();
-				if (abort) return;
-				const counts: Record<string, number> = {};
-				(Array.isArray(list) ? list : []).forEach((r: any) => {
-					if (r.status === 'cancelled' || r.status === 'no_show') return; // exclude cancelled/no-show
-					const d = String(r.reservation_date || '').slice(0, 10);
-					counts[d] = (counts[d] || 0) + 1;
-				});
-				setMonthReservationCounts(counts);
+				const list = await fetchReservationsForDate(today);
+				if (!abort) setTodayReservations(list);
 			} catch {
-				if (!abort) setMonthReservationCounts({});
+				if (!abort) setTodayReservations([]);
 			}
 		})();
 		return () => { abort = true; };
-	}, [open, availMonthOffset]);
+	}, [open, today]);
+
+	// Fetch reservation counts for the visible calendar month
+	useEffect(() => {
+		if (!open) return;
+		void loadMonthReservationCountsFromApi();
+	}, [open, availMonthOffset, loadMonthReservationCountsFromApi]);
+
+	// 오늘/선택일 목록이 바뀔 때마다 달력 라벨 즉시 동기화(일별 전체 행 수)
+	useEffect(() => {
+		if (!open) return;
+		const n = countAllReservationRows(todayReservations);
+		setMonthReservationCounts(prev => ({ ...prev, [today]: n }));
+	}, [open, today, todayReservations]);
+
+	useEffect(() => {
+		if (!open || !date) return;
+		const n = countAllReservationRows(Object.values(reservationsByTime).flat());
+		setMonthReservationCounts(prev => ({ ...prev, [date]: n }));
+	}, [open, date, reservationsByTime]);
+
+	// 슬롯 모달을 닫을 때만 월 집계 재조회(열림 시 중복 요청 방지)
+	useEffect(() => {
+		if (!open) {
+			prevShowSlotModalRef.current = showSlotModal;
+			return;
+		}
+		if (prevShowSlotModalRef.current && !showSlotModal) {
+			void loadMonthReservationCountsFromApi();
+		}
+		prevShowSlotModalRef.current = showSlotModal;
+	}, [open, showSlotModal, loadMonthReservationCountsFromApi]);
+
+	useEffect(() => {
+		if (!open) return;
+		const onVis = () => {
+			if (document.visibilityState === 'visible') void loadMonthReservationCountsFromApi();
+		};
+		document.addEventListener('visibilitychange', onVis);
+		return () => document.removeEventListener('visibilitychange', onVis);
+	}, [open, loadMonthReservationCountsFromApi]);
+
+	useEffect(() => {
+		if (!open || activeTab !== 'create') return;
+		const t = window.setInterval(() => void loadMonthReservationCountsFromApi(), 45000);
+		return () => window.clearInterval(t);
+	}, [open, activeTab, loadMonthReservationCountsFromApi]);
 
 	// Load system settings + recents on open
 	useEffect(() => {
@@ -298,6 +437,17 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		return () => clearInterval(interval);
 	}, [open, today, date]);
 
+	/** 예약 생성 후 달력 일별 카운트 + 모달 내 Today's 목록 동기화 */
+	const refreshMonthAndTodayReservations = useCallback(async () => {
+		await loadMonthReservationCountsFromApi();
+		try {
+			const list = await fetchReservationsForDate(today);
+			setTodayReservations(list);
+		} catch {
+			setTodayReservations([]);
+		}
+	}, [loadMonthReservationCountsFromApi, today]);
+
 	// Return empty array (no mock data - real data only)
 	const generateMockDayReservations = (_ds: string) => {
 		return [];
@@ -310,12 +460,7 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 		(async () => {
 			try {
 				setLoadingDayReservations(true);
-				const res = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(date)}`);
-				let list: any[] = [];
-				if (res.ok) {
-					list = await res.json();
-				}
-				// fallback to mock when empty
+				let list: any[] = await fetchReservationsForDate(date);
 				if (!Array.isArray(list) || list.length === 0) {
 					list = generateMockDayReservations(date);
 				}
@@ -670,16 +815,6 @@ const handleReservationAction = async (action: 'cancel' | 'edit' | 'arrived' | '
 		return () => clearTimeout(timer);
 	}, [showDetailModal]);
 
-	// Auto-focus Name input when timeline form opens (once)
-	useEffect(() => {
-		if (!showTimelineForm) return;
-		const timer = setTimeout(() => {
-			const el = document.getElementById('timeline-form-name-input') as HTMLInputElement | null;
-			if (el) el.focus();
-		}, 150);
-		return () => clearTimeout(timer);
-	}, [showTimelineForm]);
-
 const time24 = useMemo(() => {
 		const h12Num = Math.max(1, Math.min(12, Number(hour12) || 12));
 		let h24 = h12Num % 12;
@@ -835,6 +970,7 @@ const handleSave = async () => {
 					// await syncOnlineReservation(payload)
 				} catch {}
 			}
+			await refreshMonthAndTodayReservations();
 			if (onCreated) onCreated();
 			onClose();
 		} catch (e: any) {
@@ -880,6 +1016,7 @@ const handleSave = async () => {
 				(list || []).forEach((r: any) => { const t = String(r?.reservation_time || '').slice(0, 5); if (!grouped[t]) grouped[t] = []; grouped[t].push(r); });
 				setReservationsByTime(grouped);
 			}
+			await refreshMonthAndTodayReservations();
 			if (onCreated) onCreated();
 		} catch (e: any) {
 			setTlFormError(String(e?.message || 'Failed to create reservation'));
@@ -887,6 +1024,57 @@ const handleSave = async () => {
 			setTlFormSaving(false);
 		}
 	};
+
+	const clearTlSelectBlurTimer = () => {
+		if (tlSelectBlurTimerRef.current) {
+			clearTimeout(tlSelectBlurTimerRef.current);
+			tlSelectBlurTimerRef.current = null;
+		}
+	};
+	const scheduleTlNativeFocusClear = () => {
+		clearTlSelectBlurTimer();
+		tlSelectBlurTimerRef.current = setTimeout(() => {
+			setTlNativeFocus(null);
+			tlSelectBlurTimerRef.current = null;
+		}, 120);
+	};
+	const setTlNativeFocusImmediate = (k: 'party' | 'hour' | 'minute' | 'ampm') => {
+		clearTlSelectBlurTimer();
+		setTlNativeFocus(k);
+	};
+
+	useEffect(() => {
+		if (!showTimelineForm) {
+			if (tlSelectBlurTimerRef.current) {
+				clearTimeout(tlSelectBlurTimerRef.current);
+				tlSelectBlurTimerRef.current = null;
+			}
+			setTlNativeFocus(null);
+		}
+	}, [showTimelineForm]);
+
+	const tlNeuFieldStyle = (raised: boolean): React.CSSProperties => ({
+		...(raised ? PAY_NEO.key : PAY_NEO.inset),
+		background: PAY_NEO_CANVAS,
+		transition: 'box-shadow 0.15s ease, background 0.15s ease',
+	});
+
+	const tlNameEmpty = !tlFormName.trim();
+	const tlPhoneEmpty = onlyDigits(tlFormPhone).length === 0;
+	const tlPartyEmpty = !tlFormParty;
+	const tlDepositEmpty = !tlFormDeposit.trim();
+	const tlNameActive = softKbTarget === 'tl_name';
+	const tlPhoneActive = softKbTarget === 'tl_phone';
+	const tlDepositActive = softKbTarget === 'tl_deposit';
+	const tlPartyKbActive = softKbTarget === 'tl_party';
+	const tlPartyNativeActive = tlNativeFocus === 'party';
+	const tlNameRaised = tlNameEmpty && !tlNameActive;
+	const tlPhoneRaised = tlPhoneEmpty && !tlPhoneActive;
+	const tlPartyRaised = tlPartyEmpty && !tlPartyKbActive && !tlPartyNativeActive;
+	const tlDepositRaised = tlDepositEmpty && !tlDepositActive;
+	const tlHourRaised = tlNativeFocus !== 'hour';
+	const tlMinuteRaised = tlNativeFocus !== 'minute';
+	const tlAmpmRaised = tlNativeFocus !== 'ampm';
 
 	if (!open) return null;
 
@@ -943,7 +1131,10 @@ const handleSave = async () => {
 				</div>
 
 				{/* Tab content area - scrollable, fixed size */}
-				<div className="flex-1 min-h-0 overflow-y-auto rounded-b-[14px] px-1 pt-1" style={{ background: PAY_NEO_CANVAS }}>
+				<div
+					className="flex-1 min-h-0 overflow-y-auto rounded-b-[14px] px-1 pt-1 [scrollbar-width:thin] [scrollbar-color:rgba(100,116,139,0.45)_transparent] [&::-webkit-scrollbar]:w-[5px] [&::-webkit-scrollbar-button]:hidden [&::-webkit-scrollbar-button]:h-0 [&::-webkit-scrollbar-button]:w-0 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-500/40"
+					style={{ background: PAY_NEO_CANVAS, WebkitOverflowScrolling: 'touch' }}
+				>
 
 				{/* ===== CREATE TAB ===== */}
 				{activeTab === 'create' && <>
@@ -984,10 +1175,11 @@ const handleSave = async () => {
 						</div>
 						<div className="grid grid-cols-7 gap-[5px]">
 							{Array.from({ length: availabilityMonth.firstWeekday }).map((_, i) => (
-								<div key={`pad-av-${i}`} style={{ height: '54px' }} />
+								<div key={`pad-av-${i}`} className="aspect-square w-full" aria-hidden />
 							))}
 								{availabilityMonth.days.map((d: any) => {
-									const hasReservations = (monthReservationCounts[d.date] || 0) > 0;
+									const dayReservationCount = monthReservationCounts[d.date] ?? 0;
+									const hasReservations = dayReservationCount > 0;
 									const isSelected = date === d.date;
 									const isToday = d.date === today;
 								return (
@@ -995,7 +1187,7 @@ const handleSave = async () => {
 										type="button"
 										key={d.date}
 										disabled={!d.isOpen}
-										className={`w-full flex flex-col items-center justify-center rounded-[10px] border-0 touch-manipulation select-none ${
+										className={`relative flex aspect-square w-full flex-col items-center overflow-visible rounded-[10px] border-0 touch-manipulation select-none ${
 											!d.isOpen
 												? 'cursor-not-allowed opacity-50'
 												: isSelected
@@ -1004,10 +1196,10 @@ const handleSave = async () => {
 										}`}
 										style={
 											!d.isOpen
-												? { ...PAY_NEO.inset, height: '54px', opacity: 0.45 }
+												? { ...PAY_NEO.inset, opacity: 0.45 }
 												: isSelected
-													? { ...PAY_NEO_PRIMARY_BLUE, height: '54px' }
-													: { ...PAY_NEO.key, height: '54px' }
+													? { ...PAY_NEO_PRIMARY_BLUE }
+													: { ...PAY_NEO.key }
 										}
                                     onClick={() => { 
 										if (!d.isOpen) return;
@@ -1015,47 +1207,23 @@ const handleSave = async () => {
 										setShowSlotModal(true);
 									}}
 									>
-							<div style={{ fontSize: '15px', fontWeight: isSelected ? 800 : 600, lineHeight: 1.1 }}>{d.label}</div>
+							<span className="mt-0.5 text-[15px] font-semibold leading-none" style={{ fontWeight: isSelected ? 800 : 600 }}>{d.label}</span>
 							{d.isOpen && hasReservations && (
-								<div className={`text-[10px] font-bold leading-none mt-0.5 rounded-full px-1.5 py-[1px] min-w-[16px] text-center ${
-									isSelected ? 'bg-white text-blue-600' : 'bg-yellow-400 text-gray-900'
-								}`}>{monthReservationCounts[d.date]}</div>
+								<span
+									className={`absolute bottom-0.5 left-1/2 z-10 min-w-[18px] -translate-x-1/2 rounded-full px-1 py-px text-center text-[10px] font-extrabold leading-none shadow ring-1 ring-black/15 ${
+										isSelected ? 'bg-white text-blue-600 ring-white/50' : 'bg-amber-400 text-gray-900'
+									}`}
+									title={`해당일 예약 행 ${dayReservationCount}건 (DB 전체, 상태 포함)`}
+									aria-label={`해당일 예약 데이터베이스 행 수 ${dayReservationCount}건, 취소 및 노쇼 포함`}
+								>
+									{dayReservationCount}
+								</span>
 							)}
 									</button>
 								);
 							})}
 							</div>
 					</div>
-
-				{/* Today's reservation list under calendar */}
-				<div className="mt-2">
-					<div className="text-sm font-semibold">Today's Reservations</div>
-						<div className="mt-2 max-h-64 divide-y divide-slate-300/40 overflow-auto rounded-[14px]" style={{ ...PAY_NEO.inset }}>
-{(todayReservations || []).length === 0 && (
-							<div className="px-3 py-2 text-xs text-gray-500">No reservations today.</div>
-						)}
-						{(todayReservations || [])
-							.slice()
-							.sort((a:any,b:any)=>{
-								const toMin = (t:string) => { const m=t.match(/^(\d{2}):(\d{2})/); if(!m) return 0; return Number(m[1])*60+Number(m[2]); };
-								return toMin(String(a?.reservation_time||'')) - toMin(String(b?.reservation_time||''));
-							})
-							.map((r:any, idx:number)=>{
-								const t = String(r.reservation_time||'').slice(0,5);
-								const [hh, mm] = t.split(':').map((n:string)=>Number(n));
-								const isAM = hh < 12; const h12 = (hh%12)===0?12:(hh%12);
-								const tl = `${String(h12).padStart(2,'0')}:${String(mm).padStart(2,'0')} ${isAM?'AM':'PM'}`;
-								return (
-									<div key={idx} className="px-3 py-1 flex items-center justify-between">
-										<div className="text-sm font-medium">{tl}</div>
-										<div className="text-sm text-gray-700 truncate">
-											{r.customer_name || 'Guest'} • {r.phone_number || ''} • {r.party_size || ''}
-										</div>
-									</div>
-								);
-							})}
-					</div>
-				</div>
 				</div>
 
 					{/* Right: Slot Settings Panel */}
@@ -2017,14 +2185,7 @@ const handleSave = async () => {
 									}
 								} catch {}
 
-								// Refresh today's reservations
-								try {
-									const todayRes = await fetch(`${API_URL}/reservations/reservations?date=${encodeURIComponent(today)}`);
-									if (todayRes.ok) {
-										const list = await todayRes.json();
-										setTodayReservations(Array.isArray(list) ? list : []);
-									}
-								} catch {}
+								await refreshMonthAndTodayReservations();
 
 								setShowDetailModal(false);
 								setRescheduleMode(false);
@@ -2079,7 +2240,7 @@ const handleSave = async () => {
 								<input
 									id="timeline-form-name-input"
 									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-									style={{ ...PAY_NEO.inset }}
+									style={tlNeuFieldStyle(tlNameRaised)}
 									placeholder="Guest name"
 									value={tlFormName}
 									onChange={e => setTlFormName(autoCapitalizeName(e.target.value))}
@@ -2090,7 +2251,7 @@ const handleSave = async () => {
 								<label className="mb-1 block text-xs font-semibold text-slate-600">Phone</label>
 								<input
 									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-									style={{ ...PAY_NEO.inset }}
+									style={tlNeuFieldStyle(tlPhoneRaised)}
 									placeholder="XXX-XXX-XXXX"
 									value={tlFormPhone}
 									onChange={e => setTlFormPhone(formatPhone(e.target.value))}
@@ -2103,9 +2264,11 @@ const handleSave = async () => {
 								<label className="mb-1 block text-xs font-semibold text-slate-600">Party Size</label>
 								<select
 									className="w-full cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-									style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+									style={tlNeuFieldStyle(tlPartyRaised)}
 									value={tlFormParty}
 									onChange={e => setTlFormParty(e.target.value)}
+									onFocus={() => setTlNativeFocusImmediate('party')}
+									onBlur={scheduleTlNativeFocusClear}
 								>
 									<option value="">—</option>
 									{PARTY_SIZE_OPTIONS.map(o => (
@@ -2117,7 +2280,7 @@ const handleSave = async () => {
 								<label className="mb-1 block text-xs font-semibold text-slate-600">Deposit ($)</label>
 								<input
 									className="w-full border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-									style={{ ...PAY_NEO.inset }}
+									style={tlNeuFieldStyle(tlDepositRaised)}
 									type="number"
 									min="0"
 									placeholder="0"
@@ -2149,9 +2312,11 @@ const handleSave = async () => {
 								<div className="flex gap-2">
 									<select
 										className="min-w-0 flex-1 cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										style={tlNeuFieldStyle(tlHourRaised)}
 										value={tlFormHour}
 										onChange={e => setTlFormHour(e.target.value)}
+										onFocus={() => setTlNativeFocusImmediate('hour')}
+										onBlur={scheduleTlNativeFocusClear}
 									>
 										{Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0')).map(h => (
 											<option key={h} value={h}>{h}</option>
@@ -2159,9 +2324,11 @@ const handleSave = async () => {
 									</select>
 									<select
 										className="min-w-0 flex-1 cursor-pointer border-0 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										style={tlNeuFieldStyle(tlMinuteRaised)}
 										value={tlFormMinute}
 										onChange={e => setTlFormMinute(e.target.value)}
+										onFocus={() => setTlNativeFocusImmediate('minute')}
+										onBlur={scheduleTlNativeFocusClear}
 									>
 										{['00', '15', '30', '45'].map(m => (
 											<option key={m} value={m}>{m}</option>
@@ -2169,9 +2336,11 @@ const handleSave = async () => {
 									</select>
 									<select
 										className="w-20 cursor-pointer border-0 px-2 py-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-400/60"
-										style={{ ...PAY_NEO.inset, background: PAY_NEO_CANVAS }}
+										style={tlNeuFieldStyle(tlAmpmRaised)}
 										value={tlFormAmpm}
 										onChange={e => setTlFormAmpm(e.target.value as 'AM' | 'PM')}
+										onFocus={() => setTlNativeFocusImmediate('ampm')}
+										onBlur={scheduleTlNativeFocusClear}
 									>
 										<option value="AM">AM</option>
 										<option value="PM">PM</option>

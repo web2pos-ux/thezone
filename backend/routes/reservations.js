@@ -265,7 +265,8 @@ router.get('/reservations', async (req, res) => {
     const params = [];
     
     if (date) {
-      sql += ' AND r.reservation_date = ?';
+      // date() so TEXT values like '2026-04-16 00:00:00' still match calendar day
+      sql += ' AND date(r.reservation_date) = date(?)';
       params.push(date);
     }
     
@@ -281,7 +282,8 @@ router.get('/reservations', async (req, res) => {
     }
     
     if (start_date && end_date) {
-      sql += ' AND r.reservation_date BETWEEN ? AND ?';
+      // date() so month-range queries include all rows for each calendar day
+      sql += ' AND date(r.reservation_date) BETWEEN date(?) AND date(?)';
       params.push(start_date, end_date);
     }
     
