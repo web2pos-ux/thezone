@@ -1763,6 +1763,23 @@ const SalesPage: React.FC = () => {
     return '—';
   };
 
+  /** 투고 패널 온라인 카드 2행 우측: 고객 전화 끝 최대 4자리, 없으면 POS 일일 주문번호 */
+  const formatOnlineQueueCardSecondLineRight = (
+    phone?: string | null,
+    posOrderNum?: string | number | null
+  ): string => {
+    const digits = String(phone ?? '').replace(/\D/g, '');
+    if (digits.length > 0) {
+      return digits.length > 4 ? digits.slice(-4) : digits;
+    }
+    const rawPos = String(posOrderNum ?? '').trim();
+    const numFromPos = Number(rawPos);
+    if (Number.isFinite(numFromPos) && numFromPos > 0) {
+      return `#${String(numFromPos).padStart(3, '0')}`;
+    }
+    return '—';
+  };
+
   const formatTogoPanelDisplayId = (
     phone?: string | null,
     name?: string | null,
@@ -4785,18 +4802,25 @@ const SalesPage: React.FC = () => {
       } else if (orderType === 'online') {
         const card = onlineQueueCards.find(c => String(c.id) === String(id));
         if (card) {
-          const oSt = String(card.status || card.fullOrder?.status || '').toUpperCase();
+          const fo = (card as any).fullOrder || {};
+          const oSt = String(card.status || fo.status || '').toUpperCase();
+          const paySt = String(fo.paymentStatus || fo.payment_status || '').toLowerCase();
+          // 카드 READY 라벨(oIsPaid)과 동일: 주문 status만 보면 카드결제 완료 건이 pending/confirmed로 남아 스와이프가 무동작함
           const oReady =
             oSt === 'PAID' ||
             oSt === 'COMPLETED' ||
             oSt === 'CLOSED' ||
             oSt === 'READY' ||
             oSt === 'READY_FOR_PICKUP' ||
-            oSt === 'PREPARED';
+            oSt === 'PREPARED' ||
+            paySt === 'paid' ||
+            paySt === 'completed' ||
+            fo.paid === true ||
+            fo.isPaid === true;
           if (!oReady) return;
           const localOrderIdRaw =
-            card.fullOrder?.localOrderId ??
-            card.fullOrder?.order_id ??
+            fo.localOrderId ??
+            fo.order_id ??
             card.localOrderId ??
             card.number;
           const localOrderIdNum =
@@ -4828,14 +4852,20 @@ const SalesPage: React.FC = () => {
         } else {
           const panelOrder = togoOrders.find(o => String(o.id) === String(id));
           if (!panelOrder || orderListGetPickupChannel(panelOrder) !== 'online') return;
-          const tSt = String(panelOrder.status || panelOrder.fullOrder?.status || '').toUpperCase();
+          const tFo = (panelOrder as any).fullOrder || {};
+          const tSt = String(panelOrder.status || tFo.status || '').toUpperCase();
+          const tPaySt = String(tFo.paymentStatus || tFo.payment_status || '').toLowerCase();
           const tReady =
             tSt === 'PAID' ||
             tSt === 'COMPLETED' ||
             tSt === 'CLOSED' ||
             tSt === 'READY' ||
             tSt === 'READY_FOR_PICKUP' ||
-            tSt === 'PREPARED';
+            tSt === 'PREPARED' ||
+            tPaySt === 'paid' ||
+            tPaySt === 'completed' ||
+            tFo.paid === true ||
+            tFo.isPaid === true;
           if (!tReady) return;
           const actualOrderId = panelOrder.order_id || panelOrder.id;
           if (Number.isFinite(Number(actualOrderId))) {
@@ -11134,15 +11164,14 @@ const SalesPage: React.FC = () => {
                           ? (card as any).orderNumber
                           : null) ??
                         (isDailyPosDisplayDigits((card as any).number) ? (card as any).number : null);
-                      const onlinePanelDisplayId = formatOnlinePanelDisplayId(
-                        (card as any).onlineOrderNumber ||
-                          (card as any).fullOrder?.orderNumber ||
-                          (card as any).fullOrder?.order_number ||
-                          (card as any).fullOrder?.onlineOrderNumber ||
-                          (card as any).fullOrder?.externalOrderNumber ||
-                          (card as any).fullOrder?.displayOrderNumber ||
-                          (card as any).fullOrder?.firebaseOrderNumber,
-                        card.phone || (card as any).fullOrder?.customerPhone,
+                      const phoneForOnlineSecond =
+                        card.phone ||
+                        (card as any).fullOrder?.customerPhone ||
+                        (card as any).fullOrder?.customer_phone ||
+                        (card as any).customerPhone ||
+                        '';
+                      const onlinePanelDisplayId = formatOnlineQueueCardSecondLineRight(
+                        phoneForOnlineSecond,
                         onlineDailyRaw
                       );
                       const onlinePosDisplayNumber = formatPosNumber(onlineDailyRaw);
@@ -13417,7 +13446,7 @@ const SalesPage: React.FC = () => {
                   <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
                     <div
                       className={`bg-slate-700 px-2 font-bold text-white flex items-center flex-shrink-0 ${
-                        orderListOpenMode === 'pickup' ? 'py-3 text-lg' : 'py-2.5 text-base'
+                        orderListOpenMode === 'pickup' ? 'py-2 text-sm' : 'py-2.5 text-base'
                       }`}
                     >
                       {orderListOpenMode === 'pickup' ? (

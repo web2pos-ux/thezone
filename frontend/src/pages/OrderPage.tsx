@@ -1202,8 +1202,16 @@ const handleVoidPinClear = useCallback(() => {
   const pickupNavSnapshotRef = React.useRef<Record<string, unknown> | null>(null);
   React.useEffect(() => {
     const s = (location.state || {}) as Record<string, unknown>;
-    if (s.fromOrderHistory && s.autoPickup) {
-      pickupNavSnapshotRef.current = { ...s };
+    if (s.fromOrderHistory) {
+      const ap = s.autoPickup === true || s.autoPickup === 'true' || s.autoPickup === 1;
+      if (ap) {
+        pickupNavSnapshotRef.current = { ...s, autoPickup: true };
+      } else {
+        pickupNavSnapshotRef.current = { ...s, autoPickup: false };
+        togoWalkInPayAfterInfoRef.current = false;
+      }
+    } else {
+      pickupNavSnapshotRef.current = null;
     }
   }, [location.state]);
   // Payment Complete Modal state
@@ -2136,8 +2144,10 @@ const handleVoidPinClear = useCallback(() => {
       if (orderId) {
         const pmDiscountForClose = paymentCompleteData?.discount;
         const stPick = { ...(pickupNavSnapshotRef.current || {}), ...(location.state || {}) } as any;
+        const autoPickupNavClose =
+          stPick.autoPickup === true || stPick.autoPickup === 'true' || stPick.autoPickup === 1;
         const pickedUpClose =
-          !!(stPick.fromOrderHistory && stPick.autoPickup) || togoWalkInPayAfterInfoRef.current;
+          !!(stPick.fromOrderHistory && autoPickupNavClose) || togoWalkInPayAfterInfoRef.current;
         try {
           await fetch(`${API_URL}/orders/${orderId}/close`, {
             method: 'POST',
@@ -2419,11 +2429,13 @@ const handleVoidPinClear = useCallback(() => {
     if (walkInPayAndPickupImmediate) {
       togoWalkInPayAfterInfoRef.current = false;
     }
+    const autoPickupNav =
+      locNavPickup.autoPickup === true || locNavPickup.autoPickup === 'true' || locNavPickup.autoPickup === 1;
     const pickupImmediateFlow =
-      !!(locNavPickup.fromOrderHistory && locNavPickup.autoPickup) || walkInPayAndPickupImmediate;
+      !!(locNavPickup.fromOrderHistory && autoPickupNav) || walkInPayAndPickupImmediate;
     const mergePanelSnapForPickup = (oid: number | null | undefined) => {
       const cur = panelTogoOnlinePickupRef.current;
-      if (cur && oid != null && String(cur.sqliteOrderId) === String(oid)) {
+      if (pickupImmediateFlow && cur && oid != null && String(cur.sqliteOrderId) === String(oid)) {
         return { ...cur };
       }
       if (!pickupImmediateFlow || oid == null || !Number.isFinite(Number(oid))) return null;
@@ -2667,7 +2679,9 @@ const handleVoidPinClear = useCallback(() => {
                 } catch {}
               }
 
-              await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapSplit);
+              if (pickupImmediateFlow) {
+                await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapSplit);
+              }
 
               try {
                 window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
@@ -2954,7 +2968,9 @@ const handleVoidPinClear = useCallback(() => {
             });
           } catch {}
         }
-        await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapMain);
+        if (pickupImmediateFlow) {
+          await runPanelTogoOnlinePickupAfterPayment(orderId, panelSnapMain);
+        }
         window.dispatchEvent(new CustomEvent('orderPaid', { detail: { orderId, tableId: tableIdForMap } }));
       } catch {}
     })();
@@ -8321,7 +8337,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           savedOrderIdRef.current = Number(st.orderId); 
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
-          if (st.fromOrderHistory && st.autoPickup) {
+          const apHistory =
+            st.autoPickup === true || st.autoPickup === 'true' || st.autoPickup === 1;
+          if (st.fromOrderHistory && apHistory) {
             const row = json?.order || {};
             const fidRaw =
               row.firebase_order_id ||
@@ -8344,6 +8362,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               channel: String(st.orderType || '').toLowerCase(),
               deliveryMetaId,
             };
+          } else if (st.fromOrderHistory && st.openPayment && !apHistory) {
+            panelTogoOnlinePickupRef.current = null;
           }
           loadPersistedPaidGuests();
           
