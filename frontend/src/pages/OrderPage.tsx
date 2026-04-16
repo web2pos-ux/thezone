@@ -1198,6 +1198,14 @@ const handleVoidPinClear = useCallback(() => {
     channel: string;
     deliveryMetaId?: string | number | null;
   } | null>(null);
+  /** Pay & Pickup: 라우터가 state를 비운 뒤에도 close 본문 pickedUp / 패널 스냅샷에 쓰기 위한 스냅샷 */
+  const pickupNavSnapshotRef = React.useRef<Record<string, unknown> | null>(null);
+  React.useEffect(() => {
+    const s = (location.state || {}) as Record<string, unknown>;
+    if (s.fromOrderHistory && s.autoPickup) {
+      pickupNavSnapshotRef.current = { ...s };
+    }
+  }, [location.state]);
   // Payment Complete Modal state
   const [showPaymentCompleteModal, setShowPaymentCompleteModal] = useState(false);
   const [paymentCompleteData, setPaymentCompleteData] = useState<{
@@ -2127,7 +2135,7 @@ const handleVoidPinClear = useCallback(() => {
 
       if (orderId) {
         const pmDiscountForClose = paymentCompleteData?.discount;
-        const stPick = (location.state || {}) as any;
+        const stPick = { ...(pickupNavSnapshotRef.current || {}), ...(location.state || {}) } as any;
         const pickedUpClose =
           !!(stPick.fromOrderHistory && stPick.autoPickup) || togoWalkInPayAfterInfoRef.current;
         try {
@@ -2406,7 +2414,7 @@ const handleVoidPinClear = useCallback(() => {
     setPaymentCompleteData(null);
 
     /** Pay & Pickup: (1) Sales 카드에서 진입 (2) 투고 생성 화면에서 정보 모달 Pay — 둘 다 결제+픽업 완료로 처리 */
-    const locNavPickup = (location.state || {}) as any;
+    const locNavPickup = { ...(pickupNavSnapshotRef.current || {}), ...(location.state || {}) } as any;
     const walkInPayAndPickupImmediate = togoWalkInPayAfterInfoRef.current;
     if (walkInPayAndPickupImmediate) {
       togoWalkInPayAfterInfoRef.current = false;

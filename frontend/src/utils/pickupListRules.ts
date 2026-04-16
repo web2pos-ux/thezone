@@ -10,13 +10,68 @@ function normStatus(order: any): string {
   return String(order?.fullOrder?.status ?? order?.status ?? '').toUpperCase();
 }
 
-/** Channel for display and label rules (aligned with PickupListPanel / API order_type). */
+function normalizeChannelToken(value: unknown): string {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+/**
+ * 채널 분류 — Sales `orderListGetPickupChannel` / QSR 배지와 동일 우선순위:
+ * 딜리버리 → 투고(fulfillment TOGO·타입·TG) → 온라인(WEB·QR·OL·fulfillment ONLINE) → 픽업 슬롯 → 기타 PICKUP
+ */
 export function classifyPickupChannel(order: any): PickupChannelClass {
-  const ot = String(order.order_type || order.orderType || '').toUpperCase();
-  if (ot === 'DELIVERY' || order.delivery_company || order.deliveryCompany) return 'DELIVERY';
-  if (ot === 'ONLINE') return 'ONLINE';
-  if (ot === 'TOGO' || ot === 'TAKEOUT') return 'TOGO';
-  if (ot === 'PICKUP') return 'PICKUP';
+  const base = order?.fullOrder || order || {};
+  const typeToken = normalizeChannelToken(
+    base?.order_type || base?.orderType || order?.order_type || order?.orderType
+  );
+  const fulfillmentToken = normalizeChannelToken(
+    base?.fulfillment_mode || base?.fulfillment || order?.fulfillment_mode || order?.fulfillment
+  );
+  const sourceToken = normalizeChannelToken(
+    base?.order_source || base?.orderSource || order?.order_source || order?.orderSource
+  );
+  const tableId = String(
+    base?.table_id || base?.tableId || order?.table_id || order?.tableId || ''
+  ).toUpperCase();
+
+  const deliveryTokens = ['DELIVERY', 'UBEREATS', 'UBER', 'DOORDASH', 'SKIP', 'SKIPTHEDISHES', 'FANTUAN', 'GRUBHUB'];
+  const onlineTokens = ['ONLINE', 'WEB', 'QR'];
+  const togoTokens = ['TOGO', 'TAKEOUT'];
+
+  const hasDeliveryCompany = !!(order?.delivery_company || order?.deliveryCompany || base?.delivery_company);
+
+  if (
+    fulfillmentToken === 'DELIVERY' ||
+    tableId.startsWith('DL') ||
+    deliveryTokens.includes(typeToken) ||
+    deliveryTokens.includes(sourceToken) ||
+    hasDeliveryCompany
+  ) {
+    return 'DELIVERY';
+  }
+
+  if (
+    fulfillmentToken === 'TOGO' ||
+    togoTokens.includes(typeToken) ||
+    tableId.startsWith('TG')
+  ) {
+    return 'TOGO';
+  }
+
+  if (
+    fulfillmentToken === 'ONLINE' ||
+    tableId.startsWith('OL') ||
+    onlineTokens.includes(typeToken) ||
+    onlineTokens.includes(sourceToken)
+  ) {
+    return 'ONLINE';
+  }
+
+  if (typeToken === 'PICKUP' || fulfillmentToken === 'PICKUP') {
+    return 'PICKUP';
+  }
+
   return 'PICKUP';
 }
 

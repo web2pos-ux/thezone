@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { API_URL } from '../config/constants';
-import { getLocalDateString } from '../utils/datetimeUtils';
+import { fetchPickupDetailItemsPreferFirebase } from '../utils/onlineOrderPickupDetailItems';
 import { getDeliveryAbbr } from '../utils/deliveryChannels';
 import {
   classifyPickupChannel,
@@ -53,10 +53,10 @@ interface PickupListPanelProps {
 }
 
 const CHANNEL_COLORS: Record<PickupChannelClass, { bg: string; text: string; label: string }> = {
-  PICKUP: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Pickup' },
-  ONLINE: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Online' },
-  DELIVERY: { bg: 'bg-red-100', text: 'text-red-700', label: 'Delivery' },
-  TOGO: { bg: 'bg-green-100', text: 'text-green-700', label: 'Togo' },
+  PICKUP: { bg: 'bg-blue-600', text: 'text-white', label: 'Pickup' },
+  ONLINE: { bg: 'bg-violet-600', text: 'text-white', label: 'Online' },
+  DELIVERY: { bg: 'bg-red-600', text: 'text-white', label: 'Delivery' },
+  TOGO: { bg: 'bg-emerald-600', text: 'text-white', label: 'Togo' },
 };
 
 const PickupListPanel: React.FC<PickupListPanelProps> = ({
@@ -123,8 +123,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
 
   const loadOrders = useCallback(async () => {
     try {
-      const today = getLocalDateString();
-      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO,ONLINE,DELIVERY&date=${today}&limit=200`);
+      const res = await fetch(`${API_URL}/orders?pickup_pending=1&session_scope=1`);
       const data = await res.json();
       const raw: any[] = Array.isArray(data)
         ? data
@@ -166,6 +165,23 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
     }
   }, [sortOrders, selectedOrder]);
 
+  useEffect(() => {
+    const onTakeoutDayClosed = () => {
+      setOrders([]);
+      setSelectedOrder(null);
+      void loadOrders();
+    };
+    const onTakeoutDayOpened = () => {
+      void loadOrders();
+    };
+    window.addEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+    window.addEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    return () => {
+      window.removeEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+      window.removeEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    };
+  }, [loadOrders]);
+
   const fetchDetail = useCallback(async (order: PickupOrder) => {
     const orderId = Number(order.order_id ?? order.id);
     if (!Number.isFinite(orderId) || orderId <= 0) return;
@@ -174,8 +190,17 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
       const res = await fetch(`${API_URL}/orders/${orderId}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.success && data.items) {
-          const parsedItems = data.items.map((item: any) => {
+        if (data.success) {
+          let rawItems = Array.isArray(data.items) ? data.items : [];
+          const orderRowForFirebase = {
+            ...data.order,
+            firebase_order_id:
+              (data.order as any)?.firebase_order_id ??
+              (order as any)?.firebase_order_id ??
+              (order as any)?.fullOrder?.firebase_order_id,
+          };
+          rawItems = await fetchPickupDetailItemsPreferFirebase(API_URL, orderRowForFirebase, rawItems);
+          const parsedItems = rawItems.map((item: any) => {
             let options: any[] = [];
             let memo: any = null;
             let discount: any = null;
@@ -709,7 +734,9 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
                         {String(order.order_number ?? order.number ?? order.id).padStart(3, '0')}
                       </div>
                       <div className="col-span-2">
-                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${chInfo.bg} ${chInfo.text}`}>
+                        <span
+                          className={`inline-flex min-h-[22px] min-w-[52px] max-w-[72px] items-center justify-center rounded-[5px] px-2 py-0.5 text-[9px] font-bold uppercase leading-tight tracking-wide text-white shadow-sm ${chInfo.bg} ${chInfo.text}`}
+                        >
                           {channelDisplayLabel((order.channel as PickupChannelClass) || 'PICKUP')}
                         </span>
                         {order.channel === 'DELIVERY' && (order.delivery_company || order.deliveryCompany) && (

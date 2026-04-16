@@ -761,6 +761,11 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
         setClosingCopies(1);
         const today = getLocalDateString();
         localStorage.setItem('pos_last_closed_date', today);
+        try {
+          window.dispatchEvent(new CustomEvent('posTakeoutDayClosed', { detail: { date: today } }));
+        } catch {
+          /* ignore */
+        }
         onClosingComplete();
         onClose();
       } else {

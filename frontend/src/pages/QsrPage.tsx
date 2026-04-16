@@ -3601,34 +3601,44 @@ const QsrPage: React.FC = () => {
         
         return (
           <div className="fixed inset-0 bg-black/60 flex flex-col z-50">
+            <style>{`
+              #qsr-item-discount-kb-scope div.flex.gap-2.justify-center.w-full > div.flex.flex-col.items-center {
+                transform: scale(0.95);
+                transform-origin: bottom center;
+              }
+              #qsr-item-discount-kb-scope div.flex.gap-2.justify-center.w-full > div.grid.grid-cols-3 {
+                transform: scale(0.68);
+                transform-origin: bottom center;
+              }
+            `}</style>
             {/* Modal at top */}
-            <div className="flex-1 flex items-start justify-center pt-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-[420px] overflow-hidden">
-                <div className="bg-gradient-to-r from-orange-500 to-orange-600 px-6 py-3">
-                  <h3 className="text-white font-bold text-xl">Item Discount</h3>
-                  <p className="text-orange-100 text-sm">{itemName}</p>
+            <div className="flex-1 min-h-0 flex items-start justify-center pt-4 overflow-y-auto">
+              <div className="bg-white rounded-2xl shadow-2xl w-[420px] overflow-hidden mt-[30px]">
+                <div className="bg-gradient-to-r from-orange-500 to-orange-600 px-[22.8px] py-[11.4px]">
+                  <h3 className="text-white font-bold text-[1.1875rem]">Item Discount</h3>
+                  <p className="text-orange-100 text-[13.3px]">{itemName}</p>
                 </div>
-                <div className="p-4 space-y-3">
+                <div className="p-[15.2px] space-y-[11.4px]">
                   {/* Price Preview */}
-                  <div className="bg-gray-50 rounded-xl p-3">
-                    <div className="flex justify-between text-sm text-gray-600 mb-1">
+                  <div className="bg-gray-50 rounded-xl p-[11.4px]">
+                    <div className="flex justify-between text-[13.3px] text-gray-600 mb-[3.8px]">
                       <span>Original Price</span>
                       <span>${itemOriginalPrice.toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between text-sm text-orange-600 mb-1">
+                    <div className="flex justify-between text-[13.3px] text-orange-600 mb-[3.8px]">
                       <span>Discount</span>
                       <span>-${discountAmount.toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between text-lg font-bold text-gray-800 pt-2 border-t">
+                    <div className="flex justify-between text-[1.06875rem] font-bold text-gray-800 pt-[7.6px] border-t">
                       <span>Final Price</span>
                       <span>${finalPrice.toFixed(2)}</span>
                     </div>
                   </div>
                   
-                  <div className="flex gap-2">
+                  <div className="flex gap-[7.6px]">
                     <button
                       onClick={() => setItemDiscountType('percent')}
-                      className={`flex-1 py-2 rounded-xl font-medium transition ${
+                      className={`flex-1 py-[7.6px] rounded-xl font-medium transition text-[13.3px] ${
                         itemDiscountType === 'percent' ? 'bg-orange-500 text-white' : 'bg-gray-200 text-gray-700'
                       }`}
                     >
@@ -3636,7 +3646,7 @@ const QsrPage: React.FC = () => {
                     </button>
                     <button
                       onClick={() => setItemDiscountType('amount')}
-                      className={`flex-1 py-2 rounded-xl font-medium transition ${
+                      className={`flex-1 py-[7.6px] rounded-xl font-medium transition text-[13.3px] ${
                         itemDiscountType === 'amount' ? 'bg-orange-500 text-white' : 'bg-gray-200 text-gray-700'
                       }`}
                     >
@@ -3646,12 +3656,12 @@ const QsrPage: React.FC = () => {
                   
                   {/* Preset Discount Buttons */}
                   {itemDiscountType === 'percent' && (
-                    <div className="grid grid-cols-6 gap-1.5">
+                    <div className="grid grid-cols-6 gap-[5.7px]">
                       {[5, 10, 15, 20, 30, 45, 50, 60, 70, 80, 90, 100].map((pct) => (
                         <button
                           key={pct}
                           onClick={() => setItemDiscountValue(String(pct))}
-                          className={`py-2 rounded-lg font-medium text-sm transition ${
+                          className={`py-[7.6px] rounded-lg font-medium text-[13.3px] transition ${
                             itemDiscountValue === String(pct)
                               ? 'bg-orange-500 text-white'
                               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
@@ -3664,7 +3674,7 @@ const QsrPage: React.FC = () => {
                   )}
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                    <label className="block text-[13.3px] font-medium text-gray-700 mb-[3.8px]">
                       {itemDiscountType === 'percent' ? 'Discount %' : 'Discount Amount ($)'}
                     </label>
                     <input
@@ -3672,28 +3682,28 @@ const QsrPage: React.FC = () => {
                       value={itemDiscountValue}
                       onChange={(e) => setItemDiscountValue(e.target.value.replace(/[^0-9.]/g, ''))}
                       onFocus={() => setActiveInputField('discount')}
-                      className="w-full px-4 py-3 border border-orange-500 ring-2 ring-orange-500 rounded-xl text-xl text-center"
+                      className="w-full px-[15.2px] py-[11.4px] border border-orange-500 ring-2 ring-orange-500 rounded-xl text-[1.1875rem] text-center"
                       placeholder={itemDiscountType === 'percent' ? '10' : '5.00'}
                     />
                   </div>
-                  <div className="flex gap-3 pt-2">
+                  <div className="flex gap-[11.4px] pt-[7.6px]">
                     <button
                       onClick={() => { setShowItemDiscountModal(false); setItemDiscountValue(''); setActiveInputField(null); }}
-                      className="flex-1 py-3 bg-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-300 transition"
+                      className="flex-1 py-[11.4px] bg-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-300 transition text-[13.3px]"
                     >
                       Cancel
                     </button>
                     {hasExistingDiscount && (
                       <button
                         onClick={() => { handleRemoveItemDiscount(); setActiveInputField(null); }}
-                        className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600 transition"
+                        className="flex-1 py-[11.4px] bg-red-500 text-white rounded-xl font-bold hover:bg-red-600 transition text-[13.3px]"
                       >
                         Remove
                       </button>
                     )}
                     <button
                       onClick={() => { handleApplyItemDiscount(); setActiveInputField(null); }}
-                      className="flex-1 py-3 bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition"
+                      className="flex-1 py-[11.4px] bg-orange-500 text-white rounded-xl font-bold hover:bg-orange-600 transition text-[13.3px]"
                     >
                       Apply
                     </button>
@@ -3703,7 +3713,7 @@ const QsrPage: React.FC = () => {
             </div>
             
             {/* Keyboard at bottom */}
-            <div className="flex-shrink-0">
+            <div className="flex-shrink-0" id="qsr-item-discount-kb-scope">
               <VirtualKeyboard
                 open={true}
                 showNumpad={true}

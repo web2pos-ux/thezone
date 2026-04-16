@@ -223,3 +223,10 @@ export const MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE: CSSProperties = {
   boxShadow:
     '5px 5px 14px rgba(15, 23, 42, 0.58), -4px -4px 12px rgba(148, 163, 184, 0.28)',
 };
+
+/**
+ * `bg-slate-700` + `MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE` 닫기 X 전용.
+ * `NEO_MODAL_BTN_PRESS`/`NEO_PREP_TIME_BTN_PRESS`의 translate·scale 없이 같은 위치에서 어두운 인셋(오목)만.
+ */
+export const NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT =
+  '[-webkit-tap-highlight-color:transparent] transition-[box-shadow,filter] duration-100 ease-out active:!shadow-[inset_4px_4px_12px_rgba(15,23,42,0.72),inset_-3px_-3px_10px_rgba(148,163,184,0.14)] active:brightness-[0.92] disabled:brightness-100';

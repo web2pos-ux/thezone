@@ -251,10 +251,12 @@ module.exports = (db) => {
 		try {
 			const orderId = Number(req.params.id);
 			const closedAt = getLocalDatetimeString();
-			const { discount } = req.body || {};
+			const { discount, pickedUp } = req.body || {};
+			const pickedUpBool = pickedUp === true || pickedUp === 'true' || pickedUp === 1;
+			const closedStatus = pickedUpBool ? 'PICKED_UP' : 'PAID';
 
-			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = 'PAID', closed_at = ?, payment_status = 'PAID', paid_at = ?`;
-			const updateParams = [closedAt, closedAt];
+			let updateSql = `UPDATE orders SET order_type = UPPER(order_type), status = ?, closed_at = ?, payment_status = 'PAID', paid_at = ?`;
+			const updateParams = [closedStatus, closedAt, closedAt];
 
 			if (discount && typeof discount === 'object' && discount.percent > 0) {
 				const discountedTotal = Number(((discount.discountedSubtotal || 0) + (discount.taxesTotal || 0)).toFixed(2));
@@ -296,7 +298,8 @@ module.exports = (db) => {
 								paymentMethod,
 								tip: totalTips
 							});
-						} else {
+						} else if (!pickedUpBool) {
+							// Pay & Pickup(픽업 완료) 시: 새 Firebase orders 문서를 만들지 않음 → 투고패널/온라인 큐에 유령 카드 방지
 							const items = orderItems.map(oi => ({
 								name: oi.name,
 								quantity: oi.quantity || 1,
@@ -426,12 +429,12 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const limit = q.limit || 500;
 			const customerPhone = q.customerPhone ? String(q.customerPhone).trim() : '';
 			const customerName = q.customerName ? String(q.customerName).trim() : '';
-			const orderMode = q.order_mode; // QSR or FSR filter
 			const panel = String(q.panel || '').trim() === '1'; // 세일즈 투고패널용: 종료 주문·빈 주문 제외
 			const clauses = [];
 			const params = [];
 			
-			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, orderMode, panel });
+			// order_mode(QSR/FSR)는 목록·필터·추출에 사용하지 않음
+			console.log('[GET /orders] Query params:', { type, status, date, limit, customerPhone, customerName, panel });
 			
 			if (type) {
 				const types = String(type).split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
@@ -442,6 +445,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					clauses.push(`UPPER(o.order_type) IN (${types.map(() => '?').join(',')})`);
 					params.push(...types);
 				}
+				// 패널 배달만: 라인이 없는 orders 행은 상세 Loading 실패·좀비 카드로 남는 경우가 많음
 				if (panel && types.length === 1 && types[0] === 'DELIVERY') {
 					clauses.push(`EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id)`);
 				}
@@ -465,11 +469,72 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			if (pickupPending) {
 				clauses.push(`UPPER(o.status) NOT IN ('PICKED_UP','VOIDED','VOID','REFUNDED')`);
 				clauses.push(`UPPER(o.order_type) NOT IN ('DINE_IN','DINE-IN','POS','FORHERE','FOR_HERE','EAT_IN','EATIN')`);
-				console.log('[GET /orders] pickup_pending filter applied (no date restriction)');
+				const openRow = await dbGet(
+					`SELECT opened_at, date AS business_date, session_id FROM daily_closings WHERE status = 'open' ORDER BY datetime(opened_at) DESC LIMIT 1`
+				);
+				const openedAt = openRow?.opened_at ? String(openRow.opened_at).trim() : '';
+				if (!openedAt) {
+					console.log('[GET /orders] pickup_pending: no open business day — empty pickup list');
+					return res.json({ success: true, orders: [] });
+				}
+				clauses.push(`datetime(o.created_at) >= datetime(?)`);
+				params.push(openedAt);
+				console.log('[GET /orders] pickup_pending: current session only, created_at >=', openedAt, openRow?.session_id || '');
 			} else if (date) {
-				clauses.push(`o.created_at LIKE ?`);
-				params.push(`${date}%`);
-				console.log('[GET /orders] Date filter applied:', date);
+				const sessionScope = String(q.session_scope || '').trim() === '1';
+				const sessionIdParam = q.session_id ? String(q.session_id).trim() : '';
+				if (sessionScope) {
+					let sess = null;
+					if (sessionIdParam) {
+						sess = await dbGet(
+							`SELECT opened_at, closed_at, date AS business_date, session_id, status FROM daily_closings WHERE session_id = ?`,
+							[sessionIdParam]
+						);
+					} else {
+						const openRow = await dbGet(
+							`SELECT opened_at, closed_at, date AS business_date, session_id, status FROM daily_closings WHERE status = 'open' ORDER BY datetime(opened_at) DESC LIMIT 1`
+						);
+						const d = String(date).trim();
+						if (openRow && String(openRow.business_date || '').trim() === d) {
+							sess = openRow;
+						} else {
+							const dayStart = `${d} 00:00:00`;
+							const dayEnd = `${d} 23:59:59`;
+							sess = await dbGet(
+								`SELECT opened_at, closed_at, date AS business_date, session_id, status FROM daily_closings
+								 WHERE opened_at IS NOT NULL AND trim(opened_at) != ''
+								   AND datetime(opened_at) <= datetime(?)
+								   AND (
+								     UPPER(COALESCE(status,'')) = 'OPEN'
+								     OR (closed_at IS NOT NULL AND trim(closed_at) != '' AND datetime(closed_at) >= datetime(?))
+								   )
+								 ORDER BY datetime(opened_at) DESC LIMIT 1`,
+								[dayEnd, dayStart]
+							);
+						}
+					}
+					const openedAt = sess?.opened_at ? String(sess.opened_at).trim() : '';
+					if (openedAt) {
+						const isOpen = String(sess.status || '').toLowerCase() === 'open';
+						const closedAt = sess.closed_at ? String(sess.closed_at).trim() : '';
+						if (isOpen || !closedAt) {
+							clauses.push(`datetime(o.created_at) >= datetime(?)`);
+							params.push(openedAt);
+						} else {
+							clauses.push(`datetime(o.created_at) >= datetime(?) AND datetime(o.created_at) <= datetime(?)`);
+							params.push(openedAt, closedAt);
+						}
+						console.log('[GET /orders] session_scope: day session window', sess.session_id, openedAt, isOpen ? 'open' : closedAt);
+					} else {
+						clauses.push(`o.created_at LIKE ?`);
+						params.push(`${date}%`);
+						console.log('[GET /orders] session_scope: no session — fallback calendar', date);
+					}
+				} else {
+					clauses.push(`o.created_at LIKE ?`);
+					params.push(`${date}%`);
+					console.log('[GET /orders] Date filter applied:', date);
+				}
 			}
 			if (customerPhone) {
 				const digitsOnly = customerPhone.replace(/\D/g, '');
@@ -486,29 +551,53 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				clauses.push('LOWER(o.customer_name) LIKE ?');
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
-			// order_mode 필터 추가 (QSR/FSR 분리)
-			// FSR 모드일 때는 NULL (기존 데이터)도 포함하여 조회
-			if (orderMode) {
-				const mode = String(orderMode).toUpperCase();
-				if (mode === 'FSR') {
-					// FSR: order_mode가 FSR이거나 NULL(기존 데이터)인 경우 모두 조회
-					clauses.push('(UPPER(o.order_mode) = ? OR o.order_mode IS NULL)');
-					params.push(mode);
-				} else {
-					// QSR: 정확히 QSR만 조회
-					clauses.push('UPPER(o.order_mode) = ?');
-					params.push(mode);
-				}
-				console.log('[GET /orders] Order mode filter applied:', orderMode);
-			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
 			console.log('[GET /orders] Results count:', rows.length);
 			if (rows.length > 0) {
 				console.log('[GET /orders] First order created_at:', rows[0].created_at);
+			}
+			if (pickupPending && rows.length > 0) {
+				const DEFAULT_ONLINE_PREP = 20;
+				for (const r of rows) {
+					try {
+						if (r.ready_time != null && String(r.ready_time).trim() !== '') continue;
+						const typ = String(r.order_type || '').toUpperCase();
+						const fm = String(r.fulfillment_mode || '').toLowerCase();
+						const hasFb = String(r.firebase_order_id || '').trim() !== '';
+						const treatAsOnline = typ === 'ONLINE' || typ === 'WEB' || typ === 'QR' || hasFb;
+						const treatAsPickupChannel =
+							treatAsOnline ||
+							typ === 'TOGO' ||
+							typ === 'TAKEOUT' ||
+							typ === 'PICKUP' ||
+							typ === 'DELIVERY' ||
+							fm === 'delivery';
+						if (!treatAsPickupChannel) continue;
+						let pm = Number(r.pickup_minutes);
+						if (treatAsOnline) {
+							if (!Number.isFinite(pm) || pm <= 0) pm = DEFAULT_ONLINE_PREP;
+						} else {
+							if (!Number.isFinite(pm) || pm <= 0) continue;
+						}
+						const created = new Date(String(r.created_at || '').replace(' ', 'T'));
+						if (Number.isNaN(created.getTime())) continue;
+						const isoReady = new Date(created.getTime() + pm * 60000).toISOString();
+						await dbRun(
+							`UPDATE orders SET ready_time = ?, pickup_minutes = CASE WHEN pickup_minutes IS NULL OR pickup_minutes <= 0 THEN ? ELSE pickup_minutes END WHERE id = ?`,
+							[isoReady, pm, r.id]
+						);
+						r.ready_time = isoReady;
+						if (!Number.isFinite(Number(r.pickup_minutes)) || Number(r.pickup_minutes) <= 0) {
+							r.pickup_minutes = pm;
+						}
+					} catch (bfErr) {
+						console.warn('[GET /orders] pickup ready backfill', r.id, bfErr.message);
+					}
+				}
 			}
 			res.json({ success:true, orders: rows });
 		} catch (e) {
@@ -557,14 +646,14 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				]);
 			}
 
-			// Firebase sync - Delivery Order
+			// Firebase sync - Delivery Order (completed: pending이면 온라인 리스너·GET과 동일 컬렉션에서 중복 처리됨)
 			try {
 				const restaurantId = remoteSyncService.getRestaurantId();
 				if (restaurantId) {
 					await firebaseService.uploadOrder(restaurantId, {
 						orderNumber: `DL${id}`,
 						orderType: 'DELIVERY',
-						status: 'pending',
+						status: 'completed',
 						items: [],
 						total: 0,
 						tableId: `DL${id}`,
@@ -657,26 +746,6 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 
 			await dbRun(`UPDATE delivery_orders SET status = ? WHERE id = ?`, [next, deliveryOrderId]);
 
-			// Best-effort Firebase sync (do not block response)
-			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
-				if (restaurantId) {
-					await firebaseService.uploadOrder(restaurantId, {
-						orderNumber: `DL${deliveryOrderId}`,
-						orderType: 'DELIVERY',
-						status: String(next).toLowerCase(),
-						items: [],
-						total: 0,
-						tableId: `DL${deliveryOrderId}`,
-						customerName: '',
-						customerPhone: '',
-						source: 'POS',
-					});
-				}
-			} catch (fbErr) {
-				console.warn('[Delivery-Orders] Firebase status update failed:', fbErr?.message);
-			}
-
 			res.json({ success: true });
 		} catch (e) {
 			console.error('Failed to update delivery order status:', e);
@@ -688,7 +757,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number, firebase_order_id FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source, togo_label, tax_group_id, printer_group_id FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
@@ -918,7 +987,23 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			}));
 			
 		// 동일 아이템 병합 (같은 메뉴+옵션+메모+게스트+가격 → 수량 합산)
-		const mergedItems = mergeIdenticalItems(formattedItems);
+		// Pickup List 상세: 온라인·Firebase 연동 주문은 라인별 표시가 중요 — 병합하지 않음(잘못된 4×한줄 방지)
+		const ot = String(order.order_type || '').toUpperCase();
+		const fm = String(order.fulfillment_mode || '').toLowerCase();
+		const tid = String(order.table_id || '').trim().toUpperCase();
+		const hasFb = String(order.firebase_order_id || '').trim() !== '';
+		const hasOnlineNum = String(order.online_order_number || '').trim() !== '';
+		const skipIdenticalMerge =
+			hasFb ||
+			hasOnlineNum ||
+			ot === 'ONLINE' ||
+			ot === 'WEB' ||
+			ot === 'QR' ||
+			fm === 'online' ||
+			fm === 'web' ||
+			fm === 'qr' ||
+			tid.startsWith('OL');
+		const mergedItems = skipIdenticalMerge ? formattedItems : mergeIdenticalItems(formattedItems);
 		
 		// VOID 정보 조회 (void_lines 포함)
 		let voidLines = [];
@@ -1173,7 +1258,12 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				
 				const guestNumber = item.guestNumber || item.guest_number || 1;
 				const togoFlag = (item.togoLabel || item.togo_label) ? '1' : '0';
-				const key = `${item.id}|${guestNumber}|${modKey}|${memoKey}|${discountKey}|${togoFlag}`;
+				// item.id는 메뉴 item_id라서, 온라인 등에서 잘못 같은 id가 박히면 서로 다른 메뉴가 한 줄로 합쳐짐 — 표시명 포함
+				const nameKey = String(item.name || '')
+					.trim()
+					.toLowerCase()
+					.replace(/\s+/g, ' ');
+				const key = `${item.id}|${nameKey}|${guestNumber}|${modKey}|${memoKey}|${discountKey}|${togoFlag}`;
 
 				if (mergeMap.has(key)) {
 					const existingIdx = mergeMap.get(key);

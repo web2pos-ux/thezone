@@ -23,6 +23,7 @@ type PeriodKey = 'today' | 'lastWeek' | '7days' | '30days' | 'lastMonth' | 'this
 
 interface TaxDetail { name: string; rate: number; amount: number }
 interface ReportData {
+  success?: boolean;
   period: { startDate: string; endDate: string };
   overall: { orderCount: number; subtotal: number; taxTotal: number; totalSales: number; totalTip?: number; serviceCharge?: number };
   taxDetails?: TaxDetail[];
@@ -46,6 +47,17 @@ interface ReportData {
     byChannel: Array<{ channel: string; tips: number; orderCount: number }>;
     byPaymentMethod: Array<{ method: string; tips: number; count: number }>;
   };
+  /** 단일 달력일 응답: 멀티데이 세션 포함 시 잠정 */
+  calendarDayProvisional?: boolean;
+  /** 해당 달력일과 겹치는 각 데이오프닝~클로징 세션 전체 리포트 */
+  sessionsOnDay?: Array<{
+    session_id: string;
+    business_date?: string;
+    opened_at: string;
+    closed_at: string | null;
+    status: string;
+    report: Omit<ReportData, 'period' | 'calendarDayProvisional' | 'sessionsOnDay' | 'success'>;
+  }>;
 }
 
 const PAYMENT_ORDER = ['Cash', 'Debit', 'Visa', 'MC', 'Other Card', 'From Delivery', 'Gift Card', 'Coupon'];
@@ -152,7 +164,10 @@ const OperationalReportsPanel: React.FC = () => {
         headers: { Accept: 'application/json' },
       });
       const j = await r.json();
-      if (j.success) setData(j);
+      if (j.success) {
+        const { success: _ok, ...rest } = j;
+        setData(rest as ReportData);
+      }
     } catch (err: unknown) {
       const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: string }).name) : '';
       if (name === 'AbortError') return;
@@ -234,6 +249,16 @@ const OperationalReportsPanel: React.FC = () => {
       ) : (
         <div className="space-y-5">
           <div className="text-xs text-gray-500">{data.period.startDate} ~ {data.period.endDate}</div>
+          {data.calendarDayProvisional && (
+            <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+              이 구간의 <b>달력일 요약</b>은 여러 날에 걸친 영업 세션이 섞일 수 있어 <b>잠정</b>입니다. 확정 매출·건수는 아래 <b>Day session (오프닝~클로징)</b>별 표를 사용하세요.
+            </div>
+          )}
+          {data.sessionsOnDay && data.sessionsOnDay.length > 0 && data.period.startDate === data.period.endDate && (
+            <div className="text-xs text-slate-600 font-semibold">
+              상단 표 = 달력일 <code className="bg-slate-100 px-1 rounded">{data.period.startDate}</code> 자정 기준 같은 날짜 주문 합계 · 아래 = 각 세션 전체(오프닝~클로징)
+            </div>
+          )}
 
           {/* ===== 1. All Orders ===== */}
           <div>
@@ -404,6 +429,24 @@ const OperationalReportsPanel: React.FC = () => {
               />
             </div>
           </div>
+
+          {data.sessionsOnDay && data.sessionsOnDay.length > 0 && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-4 space-y-2">
+              <div className="text-xs font-bold text-violet-900">Day sessions (opening ~ closing)</div>
+              {data.sessionsOnDay.map((s, idx) => (
+                <details key={s.session_id || String(idx)} className="bg-white rounded-lg border border-violet-100">
+                  <summary className="px-3 py-2 cursor-pointer text-sm font-semibold text-violet-900">
+                    #{idx + 1} {(s.opened_at || '').slice(0, 16)} → {s.closed_at ? s.closed_at.slice(0, 16) : 'OPEN'}{' '}
+                    <span className="text-violet-500 font-normal text-xs ml-1">{s.session_id}</span>
+                  </summary>
+                  <div className="px-3 pb-3 pt-0 text-xs space-y-1 text-slate-700">
+                    <div>Paid orders: <b>{s.report.overall.orderCount}</b> · Sales <b>{fmt(s.report.overall.totalSales)}</b> · Tips <b>{fmt(s.report.overall.totalTip || 0)}</b></div>
+                    <div>Unpaid: <b>{s.report.unpaid?.orderCount || 0}</b> orders · <b>{fmt(s.report.unpaid?.totalAmount || 0)}</b></div>
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
 
           {/* ===== 3. Payments by Method ===== */}
           {data.paymentBreakdown && data.paymentBreakdown.length > 0 && (() => {

@@ -28,8 +28,9 @@ import {
   disarmPanelTogoPayKitchenSuppress,
   isPanelTogoPayKitchenSuppressActive,
 } from '../utils/printUtils';
-import { SOFT_NEO, OH_ACTION_NEO, PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, PAY_NEO_PRIMARY_AMBER, PAY_NEO_KEY_FLAT, PAY_KEYPAD_KEY, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS, NEO_COLOR_BTN_PRESS, PCM_RX_ROUND, NEO_PRESS_INSET_ONLY_NO_SHIFT, NEO_PRESS_INSET_AMBER_NO_SHIFT, NEO_COLOR_BTN_PRESS_NO_SHIFT, MODAL_CLOSE_X_RAISED_STYLE, MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE } from '../utils/softNeumorphic';
+import { SOFT_NEO, OH_ACTION_NEO, PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, PAY_NEO_PRIMARY_AMBER, PAY_NEO_KEY_FLAT, PAY_KEYPAD_KEY, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS, NEO_COLOR_BTN_PRESS, PCM_RX_ROUND, NEO_PRESS_INSET_ONLY_NO_SHIFT, NEO_PRESS_INSET_AMBER_NO_SHIFT, NEO_COLOR_BTN_PRESS_NO_SHIFT, MODAL_CLOSE_X_RAISED_STYLE, MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE, NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT } from '../utils/softNeumorphic';
 import { calculateOrderPricing } from '../utils/orderPricing';
+import { fetchPickupDetailItemsPreferFirebase } from '../utils/onlineOrderPickupDetailItems';
 import { MoveMergeHistoryModal } from '../components/MoveMergeHistoryModal';
 import { SimplePartialSelectionModal } from '../components/SimplePartialSelectionModal';
 import { PartialSelectionPayload } from '../types/MoveMergeTypes';
@@ -566,6 +567,8 @@ const SalesPage: React.FC = () => {
   const swipeDraggedRef = useRef<boolean>(false);
   /** 스와이프 픽업 직후 load*가 서버에 아직 PICKED_UP 반영 전인 행을 다시 넣는 것을 막기 위한 ID 집합 */
   const swipeRemovedPanelIdsRef = useRef<Set<string>>(new Set());
+  /** 데이 클로징 등에서 항상 최신 fetchOrderList 호출용 */
+  const fetchOrderListRef = useRef<((date: string, mode?: 'history' | 'pickup') => void) | null>(null);
   const [swipeDragState, setSwipeDragState] = useState<{ id: string; offsetX: number; dismissing?: boolean } | null>(null);
   const [softKbOpen, setSoftKbOpen] = useState(false);
   const [kbLang, setKbLang] = useState<string>('EN');
@@ -1781,13 +1784,35 @@ const SalesPage: React.FC = () => {
   };
 
   const formatTimeAmPm = (t?: string | null): string => {
-    const raw = (t || '--:--').trim();
+    if (t == null) return '';
+    let raw = String(t).trim();
+    if (!raw) return '';
+
+    // ISO / "YYYY-MM-DD HH:mm:ss" 등 → 로컬 시:분으로 정규화 후 아래 24h 분기로 처리
+    if (raw.length >= 10 && (raw.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(raw))) {
+      const d = new Date(raw.replace(' ', 'T'));
+      if (!Number.isNaN(d.getTime())) {
+        raw = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      }
+    }
+
     if (raw.includes('오전') || raw.includes('오후')) {
       const isPM = raw.includes('오후');
       const timeOnly = raw.replace(/오전|오후/g, '').trim();
       return `${timeOnly} ${isPM ? 'PM' : 'AM'}`;
     }
-    const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+
+    const m12 = raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (m12) {
+      let h = parseInt(m12[1], 10);
+      const min = m12[2];
+      const isPM = m12[3].toUpperCase() === 'PM';
+      if (isPM && h < 12) h += 12;
+      if (!isPM && h === 12) h = 0;
+      raw = `${String(h).padStart(2, '0')}:${min}`;
+    }
+
+    const m24 = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
     if (m24) {
       let h = parseInt(m24[1], 10);
       const min = m24[2];
@@ -2975,12 +3000,11 @@ const SalesPage: React.FC = () => {
 
   const loadTogoOrders = useCallback(async () => {
     try {
-
-
+      const today = getLocalDateString();
       const [togoRes, deliveryRes, onlineRes, deliveryOrdersRes] = await Promise.all([
-        fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&limit=200`),
-        fetch(`${API_URL}/orders?type=DELIVERY&limit=200&panel=1`),
-        fetch(`${API_URL}/orders?type=ONLINE&limit=200`),
+        fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&date=${today}&session_scope=1&limit=200`),
+        fetch(`${API_URL}/orders?type=DELIVERY&limit=200&panel=1&date=${today}&session_scope=1`),
+        fetch(`${API_URL}/orders?type=ONLINE&date=${today}&session_scope=1&limit=200`),
         fetch(`${API_URL}/orders/delivery-orders`),
       ]);
       
@@ -3331,6 +3355,7 @@ const SalesPage: React.FC = () => {
       console.warn('Failed to load togo orders:', error);
     }
   }, [API_URL, setTogoOrders, playOnlineOrderSound]);
+
   const openChannelOrder = useCallback(
     (channel: VirtualOrderChannel, order: any) => {
       const resolvedVirtualId =
@@ -5998,8 +6023,12 @@ const SalesPage: React.FC = () => {
   const fetchOrderList = async (date: string, mode?: 'history' | 'pickup') => {
     const effectiveMode = mode ?? orderListOpenMode;
     console.log('[fetchOrderList] Fetching orders for date:', date, 'mode:', effectiveMode);
-    // FSR ëª¨ë“œì—ì„œëŠ” FSR ì£¼ë¬¸ë§Œ ì¡°íšŒ
-    console.log('[fetchOrderList] API URL:', `${API_URL}/orders?date=${date}&order_mode=FSR`);
+    console.log(
+      '[fetchOrderList] API URL:',
+      effectiveMode === 'pickup'
+        ? `${API_URL}/orders?pickup_pending=1&session_scope=1`
+        : `${API_URL}/orders?date=${date}&session_scope=1`
+    );
     setOrderListLoading(true);
     try {
       // Fetch tax rate for order list display
@@ -6038,8 +6067,8 @@ const SalesPage: React.FC = () => {
       }
 
       const ordersUrl = effectiveMode === 'pickup'
-        ? `${API_URL}/orders?pickup_pending=1`
-        : `${API_URL}/orders?date=${date}&order_mode=FSR`;
+        ? `${API_URL}/orders?pickup_pending=1&session_scope=1`
+        : `${API_URL}/orders?date=${date}&session_scope=1`;
       const [ordersRes, deliveryMetaRes] = await Promise.all([
         fetch(ordersUrl),
         fetch(`${API_URL}/orders/delivery-orders`)
@@ -6073,6 +6102,20 @@ const SalesPage: React.FC = () => {
               existing.deliveryOrderNumber = meta.delivery_order_number || meta.deliveryOrderNumber || existing.deliveryOrderNumber;
               // Delivery로 확실히 판단 가능하도록 fulfillment 보정
               existing.fulfillment_mode = existing.fulfillment_mode || 'delivery';
+              const rtl = meta.ready_time_label || meta.readyTimeLabel;
+              if (rtl && String(rtl).trim()) {
+                existing.readyTimeLabel = existing.readyTimeLabel || rtl;
+                if (!existing.ready_time && !existing.readyTime) {
+                  existing.ready_time = String(rtl).trim();
+                }
+              }
+              const pt = Number(meta.prep_time ?? meta.prepTime ?? 0);
+              if (Number.isFinite(pt) && pt > 0) {
+                const cur = Number(existing.pickup_minutes ?? existing.pickupMinutes ?? 0);
+                if (!Number.isFinite(cur) || cur <= 0) {
+                  existing.pickup_minutes = pt;
+                }
+              }
             }
           });
           setOrderListOrders(mergeOnlineCardsForPickup(Array.from(orderMap.values()), effectiveMode));
@@ -6091,6 +6134,31 @@ const SalesPage: React.FC = () => {
       setOrderListLoading(false);
     }
   };
+  fetchOrderListRef.current = fetchOrderList;
+
+  useEffect(() => {
+    const onTakeoutDayClosed = () => {
+      setOrderListOrders([]);
+      setOrderListSelectedOrder(null);
+      setOrderListSelectedItems([]);
+      setOrderListVoidLines([]);
+      swipeRemovedPanelIdsRef.current = new Set();
+      previousDeliveryPanelKeysRef.current = new Set();
+      isFirstDeliveryPanelLoadRef.current = true;
+      void loadTogoOrders();
+      void fetchOrderListRef.current?.(getLocalDateString(), 'pickup');
+    };
+    const onTakeoutDayOpened = () => {
+      void fetchOrderListRef.current?.(getLocalDateString(), 'pickup');
+      void fetchOrderListRef.current?.(orderListDate, orderListOpenMode);
+    };
+    window.addEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+    window.addEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    return () => {
+      window.removeEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+      window.removeEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    };
+  }, [loadTogoOrders, orderListDate, orderListOpenMode]);
 
   const fetchOrderDetails = async (orderId: number) => {
     try {
@@ -6112,7 +6180,8 @@ const SalesPage: React.FC = () => {
         const tableName = listOrder?.table_name || data.order.table_name || '';
         // ✅ Compute the same numbers the "togo modal" would show ONCE,
         // then reuse those exact numbers everywhere (detail, pay, etc.)
-        const items = Array.isArray(data.items) ? data.items : [];
+        let items = Array.isArray(data.items) ? data.items : [];
+        items = await fetchPickupDetailItemsPreferFirebase(API_URL, data.order, items);
         let computedTotals: null | {
           subtotal: number;
           tax: number;
@@ -6281,6 +6350,10 @@ const SalesPage: React.FC = () => {
       if (orderListTab === 'live' && showOrderListModal) {
         fetchLiveOrders();
       }
+      // Pickup List 모달이 열린 상태에서 결제/갱신 시 목록 즉시 동기화(Pay & Pickup 완료 후 제거)
+      if (showOrderListModal && orderListOpenMode === 'pickup') {
+        void fetchOrderListRef.current?.(orderListDate, 'pickup');
+      }
       void loadTogoOrders();
     };
 
@@ -6294,7 +6367,7 @@ const SalesPage: React.FC = () => {
       window.removeEventListener('orderPaid', handleOrderChange);
       window.removeEventListener('orderUpdated', handleOrderChange);
     };
-  }, [orderListTab, showOrderListModal, fetchLiveOrders, loadTogoOrders]);
+  }, [orderListTab, showOrderListModal, orderListOpenMode, orderListDate, fetchLiveOrders, loadTogoOrders]);
 
   // 투고패널 카드 → Pay & Pickup 결제 완료 후: 패널에서 해당 투고/온라인 카드 제거
   useEffect(() => {
@@ -6340,8 +6413,12 @@ const SalesPage: React.FC = () => {
   useEffect(() => {
     if (!showOrderListModal || orderListOpenMode !== 'pickup') return;
     setOrderListOrders((prev) => {
-      const baseOrders = prev.filter((o: any) => !o?._fromOnlineQueue && !o?._fromTogoPanel);
-      return mergeOnlineCardsForPickup(baseOrders, 'pickup');
+      const hasQueue = (prev || []).some((o: any) => o?._fromOnlineQueue || o?._fromTogoPanel);
+      if (!hasQueue) return prev;
+      return mergeOnlineCardsForPickup(
+        (prev || []).filter((o: any) => !o?._fromOnlineQueue && !o?._fromTogoPanel),
+        'pickup'
+      );
     });
   }, [showOrderListModal, orderListOpenMode, mergeOnlineCardsForPickup]);
 
@@ -6349,10 +6426,6 @@ const SalesPage: React.FC = () => {
     if (!showOrderListModal || orderListLoading) return;
     if (orderListOrders.length === 0) return;
     const filtered = orderListOrders.filter((order) => {
-      const _fEarly = String(order.fulfillment_mode || '').toLowerCase();
-      const pickupChEarly = orderListGetPickupChannel({ ...order, fulfillment: _fEarly });
-      const normEarly = pickupChEarly === 'other' ? 'togo' : pickupChEarly;
-      if (normEarly === 'online' || normEarly === 'togo') return false;
       if (orderListOpenMode !== 'pickup') return true;
       const _f = String(order.fulfillment_mode || '').toLowerCase();
       const _s = String(order.status || '').toUpperCase();
@@ -6368,12 +6441,37 @@ const SalesPage: React.FC = () => {
     });
     const now = Date.now();
     const parseRT = (o: any): number | null => {
-      const rt = o.ready_time || o.readyTime || '';
-      if (!rt) return null;
+      if (orderListOpenMode === 'pickup') {
+        const createdRaw = o?.created_at || o?.createdAt;
+        const pm = Number(o?.pickup_minutes ?? o?.pickupMinutes ?? 0);
+        if (createdRaw && Number.isFinite(pm) && pm > 0) {
+          const d = new Date(createdRaw);
+          if (!Number.isNaN(d.getTime())) return d.getTime() + pm * 60000;
+        }
+      }
+      const rt =
+        o.ready_time ||
+        o.readyTime ||
+        o.readyTimeLabel ||
+        o.ready_time_label ||
+        '';
+      if (!String(rt).trim()) return null;
       const today = new Date();
       const ds = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-      const p = new Date(`${ds}T${rt}`);
-      return isNaN(p.getTime()) ? null : p.getTime();
+      const p = new Date(`${ds}T${String(rt).trim()}`);
+      if (!isNaN(p.getTime())) return p.getTime();
+      const m = String(rt).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const min = parseInt(m[2], 10);
+        const isPm = m[3].toUpperCase() === 'PM';
+        if (isPm && h < 12) h += 12;
+        if (!isPm && h === 12) h = 0;
+        const base = new Date(`${ds}T00:00:00`);
+        base.setHours(h, min, 0, 0);
+        return base.getTime();
+      }
+      return null;
     };
     filtered.sort((a, b) => {
       const aTime = parseRT(a);
@@ -6410,6 +6508,36 @@ const SalesPage: React.FC = () => {
     setOrderListSelectedOrder(null);
     setOrderListSelectedItems([]);
     fetchOrderList(newDate);
+  };
+
+  /** Pickup List — Pay&Pick 줄일 때 Print/Reprint/Void 10% 축소, Pay&Pick(또는 단일 Pay/Pickup)에 폭 이전 */
+  const getOrderListPickupActionFlex = (order: any) => {
+    const def = { bar: 1, payPair: 2, pay: 1, payPickup: 1, single: 1 };
+    if (!order) return def;
+    const _pkType = (order.order_type || '').toUpperCase();
+    const _pkTableId = (order.table_id || '').toString().toUpperCase();
+    const _pkFulfillment = String(order.fulfillment_mode || '').toLowerCase();
+    const _pkIsDelivery =
+      _pkType === 'DELIVERY' ||
+      _pkFulfillment === 'delivery' ||
+      _pkType === 'UBEREATS' ||
+      _pkType === 'UBER' ||
+      _pkType === 'DOORDASH' ||
+      _pkType === 'SKIP' ||
+      _pkType === 'SKIPTHEDISHES' ||
+      _pkType === 'FANTUAN' ||
+      _pkTableId.startsWith('DL');
+    const _pkStatus = String(order.status || '').toUpperCase();
+    const _pkIsPaid =
+      _pkStatus === 'PAID' || _pkStatus === 'COMPLETED' || _pkStatus === 'CLOSED' || _pkIsDelivery;
+    const showPayAndPickup = !_pkIsPaid && !_pkIsDelivery;
+    if (showPayAndPickup) {
+      return { bar: 0.9, payPair: 2.3, pay: 0.9, payPickup: 1.3, single: 1 };
+    }
+    if (_pkIsPaid || _pkIsDelivery) {
+      return { bar: 0.9, payPair: 2, pay: 1, payPickup: 1, single: 1.3 };
+    }
+    return def;
   };
 
   const handleOrderListPrintBill = async () => {
@@ -6953,6 +7081,109 @@ const SalesPage: React.FC = () => {
       return serviceMode === 'FSR' ? 'Dine-in' : 'Eat In';
     };
 
+  /** Pickup List — POS 일일 번호만 (001), 없으면 — */
+  const orderListPickupListPosDigits = (order: any): string => {
+    const raw = order?.order_number ?? order?.pos_order_number ?? order?.posOrderNumber;
+    const s = String(raw ?? '').trim().replace(/^#/, '');
+    if (isDailyPosDisplayDigits(s)) return String(Number(s)).padStart(3, '0');
+    return '—';
+  };
+
+  /**
+   * Pickup List — Order ID: Online-7117, 외부채번(UKET0575 등), TOGO -뒤4자리
+   */
+  const orderListPickupListOrderId = (order: any): string => {
+    const type = String(order.order_type || '').toUpperCase();
+    const fulfillment = String(order.fulfillment_mode || '').toLowerCase();
+    const isDelivery =
+      type === 'DELIVERY' ||
+      fulfillment === 'delivery' ||
+      ['UBEREATS', 'UBER', 'DOORDASH', 'SKIP', 'SKIPTHEDISHES', 'FANTUAN'].includes(type);
+    const isOnline = type === 'ONLINE' || type === 'WEB' || type === 'QR';
+    const isTogo = type === 'TOGO' || type === 'TAKEOUT' || type === 'PICKUP';
+    const phoneDigits = String(order.customer_phone || order.customerPhone || '').replace(/\D/g, '');
+    const { company: deliveryCompanyRaw, orderNumber: deliveryOrderNumberRaw } = orderListGetDeliveryMeta(order);
+    let ext = String(deliveryOrderNumberRaw || '').replace(/^#/, '').trim();
+    if (ext && orderListIsInternalDeliveryMetaId(ext)) ext = '';
+
+    if (isDelivery) {
+      if (ext) return ext.toUpperCase();
+      const abbr = orderListNormalizeDeliveryAbbr(deliveryCompanyRaw);
+      return abbr ? `${abbr}` : '—';
+    }
+    if (isOnline) {
+      const onlineNum = String(order.online_order_number || order.onlineOrderNumber || '').trim().replace(/"/g, '');
+      let suffix = '';
+      if (onlineNum) suffix = onlineNum.toUpperCase();
+      else if (phoneDigits.length >= 4) suffix = phoneDigits.slice(-4);
+      else if (phoneDigits.length > 0) suffix = phoneDigits;
+      else if (isDailyPosDisplayDigits(order.order_number)) suffix = String(order.order_number).trim();
+      return suffix ? `Online-${suffix}` : 'Online';
+    }
+    if (isTogo) {
+      let suffix = '';
+      if (phoneDigits.length >= 4) suffix = phoneDigits.slice(-4);
+      else if (phoneDigits.length > 0) suffix = phoneDigits;
+      else {
+        const cn = String(order.customer_name || order.customerName || '').trim();
+        if (cn) suffix = cn.slice(0, 8).toUpperCase();
+        else if (isDailyPosDisplayDigits(order.order_number)) suffix = String(order.order_number).trim();
+      }
+      return suffix ? `TOGO -${suffix}` : 'TOGO';
+    }
+    const nm = String(order.customer_name || order.customerName || '').trim();
+    return nm || '—';
+  };
+
+  /**
+   * 주문 목록 Ready Time(픽업 리스트 컬럼명과 동일) — ready_time·라벨·배달 time 등, 없으면 created_at + pickup_minutes(+prep_time)
+   */
+  const orderListPickupTimeDisplay = (order: any): string => {
+    const candidates: unknown[] = [
+      order?.ready_time,
+      order?.readyTime,
+      order?.readyTimeLabel,
+      order?.ready_time_label,
+      order?.pickup_time,
+      order?.pickupTime,
+      order?.pickup_time_label,
+      order?.pickupTimeLabel,
+      order?.time,
+      order?.fullOrder?.ready_time,
+      order?.fullOrder?.readyTime,
+      order?.fullOrder?.readyTimeLabel,
+    ];
+
+    for (const c of candidates) {
+      if (c == null) continue;
+      if (typeof c === 'number' && Number.isFinite(c) && c > 1e12) {
+        const d = new Date(c);
+        if (!Number.isNaN(d.getTime())) {
+          const formatted = formatTimeAmPm(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+          if (formatted) return formatted;
+        }
+        continue;
+      }
+      const s = String(c).trim();
+      if (!s) continue;
+      const formatted = formatTimeAmPm(s);
+      if (formatted) return formatted;
+    }
+
+    const createdRaw = order?.created_at || order?.createdAt;
+    const pm = Number(order?.pickup_minutes ?? order?.pickupMinutes ?? order?.prep_time ?? order?.prepTime ?? 0);
+    if (createdRaw && Number.isFinite(pm) && pm > 0) {
+      const d = new Date(createdRaw);
+      if (!Number.isNaN(d.getTime())) {
+        const readyDate = new Date(d.getTime() + pm * 60000);
+        const hh = String(readyDate.getHours()).padStart(2, '0');
+        const mm = String(readyDate.getMinutes()).padStart(2, '0');
+        return formatTimeAmPm(`${hh}:${mm}`);
+      }
+    }
+    return '';
+  };
+
   const orderListNormalizeDeliveryAbbr = (raw: any) => {
       const s = String(raw || '').trim();
       if (!s) return '';
@@ -7084,6 +7315,16 @@ const SalesPage: React.FC = () => {
         return 'delivery';
       }
 
+      // 명시 투고/테이블 TG는 OL 접두(가상 테이블)보다 우선 — 투고가 온라인으로 묻는 현상 방지
+      if (
+        fulfillmentToken === 'TOGO' ||
+        tableId.startsWith('TG') ||
+        togoTokens.includes(typeToken) ||
+        togoTokens.includes(sourceToken)
+      ) {
+        return 'togo';
+      }
+
       if (
         fulfillmentToken === 'ONLINE' ||
         tableId.startsWith('OL') ||
@@ -7093,13 +7334,7 @@ const SalesPage: React.FC = () => {
         return 'online';
       }
 
-      if (
-        fulfillmentToken === 'TOGO' ||
-        fulfillmentToken === 'PICKUP' ||
-        tableId.startsWith('TG') ||
-        togoTokens.includes(typeToken) ||
-        togoTokens.includes(sourceToken)
-      ) {
+      if (fulfillmentToken === 'PICKUP') {
         return 'togo';
       }
 
@@ -7140,29 +7375,29 @@ const SalesPage: React.FC = () => {
     const channel = orderListGetPickupChannel(order);
 
     if (channel === 'online') {
-      return { label: 'ONLINE', bgColor: 'bg-purple-500', textColor: 'text-white' };
+      return { label: 'ONLINE', bgColor: 'bg-violet-600', textColor: 'text-white' };
     }
 
     if (channel === 'delivery') {
       const { company } = orderListGetDeliveryMeta(order);
       const abbr = orderListNormalizeDeliveryAbbr(company);
       const deliveryLabel = abbr || 'DLV';
-      return { label: deliveryLabel, bgColor: 'bg-red-500', textColor: 'text-white' };
+      return { label: deliveryLabel, bgColor: 'bg-red-600', textColor: 'text-white' };
     }
 
     if (channel === 'togo') {
-      return { label: 'TOGO', bgColor: 'bg-green-600', textColor: 'text-white' };
+      return { label: 'TOGO', bgColor: 'bg-emerald-600', textColor: 'text-white' };
     }
 
     const normalizedType = orderListNormalizeChannelToken(order?.order_type);
     if (normalizedType && normalizedType !== 'DINEIN' && normalizedType !== 'POS') {
-      return { label: 'TOGO', bgColor: 'bg-green-600', textColor: 'text-white' };
+      return { label: 'TOGO', bgColor: 'bg-emerald-600', textColor: 'text-white' };
     }
     
     if (serviceMode === 'FSR') {
-      return { label: 'Dine-in', bgColor: 'bg-blue-500', textColor: 'text-white' };
+      return { label: 'DINE-IN', bgColor: 'bg-blue-600', textColor: 'text-white' };
     }
-    return { label: 'Eat In', bgColor: 'bg-amber-500', textColor: 'text-white' };
+    return { label: 'EAT IN', bgColor: 'bg-amber-600', textColor: 'text-white' };
   };
 
   const orderListCalculateTotals = () => {
@@ -8035,6 +8270,9 @@ const SalesPage: React.FC = () => {
         setIsDayClosed(false);
         setShowOpeningModal(false);
         resetOpeningCashCounts();
+        try {
+          window.dispatchEvent(new CustomEvent('posTakeoutDayOpened', { detail: {} }));
+        } catch { /* ignore */ }
       } else {
         alert(result.error || 'Opening failed');
       }
@@ -8087,6 +8325,9 @@ const SalesPage: React.FC = () => {
         resetClosingCashCounts();
         setZReportData(null);
         setClosingStep('report');
+        try {
+          window.dispatchEvent(new CustomEvent('posTakeoutDayClosed', { detail: { date: today } }));
+        } catch { /* ignore */ }
       } else {
         alert(result.error || 'Closing failed');
       }
@@ -10730,11 +10971,49 @@ const SalesPage: React.FC = () => {
                       }
                       return Infinity;
                     };
+                    // 온라인 앱 주문(onlineQueueCards)을 정본으로: 동일 주문의 SQLite 패널 행은 링크 키로 제외해 카드 1장만 표시
+                    const onlineCardLinkIndexForTogoDedupe = (() => {
+                      const loc = new Set<string>();
+                      const fid = new Set<string>();
+                      const onum = new Set<string>();
+                      const add = (set: Set<string>, v: any) => {
+                        const s = String(v ?? '').trim();
+                        if (s) set.add(s);
+                      };
+                      for (const c of onlineQueueCards) {
+                        if (isRightPanelDeliveryOrder(c)) continue;
+                        const fo = (c as any).fullOrder || {};
+                        add(loc, (c as any).localOrderId);
+                        add(loc, fo.localOrderId);
+                        add(fid, (c as any).id);
+                        add(fid, fo.id);
+                        add(fid, fo.firebase_order_id);
+                        add(fid, fo.firebaseOrderId);
+                        add(onum, (c as any).onlineOrderNumber);
+                        add(onum, fo.orderNumber);
+                        add(onum, fo.order_number);
+                        add(onum, fo.externalOrderNumber);
+                        add(onum, fo.displayOrderNumber);
+                        add(onum, fo.firebaseOrderNumber);
+                      }
+                      return { loc, fid, onum };
+                    })();
+                    const togoRowShadowedByOnlineQueueCard = (o: any): boolean => {
+                      const oid = String(o.id ?? '').trim();
+                      if (oid && onlineCardLinkIndexForTogoDedupe.loc.has(oid)) return true;
+                      if (oid && onlineCardLinkIndexForTogoDedupe.fid.has(oid)) return true;
+                      const fb = String(o.firebase_order_id ?? o.firebaseOrderId ?? '').trim();
+                      if (fb && onlineCardLinkIndexForTogoDedupe.fid.has(fb)) return true;
+                      const onu = String(o.onlineOrderNumber ?? o.online_order_number ?? '').trim();
+                      if (onu && onlineCardLinkIndexForTogoDedupe.onum.has(onu)) return true;
+                      return false;
+                    };
                     // SQLite ONLINE 행은 onlineQueueCards(Firestore)와 동일 주문이므로 제외 — 한 장만 표시
                     const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
                       ...togoOrders
                         .filter((o) => !isRightPanelDeliveryOrder(o))
                         .filter((o) => orderListGetPickupChannel(o) !== 'online')
+                        .filter((o) => !togoRowShadowedByOnlineQueueCard(o))
                         .map((o) => {
                           const pickupChannel = orderListGetPickupChannel(o);
                           const type: 'togo' | 'online' = pickupChannel === 'online' ? 'online' : 'togo';
@@ -11133,7 +11412,7 @@ const SalesPage: React.FC = () => {
                   onClick={() => setShowPrepTimeModal(false)}
                   aria-label="Close"
                   title="Close"
-                  className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                  className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT}`}
                   style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
                 >
                   <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -12985,7 +13264,7 @@ const SalesPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); setLiveOrderHighlightItem(null); }}
-                    className={`absolute right-3 top-1/2 z-[99999] flex h-12 w-12 -translate-y-1/2 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                    className={`absolute right-3 top-1/2 z-[99999] flex h-12 w-12 -translate-y-1/2 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT}`}
                     style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
                     aria-label="Close"
                     title="Close"
@@ -13136,13 +13415,30 @@ const SalesPage: React.FC = () => {
                 <div className="flex flex-col md:flex-row p-2 sm:p-3 gap-2 sm:gap-3 flex-1 min-h-0" style={{ overflow: 'hidden' }}>
                   {/* Left Panel - Order List (55%) */}
                   <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
-                    <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center flex-shrink-0">
-                      <span className="w-[60px] text-center flex-shrink-0">Channel</span>
-                      <span className="w-[87px] text-center flex-shrink-0">#</span>
-                      <span className="flex-1 min-w-0 ml-1">Order ID</span>
-                      <span className="w-[70px] text-center flex-shrink-0">Ready Time</span>
-                      <span className="w-[52px] text-center flex-shrink-0">Status</span>
-                      <span className="w-[60px] text-right flex-shrink-0">Amount</span>
+                    <div
+                      className={`bg-slate-700 px-2 font-bold text-white flex items-center flex-shrink-0 ${
+                        orderListOpenMode === 'pickup' ? 'py-3 text-lg' : 'py-2.5 text-base'
+                      }`}
+                    >
+                      {orderListOpenMode === 'pickup' ? (
+                        <>
+                          <span className="w-[76px] text-center flex-shrink-0">Channel</span>
+                          <span className="w-[48px] text-center flex-shrink-0">#</span>
+                          <span className="flex-1 min-w-0 ml-1 pl-0.5">Order ID</span>
+                          <span className="w-[80px] text-center flex-shrink-0">Ready Time</span>
+                          <span className="w-[68px] text-center flex-shrink-0">Status</span>
+                          <span className="w-[76px] text-right flex-shrink-0 pr-0.5">Amount</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-[60px] text-center flex-shrink-0">Channel</span>
+                          <span className="w-[87px] text-center flex-shrink-0">#</span>
+                          <span className="flex-1 min-w-0 ml-1">Order ID</span>
+                          <span className="w-[70px] text-center flex-shrink-0">Ready Time</span>
+                          <span className="w-[52px] text-center flex-shrink-0">Status</span>
+                          <span className="w-[60px] text-right flex-shrink-0">Amount</span>
+                        </>
+                      )}
                     </div>
                     <div 
                       className="flex-1 bg-slate-50 relative" 
@@ -13161,13 +13457,6 @@ const SalesPage: React.FC = () => {
                         <div className="flex items-center justify-center h-32 text-gray-500 text-base">No orders found</div>
                       ) : (
                         orderListOrders.filter((order) => {
-                          const _fEarly = String(order.fulfillment_mode || '').toLowerCase();
-                          const pickupChEarly = orderListGetPickupChannel({
-                            ...order,
-                            fulfillment: _fEarly,
-                          });
-                          const normEarly = pickupChEarly === 'other' ? 'togo' : pickupChEarly;
-                          if (normEarly === 'online' || normEarly === 'togo') return false;
                           if (orderListOpenMode !== 'pickup') return true;
                           const _f = String(order.fulfillment_mode || '').toLowerCase();
                           const _s = String(order.status || '').toUpperCase();
@@ -13186,12 +13475,45 @@ const SalesPage: React.FC = () => {
                         }).sort((a, b) => {
                           const now = Date.now();
                           const parseReadyTime = (o: any): number | null => {
-                            const rt = o.ready_time || o.readyTime || '';
-                            if (!rt) return null;
+                            if (orderListOpenMode === 'pickup') {
+                              const createdRaw = o?.created_at || o?.createdAt;
+                              const pm = Number(o?.pickup_minutes ?? o?.pickupMinutes ?? o?.prep_time ?? o?.prepTime ?? 0);
+                              if (createdRaw && Number.isFinite(pm) && pm > 0) {
+                                const d = new Date(createdRaw);
+                                if (!Number.isNaN(d.getTime())) return d.getTime() + pm * 60000;
+                              }
+                            }
+                            const rt =
+                              o.ready_time ||
+                              o.readyTime ||
+                              o.readyTimeLabel ||
+                              o.ready_time_label ||
+                              o.pickup_time ||
+                              o.pickupTime ||
+                              o.time ||
+                              '';
+                            const rtTrim = String(rt).trim();
+                            if (!rtTrim) return null;
+                            if (rtTrim.length >= 10 && (rtTrim.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(rtTrim))) {
+                              const isoMs = new Date(rtTrim.replace(' ', 'T')).getTime();
+                              if (!Number.isNaN(isoMs)) return isoMs;
+                            }
                             const today = new Date();
                             const dateStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-                            const parsed = new Date(`${dateStr}T${rt}`);
-                            return isNaN(parsed.getTime()) ? null : parsed.getTime();
+                            const parsed = new Date(`${dateStr}T${rtTrim}`);
+                            if (!isNaN(parsed.getTime())) return parsed.getTime();
+                            const m = rtTrim.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+                            if (m) {
+                              let h = parseInt(m[1], 10);
+                              const min = parseInt(m[2], 10);
+                              const isPm = m[3].toUpperCase() === 'PM';
+                              if (isPm && h < 12) h += 12;
+                              if (!isPm && h === 12) h = 0;
+                              const base = new Date(`${dateStr}T00:00:00`);
+                              base.setHours(h, min, 0, 0);
+                              return base.getTime();
+                            }
+                            return null;
                           };
                           const aTime = parseReadyTime(a);
                           const bTime = parseReadyTime(b);
@@ -13238,8 +13560,7 @@ const SalesPage: React.FC = () => {
                           } else {
                             channelOrderId = custName || '-';
                           }
-                          const readyTimeRaw = order.ready_time || order.readyTime || order.readyTimeLabel || '';
-                          const readyTimeDisplay = readyTimeRaw ? String(readyTimeRaw) : '';
+                          const readyTimeDisplay = orderListPickupTimeDisplay(order);
                           const subtotalVal = Number(order.subtotal || 0);
                           const taxVal = Number(order.tax || 0);
                           const totalVal = Number(order.total || 0);
@@ -13257,9 +13578,14 @@ const SalesPage: React.FC = () => {
                           const olIsSelected = sameSelected;
                           const olEvenBg = _rowIdx % 2 === 0 ? '#F8FAFC' : '#F1F5F9';
                           const olBg = olIsSelected ? '#BFDBFE' : olIsPickedUp ? '#FFFFFF' : olEvenBg;
+                          const pickupMode = orderListOpenMode === 'pickup';
+                          const pickupPosDigits = pickupMode ? orderListPickupListPosDigits(order) : '';
+                          const pickupOrderIdText = pickupMode ? orderListPickupListOrderId(order) : '';
                           const olIsLabelTarget = !olIsPickedUp && (isOnline || isDelivery || isTogo);
                           let olLabel: string | null = null;
-                          if (olIsLabelTarget) {
+                          if (pickupMode) {
+                            if (!olIsPickedUp) olLabel = olIsPaid ? 'Ready' : 'Unpaid';
+                          } else if (olIsLabelTarget) {
                             if (isDelivery) { olLabel = 'Ready'; }
                             else if (isOnline) { olLabel = olIsPaid ? 'Ready' : 'Unpaid'; }
                             else { olLabel = olIsPaid ? 'Ready' : 'Unpaid'; }
@@ -13268,22 +13594,52 @@ const SalesPage: React.FC = () => {
                             <React.Fragment key={order.id}>
                             <div
                               onClick={(e) => { e.stopPropagation(); fetchOrderDetails(order.id); }}
-                              className={`flex items-center gap-1.5 px-2 py-3 text-sm cursor-pointer hover:brightness-95`}
+                              className={`flex items-center gap-1.5 px-2 cursor-pointer hover:brightness-95 ${
+                                pickupMode ? 'py-3.5 text-lg' : 'py-3 text-base'
+                              }`}
                               style={{ backgroundColor: olBg }}
                             >
-                              {/* ì±„ë„ ë ì§€ */}
-                              <span className={`w-[60px] px-1 py-1 rounded text-center text-xs font-bold flex-shrink-0 ${badge.bgColor} ${badge.textColor}`}>
-                                {badge.label}
-                              </span>
-                              <span className="w-[87px] text-center font-bold text-gray-700 flex-shrink-0">{posSeqNum}</span>
-                              <span className="flex-1 min-w-0 truncate font-bold ml-1" title={channelOrderId}>{channelOrderId}</span>
-                              <span className="w-[70px] text-center font-bold flex-shrink-0 text-xs">{readyTimeDisplay}</span>
-                              <span className="w-[52px] text-center flex-shrink-0">
-                                {olLabel && (
-                                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
-                                )}
-                              </span>
-                              <span className="w-[60px] text-right font-bold flex-shrink-0">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
+                              {pickupMode ? (
+                                <>
+                                  <span className="w-[76px] flex shrink-0 justify-center px-0.5">
+                                    <span
+                                      className={`inline-flex min-h-[28px] min-w-[64px] max-w-[76px] items-center justify-center rounded-[5px] px-2 py-1 text-center text-[11px] font-bold uppercase leading-tight tracking-wide text-white shadow-sm ${badge.bgColor} ${badge.textColor}`}
+                                    >
+                                      {badge.label}
+                                    </span>
+                                  </span>
+                                  <span className="w-[48px] text-center font-mono text-base font-bold tabular-nums text-slate-800 flex-shrink-0">
+                                    {pickupPosDigits}
+                                  </span>
+                                  <span className="flex-1 min-w-0 truncate text-base font-semibold text-slate-900 ml-1" title={pickupOrderIdText}>
+                                    {pickupOrderIdText}
+                                  </span>
+                                  <span className="w-[80px] text-center font-semibold text-slate-800 flex-shrink-0 text-base tabular-nums">
+                                    {readyTimeDisplay || '—'}
+                                  </span>
+                                  <span className="w-[68px] text-center flex-shrink-0">
+                                    {olLabel && (
+                                      <span className={`text-sm font-bold px-1.5 py-0.5 rounded-md whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-700 bg-red-50 border border-red-200' : 'text-emerald-800 bg-emerald-50 border border-emerald-200'}`}>{olLabel}</span>
+                                    )}
+                                  </span>
+                                  <span className="w-[76px] text-right font-bold text-slate-900 flex-shrink-0 text-base tabular-nums pr-0.5">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className={`w-[60px] px-1 py-1 rounded text-center text-sm font-bold flex-shrink-0 ${badge.bgColor} ${badge.textColor}`}>
+                                    {badge.label}
+                                  </span>
+                                  <span className="w-[87px] text-center font-bold text-gray-700 flex-shrink-0">{posSeqNum}</span>
+                                  <span className="flex-1 min-w-0 truncate font-bold ml-1" title={channelOrderId}>{channelOrderId}</span>
+                                  <span className="w-[70px] text-center font-bold flex-shrink-0 text-sm">{readyTimeDisplay || '—'}</span>
+                                  <span className="w-[52px] text-center flex-shrink-0">
+                                    {olLabel && (
+                                      <span className={`text-xs font-bold px-1 py-0.5 rounded whitespace-nowrap ${olLabel === 'Unpaid' ? 'text-red-600 bg-red-100' : 'text-emerald-700 bg-emerald-100'}`}>{olLabel}</span>
+                                    )}
+                                  </span>
+                                  <span className="w-[60px] text-right font-bold flex-shrink-0">{`$${Number(displayAmount || 0).toFixed(2)}`}</span>
+                                </>
+                              )}
                             </div>
                             <div style={{ height: '1px', backgroundColor: 'rgba(190,209,236,0.2)' }} />
                             </React.Fragment>
@@ -13302,22 +13658,24 @@ const SalesPage: React.FC = () => {
                     ) : (
                       <>
                         {/* Action Buttons - ë§¨ ìœ„ë¡œ ì´ë™ */}
-                        <div className="flex flex-shrink-0 gap-3 px-4 py-3" style={OH_ACTION_NEO.bar}>
-                          {orderListOpenMode === 'pickup' ? (
+                        <div className="flex flex-shrink-0 gap-1.5 px-4 py-3" style={OH_ACTION_NEO.bar}>
+                          {orderListOpenMode === 'pickup' ? (() => {
+                            const _fl = getOrderListPickupActionFlex(orderListSelectedOrder);
+                            return (
                             <>
                               <button
                                 type="button"
                                 onClick={handleOrderListPrintBill}
-                                style={{ flex: 1, ...OH_ACTION_NEO.blue }}
-                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                                style={{ flex: _fl.bar, ...OH_ACTION_NEO.blue }}
+                                className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                               >
                                 Print Bill
                               </button>
                               <button
                                 type="button"
                                 onClick={handleOrderListPrintKitchen}
-                                style={{ flex: 1, ...OH_ACTION_NEO.orange }}
-                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                                style={{ flex: _fl.bar, ...OH_ACTION_NEO.orange }}
+                                className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                               >
                                 Reprint
                               </button>
@@ -13352,8 +13710,8 @@ const SalesPage: React.FC = () => {
                                     setShowTogoVoidModal(true);
                                   } catch (e) { console.error('[Pickup Void] Failed:', e); alert('Failed to open void.'); }
                                 }}
-                                style={{ flex: 1, ...OH_ACTION_NEO.red }}
-                                className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                                style={{ flex: _fl.bar, ...OH_ACTION_NEO.red }}
+                                className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                               >
                                 Void
                               </button>
@@ -13373,7 +13731,19 @@ const SalesPage: React.FC = () => {
                                         if (!orderId) return;
                                         try {
                                           const _firebaseId = orderListSelectedOrder.firebase_id;
-                                          const isOnlineOrder = _pkType === 'ONLINE' || _pkType === 'WEB' || _pkType === 'QR' || _pkTableId.startsWith('OL') || !!_firebaseId;
+                                          const isTogoLike =
+                                            _pkType === 'TOGO' ||
+                                            _pkType === 'TAKEOUT' ||
+                                            _pkFulfillment === 'togo' ||
+                                            _pkTableId.startsWith('TG');
+                                          const isOnlineOrder =
+                                            !_pkIsDelivery &&
+                                            !isTogoLike &&
+                                            (_pkType === 'ONLINE' ||
+                                              _pkType === 'WEB' ||
+                                              _pkType === 'QR' ||
+                                              _pkTableId.startsWith('OL') ||
+                                              _pkFulfillment === 'online');
 
                                           await fetch(`${API_URL}/orders/${orderId}/status`, {
                                             method: 'PATCH',
@@ -13411,58 +13781,94 @@ const SalesPage: React.FC = () => {
                                         } catch (e) { console.error('[Pickup Complete] Error:', e); }
                                       }}
                                       type="button"
-                                      style={{ flex: 1, ...OH_ACTION_NEO.green }}
-                                      className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                                      style={{ flex: _fl.single, ...OH_ACTION_NEO.green }}
+                                      className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                                     >
                                       Pickup
                                     </button>
                                   );
                                 }
 
+                                const openPickupPay = async (autoPickup: boolean) => {
+                                  try {
+                                    const orderId = Number(orderListSelectedOrder.id);
+                                    if (!Number.isFinite(orderId)) return;
+                                    const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
+                                    const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                    const nextOrderType =
+                                      rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
+                                        ? 'togo'
+                                        : rawType.includes('online')
+                                          ? 'online'
+                                          : 'pos';
+                                    const fb =
+                                      (orderListSelectedOrder as any).firebase_order_id ||
+                                      (orderListSelectedOrder as any).firebaseOrderId ||
+                                      (orderListSelectedOrder as any).firebase_id ||
+                                      null;
+                                    const dm =
+                                      (orderListSelectedOrder as any).delivery_meta_id ||
+                                      (orderListSelectedOrder as any).deliveryMetaId ||
+                                      null;
+                                    navigate('/sales/order', {
+                                      state: {
+                                        orderType: nextOrderType,
+                                        menuId: defaultMenu.menuId,
+                                        menuName: defaultMenu.menuName,
+                                        orderId,
+                                        customerName: orderListSelectedOrder.customer_name || '',
+                                        customerPhone: orderListSelectedOrder.customer_phone || '',
+                                        readyTimeLabel: orderListSelectedOrder.ready_time || '',
+                                        fulfillmentMode: orderListSelectedOrder.fulfillment_mode || null,
+                                        openPayment: true,
+                                        fromOrderHistory: true,
+                                        ...(autoPickup ? { autoPickup: true, firebaseOrderId: fb, deliveryMetaId: dm } : {}),
+                                      },
+                                    });
+                                    setShowOrderListModal(false);
+                                  } catch (e) {
+                                    console.error('[Pickup Pay] Failed to open payment:', e);
+                                    alert('Failed to open payment.');
+                                  }
+                                };
+
+                                if (_pkIsDelivery) {
+                                  return (
+                                    <button
+                                      onClick={() => { void openPickupPay(false); }}
+                                      type="button"
+                                      style={{ flex: _fl.single, ...OH_ACTION_NEO.green }}
+                                      className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                                    >
+                                      Pay
+                                    </button>
+                                  );
+                                }
+
                                 return (
-                                  <button
-                                    onClick={async () => {
-                                      try {
-                                        const orderId = Number(orderListSelectedOrder.id);
-                                        if (!Number.isFinite(orderId)) return;
-                                        const rawType = String(orderListSelectedOrder.order_type || '').toLowerCase();
-                                        const rawFulfillment = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
-                                        const nextOrderType =
-                                          rawType.includes('togo') || rawFulfillment.includes('togo') || rawFulfillment.includes('pickup')
-                                            ? 'togo'
-                                            : rawType.includes('online')
-                                            ? 'online'
-                                            : 'pos';
-                                        navigate('/sales/order', {
-                                          state: {
-                                            orderType: nextOrderType,
-                                            menuId: defaultMenu.menuId,
-                                            menuName: defaultMenu.menuName,
-                                            orderId,
-                                            customerName: orderListSelectedOrder.customer_name || '',
-                                            customerPhone: orderListSelectedOrder.customer_phone || '',
-                                            readyTimeLabel: orderListSelectedOrder.ready_time || '',
-                                            fulfillmentMode: orderListSelectedOrder.fulfillment_mode || null,
-                                            openPayment: true,
-                                            fromOrderHistory: true,
-                                          },
-                                        });
-                                        setShowOrderListModal(false);
-                                      } catch (e) {
-                                        console.error('[Pickup Pay] Failed to open payment:', e);
-                                        alert('Failed to open payment.');
-                                      }
-                                    }}
-                                    type="button"
-                                    style={{ flex: 1, ...OH_ACTION_NEO.green }}
-                                    className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
-                                  >
-                                    Pay
-                                  </button>
+                                  <div className="flex min-w-0 gap-1" style={{ flex: _fl.payPair }}>
+                                    <button
+                                      onClick={() => { void openPickupPay(false); }}
+                                      type="button"
+                                      style={{ flex: _fl.pay, ...OH_ACTION_NEO.green }}
+                                      className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                                    >
+                                      Pay
+                                    </button>
+                                    <button
+                                      onClick={() => { void openPickupPay(true); }}
+                                      type="button"
+                                      style={{ flex: _fl.payPickup, ...OH_ACTION_NEO.blue }}
+                                      className={`min-w-0 rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                                    >
+                                      Pay & Pickup
+                                    </button>
+                                  </div>
                                 );
                               })()}
                             </>
-                          ) : (
+                            );
+                          })() : (
                           <>
                           {/* 1. Back to Order */}
                           {(() => {
@@ -13503,10 +13909,10 @@ const SalesPage: React.FC = () => {
                                   setShowOrderListModal(false);
                                 }}
                                 style={{ flex: 1, ...(isOnlineOrDelivery ? OH_ACTION_NEO.disabled : OH_ACTION_NEO.slate) }}
-                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
+                                className={`rounded-xl py-4 text-sm font-bold touch-manipulation ${
                                   isOnlineOrDelivery
                                     ? 'cursor-not-allowed'
-                                    : 'text-white active:scale-[0.98]'
+                                    : `text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`
                                 }`}
                               >
                                 Back to Order
@@ -13568,7 +13974,7 @@ const SalesPage: React.FC = () => {
                               }
                             }}
                             style={{ flex: 1, ...OH_ACTION_NEO.red }}
-                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                            className={`rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                           >
                             Void
                           </button>
@@ -13577,7 +13983,7 @@ const SalesPage: React.FC = () => {
                             type="button"
                             onClick={handleOrderListPrintKitchen}
                             style={{ flex: 1, ...OH_ACTION_NEO.orange }}
-                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                            className={`rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                           >
                             Reprint
                           </button>
@@ -13586,7 +13992,7 @@ const SalesPage: React.FC = () => {
                             type="button"
                             onClick={handleOrderListPrintBill}
                             style={{ flex: 1, ...OH_ACTION_NEO.blue }}
-                            className="rounded-xl py-4 text-sm font-bold text-white transition-transform active:scale-[0.98] touch-manipulation"
+                            className={`rounded-xl py-4 text-sm font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                           >
                             Print Bill
                           </button>
@@ -13601,8 +14007,8 @@ const SalesPage: React.FC = () => {
                                 onClick={isPaid ? handleOrderListPrintReceipt : undefined}
                                 disabled={!isPaid}
                                 style={{ flex: 1, ...(isPaid ? OH_ACTION_NEO.emerald : OH_ACTION_NEO.disabled) }}
-                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
-                                  isPaid ? 'text-white active:scale-[0.98]' : 'cursor-not-allowed'
+                                className={`rounded-xl py-4 text-sm font-bold touch-manipulation ${
+                                  isPaid ? `text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}` : 'cursor-not-allowed'
                                 }`}
                               >
                                 Print Receipt
@@ -13661,8 +14067,8 @@ const SalesPage: React.FC = () => {
                                   }
                                 }}
                                 style={{ flex: 1, ...(isPaid ? OH_ACTION_NEO.disabled : OH_ACTION_NEO.green) }}
-                                className={`rounded-xl py-4 text-sm font-bold transition-transform touch-manipulation ${
-                                  isPaid ? 'cursor-not-allowed' : 'text-white active:scale-[0.98]'
+                                className={`rounded-xl py-4 text-sm font-bold touch-manipulation ${
+                                  isPaid ? 'cursor-not-allowed' : `text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`
                                 }`}
                               >
                                 Pay
@@ -13685,7 +14091,7 @@ const SalesPage: React.FC = () => {
                             let channelName = badge.label;
                             let channelOrderNum = '';
 
-                            if (badge.label === 'ONLINE' || badge.label === 'UBER' || badge.label === 'DDASH' || badge.label === 'SKIP' || badge.label === 'FTUAN' || badge.label === 'DLV' || badge.label === 'Delivery') {
+                            if (badge.label === 'ONLINE' || badge.label === 'UBER' || badge.label === 'DDASH' || badge.label === 'SKIP' || badge.label === 'FTUAN' || badge.label === 'DLV' || badge.label === 'Delivery' || badge.label === 'DELIVERY') {
                               if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
                                 channelName = 'UberEATS';
                               } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
@@ -13717,7 +14123,7 @@ const SalesPage: React.FC = () => {
                               if (!channelOrderNum && channelName === 'Online' && orderListSelectedOrder.customer_name) {
                                 channelOrderNum = orderListSelectedOrder.customer_name;
                               }
-                            } else if (badge.label === 'TOGO' || badge.label === 'Pickup') {
+                            } else if (badge.label === 'TOGO' || badge.label === 'PICKUP') {
                               channelName = 'TOGO';
                               const rawPhone = String(orderListSelectedOrder.customer_phone || '').replace(/\D/g, '');
                               if (rawPhone.length >= 4) {
@@ -13725,9 +14131,11 @@ const SalesPage: React.FC = () => {
                               } else if (orderListSelectedOrder.customer_name) {
                                 channelOrderNum = String(orderListSelectedOrder.customer_name).slice(0, 10);
                               }
-                            } else if (badge.label === 'Dine-in') {
+                            } else if (badge.label === 'DINE-IN' || badge.label === 'EAT IN') {
                               const tbl = orderListSelectedOrder.table_name || '';
-                              if (tbl) channelName = `Dine-in  ${tbl}`;
+                              const base = badge.label === 'DINE-IN' ? 'Dine-in' : 'Eat In';
+                              if (tbl) channelName = `${base}  ${tbl}`;
+                              else channelName = base;
                             }
 
                             const posNumber = orderListSelectedOrder.order_number || String(orderListSelectedOrder.id).padStart(3, '0');

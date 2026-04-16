@@ -57,17 +57,31 @@ function getFirestore() {
 }
 
 /**
- * POS가 대시보드 동기화용으로 `restaurants/{id}/orders`에 넣은 배달 스텁(source=POS, DL… / delivery).
- * 앱 온라인 주문과 같은 컬렉션이라 이 문서가 온라인 파이프라인에 들어가면 SQLite·패널에 중복 카드가 생긴다.
+ * POS가 대시보드 연동으로 `restaurants/{id}/orders`에 넣은 미러 문서(배달 DL·투고 TG 등, source=POS).
+ * 앱 온라인 주문과 같은 컬렉션이라 여기 들어오면 SSE/SQLite 온라인 INSERT·패널 중복 카드가 생긴다.
+ * 투고(TOGO)·픽업 등은 Thezone 앱 온라인 주문과 별개이므로 동일하게 제외한다.
  */
 function isPosDeliveryMirrorFirestoreOrder(order) {
   if (!order || typeof order !== 'object') return false;
   const source = String(order.source || '').toUpperCase();
   if (source !== 'POS') return false;
-  const orderType = String(order.orderType || order.type || '').toLowerCase();
+  const orderType = String(order.orderType || order.type || '').toLowerCase().replace(/[\s_-]+/g, '');
   const tableId = String(order.tableId || order.table_id || '').trim().toUpperCase();
+  const fulfillment = String(order.fulfillmentMode || order.fulfillment_mode || order.fulfillment || '')
+    .toLowerCase()
+    .trim();
   if (orderType === 'delivery') return true;
   if (tableId.startsWith('DL')) return true;
+  if (tableId.startsWith('TG')) return true;
+  if (fulfillment === 'togo' || fulfillment === 'pickup' || fulfillment === 'takeout') return true;
+  if (
+    orderType === 'togo' ||
+    orderType === 'takeout' ||
+    orderType === 'pickup' ||
+    orderType === 'togoorder'
+  ) {
+    return true;
+  }
   return false;
 }
 

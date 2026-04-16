@@ -9,7 +9,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { API_URL } from '../config/constants';
 import { calculateOrderPricing } from '../utils/orderPricing';
+import { fetchPickupDetailItemsPreferFirebase } from '../utils/onlineOrderPickupDetailItems';
 import {
+  NEO_COLOR_BTN_PRESS_NO_SHIFT,
+  NEO_PRESS_INSET_AMBER_NO_SHIFT,
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
   PAY_NEO,
   PAY_NEO_CANVAS,
@@ -93,6 +96,8 @@ export interface OrderDetailModalProps {
   embedded?: boolean;  // true면 모달 배경 없이 탭 안에 내장
   showTabs?: boolean;  // 상단 탭 표시 여부 (default: true)
   defaultTab?: OrderChannelType;  // 기본 선택 탭
+  /** QSR Pickup List: Pay / Pay & Pickup 분리 (미결제 시 Pay 오른쪽에 Pay & Pickup) */
+  splitPayAndPickupActions?: boolean;
 }
 
 const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
@@ -111,6 +116,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
   embedded = false,
   showTabs = true,
   defaultTab = 'togo',
+  splitPayAndPickupActions = false,
 }) => {
   // 현재 선택된 탭
   const [selectedOrderType, setSelectedOrderType] = useState<OrderChannelType>(
@@ -169,8 +175,17 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
         const res = await fetch(`${API_URL}/orders/${actualOrderId}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.success && data.items) {
-            const parsedItems = data.items.map((item: any) => {
+          if (data.success) {
+            let rawItems = Array.isArray(data.items) ? data.items : [];
+            const orderRowForFirebase = {
+              ...data.order,
+              firebase_order_id:
+                (data.order as any)?.firebase_order_id ??
+                (order as any)?.firebase_order_id ??
+                (order as any)?.fullOrder?.firebase_order_id,
+            };
+            rawItems = await fetchPickupDetailItemsPreferFirebase(API_URL, orderRowForFirebase, rawItems);
+            const parsedItems = rawItems.map((item: any) => {
               let options: any[] = [];
               let memo: any = null;
               let discount: any = null;
@@ -591,63 +606,88 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
     }
   }, [selectedOrderDetail, selectedOrderType]);
 
-  // Pay/Pickup 버튼 핸들러
+  const buildUnpaidPaymentPayload = useCallback((): OrderData | null => {
+    if (!selectedOrderDetail) return null;
+    const items = selectedOrderDetail.fullOrder?.items || [];
+    let totals: any = null;
+    try {
+      const normalizedItems = (items || []).map((it: any) => {
+        let discountObj: any = it.discount ?? null;
+        if (!discountObj && it.discount_json) {
+          try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
+        }
+        return {
+          id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
+          orderLineId: it.order_line_id ?? it.orderLineId,
+          name: it.name,
+          type: it.type,
+          quantity: it.quantity,
+          price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
+          totalPrice: (it.total_price ?? it.totalPrice),
+          modifiers: it.modifiers ?? it.options ?? [],
+          memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
+          discount: discountObj,
+          guestNumber: it.guestNumber ?? it.guest_number,
+          taxGroupId: it.taxGroupId ?? it.tax_group_id,
+          void_id: it.void_id,
+          voidId: it.voidId,
+          is_void: it.is_void,
+        };
+      });
+      const pricing = calculateOrderPricing(normalizedItems as any);
+      const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
+      const storedTotalRaw =
+        (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).total) ??
+        (selectedOrderDetail as any).total ??
+        (pricing.totals.total || 0);
+      const storedTotalNum = Number(storedTotalRaw);
+      const storedTotal = Number.isFinite(storedTotalNum) ? Number(storedTotalNum.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
+      const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
+      totals = { subtotal: netSubtotal, tax: derivedTax, taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [], total: storedTotal };
+    } catch {
+      totals = null;
+    }
+    return { ...(selectedOrderDetail as any), __togoTotals: totals } as OrderData;
+  }, [selectedOrderDetail]);
+
+  const handlePayOnly = useCallback(() => {
+    if (!selectedOrderDetail) return;
+    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
+    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' ||
+      selectedOrderType === 'delivery';
+    if (isPaid) return;
+    const payload = buildUnpaidPaymentPayload();
+    if (!payload) return;
+    onPayment(payload, selectedOrderType);
+  }, [selectedOrderDetail, selectedOrderType, buildUnpaidPaymentPayload, onPayment]);
+
+  const handlePayAndPickup = useCallback(() => {
+    if (!selectedOrderDetail) return;
+    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
+    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' ||
+      selectedOrderType === 'delivery';
+    if (isPaid) return;
+    const payload = buildUnpaidPaymentPayload();
+    if (!payload) return;
+    onPayment({ ...(payload as any), __completePickupAfterPay: true } as OrderData, selectedOrderType);
+  }, [selectedOrderDetail, selectedOrderType, buildUnpaidPaymentPayload, onPayment]);
+
+  // Pay/Pickup 버튼 핸들러 (단일 버튼 모드 또는 Delivery / 결제완료 픽업)
   const handlePayPickup = useCallback(async () => {
     if (!selectedOrderDetail) return;
-    
-    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
-    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' || 
-      selectedOrderType === 'delivery'; // Delivery는 항상 PAID
-    
-    if (!isPaid) {
-      // UNPAID: 결제 모달 열기
-      // Pass through the exact totals computed in this modal (no recompute downstream)
-      const items = selectedOrderDetail.fullOrder?.items || [];
-      let totals: any = null;
-      try {
-        const normalizedItems = (items || []).map((it: any) => {
-          let discountObj: any = it.discount ?? null;
-          if (!discountObj && it.discount_json) {
-            try { discountObj = typeof it.discount_json === 'string' ? JSON.parse(it.discount_json) : it.discount_json; } catch { discountObj = null; }
-          }
-          return {
-            id: it.id ?? it.item_id ?? it.itemId ?? it.order_line_id ?? it.orderLineId ?? `${it.name || 'line'}`,
-            orderLineId: it.order_line_id ?? it.orderLineId,
-            name: it.name,
-            type: it.type,
-            quantity: it.quantity,
-            price: (typeof it.price === 'number' ? it.price : Number(it.price ?? it.total_price ?? it.totalPrice ?? it.subtotal ?? 0)),
-            totalPrice: (it.total_price ?? it.totalPrice),
-            modifiers: it.modifiers ?? it.options ?? [],
-            memo: it.memo && typeof it.memo === 'object' ? it.memo : null,
-            discount: discountObj,
-            guestNumber: it.guestNumber ?? it.guest_number,
-            taxGroupId: it.taxGroupId ?? it.tax_group_id,
-            void_id: it.void_id,
-            voidId: it.voidId,
-            is_void: it.is_void,
-          };
-        });
-        const pricing = calculateOrderPricing(normalizedItems as any);
-        const netSubtotal = Number((pricing.totals.subtotalAfterAllDiscounts || 0).toFixed(2));
-        const storedTotalRaw =
-          (selectedOrderDetail.fullOrder && (selectedOrderDetail.fullOrder as any).total) ??
-          (selectedOrderDetail as any).total ??
-          (pricing.totals.total || 0);
-        const storedTotalNum = Number(storedTotalRaw);
-        const storedTotal = Number.isFinite(storedTotalNum) ? Number(storedTotalNum.toFixed(2)) : Number((pricing.totals.total || 0).toFixed(2));
-        const derivedTax = Math.max(0, Number((storedTotal - netSubtotal).toFixed(2)));
-        totals = { subtotal: netSubtotal, tax: derivedTax, taxLines: derivedTax > 0.0001 ? [{ name: 'Tax', amount: derivedTax }] : [], total: storedTotal };
-      } catch {
-        totals = null;
-      }
 
-      onPayment({ ...(selectedOrderDetail as any), __togoTotals: totals }, selectedOrderType);
+    const status = (selectedOrderDetail?.fullOrder?.status || selectedOrderDetail?.status || '').toLowerCase();
+    const isPaid = status === 'paid' || status === 'completed' || status === 'closed' ||
+      selectedOrderType === 'delivery'; // Delivery는 항상 PAID
+
+    if (!isPaid) {
+      const payload = buildUnpaidPaymentPayload();
+      if (!payload) return;
+      onPayment(payload, selectedOrderType);
     } else {
-      // PAID: Pickup Complete 처리
       onPickupComplete(selectedOrderDetail, selectedOrderType);
     }
-  }, [selectedOrderDetail, selectedOrderType, onPayment, onPickupComplete]);
+  }, [selectedOrderDetail, selectedOrderType, buildUnpaidPaymentPayload, onPayment, onPickupComplete]);
 
   const handleVoid = useCallback(() => {
     if (!selectedOrderDetail || !onVoid) return;
@@ -851,7 +891,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
         {/* 오른쪽: 주문 상세 */}
         <div className="flex min-h-0 w-[45%] min-w-0 flex-col overflow-hidden rounded-[14px] p-2.5" style={PAY_NEO.inset}>
           {/* 상단 버튼 영역 */}
-          <div className="flex flex-shrink-0 flex-wrap gap-2 rounded-[10px] border-0 bg-transparent p-0 pb-2">
+          <div className="flex flex-shrink-0 flex-wrap gap-1 rounded-[10px] border-0 bg-transparent p-0 pb-2">
             {/* Back to Order 버튼 */}
             {onBackToOrder && (
               <button
@@ -869,7 +909,7 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               type="button"
               onClick={handlePrintBill}
               disabled={!selectedOrderDetail}
-              className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white touch-manipulation disabled:opacity-40 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+              className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white touch-manipulation disabled:opacity-40 ${NEO_PRESS_INSET_AMBER_NO_SHIFT}`}
               style={PAY_NEO_PRIMARY_AMBER}
             >
               Print Bill
@@ -896,16 +936,55 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                 Void
               </button>
             )}
-            {/* Pay/Pickup 버튼 */}
-            <button
-              type="button"
-              onClick={handlePayPickup}
-              disabled={!selectedOrderDetail}
-              className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white touch-manipulation disabled:opacity-40 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
-              style={PAY_NEO_PRIMARY_BLUE}
-            >
-              {selectedOrderType === 'delivery' ? 'Pickup' : 'Pay/Pickup'}
-            </button>
+            {/* Pay / Pay & Pickup (QSR split) 또는 단일 Pay/Pickup */}
+            {(!splitPayAndPickupActions || selectedOrderType === 'delivery') ? (
+              <button
+                type="button"
+                onClick={handlePayPickup}
+                disabled={!selectedOrderDetail}
+                className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white touch-manipulation disabled:opacity-40 ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                style={PAY_NEO_PRIMARY_BLUE}
+              >
+                {selectedOrderType === 'delivery' ? 'Pickup' : 'Pay/Pickup'}
+              </button>
+            ) : !selectedOrderDetail ? (
+              <button
+                type="button"
+                disabled
+                className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white opacity-40 ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                style={PAY_NEO_PRIMARY_BLUE}
+              >
+                Pay
+              </button>
+            ) : checkIsPaid(selectedOrderDetail) ? (
+              <button
+                type="button"
+                onClick={handlePayPickup}
+                className={`min-w-[120px] flex-1 rounded-[10px] border-0 px-3 py-3 text-base font-semibold text-white touch-manipulation ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                style={PAY_NEO_PRIMARY_BLUE}
+              >
+                Pickup Complete
+              </button>
+            ) : (
+              <div className="flex min-w-0 flex-1 gap-1">
+                <button
+                  type="button"
+                  onClick={handlePayOnly}
+                  className={`min-w-0 flex-1 rounded-[10px] border-0 px-2 py-3 text-sm font-semibold text-white touch-manipulation sm:text-base ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                  style={PAY_NEO_PRIMARY_BLUE}
+                >
+                  Pay
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePayAndPickup}
+                  className={`min-w-0 flex-1 rounded-[10px] border-0 px-2 py-3 text-sm font-semibold text-white touch-manipulation sm:text-base ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}
+                  style={PAY_NEO_PRIMARY_BLUE}
+                >
+                  Pay & Pickup
+                </button>
+              </div>
+            )}
           </div>
           
           {/* 주문 상세 정보 */}

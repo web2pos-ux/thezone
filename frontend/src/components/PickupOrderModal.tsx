@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense, laz
 import { API_URL } from '../config/constants';
 import { shouldShowInPickupList } from '../utils/pickupListRules';
 import { formatNameForDisplay } from '../utils/nameParser';
-import { getLocalDateString } from '../utils/datetimeUtils';
 import OrderDetailModal, { OrderData } from './OrderDetailModal';
 import { PAY_NEO, PAY_NEO_CANVAS, PAY_NEO_PRIMARY_BLUE, OH_ACTION_NEO, NEO_MODAL_BTN_PRESS, NEO_PREP_TIME_BTN_PRESS } from '../utils/softNeumorphic';
 
@@ -220,8 +219,7 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
     setPickupCompleteLoading(true);
     setPickupCompleteError('');
     try {
-      const today = getLocalDateString();
-      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO,DELIVERY,ONLINE&date=${today}&limit=200`);
+      const res = await fetch(`${API_URL}/orders?pickup_pending=1&session_scope=1`);
       const data = await res.json();
       const raw: any[] = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : Array.isArray(data?.data) ? data.data : [];
       const filtered = raw.filter((o: any) => shouldShowInPickupList(o));
@@ -251,6 +249,22 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
       setPickupCompleteLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const onDayClosed = () => {
+      setPickupCompleteOrders([]);
+      setPickupCompleteError('');
+    };
+    const onDayOpened = () => {
+      if (isOpen && activeTab === 'complete') void loadPickupCompleteOrders();
+    };
+    window.addEventListener('posTakeoutDayClosed', onDayClosed);
+    window.addEventListener('posTakeoutDayOpened', onDayOpened);
+    return () => {
+      window.removeEventListener('posTakeoutDayClosed', onDayClosed);
+      window.removeEventListener('posTakeoutDayOpened', onDayOpened);
+    };
+  }, [isOpen, activeTab, loadPickupCompleteOrders]);
 
   // --- Effects ---
   useEffect(() => {

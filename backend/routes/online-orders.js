@@ -44,6 +44,72 @@ async function ensurePosDailyOrderNumberForOnlineSqliteRow(orderId, currentOrder
   return await assignPosDailyOrderNumberToSqliteOrder(orderId);
 }
 
+/** Firebase 온라인 주문 → SQLite `orders.ready_time` / `orders.pickup_minutes` (GET /orders·Pickup List) */
+function parseFirebaseOrderCreatedAt(order, createdAtStrFallback) {
+  if (createdAtStrFallback) {
+    const d = new Date(createdAtStrFallback);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const ca = order.createdAt?.toDate?.() || order.createdAt;
+  if (!ca) return null;
+  if (typeof ca === 'string') {
+    const d = new Date(ca);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (ca instanceof Date) return Number.isNaN(ca.getTime()) ? null : ca;
+  try {
+    const d = new Date(ca);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function sqliteReadyFieldsFromFirebaseOrder(order, createdAtStrFallback) {
+  const prepRaw =
+    order?.prepTime ?? order?.prep_time ?? order?.pickupMinutes ?? order?.pickup_minutes;
+  const prepNum = Number(prepRaw);
+  const pickupMinutes = Number.isFinite(prepNum) && prepNum > 0 ? Math.round(prepNum) : null;
+
+  const readyRaw =
+    order?.readyTime ??
+    order?.ready_time ??
+    order?.pickupTime ??
+    order?.pickup_time ??
+    order?.readyTimeLabel ??
+    order?.ready_time_label ??
+    null;
+  let readyTime = readyRaw != null && String(readyRaw).trim() !== '' ? String(readyRaw).trim() : null;
+
+  if (!readyTime && pickupMinutes) {
+    const base = parseFirebaseOrderCreatedAt(order, createdAtStrFallback);
+    if (base) {
+      readyTime = new Date(base.getTime() + pickupMinutes * 60000).toISOString();
+    }
+  }
+
+  return { readyTime, pickupMinutes };
+}
+
+/** 기존 행(ready 비어 있음)에 Firebase 값 백필 */
+async function syncSqliteReadyFieldsFromFirebase(localOrderId, order, createdAtStrFallback) {
+  const { readyTime, pickupMinutes } = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStrFallback);
+  if (!readyTime && !(pickupMinutes != null && pickupMinutes > 0)) return;
+  try {
+    const row = await dbGet('SELECT ready_time, pickup_minutes FROM orders WHERE id = ?', [localOrderId]);
+    const rtEmpty = !row?.ready_time || !String(row.ready_time).trim();
+    const pmEmpty = row?.pickup_minutes == null || Number(row.pickup_minutes) <= 0;
+    if (rtEmpty && readyTime) {
+      await dbRun('UPDATE orders SET ready_time = ? WHERE id = ?', [readyTime, localOrderId]);
+    }
+    if (pmEmpty && pickupMinutes != null && pickupMinutes > 0) {
+      await dbRun('UPDATE orders SET pickup_minutes = ? WHERE id = ?', [pickupMinutes, localOrderId]);
+    }
+  } catch (e) {
+    console.warn('[Online] syncSqliteReadyFieldsFromFirebase:', e.message);
+  }
+}
+
 /** Kitchen/출력 헤더: SQLite `order_number`(일일 순번) 우선 — Sales 카드·POS 영수증과 동일 */
 function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
   if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
@@ -175,20 +241,23 @@ function startOrderListener(restaurantId) {
           'SELECT id FROM orders WHERE firebase_order_id = ?',
           [firebaseOrderId]
         );
-        
+
+        const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+        const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
+        const rf = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStr);
+
         if (!localOrder) {
-          const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
-          
+
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
               order.total || 0,
               'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              createdAtStr,
               order.customerPhone || null,
               order.customerName || null,
               firebaseOrderId,
@@ -197,11 +266,13 @@ function startOrderListener(restaurantId) {
               order.paymentTransactionId || null,
               order.cardLast4 || null,
               paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
+              rf.readyTime || null,
+              rf.pickupMinutes,
               'online'
             ]
           );
           localOrder = { id: result.lastID };
-          
+
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
               await dbRun(
@@ -213,8 +284,11 @@ function startOrderListener(restaurantId) {
           }
           const posDaily = await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
           console.log(
-            `✅ 온라인 주문 SQLite 저장: id=${localOrder.id} pos#=${posDaily || '—'} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'})`
+            `✅ 온라인 주문 SQLite 저장: id=${localOrder.id} pos#=${posDaily || '—'} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'}) ready_time=${rf.readyTime || '—'} pickup_minutes=${rf.pickupMinutes ?? '—'}`
           );
+        }
+        if (localOrder?.id) {
+          await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStr);
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -238,8 +312,20 @@ function startOrderListener(restaurantId) {
         order: formatted
       });
     },
-    onOrderUpdate: (order) => {
+    onOrderUpdate: async (order) => {
       if (firebaseService.isPosDeliveryMirrorFirestoreOrder(order)) return;
+
+      try {
+        const lo = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [order.id]);
+        if (lo?.id) {
+          const createdAt = order.createdAt?.toDate?.() || order.createdAt;
+          const createdAtStr =
+            typeof createdAt === 'string' ? createdAt : createdAt?.toISOString?.() ? createdAt.toISOString() : '';
+          await syncSqliteReadyFieldsFromFirebase(lo.id, order, createdAtStr || null);
+        }
+      } catch (e) {
+        console.warn('[Online] onOrderUpdate SQLite sync:', e.message);
+      }
 
       broadcastToClients(restaurantId, {
         type: 'order_updated',
@@ -631,20 +717,24 @@ router.get('/:restaurantId', async (req, res) => {
       
       if (!localOrder) {
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
-        
+        const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
+        const rf = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStr);
+
         try {
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
               order.total || 0,
               'PENDING',
-              typeof createdAt === 'string' ? createdAt : createdAt.toISOString(),
+              createdAtStr,
               order.customerPhone || null,
               order.customerName || null,
               firebaseOrderId,
+              rf.readyTime || null,
+              rf.pickupMinutes,
               'online'
             ]
           );
@@ -673,8 +763,20 @@ router.get('/:restaurantId', async (req, res) => {
           if (ensured) localOrder.order_number = ensured;
           else if (r?.order_number) localOrder.order_number = r.order_number;
         } catch {}
+        try {
+          const createdAtForSync = order.createdAt?.toDate?.() || order.createdAt;
+          const createdAtStrForSync =
+            typeof createdAtForSync === 'string'
+              ? createdAtForSync
+              : createdAtForSync?.toISOString?.()
+                ? createdAtForSync.toISOString()
+                : '';
+          await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStrForSync || null);
+        } catch (e) {
+          console.warn('[Online] GET list SQLite ready sync:', e.message);
+        }
       }
-      
+
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
       if (localOrder?.order_number) {
@@ -706,7 +808,14 @@ router.get('/order/:orderId', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const order = await firebaseService.getOrderById(orderId);
+    let restaurantId = null;
+    try {
+      const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+      restaurantId = profile?.firebase_restaurant_id || null;
+    } catch (_) {
+      /* ignore */
+    }
+    const order = await firebaseService.getOrderById(orderId, restaurantId);
 
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
@@ -962,6 +1071,24 @@ router.post('/order/:orderId/accept', async (req, res) => {
     console.log(`[ACCEPT] orderId: ${orderId}, prepTime: ${prepTime}, pickupTime: ${pickupTime}, readyTime: ${readyTime}`);
 
     const result = await firebaseService.acceptOrder(orderId, prepTime, pickupTime, restaurantId || null, readyTime || null);
+
+    try {
+      const prepNum = Number(prepTime);
+      const rtStr =
+        (readyTime != null && String(readyTime).trim() !== '' && String(readyTime).trim()) ||
+        (pickupTime != null && String(pickupTime).trim() !== '' && String(pickupTime).trim()) ||
+        null;
+      await dbRun(
+        `UPDATE orders SET ready_time = ?, pickup_minutes = ? WHERE firebase_order_id = ?`,
+        [
+          rtStr,
+          Number.isFinite(prepNum) && prepNum > 0 ? Math.round(prepNum) : null,
+          orderId
+        ]
+      );
+    } catch (sqlErr) {
+      console.warn('[ACCEPT] SQLite ready_time sync:', sqlErr.message);
+    }
 
     try {
       await preorderReprintService.onOnlineOrderAccepted({

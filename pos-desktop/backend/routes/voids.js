@@ -22,6 +22,7 @@ async function getRestaurantId() {
       return cachedRestaurantId;
     }
   } catch (e) { /* 테이블 없을 수 있음 */ }
+  // online-orders·프론트는 business_profile.firebase_restaurant_id 를 쓰는 경우가 많음 — 여기 없으면 Firestore 서브컬렉션 갱신 실패 → Void 후에도 GET 목록에 그대로 남음
   try {
     const bp = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
     if (bp?.firebase_restaurant_id && String(bp.firebase_restaurant_id).trim()) {
@@ -277,7 +278,12 @@ router.post('/orders/:orderId/void', async (req, res) => {
       created_by = null,
     } = req.body || {};
 
-    if (!Array.isArray(lines) || lines.length === 0) {
+    if (!Array.isArray(lines)) {
+      return res.status(400).json({ error: 'Invalid lines payload' });
+    }
+    const srcLower = String(source || '').toLowerCase();
+    // 좀비 주문( order_items 없음 / API 미동기 )은 라인 없이 전체 void만 허용
+    if (lines.length === 0 && srcLower !== 'entire') {
       return res.status(400).json({ error: 'No lines to void' });
     }
 
@@ -424,6 +430,24 @@ router.post('/orders/:orderId/void', async (req, res) => {
         }
       }
     } catch (e) { /* 주문 정보 조회 실패 무시 */ }
+
+    // 전체 Void 후에도 Firestore가 pending이면 GET /online-orders/:rid 가 다시 넣음 — DB VOIDED 확인 시 cancelled 동기화
+    if (isEntireVoid && firebaseService && typeof firebaseService.updateOrderStatus === 'function') {
+      try {
+        const chk = await dbGet(`SELECT status, firebase_order_id FROM orders WHERE id = ?`, [orderId]);
+        const st = String(chk?.status || '').toUpperCase();
+        const fid =
+          chk?.firebase_order_id != null && String(chk.firebase_order_id).trim() !== ''
+            ? String(chk.firebase_order_id).trim()
+            : '';
+        if (st === 'VOIDED' && fid) {
+          const rid = await getRestaurantId();
+          await firebaseService.updateOrderStatus(fid, 'cancelled', rid || null);
+        }
+      } catch (fbErr) {
+        console.warn('[VOID] Firebase cancelled sync:', fbErr && fbErr.message ? fbErr.message : fbErr);
+      }
+    }
 
     // Build station payloads.
     // If client didn't provide printer_group_id (common for "void unpaid order" flows),

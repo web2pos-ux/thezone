@@ -58,6 +58,7 @@ import {
   OH_ACTION_NEO,
   MODAL_CLOSE_X_RAISED_STYLE,
   MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE,
+  NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT,
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
 } from '../utils/softNeumorphic';
 import { PrintBillModal } from '../components/PrintBillModal';
@@ -77,6 +78,7 @@ import {
   classifyPickupChannel,
   shouldShowInPickupList,
 } from '../utils/pickupListRules';
+import { fetchPickupDetailItemsPreferFirebase } from '../utils/onlineOrderPickupDetailItems';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 
 const LAYOUT_SETTINGS_SNAPSHOT_KEY = 'orderLayout:layoutSettingsSnapshot';
@@ -468,7 +470,7 @@ const QsrOrderPage = () => {
     setQsrPickupCompleteLoading(true);
     setQsrPickupCompleteError('');
     try {
-      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO&status=PENDING,UNPAID,PAID&limit=80`);
+      const res = await fetch(`${API_URL}/orders?pickup_pending=1&session_scope=1`);
       const data = await res.json();
       const raw: any[] =
         Array.isArray(data)
@@ -480,6 +482,8 @@ const QsrOrderPage = () => {
               : [];
 
       const filtered = raw.filter((o: any) => {
+        const t = String(o?.order_type ?? '').toUpperCase();
+        if (t !== 'PICKUP' && t !== 'TOGO') return false;
         const s = String(o?.status ?? '').toUpperCase();
         if (s === 'PICKED_UP' || s === 'CANCELLED' || s === 'MERGED') return false;
         return true;
@@ -2469,9 +2473,10 @@ const handleVoidPinClear = useCallback(() => {
     const effectiveMode = mode ?? orderListOpenMode;
     setOrderListLoading(true);
     try {
+      // 주문 목록·추출: order_mode(QSR/FSR)로 나누지 않고 동일 DB 전체 조회
       const ordersUrl = effectiveMode === 'pickup'
-        ? `${API_URL}/orders?pickup_pending=1`
-        : `${API_URL}/orders?date=${date}&order_mode=QSR`;
+        ? `${API_URL}/orders?pickup_pending=1&session_scope=1`
+        : `${API_URL}/orders?date=${date}&session_scope=1`;
       const [ordersRes, deliveryMetaRes] = await Promise.all([
         fetch(ordersUrl),
         fetch(`${API_URL}/orders/delivery-orders`)
@@ -2520,8 +2525,6 @@ const handleVoidPinClear = useCallback(() => {
           const _s = String(order.status || '').toUpperCase();
           const isEatIn = _t === 'FORHERE' || _t === 'FOR_HERE' || _t === 'POS' || _t === 'DINE_IN' || _t === 'DINE-IN';
           if (isEatIn) return false;
-          const isTogoOrder = _t === 'TOGO' || ((_f === 'togo') && _t !== 'PICKUP');
-          if (isTogoOrder) return false;
           if (_s === 'PICKED_UP' || _s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
           return true;
         }).sort((a: any, b: any) => {
@@ -2587,8 +2590,10 @@ const handleVoidPinClear = useCallback(() => {
       if (data.success) {
         const listOrder = orderListOrders.find((o: any) => o.id === orderId);
         const tableName = listOrder?.table_name || data.order.table_name || '';
+        let detailItems = Array.isArray(data.items) ? data.items : [];
+        detailItems = await fetchPickupDetailItemsPreferFirebase(API_URL, data.order, detailItems);
         setOrderListSelectedOrder({ ...data.order, table_name: tableName, adjustments: data.adjustments || [] });
-        setOrderListSelectedItems(data.items || []);
+        setOrderListSelectedItems(detailItems);
         setOrderListVoidLines(data.voidLines || []);
       } else {
         const listOrder = orderListOrders.find((o: any) => o.id === orderId);
@@ -2666,26 +2671,45 @@ const handleVoidPinClear = useCallback(() => {
     const deliveryKeywords = ['UBER', 'DOORDASH', 'DDASH', 'SKIP', 'FANTUAN', 'FTAN'];
     const isDeliverySource = deliveryKeywords.some(k => source.includes(k) || custName.includes(k) || orderNum.includes(k));
     if (type === 'DELIVERY' || isDeliverySource || tableId.startsWith('DL')) {
-      return { label: 'Delivery', bgColor: 'bg-red-500', textColor: 'text-white' };
+      const { company } = orderListGetDeliveryMeta(order);
+      const abbr = orderListNormalizeDeliveryAbbr(company);
+      const deliveryLabel = (abbr || 'DLV').toUpperCase();
+      return { label: deliveryLabel, bgColor: 'bg-red-600', textColor: 'text-white' };
     }
-    
+
+    const fulfillment = String(order.fulfillment_mode || '')
+      .toUpperCase()
+      .replace(/[\s_-]+/g, '');
+    // 투고·TG는 OL 가상테이블보다 우선 (투고가 ONLINE 배지로 묻는 현상 방지)
+    if (
+      fulfillment === 'TOGO' ||
+      type === 'TOGO' ||
+      type === 'TAKEOUT' ||
+      type === 'TO GO' ||
+      type === 'TO-GO' ||
+      tableId.startsWith('TG')
+    ) {
+      return { label: 'TOGO', bgColor: 'bg-emerald-600', textColor: 'text-white' };
+    }
+
     // Online channel (TheZone Online, Web, QR) - or table_id starts with 'OL'
-    if (type === 'ONLINE' || type === 'WEB' || type === 'QR' || tableId.startsWith('OL')) {
-      return { label: 'Online', bgColor: 'bg-purple-500', textColor: 'text-white' };
-    }
-    
-    // Togo channel - order_type or table_id starts with 'TG'
-    if (type === 'TOGO' || type === 'TAKEOUT' || type === 'TO GO' || type === 'TO-GO' || tableId.startsWith('TG')) {
-      return { label: 'Togo', bgColor: 'bg-green-600', textColor: 'text-white' };
+    if (
+      fulfillment === 'ONLINE' ||
+      type === 'ONLINE' ||
+      type === 'WEB' ||
+      type === 'QR' ||
+      tableId.startsWith('OL')
+    ) {
+      return { label: 'ONLINE', bgColor: 'bg-violet-600', textColor: 'text-white' };
     }
     
     // Pickup channel
     if (type === 'PICKUP') {
-      return { label: 'Pickup', bgColor: 'bg-blue-500', textColor: 'text-white' };
+      return { label: 'PICKUP', bgColor: 'bg-blue-600', textColor: 'text-white' };
     }
     
     // Eat In (default - POS, Table Order, Dine-in, Forhere)
-    return { label: 'Eat In', bgColor: 'bg-amber-500', textColor: 'text-white' };
+    return { label: 'EAT IN', bgColor: 'bg-blue-600', textColor: 'text-white' };
   };
 
   const orderListNormalizeDeliveryAbbr = (raw: any) => {
@@ -3017,8 +3041,7 @@ const handleVoidPinClear = useCallback(() => {
 
   const loadQsrPickupListOrders = useCallback(async () => {
     try {
-      const today = getLocalDateString();
-      const res = await fetch(`${API_URL}/orders?type=PICKUP,TOGO,ONLINE,DELIVERY&date=${today}&limit=200`);
+      const res = await fetch(`${API_URL}/orders?pickup_pending=1&session_scope=1`);
       const data = await res.json();
       const raw: any[] = Array.isArray(data) ? data : Array.isArray(data?.orders) ? data.orders : Array.isArray(data?.data) ? data.data : [];
       const filtered = raw.filter((o: any) => shouldShowInPickupList(o));
@@ -3046,10 +3069,38 @@ const handleVoidPinClear = useCallback(() => {
     }
   }, [API_URL]);
 
+  useEffect(() => {
+    const onTakeoutDayClosed = () => {
+      setOrderListOrders([]);
+      setOrderListSelectedOrder(null);
+      setOrderListSelectedItems([]);
+      setOrderListVoidLines([]);
+      setQsrPickupOnlineOrders([]);
+      setQsrPickupTogoOrders([]);
+      setQsrPickupDeliveryOrders([]);
+      setQsrPickupCompleteOrders([]);
+      void loadQsrPickupListOrders();
+    };
+    const onTakeoutDayOpened = () => {
+      void loadQsrPickupListOrders();
+    };
+    window.addEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+    window.addEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    return () => {
+      window.removeEventListener('posTakeoutDayClosed', onTakeoutDayClosed);
+      window.removeEventListener('posTakeoutDayOpened', onTakeoutDayOpened);
+    };
+  }, [loadQsrPickupListOrders]);
+
   const payingExistingOrderRef = useRef(false);
+  /** Pickup List에서 Pay vs Pay&Pick 구분 — 결제 완료 시 Pay&Pick이면 PICKED_UP 처리 */
+  const qsrPickupPayIntentRef = useRef<{ orderId: number; pickAfterPay: boolean } | null>(null);
+  /** 결제 모달이 완료 플로우(영수증 모달)로 넘어갔으면 true — 취소 시 intent 유지 방지용 */
+  const paymentFlowReachedCompleteRef = useRef(false);
 
   const openPaymentModalForOrderId = async (orderId: number, afterOpen?: () => void) => {
     try {
+      paymentFlowReachedCompleteRef.current = false;
       payingExistingOrderRef.current = true;
       const res = await fetch(`${API_URL}/orders/${encodeURIComponent(orderId)}`);
       if (!res.ok) throw new Error('Failed to load order');
@@ -3931,6 +3982,9 @@ const handleVoidPinClear = useCallback(() => {
         setIsDayClosed(false);
         setShowOpeningModal(false);
         resetOpeningCashCounts();
+        try {
+          window.dispatchEvent(new CustomEvent('posTakeoutDayOpened', { detail: {} }));
+        } catch { /* ignore */ }
       } else {
         alert(result.error || 'Opening failed');
       }
@@ -4880,6 +4934,88 @@ const handleVoidPinClear = useCallback(() => {
           });
         } catch (e) { 
           console.warn('Order status update failed:', e); 
+        }
+      }
+
+      // 5b. QSR Pickup List — Pay & Pickup: 결제 완료 후 픽업 완료 처리 → 목록에서 제외
+      const pickupIntent = qsrPickupPayIntentRef.current;
+      if (pickupIntent && pickupIntent.orderId === orderId) {
+        qsrPickupPayIntentRef.current = null;
+        if (pickupIntent.pickAfterPay && !paymentCompleteData?.isPartialPayment) {
+          try {
+            await fetch(`${API_URL}/orders/${orderId}/status`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'PICKED_UP' }),
+            });
+          } catch (e) {
+            console.warn('[QSR] Pay & Pickup — PICKED_UP failed:', e);
+          }
+          try {
+            const ordRes = await fetch(`${API_URL}/orders/${orderId}`);
+            if (ordRes.ok) {
+              const ordJson = await ordRes.json();
+              const row = ordJson.order || ordJson;
+              const _oType = (row.order_type || '').toUpperCase();
+              const _oTableId = (row.table_id || '').toString().toUpperCase();
+              const _firebaseId = row.firebase_order_id || row.firebase_id;
+              const _oFul = String(row.fulfillment_mode || '').toLowerCase();
+              const isDeliveryOrderLocal =
+                _oType === 'DELIVERY' ||
+                _oType === 'UBEREATS' ||
+                _oType === 'UBER' ||
+                _oType === 'DOORDASH' ||
+                _oType === 'SKIP' ||
+                _oType === 'SKIPTHEDISHES' ||
+                _oType === 'FANTUAN' ||
+                _oTableId.startsWith('DL') ||
+                _oFul === 'delivery';
+              const isTogoLike =
+                _oType === 'TOGO' ||
+                _oType === 'TAKEOUT' ||
+                _oFul === 'togo' ||
+                _oTableId.startsWith('TG');
+              const isOnlineOrder =
+                !isDeliveryOrderLocal &&
+                !isTogoLike &&
+                (_oType === 'ONLINE' ||
+                  _oType === 'WEB' ||
+                  _oType === 'QR' ||
+                  _oTableId.startsWith('OL') ||
+                  _oFul === 'online');
+              if (isOnlineOrder && _firebaseId) {
+                try {
+                  await fetch(`${API_URL}/online-orders/order/${_firebaseId}/pickup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                  });
+                } catch (e) {
+                  console.error('[QSR Pay&Pickup] Firebase pickup failed:', e);
+                }
+              }
+              if (isDeliveryOrderLocal && _oTableId.startsWith('DL')) {
+                const deliveryMetaId = _oTableId.substring(2);
+                if (deliveryMetaId) {
+                  try {
+                    await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(deliveryMetaId)}/status`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ status: 'PICKED_UP' }),
+                    });
+                  } catch (e) {
+                    console.error('[QSR Pay&Pickup] Delivery meta pickup failed:', e);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[QSR Pay&Pickup] post-status order fetch failed:', e);
+          }
+          try {
+            await fetchOrderList(orderListDate, orderListOpenMode);
+          } catch {}
+          void loadQsrPickupListOrders();
+          setShowQsrOrderDetailModal(false);
         }
       }
       
@@ -12942,6 +13078,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         paymentModalProps={{
           isOpen: showPaymentModal,
           onClose: () => {
+            if (!paymentFlowReachedCompleteRef.current) {
+              qsrPickupPayIntentRef.current = null;
+            }
+            paymentFlowReachedCompleteRef.current = false;
             setShowPaymentModal(false);
             setAdhocSplitCount(0);
             try { setPrefillUseTotalOnceNonce(0); } catch {}
@@ -13008,6 +13148,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           onConfirm: handleAddPayment,
           onComplete: handleCompletePayment,
           onPaymentComplete: (data: { change: number; total: number; tip: number; payments: Array<{ method: string; amount: number }>; hasCashPayment: boolean; discount?: { percent: number; amount: number; originalSubtotal: number; discountedSubtotal: number; taxLines: Array<{ name: string; amount: number }>; taxesTotal: number } }) => {
+            paymentFlowReachedCompleteRef.current = true;
             const currentGuest = (typeof guestPaymentMode === 'number') ? guestPaymentMode : undefined;
             const hasSplitBill =
               ((guestIds || []).length > 1) ||
@@ -16252,7 +16393,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 <button
                   type="button"
                   onClick={() => { setShowOrderListModal(false); setShowOrderListCalendar(false); setOrderListSelectedOrder(null); setOrderListSelectedItems([]); setOrderListVoidLines([]); setOrderListOpenMode('history'); }}
-                  className={`absolute right-3 top-1/2 z-[99999] flex h-12 w-12 -translate-y-1/2 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                  className={`absolute right-3 top-1/2 z-[99999] flex h-12 w-12 -translate-y-1/2 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT}`}
                   style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
                   aria-label="Close"
                   title="Close"
@@ -16340,7 +16481,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 {/* Left Panel - Order List (55%) */}
                 <div className="w-full md:w-[55%] h-1/2 md:h-full bg-white rounded-xl shadow-lg border-2 border-gray-300 flex flex-col" style={{ overflow: 'hidden' }}>
                   <div className="bg-slate-700 px-2 py-2.5 text-sm font-bold text-white flex items-center gap-1.5 flex-shrink-0">
-                    <span className="w-16 text-center">Channel</span>
+                    <span className="w-[76px] text-center flex-shrink-0">Channel</span>
                     <span className="w-28">ID / Order#</span>
                     <span className="w-20 text-center">Time</span>
                     <span className="flex-1 ml-2">Table/Customer</span>
@@ -16357,11 +16498,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const _t = (order.order_type || '').toUpperCase();
                         const _f = String(order.fulfillment_mode || '').toLowerCase();
                         const _s = String(order.status || '').toUpperCase();
-                        const isEatIn = _t === 'FORHERE' || _t === 'FOR_HERE' || _t === 'POS' || _t === 'DINE_IN' || _t === 'DINE-IN';
-                        if (isEatIn) return false;
-                        const isTogoOrder = _t === 'TOGO' || ((_f === 'togo') && _t !== 'PICKUP');
-                        if (isTogoOrder) return false;
-                        if (_s === 'PICKED_UP') return false;
+          const isEatIn = _t === 'FORHERE' || _t === 'FOR_HERE' || _t === 'POS' || _t === 'DINE_IN' || _t === 'DINE-IN';
+          if (isEatIn) return false;
+          if (_s === 'PICKED_UP') return false;
                         if (_s === 'VOIDED' || _s === 'VOID' || _s === 'REFUNDED') return false;
                         const isDeliveryOrder = _t === 'DELIVERY' || _f === 'delivery' || _t === 'UBEREATS' || _t === 'UBER' || _t === 'DOORDASH' || _t === 'SKIP' || _t === 'SKIPTHEDISHES' || _t === 'FANTUAN';
                         const isOnlineOrder = _t === 'ONLINE' || _t === 'WEB' || _t === 'QR' || (order.table_id || '').toString().toUpperCase().startsWith('OL');
@@ -16420,7 +16559,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const olIsPickedUp = olStatus === 'PICKED_UP';
                         const olIsSelected = orderListSelectedOrder?.id === order.id;
                         const olBg = olIsSelected ? '#BFDBFE' : olIsPickedUp ? '#FFFFFF' : olIsPaid ? 'rgba(229,236,240,0.1)' : 'rgba(219,229,239,0.15)';
-                        const olIsLabelTarget = !olIsPickedUp && (badge.label === 'Online' || badge.label === 'Delivery' || badge.label === 'Togo' || badge.label === 'Pickup');
+                        const deliveryStatusLabels = new Set(['UBER', 'DDASH', 'SKIP', 'FTUAN', 'DLV', 'DELIVERY']);
+                        const olIsLabelTarget = !olIsPickedUp && (
+                          badge.label === 'ONLINE' || badge.label === 'TOGO' || badge.label === 'PICKUP' ||
+                          deliveryStatusLabels.has(badge.label)
+                        );
                         const olLabel = olIsLabelTarget ? (!olIsPaid ? 'Unpaid' : 'Ready') : null;
                         return (
                           <React.Fragment key={order.id}>
@@ -16429,7 +16572,13 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             className="flex items-center gap-1.5 px-2 py-3 text-sm cursor-pointer hover:brightness-95"
                             style={{ backgroundColor: olBg }}
                           >
-                            <span className={`w-16 px-1.5 py-1 rounded text-center text-xs font-bold ${badge.bgColor} ${badge.textColor}`}>{badge.label}</span>
+                            <span className="w-[76px] flex shrink-0 justify-center px-0.5">
+                              <span
+                                className={`inline-flex min-h-[26px] min-w-[56px] max-w-[76px] items-center justify-center rounded-[5px] px-2 py-1 text-center text-[10px] font-bold uppercase leading-tight tracking-wide text-white shadow-sm ${badge.bgColor} ${badge.textColor}`}
+                              >
+                                {badge.label}
+                              </span>
+                            </span>
                             <span className="w-28 leading-tight truncate" title={order.order_number || ''}>
                               <span className="font-bold text-gray-700">{displayIdText}</span>
                             </span>
@@ -16459,7 +16608,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   ) : (
                     <>
                       {/* Action Buttons */}
-                      <div className="px-4 py-3 bg-slate-700 flex gap-3 flex-shrink-0">
+                      <div className="px-4 py-3 bg-slate-700 flex gap-1.5 flex-shrink-0">
                         {orderListOpenMode === 'pickup' ? (
                           (() => {
                             const _pkStatus = String(orderListSelectedOrder.status || '').toUpperCase();
@@ -16469,9 +16618,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             const _pkTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
                             const _pkIsDelivery = _pkType === 'DELIVERY' || _pkFulfillment === 'delivery' || _pkType === 'UBEREATS' || _pkType === 'UBER' || _pkType === 'DOORDASH' || _pkType === 'SKIP' || _pkType === 'SKIPTHEDISHES' || _pkType === 'FANTUAN' || _pkTableId.startsWith('DL');
                             const _pkIsPaid = _pkStatus === 'PAID' || _pkStatus === 'COMPLETED' || _pkStatus === 'CLOSED' || _pkPayStatus === 'PAID' || _pkPayStatus === 'COMPLETED' || orderListSelectedOrder.paid === true || _pkIsDelivery;
+                            const _pkShowPayAndPickup = !_pkIsPaid && !_pkIsDelivery;
+                            const _pkFlexBill = _pkShowPayAndPickup ? 0.9 : 1;
+                            const _pkFlexReprint = _pkShowPayAndPickup ? 0.9 : 1;
                             return <>
-                              <button onClick={handleOrderListPrintBill} style={{ flex: 1 }} className="py-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-sm font-bold">Print Bill</button>
-                              <button onClick={handleOrderListPrintKitchen} style={{ flex: 1 }} className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold">Reprint</button>
+                              <button
+                                onClick={handleOrderListPrintBill}
+                                style={{ flex: _pkFlexBill }}
+                                className={
+                                  _pkShowPayAndPickup
+                                    ? `min-w-0 py-4 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`
+                                    : `min-w-0 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`
+                                }
+                              >Print Bill</button>
+                              <button onClick={handleOrderListPrintKitchen} style={{ flex: _pkFlexReprint }} className={`min-w-0 py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}>Reprint</button>
                               {_pkIsPaid ? (
                                 <button
                                   onClick={async () => {
@@ -16481,8 +16641,30 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                       const _oType = (orderListSelectedOrder.order_type || '').toUpperCase();
                                       const _oTableId = (orderListSelectedOrder.table_id || '').toString().toUpperCase();
                                       const _firebaseId = orderListSelectedOrder.firebase_id;
-                                      const isOnlineOrder = _oType === 'ONLINE' || _oType === 'WEB' || _oType === 'QR' || _oTableId.startsWith('OL') || !!_firebaseId;
-                                      const isDeliveryOrderLocal = _oType === 'DELIVERY' || _oType === 'UBEREATS' || _oType === 'UBER' || _oType === 'DOORDASH' || _oType === 'SKIP' || _oType === 'SKIPTHEDISHES' || _oType === 'FANTUAN' || _oTableId.startsWith('DL');
+                                      const _oFul = String(orderListSelectedOrder.fulfillment_mode || '').toLowerCase();
+                                      const isDeliveryOrderLocal =
+                                        _oType === 'DELIVERY' ||
+                                        _oType === 'UBEREATS' ||
+                                        _oType === 'UBER' ||
+                                        _oType === 'DOORDASH' ||
+                                        _oType === 'SKIP' ||
+                                        _oType === 'SKIPTHEDISHES' ||
+                                        _oType === 'FANTUAN' ||
+                                        _oTableId.startsWith('DL') ||
+                                        _oFul === 'delivery';
+                                      const isTogoLike =
+                                        _oType === 'TOGO' ||
+                                        _oType === 'TAKEOUT' ||
+                                        _oFul === 'togo' ||
+                                        _oTableId.startsWith('TG');
+                                      const isOnlineOrder =
+                                        !isDeliveryOrderLocal &&
+                                        !isTogoLike &&
+                                        (_oType === 'ONLINE' ||
+                                          _oType === 'WEB' ||
+                                          _oType === 'QR' ||
+                                          _oTableId.startsWith('OL') ||
+                                          _oFul === 'online');
                                       await fetch(`${API_URL}/orders/${orderId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'PICKED_UP' }) });
                                       if (isOnlineOrder && _firebaseId) {
                                         try { await fetch(`${API_URL}/online-orders/order/${_firebaseId}/pickup`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); } catch (e) { console.error('[Pickup] Firebase pickup failed:', e); }
@@ -16500,18 +16682,42 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                     } catch (e) { console.error('[Pickup Complete] Error:', e); }
                                   }}
                                   style={{ flex: 1 }}
-                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                  className={`min-w-0 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                                 >Pickup</button>
-                              ) : (
+                              ) : _pkIsDelivery ? (
                                 <button
                                   onClick={async () => {
                                     const orderId = orderListSelectedOrder.id;
+                                    qsrPickupPayIntentRef.current = { orderId, pickAfterPay: false };
                                     setShowOrderListModal(false);
                                     await openPaymentModalForOrderId(orderId, () => {});
                                   }}
                                   style={{ flex: 1 }}
-                                  className="py-4 bg-green-600 hover:bg-green-700 active:bg-green-800 text-white rounded-lg text-sm font-bold"
+                                  className={`min-w-0 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                                 >Pay</button>
+                              ) : (
+                                <>
+                                  <button
+                                    onClick={async () => {
+                                      const orderId = orderListSelectedOrder.id;
+                                      qsrPickupPayIntentRef.current = { orderId, pickAfterPay: false };
+                                      setShowOrderListModal(false);
+                                      await openPaymentModalForOrderId(orderId, () => {});
+                                    }}
+                                    style={{ flex: 0.9 }}
+                                    className={`min-w-0 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                                  >Pay</button>
+                                  <button
+                                    onClick={async () => {
+                                      const orderId = orderListSelectedOrder.id;
+                                      qsrPickupPayIntentRef.current = { orderId, pickAfterPay: true };
+                                      setShowOrderListModal(false);
+                                      await openPaymentModalForOrderId(orderId, () => {});
+                                    }}
+                                    style={{ flex: 1.3 }}
+                                    className={`min-w-0 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                                  >Pay & Pickup</button>
+                                </>
                               )}
                             </>;
                           })()
@@ -16532,7 +16738,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                                   }}
                                   disabled={isPaid}
                                   style={{ flex: 1 }}
-                                  className={`py-4 rounded-lg text-sm font-bold ${isPaid ? 'bg-emerald-200 text-emerald-800 cursor-not-allowed opacity-80' : 'bg-green-600 hover:bg-green-700 active:bg-green-800 text-white'}`}
+                                  className={`py-4 rounded-lg text-sm font-bold touch-manipulation ${isPaid ? 'bg-emerald-200 text-emerald-800 cursor-not-allowed opacity-80' : `bg-green-600 hover:bg-green-700 text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}`}
                                 >{isPaid ? 'PAID' : 'Pay'}</button>
                               );
                             })()}
@@ -16540,18 +16746,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               const isPaid = isOrderPaidForOrderList(orderListSelectedOrder);
                               if (!isPaid) return null;
                               return (
-                                <button onClick={async () => { await openRefundForOrderList(orderListSelectedOrder); }} style={{ flex: 1 }} className="py-4 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-lg text-sm font-bold">Refund</button>
+                                <button onClick={async () => { await openRefundForOrderList(orderListSelectedOrder); }} style={{ flex: 1 }} className={`py-4 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}>Refund</button>
                               );
                             })()}
                             {(() => {
                               const orderPaid = isOrderPaidForOrderList(orderListSelectedOrder);
                               return (
                                 <button onClick={orderPaid ? handleQsrPrintBill : handleOrderListPrintBill} style={{ flex: 1 }}
-                                  className={`py-4 rounded-lg text-sm font-bold ${orderPaid ? 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800'} text-white`}
+                                  className={`py-4 rounded-lg text-sm font-bold text-white touch-manipulation ${orderPaid ? `bg-emerald-600 hover:bg-emerald-700 ${NEO_COLOR_BTN_PRESS_NO_SHIFT}` : `bg-blue-600 hover:bg-blue-700 ${NEO_COLOR_BTN_PRESS_NO_SHIFT}`}`}
                                 >{orderPaid ? 'Print Receipt' : 'Print Bill'}</button>
                               );
                             })()}
-                            <button onClick={handleOrderListPrintKitchen} style={{ flex: 1 }} className="py-4 bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white rounded-lg text-sm font-bold">Reprint</button>
+                            <button onClick={handleOrderListPrintKitchen} style={{ flex: 1 }} className={`py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-bold ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}>Reprint</button>
                           </>
                         )}
                       </div>
@@ -16568,7 +16774,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           let channelName = badge.label;
                           let channelOrderNum = '';
 
-                          if (badge.label === 'Online' || badge.label === 'Delivery') {
+                          if (badge.label === 'ONLINE' || badge.label === 'DELIVERY' || ['UBER', 'DDASH', 'SKIP', 'FTUAN', 'DLV'].includes(badge.label)) {
                             if (dCompanyStr === 'UBEREATS' || dCompanyStr === 'UBER' || oType === 'UBEREATS' || oType === 'UBER') {
                               channelName = 'UberEATS';
                             } else if (dCompanyStr === 'DOORDASH' || dCompanyStr === 'DOORASH' || oType === 'DOORDASH') {
@@ -16599,7 +16805,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             if (!channelOrderNum && channelName === 'Online' && orderListSelectedOrder.customer_name) {
                               channelOrderNum = orderListSelectedOrder.customer_name;
                             }
-                          } else if (badge.label === 'Togo' || badge.label === 'Pickup') {
+                          } else if (badge.label === 'TOGO' || badge.label === 'PICKUP') {
                             channelName = 'TOGO';
                             const rawPhone = String(orderListSelectedOrder.customer_phone || '').replace(/\D/g, '');
                             if (rawPhone.length >= 4) {
@@ -16607,7 +16813,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             } else if (orderListSelectedOrder.customer_name) {
                               channelOrderNum = String(orderListSelectedOrder.customer_name).slice(0, 10);
                             }
-                          } else if (badge.label === 'Eat In') {
+                          } else if (badge.label === 'EAT IN') {
                             channelName = 'Eat In';
                           }
 
@@ -17964,7 +18170,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 onClick={() => setShowPrepTimeModal(false)}
                 aria-label="Close"
                 title="Close"
-                className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 transition-all hover:brightness-[1.03] ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+                className={`flex h-12 w-12 shrink-0 touch-manipulation items-center justify-center rounded-xl border-[3px] border-red-500 hover:brightness-[1.03] ${NEO_CLOSE_X_ON_SLATE700_PRESS_INSET_NO_SHIFT}`}
                 style={{ ...MODAL_CLOSE_X_ON_SLATE700_RAISED_STYLE }}
               >
                 <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -18377,9 +18583,20 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         togoOrders={qsrPickupTogoOrders}
         deliveryOrders={qsrPickupDeliveryOrders}
         initialOrderType="togo"
+        splitPayAndPickupActions
         onPayment={async (order) => {
-          const orderId = Number(order.order_id ?? order.id);
+          const rawId =
+            (order as any).order_id ??
+            order.id ??
+            (order as any).localOrderId ??
+            (order as any).fullOrder?.localOrderId ??
+            (order as any).fullOrder?.order_id;
+          const orderId = Number(rawId);
           if (!Number.isFinite(orderId) || orderId <= 0) return;
+          qsrPickupPayIntentRef.current = {
+            orderId,
+            pickAfterPay: !!(order as any).__completePickupAfterPay,
+          };
           setShowQsrOrderDetailModal(false);
           setQsrOrderType('pickup');
           await openPaymentModalForOrderId(orderId, () => {
