@@ -593,7 +593,8 @@ db.serialize(() => {
     kitchen_note TEXT,
     tax_rate REAL DEFAULT 0,
     tax_breakdown TEXT,
-    order_mode TEXT
+    order_mode TEXT,
+    service_pattern TEXT
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS order_items (

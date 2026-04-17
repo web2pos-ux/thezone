@@ -15754,11 +15754,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-xl bg-white shadow-2xl" style={{ transform: 'translateY(-70px)' }}>
+            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-xl bg-white shadow-2xl" style={{ transform: 'translateY(-20px)' }}>
               {/* Header */}
               <div className="flex items-center justify-between bg-gradient-to-r from-blue-600 to-blue-700 px-5 py-3.5">
                 <h3 className="text-lg font-bold text-white">Item Discount</h3>
-                <button type="button" onClick={handleCancelItemDiscount} className={`flex min-h-[1.925rem] min-w-[1.925rem] items-center justify-center rounded-xl px-[0.55rem] py-[0.275rem] text-2xl font-bold leading-none text-white hover:text-gray-200 hover:brightness-[1.05] touch-manipulation ${QSR_VOID_PAD_PRESS}`}>&times;</button>
+                <button
+                  type="button"
+                  onClick={handleCancelItemDiscount}
+                  className={`flex min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded-xl border-0 text-3xl font-bold leading-none text-gray-600 hover:text-gray-700 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                  style={{ ...PAY_NEO.raised, background: '#f1f5f9' }}
+                >
+                  &times;
+                </button>
               </div>
               
               {/* Item Info */}

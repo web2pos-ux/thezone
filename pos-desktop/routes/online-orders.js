@@ -8,6 +8,7 @@ const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
+const { resolveServicePattern } = require('../utils/orderServicePattern');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -250,8 +251,8 @@ function startOrderListener(restaurantId) {
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
 
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -269,6 +270,7 @@ function startOrderListener(restaurantId) {
               rf.readyTime || null,
               rf.pickupMinutes,
               'online',
+              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
             ]
           );
           localOrder = { id: result.lastID };
@@ -723,8 +725,8 @@ router.get('/:restaurantId', async (req, res) => {
 
         try {
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -737,6 +739,7 @@ router.get('/:restaurantId', async (req, res) => {
               rf.readyTime || null,
               rf.pickupMinutes,
               'online',
+              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
             ]
           );
           localOrder = { id: result.lastID, order_number: null };

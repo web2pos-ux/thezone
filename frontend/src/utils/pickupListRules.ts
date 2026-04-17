@@ -85,8 +85,19 @@ export function orderPickupComplete(order: any): boolean {
   return normStatus(order) === 'PICKED_UP';
 }
 
-/** Show row in Pickup List (excludes picked up, cancelled, merged). */
+function takeoutServicePatternRaw(order: any): string {
+  const base = order?.fullOrder || order || {};
+  return String(base?.service_pattern ?? order?.service_pattern ?? '').trim().toUpperCase();
+}
+
+/** SQLite orders.service_pattern — Pickup List / 투고 패널은 TAKEOUT만 표시. */
+export function isTakeoutServicePattern(order: any): boolean {
+  return takeoutServicePatternRaw(order) === 'TAKEOUT';
+}
+
+/** Show row in Pickup List (TAKEOUT only; excludes DINEIN, picked up, cancelled, merged). */
 export function shouldShowInPickupList(order: any): boolean {
+  if (!isTakeoutServicePattern(order)) return false;
   const s = String(order?.status ?? '').toUpperCase();
   const fs = normStatus(order);
   if (fs === 'PICKED_UP' || s === 'PICKED_UP') return false;

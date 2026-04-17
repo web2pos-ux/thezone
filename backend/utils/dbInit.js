@@ -507,7 +507,8 @@ async function initDatabase(db) {
       tax_rate REAL DEFAULT 0,
       tax_breakdown TEXT,
       order_mode TEXT,
-      service_charge REAL DEFAULT 0
+      service_charge REAL DEFAULT 0,
+      service_pattern TEXT
     )`);
 
     // orders 테이블 컬럼 마이그레이션 (기존 DB 호환)
@@ -527,6 +528,7 @@ async function initDatabase(db) {
       { col: 'tax_breakdown', sql: "ALTER TABLE orders ADD COLUMN tax_breakdown TEXT" },
       { col: 'order_mode', sql: "ALTER TABLE orders ADD COLUMN order_mode TEXT" },
       { col: 'service_charge', sql: "ALTER TABLE orders ADD COLUMN service_charge REAL DEFAULT 0" },
+      { col: 'service_pattern', sql: "ALTER TABLE orders ADD COLUMN service_pattern TEXT" },
     ];
     for (const m of ordersMigrations) {
       if (!ordersColNames.includes(m.col)) {

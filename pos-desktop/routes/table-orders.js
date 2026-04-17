@@ -347,8 +347,8 @@ module.exports = (db) => {
 
         const posOrderResult = await dbRun(
           `
-          INSERT INTO orders (order_number, order_type, total, status, created_at, table_id, order_source, guest_count, server_name)
-          VALUES (?, 'DINE_IN', ?, 'PENDING', ?, ?, ?, ?, ?)
+          INSERT INTO orders (order_number, order_type, total, status, created_at, table_id, order_source, guest_count, server_name, service_pattern)
+          VALUES (?, 'DINE_IN', ?, 'PENDING', ?, ?, ?, ?, ?, 'DINEIN')
         `,
           [null, total, createdAt, table_id, orderSource, guest_count || 1, server_name || null]
         );

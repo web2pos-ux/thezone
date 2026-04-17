@@ -3252,9 +3252,9 @@ const SalesPage: React.FC = () => {
     try {
       const today = getLocalDateString();
       const [togoRes, deliveryRes, onlineRes, deliveryOrdersRes] = await Promise.all([
-        fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&date=${today}&session_scope=1&limit=200`),
-        fetch(`${API_URL}/orders?type=DELIVERY&limit=200&panel=1&date=${today}&session_scope=1`),
-        fetch(`${API_URL}/orders?type=ONLINE&date=${today}&session_scope=1&limit=200`),
+        fetch(`${API_URL}/orders?type=TOGO,PICKUP,TAKEOUT&date=${today}&session_scope=1&limit=200&service_pattern=TAKEOUT`),
+        fetch(`${API_URL}/orders?type=DELIVERY&limit=200&panel=1&date=${today}&session_scope=1&service_pattern=TAKEOUT`),
+        fetch(`${API_URL}/orders?type=ONLINE&date=${today}&session_scope=1&limit=200&service_pattern=TAKEOUT`),
         fetch(`${API_URL}/orders/delivery-orders`),
       ]);
       
@@ -4879,6 +4879,7 @@ const SalesPage: React.FC = () => {
         readyTimeLabel,
         virtualChannel: 'togo' as VirtualOrderChannel,
         virtualTableId: null as string | null,
+        service_pattern: 'TAKEOUT',
       };
       const usedVirtualIds = new Set<string>();
       Object.values(togoOrderMeta).forEach((meta) => {
@@ -9939,6 +9940,7 @@ const SalesPage: React.FC = () => {
                   readyTimeLabel,
                   virtualChannel: 'togo' as VirtualOrderChannel,
                   virtualTableId: null as string | null,
+                  service_pattern: 'TAKEOUT',
                 };
                 const usedVirtualIds = new Set<string>();
                 Object.values(togoOrderMeta).forEach((meta) => {
@@ -14939,6 +14941,7 @@ const SalesPage: React.FC = () => {
                       deliveryOrderNumber: deliveryOrderNumberTrimmed,
                       readyTimeLabel,
                       prepTime: minutesForOrder,
+                      service_pattern: 'TAKEOUT',
                     };
                     setTogoOrders(prev => [...prev, newOrder]);
                     try {
@@ -15879,6 +15882,7 @@ const SalesPage: React.FC = () => {
             readyTimeLabel,
             virtualChannel: (fm === 'delivery' ? 'delivery' : fm === 'online' ? 'online' : 'togo') as VirtualOrderChannel,
             virtualTableId: null as string | null,
+            service_pattern: 'TAKEOUT',
           };
           const usedVirtualIds = new Set<string>();
           Object.values(togoOrderMeta).forEach((meta) => {

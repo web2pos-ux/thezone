@@ -139,6 +139,7 @@ module.exports = (db) => {
       'fulfillment_mode',
       'ready_time',
       'pickup_minutes',
+      'service_pattern',
     ];
     const values = columns.map((col) => {
       switch (col) {

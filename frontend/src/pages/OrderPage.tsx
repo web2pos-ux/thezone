@@ -13952,11 +13952,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         
         return (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-2xl shadow-2xl" style={{ transform: 'translateY(-70px)', background: '#e0e5ec' }}>
+            <div className="max-h-[95vh] w-[min(600px,96vw)] overflow-hidden rounded-2xl shadow-2xl" style={{ transform: 'translateY(-20px)', background: '#e0e5ec' }}>
               {/* Header */}
               <div className="flex items-center justify-between rounded-t-2xl px-5 py-3.5" style={{ background: '#e0e5ec', boxShadow: 'inset 3px 3px 6px #b8bec7, inset -3px -3px 6px #ffffff' }}>
                 <h3 className="text-lg font-bold text-gray-700">Item Discount</h3>
-                <button type="button" onClick={handleCancelItemDiscount} className={`rounded-xl px-[0.55rem] py-[0.275rem] text-2xl font-bold leading-none text-red-400 hover:text-red-500 hover:brightness-[1.02] touch-manipulation min-h-[1.925rem] min-w-[1.925rem] flex items-center justify-center ${ORDER_VOID_PAD_PRESS}`}>&times;</button>
+                <button
+                  type="button"
+                  onClick={handleCancelItemDiscount}
+                  className={`flex min-h-[2.75rem] min-w-[2.75rem] items-center justify-center rounded-xl border-0 text-3xl font-bold leading-none text-gray-600 hover:text-gray-700 ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                  style={{ ...PAY_NEO.raised }}
+                >
+                  &times;
+                </button>
               </div>
               
               {/* Item Info */}
