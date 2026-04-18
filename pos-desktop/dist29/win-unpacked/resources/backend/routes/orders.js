@@ -4,6 +4,7 @@ const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
 const salesSyncService = require('../services/salesSyncService');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
+const { resolveServicePattern } = require('../utils/orderServicePattern');
 
 /**
  * Orders API Routes
@@ -466,9 +467,10 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				}
 			}
 			const pickupPending = q.pickup_pending === '1';
+			const servicePatternFilter = q.service_pattern ? String(q.service_pattern).trim().toUpperCase() : '';
 			if (pickupPending) {
 				clauses.push(`UPPER(o.status) NOT IN ('PICKED_UP','VOIDED','VOID','REFUNDED')`);
-				clauses.push(`UPPER(o.order_type) NOT IN ('DINE_IN','DINE-IN','POS','FORHERE','FOR_HERE','EAT_IN','EATIN')`);
+				clauses.push(`o.service_pattern = 'TAKEOUT'`);
 				// pickup_pending = Pickup List 전용 — session_scope 쿼리 유무와 관계없이 항상 «현재 오픈 영업일 세션»만 (클로징 후 미오픈이면 빈 목록)
 				const openRow = await dbGet(
 					`SELECT opened_at, date AS business_date, session_id FROM daily_closings WHERE status = 'open' ORDER BY datetime(opened_at) DESC LIMIT 1`
@@ -552,8 +554,12 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				clauses.push('LOWER(o.customer_name) LIKE ?');
 				params.push(`%${customerName.toLowerCase()}%`);
 			}
+			if (!pickupPending && (servicePatternFilter === 'TAKEOUT' || servicePatternFilter === 'DINEIN')) {
+				clauses.push('o.service_pattern = ?');
+				params.push(servicePatternFilter);
+			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, o.service_pattern, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -1370,6 +1376,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const isDelivery = isDeliveryLikeOrder({ orderType, fulfillmentMode, tableId, orderSource });
 			const isPrepaidOnline = !!isPrepaid;
 			const orderTypeToSave = isDelivery ? 'DELIVERY' : (orderType ? String(orderType).toUpperCase() : null);
+			const servicePatternToSave = resolveServicePattern({
+				orderType: orderTypeToSave,
+				fulfillmentMode,
+				tableId,
+			});
 			const statusToSave = (isDelivery || isPrepaidOnline) ? 'PAID' : 'PENDING';
 			const closedAtToSave = (isDelivery || isPrepaidOnline) ? createdAt : null;
 			
@@ -1381,8 +1392,8 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 			const mergedItems = mergeIdenticalItems(itemsWithLineId);
 			
 			const result = await dbRun(
-				`INSERT INTO orders(order_number, order_type, total, subtotal, tax, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode, order_source, online_order_number)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO orders(order_number, order_type, total, subtotal, tax, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, kitchen_note, order_mode, order_source, online_order_number, service_pattern)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					orderNumber || null,
 					orderTypeToSave,
@@ -1404,6 +1415,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 					orderMode || null,
 					orderSource || null,
 					onlineOrderNumber ? String(onlineOrderNumber).trim() : null,
+					servicePatternToSave,
 				]
 			);
 			const orderId = result.lastID;

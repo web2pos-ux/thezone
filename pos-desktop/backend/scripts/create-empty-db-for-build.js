@@ -388,6 +388,20 @@ db.serialize(() => {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS shift_close_order_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shift_closing_id INTEGER,
+    session_id TEXT NOT NULL,
+    shift_number INTEGER NOT NULL,
+    from_server_id TEXT,
+    from_server_name TEXT,
+    to_server_id TEXT NOT NULL,
+    to_server_name TEXT,
+    order_ids_json TEXT,
+    order_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+
   // ====== Admin Settings ======
   
   db.run(`CREATE TABLE IF NOT EXISTS admin_settings (
@@ -593,7 +607,12 @@ db.serialize(() => {
     kitchen_note TEXT,
     tax_rate REAL DEFAULT 0,
     tax_breakdown TEXT,
-    order_mode TEXT
+    order_mode TEXT,
+    service_pattern TEXT,
+    original_server_id TEXT,
+    original_server_name TEXT,
+    shift_transferred_at TEXT,
+    online_tip REAL DEFAULT 0
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS order_items (
@@ -636,6 +655,10 @@ db.serialize(() => {
     guest_number INTEGER,
     status TEXT,
     ref TEXT,
+    server_id TEXT,
+    original_server_id TEXT,
+    original_server_name TEXT,
+    shift_transferred_at TEXT,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
   )`);
   

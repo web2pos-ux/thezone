@@ -7,6 +7,7 @@ import {
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
   NEO_MODAL_BTN_PRESS,
   NEO_PREP_TIME_BTN_PRESS,
+  NEO_PREP_TIME_BTN_PRESS_SNAP,
   NEO_COLOR_BTN_PRESS_NO_SHIFT,
   PAY_NEO,
   PAY_NEO_CANVAS,
@@ -116,6 +117,65 @@ const formatCurrency = (amount: number) => {
 
 const formatMoney = (amt: number) => `$${(amt || 0).toFixed(2)}`;
 
+/** Shift Close: `check-server-unpaid` response `orders` rows (snake_case) */
+interface ShiftUnpaidOrderRow {
+  id?: number | string;
+  order_number?: string | null;
+  order_type?: string | null;
+  table_id?: string | null;
+  table_name?: string | null;
+  fulfillment_mode?: string | null;
+  customer_name?: string | null;
+  channel?: string | null;
+  order_source?: string | null;
+}
+
+/** One-line label: table vs online vs togo vs delivery (aligned with SalesPage-style rules) */
+function formatShiftUnpaidOrderSummary(row: ShiftUnpaidOrderRow): string {
+  const num = String(row.order_number ?? row.id ?? '').trim() || '—';
+  const raw = String(row.order_type || '').toUpperCase().trim();
+  const source = String(row.order_source || '').toUpperCase();
+  const fm = String(row.fulfillment_mode || '').toLowerCase();
+  const ch = String(row.channel || '').toUpperCase();
+  const deliverySources = ['THEZONE', 'UBEREATS', 'DOORDASH', 'SKIPTHEDISHES', 'SKIP', 'FANTUAN', 'GRUBHUB'];
+  const isDelivery =
+    raw === 'DELIVERY' ||
+    deliverySources.includes(source) ||
+    fm === 'delivery';
+  if (isDelivery) return `Delivery · Order #${num}`;
+
+  const isOnline =
+    raw === 'ONLINE' ||
+    raw === 'WEB' ||
+    raw === 'QR' ||
+    ch === 'ONLINE' ||
+    (raw.includes('ONLINE') && !raw.includes('OFFLINE'));
+  if (isOnline) {
+    const cust = String(row.customer_name || '').trim();
+    return cust ? `Online · Order #${num} (${cust})` : `Online · Order #${num}`;
+  }
+
+  const isTogo =
+    ['TOGO', 'PICKUP', 'TAKEOUT', 'TO GO', 'TO-GO', 'TAKE OUT'].includes(raw) ||
+    fm === 'pickup';
+  if (isTogo) return `Togo / Pickup · Order #${num}`;
+
+  const tn = String(row.table_name || '').trim();
+  const tid = String(row.table_id || '').trim();
+  if (tn || tid) {
+    const label = tn || tid;
+    return `Table ${label} · Order #${num}`;
+  }
+
+  const dineInHints = ['DINE_IN', 'DINE-IN', 'TABLE_ORDER', 'POS', 'FOR HERE', 'FORHERE', 'EAT IN', 'EATIN', 'DINEIN'];
+  if (dineInHints.some((h) => raw === h || raw.includes(h))) {
+    return `Dine-in · Order #${num}`;
+  }
+
+  const rest = raw || 'Other';
+  return `${rest} · Order #${num}`;
+}
+
 const centDenominations = [
   { key: 'cent1', label: '1¢', value: 0.01 },
   { key: 'cent5', label: '5¢', value: 0.05 },
@@ -211,7 +271,15 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [isClosing, setIsClosing] = useState(false);
   const [isShiftClosing, setIsShiftClosing] = useState(false);
   const [showShiftCloseCashOk, setShowShiftCloseCashOk] = useState(false);
-  /** Day Close 접근에 사용한 직원 — Shift Close는 본인만 (서버 선택 없음) */
+  /** Shift Close: unpaid count & transfer targets (for PIN employee) */
+  const [shiftUnpaidCount, setShiftUnpaidCount] = useState<number | null>(null);
+  const [shiftUnpaidOrders, setShiftUnpaidOrders] = useState<ShiftUnpaidOrderRow[]>([]);
+  const [shiftTransferTargets, setShiftTransferTargets] = useState<Array<{ id: string; name: string }>>([]);
+  const [shiftTransferServerId, setShiftTransferServerId] = useState('');
+  /** If OK without receiver server — open picker modal instead of alert */
+  const [showShiftTransferPickModal, setShowShiftTransferPickModal] = useState(false);
+  const [shiftClosePreflightLoading, setShiftClosePreflightLoading] = useState(false);
+  /** Employee used for Day Close access — Shift Close applies to this user */
   const [closingAccessEmployeeName, setClosingAccessEmployeeName] = useState<string>('');
   const [closingAccessEmployeeId, setClosingAccessEmployeeId] = useState<string>('');
   const [dayCloseMinLevel, setDayCloseMinLevel] = useState<number>(4);
@@ -293,6 +361,18 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const expectedCash = zReportData?.expected_cash || 0;
   const cashDifference = closingCashTotal - expectedCash;
 
+  /** Day Close / Z-Report 미리보기 전: 직원 PIN으로 들어온 경우 출근 중이어야 함 (Shift Close 후 자동 퇴근 → 재출근 필요) */
+  const ensureClockedInForDayClose = useCallback(async (): Promise<boolean> => {
+    if (!closingAccessEmployeeId) return true;
+    try {
+      const res = await fetch(`${API_URL}/work-schedule/clocked-in`);
+      const rows = res.ok ? await res.json() : [];
+      const list = Array.isArray(rows) ? rows : [];
+      return list.some((r: { employee_id?: string }) => String(r.employee_id) === String(closingAccessEmployeeId));
+    } catch {
+      return false;
+    }
+  }, [closingAccessEmployeeId]);
 
   // Z Report History fetch
   const fetchZReportHistory = useCallback(async () => {
@@ -739,38 +819,60 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   };
 
   const handleShowPreview = async () => {
-    // Always refresh z-report data before showing preview
+    if (closingAccessEmployeeId) {
+      const ok = await ensureClockedInForDayClose();
+      if (!ok) {
+        alert('Clock in is required before Day Close. Please clock in, then try again.');
+        return;
+      }
+    }
     await fetchZReport();
     setViewMode('print-preview');
   };
 
   const handlePrintAndClose = async () => {
+    if (closingAccessEmployeeId) {
+      const ok = await ensureClockedInForDayClose();
+      if (!ok) {
+        alert('Clock in is required before Day Close. Please clock in, then try again.');
+        return;
+      }
+    }
     setIsClosing(true);
     try {
       const response = await fetch(`${API_URL}/daily-closings/closing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ closingCash: closingCashTotal, cashBreakdown: cashCounts, closedBy: '' })
+        body: JSON.stringify({
+          closingCash: closingCashTotal,
+          cashBreakdown: cashCounts,
+          closedBy: closingAccessEmployeeName || '',
+          employeeId: closingAccessEmployeeId || '',
+        })
       });
-      const result = await response.json();
-      if (result.success) {
-        const printed = await printZReport(zReportData, closingCopies);
-        if (!printed) {
-          alert('Day Closing completed, but printing failed. Please reprint Z-Report after checking the Front printer.');
-        }
-        setClosingCopies(1);
-        const today = getLocalDateString();
-        localStorage.setItem('pos_last_closed_date', today);
-        try {
-          window.dispatchEvent(new CustomEvent('posTakeoutDayClosed', { detail: { date: today } }));
-        } catch {
-          /* ignore */
-        }
-        onClosingComplete();
-        onClose();
-      } else {
-        alert(result.error || 'Closing failed');
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.success === false) {
+        alert(
+          result.code === 'CLOCK_IN_REQUIRED'
+            ? result.error || 'Clock in is required before Day Close.'
+            : result.error || 'Closing failed'
+        );
+        return;
       }
+      const printed = await printZReport(zReportData, closingCopies);
+      if (!printed) {
+        alert('Day Closing completed, but printing failed. Please reprint Z-Report after checking the Front printer.');
+      }
+      setClosingCopies(1);
+      const today = getLocalDateString();
+      localStorage.setItem('pos_last_closed_date', today);
+      try {
+        window.dispatchEvent(new CustomEvent('posTakeoutDayClosed', { detail: { date: today } }));
+      } catch {
+        /* ignore */
+      }
+      onClosingComplete();
+      onClose();
     } catch (error: any) {
       console.error('Closing error:', error);
       alert('Closing failed: ' + error.message);
@@ -779,10 +881,73 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     }
   };
 
+  useEffect(() => {
+    if (!showShiftCloseCashOk || !isOpen) return;
+    if (!closingAccessEmployeeId) {
+      setShiftUnpaidCount(0);
+      setShiftUnpaidOrders([]);
+      setShiftTransferTargets([]);
+      setShiftTransferServerId('');
+      setShiftClosePreflightLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setShiftClosePreflightLoading(true);
+    (async () => {
+      try {
+        const [unpaidRes, targetsRes] = await Promise.all([
+          fetch(`${API_URL}/daily-closings/check-server-unpaid`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serverId: closingAccessEmployeeId }),
+          }),
+          fetch(
+            `${API_URL}/daily-closings/shift-transfer-targets?excludeServerId=${encodeURIComponent(closingAccessEmployeeId)}`
+          ),
+        ]);
+        const unpaidJson = unpaidRes.ok ? await unpaidRes.json().catch(() => ({})) : {};
+        const targetsJson = targetsRes.ok ? await targetsRes.json().catch(() => ({})) : {};
+        if (cancelled) return;
+        const rawOrders: ShiftUnpaidOrderRow[] = Array.isArray(unpaidJson.orders)
+          ? unpaidJson.orders
+          : [];
+        const cnt =
+          typeof unpaidJson.count === 'number' ? unpaidJson.count : rawOrders.length;
+        setShiftUnpaidCount(cnt);
+        setShiftUnpaidOrders(rawOrders);
+        setShiftTransferTargets(Array.isArray(targetsJson.servers) ? targetsJson.servers : []);
+        setShiftTransferServerId('');
+      } catch {
+        if (!cancelled) {
+          setShiftUnpaidCount(0);
+          setShiftUnpaidOrders([]);
+          setShiftTransferTargets([]);
+        }
+      } finally {
+        if (!cancelled) setShiftClosePreflightLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showShiftCloseCashOk, closingAccessEmployeeId, isOpen]);
+
+  useEffect(() => {
+    if (!showShiftCloseCashOk) setShowShiftTransferPickModal(false);
+  }, [showShiftCloseCashOk]);
+
   // ========== SHIFT CLOSE ==========
   const handleShiftClose = async () => {
+    if (closingAccessEmployeeId && shiftUnpaidCount !== null && shiftUnpaidCount > 0) {
+      if (!String(shiftTransferServerId || '').trim()) {
+        setShowShiftTransferPickModal(true);
+        return;
+      }
+    }
     setIsShiftClosing(true);
     try {
+      const toName =
+        shiftTransferTargets.find((s) => String(s.id) === String(shiftTransferServerId))?.name || '';
       const response = await fetch(`${API_URL}/daily-closings/shift-close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -791,7 +956,9 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           cashDetails: cashCounts,
           closedBy: closingAccessEmployeeName || '',
           serverId: closingAccessEmployeeId || '',
-          serverPin: accessPin || ''
+          serverPin: accessPin || '',
+          transferToServerId: shiftTransferServerId || '',
+          transferToServerName: toName,
         })
       });
       const result = await response.json();
@@ -955,9 +1122,23 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           setAccessPin('');
           return;
         }
+        const empId = String(emp?.id ?? '').trim();
+        if (empId) {
+          const clockRes = await fetch(`${API_URL}/work-schedule/clocked-in`);
+          const clockJson = clockRes.ok ? await clockRes.json().catch(() => []) : [];
+          const rows = Array.isArray(clockJson) ? clockJson : [];
+          const clockedIn = rows.some((r: { employee_id?: string }) => String(r?.employee_id ?? '') === empId);
+          if (!clockedIn) {
+            setAccessError(
+              'Clock in before Day Closing. After Shift Close you were clocked out — please clock in again.'
+            );
+            setAccessPin('');
+            return;
+          }
+        }
         setAccessEmployeeLabel(`${emp?.name || 'Employee'} (Level ${level})`);
         setClosingAccessEmployeeName(String(emp?.name || '').trim());
-        setClosingAccessEmployeeId(String(emp?.id ?? '').trim());
+        setClosingAccessEmployeeId(empId);
         setAccessGranted(true);
       } catch (e) {
         console.error('Day Close access verify failed:', e);
@@ -1897,7 +2078,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                 <button
                   type="button"
                   onClick={onClose}
-                  className={`w-[120px] touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-semibold text-gray-700 hover:brightness-[1.02] ${CLOSING_PAD_NEO_PRESS}`}
+                  className={`w-[120px] min-h-[calc(44px*1.2)] flex items-center justify-center touch-manipulation rounded-xl border-0 px-3 text-sm font-semibold text-gray-700 hover:brightness-[1.02] ${CLOSING_PAD_NEO_PRESS}`}
                   style={PAY_NEO.key}
                 >
                   Cancel
@@ -1910,7 +2091,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     setShowShiftCloseCashOk(true);
                   }}
                   disabled={isLoading || isShiftClosing}
-                  className={`w-[160px] touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                  className={`w-[160px] min-h-[calc(44px*1.2)] flex items-center justify-center touch-manipulation rounded-xl border-0 px-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
                     isLoading || isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
                   }`}
                   style={
@@ -1925,7 +2106,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   type="button"
                   onClick={handleShowPreview}
                   disabled={isLoading}
-                  className={`flex-1 touch-manipulation rounded-xl border-0 px-3 py-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
+                  className={`flex-1 min-h-[calc(44px*1.2)] flex items-center justify-center touch-manipulation rounded-xl border-0 px-3 text-sm font-bold text-white hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
                     isLoading ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
                   }`}
                   style={isLoading ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 } : { ...OH_ACTION_NEO.red, borderRadius: 12 }}
@@ -1956,11 +2137,11 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     <div className="mb-4 rounded-xl border border-orange-200 bg-orange-50/80 px-4 py-3">
                       <div className="text-xs font-bold text-orange-800 mb-1">Shift Close (this device)</div>
                       <div className="text-sm text-gray-800">
-                        Closing PIN으로 들어온 직원만 적용됩니다:{' '}
+                        Applies only to the employee who signed in with this Closing PIN:{' '}
                         <span className="font-extrabold">{closingAccessEmployeeName || '—'}</span>
                       </div>
                       <div className="text-[11px] text-gray-600 mt-1">
-                        리포트의 서버 팁 합계는 위 이름과 주문의 Server 이름이 일치할 때 집계됩니다.
+                        Server tip totals on the report match when this name matches the Server field on orders.
                       </div>
                     </div>
                     <div className="grid grid-cols-4 gap-2 mb-4">
@@ -2015,6 +2196,76 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         </div>
                       </div>
                     </div>
+
+                    {shiftClosePreflightLoading && (
+                      <div className="mt-4 text-sm font-medium text-gray-600">Checking unpaid orders…</div>
+                    )}
+                    {!shiftClosePreflightLoading &&
+                      closingAccessEmployeeId &&
+                      shiftUnpaidCount !== null &&
+                      shiftUnpaidCount > 0 && (
+                        <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+                          <div className="text-sm font-extrabold text-red-800 mb-1">
+                            You have unpaid orders ({shiftUnpaidCount})
+                          </div>
+                          {shiftUnpaidOrders.length > 0 && (
+                            <ul className="mb-3 space-y-1.5 rounded-lg border border-amber-200 bg-white/90 px-3 py-2.5 list-none">
+                              {shiftUnpaidOrders.map((o, idx) => (
+                                <li
+                                  key={String(o.id ?? o.order_number ?? idx)}
+                                  className="text-sm font-semibold text-gray-900 leading-snug pl-3 border-l-4 border-amber-500"
+                                >
+                                  {formatShiftUnpaidOrderSummary(o)}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="text-sm font-extrabold text-amber-900 mb-1">
+                            Choose who receives these orders
+                          </div>
+                          <p className="text-xs text-amber-800 mb-3">
+                            Required to finish Shift Close. Orders, payments, and tips will move to the server you select.
+                          </p>
+                          <div className="text-xs font-bold text-gray-700 mb-2">Servers available</div>
+                          {shiftTransferTargets.length === 0 ? (
+                            <p className="text-xs text-red-600">
+                              No other active servers. Add staff or have another server clock in.
+                            </p>
+                          ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                              {shiftTransferTargets
+                                .slice()
+                                .sort((a, b) =>
+                                  String(a.name || a.id).localeCompare(String(b.name || b.id), 'en', {
+                                    sensitivity: 'base',
+                                  })
+                                )
+                                .map((s) => {
+                                  const sid = String(s.id);
+                                  const selected = String(shiftTransferServerId) === sid;
+                                  const label = (s.name || '').trim() ? s.name : `Server ${s.id}`;
+                                  return (
+                                    <button
+                                      key={sid}
+                                      type="button"
+                                      disabled={isShiftClosing}
+                                      onClick={() => setShiftTransferServerId(sid)}
+                                      className={[
+                                        'min-h-[76px] rounded-2xl px-3 py-3 text-center font-extrabold text-gray-900 transition-[box-shadow,transform,filter] duration-100 ease-out',
+                                        '[-webkit-tap-highlight-color:transparent] touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed',
+                                        selected
+                                          ? 'shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] bg-[#dce0e8] ring-2 ring-amber-500 scale-[0.99]'
+                                          : 'shadow-[5px_5px_10px_#babecc,-5px_-5px_10px_#ffffff] bg-[#e8ecf2] hover:brightness-[1.02] active:shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.99] active:brightness-[0.96]',
+                                      ].join(' ')}
+                                    >
+                                      <span className="text-sm leading-tight block">{label}</span>
+                                    </button>
+                                  );
+                                })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                   </div>
 
                   <div className="px-5 py-4 border-t bg-gray-50 flex-shrink-0">
@@ -2023,7 +2274,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         type="button"
                         onClick={() => setShowShiftCloseCashOk(false)}
                         disabled={isShiftClosing}
-                        className={`flex-1 touch-manipulation rounded-xl border-0 py-3 font-semibold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${CLOSING_PAD_NEO_PRESS}`}
+                        className={`flex-1 touch-manipulation rounded-xl border-0 py-3 font-semibold text-gray-700 hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${NEO_PREP_TIME_BTN_PRESS_SNAP}`}
                         style={PAY_NEO.key}
                       >
                         Cancel
@@ -2032,6 +2283,15 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         type="button"
                         onClick={async () => {
                           if (isShiftClosing) return;
+                          if (
+                            closingAccessEmployeeId &&
+                            shiftUnpaidCount !== null &&
+                            shiftUnpaidCount > 0 &&
+                            !String(shiftTransferServerId || '').trim()
+                          ) {
+                            setShowShiftTransferPickModal(true);
+                            return;
+                          }
                           setShowShiftCloseCashOk(false);
                           await handleShiftClose();
                         }}
@@ -2048,6 +2308,126 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                         {isShiftClosing ? 'Processing...' : 'OK → Shift Close & Print'}
                       </button>
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {showShiftTransferPickModal && (
+              <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 p-4">
+                <div
+                  className="w-full max-w-[520px] rounded-2xl border-0 p-6 shadow-[8px_8px_20px_#9ca3af,-6px_-6px_18px_#ffffff]"
+                  style={{ ...PAY_NEO.modalShell, background: PAY_NEO_CANVAS }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="shift-transfer-pick-title"
+                >
+                  <h2
+                    id="shift-transfer-pick-title"
+                    className="text-lg font-extrabold text-gray-900 mb-1"
+                  >
+                    Transfer unpaid orders to
+                  </h2>
+                  {shiftUnpaidCount != null && shiftUnpaidCount > 0 && (
+                    <div className="text-sm font-extrabold text-red-800 mb-2">
+                      You have unpaid orders ({shiftUnpaidCount})
+                    </div>
+                  )}
+                  {shiftUnpaidOrders.length > 0 && (
+                    <ul className="mb-4 space-y-1.5 rounded-xl border border-amber-200 bg-white/95 px-3 py-2.5 list-none">
+                      {shiftUnpaidOrders.map((o, idx) => (
+                        <li
+                          key={String(o.id ?? o.order_number ?? idx)}
+                          className="text-sm font-semibold text-gray-900 leading-snug pl-3 border-l-4 border-amber-500"
+                        >
+                          {formatShiftUnpaidOrderSummary(o)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="text-sm text-gray-600 mb-4">
+                    {shiftUnpaidCount != null && shiftUnpaidCount > 0
+                      ? 'Tap a server below to receive the orders above.'
+                      : 'Select a server.'}
+                  </p>
+                  {shiftTransferTargets.length === 0 ? (
+                    <p className="text-sm text-red-600 mb-4">
+                      No other active servers. Add staff or have another server clock in, then try again.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
+                      {shiftTransferTargets
+                        .slice()
+                        .sort((a, b) =>
+                          String(a.name || a.id).localeCompare(String(b.name || b.id), 'en', {
+                            sensitivity: 'base',
+                          })
+                        )
+                        .map((s) => {
+                          const sid = String(s.id);
+                          const selected = String(shiftTransferServerId) === sid;
+                          const label = (s.name || '').trim() ? s.name : `Server ${s.id}`;
+                          return (
+                            <button
+                              key={sid}
+                              type="button"
+                              disabled={isShiftClosing}
+                              onClick={() => setShiftTransferServerId(sid)}
+                              className={[
+                                'min-h-[80px] rounded-2xl px-3 py-3 text-center font-extrabold text-gray-900 transition-[box-shadow,transform,filter] duration-100 ease-out',
+                                '[-webkit-tap-highlight-color:transparent] touch-manipulation disabled:opacity-50',
+                                selected
+                                  ? 'shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] bg-[#dce0e8] ring-2 ring-amber-500 scale-[0.99]'
+                                  : 'shadow-[5px_5px_10px_#babecc,-5px_-5px_10px_#ffffff] bg-[#e8ecf2] hover:brightness-[1.02] active:shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.99] active:brightness-[0.96]',
+                              ].join(' ')}
+                            >
+                              <span className="text-sm leading-tight block">{label}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      disabled={isShiftClosing}
+                      onClick={() => setShowShiftTransferPickModal(false)}
+                      className={`flex-1 rounded-xl border-0 py-3.5 font-semibold text-gray-800 ${NEO_PREP_TIME_BTN_PRESS_SNAP}`}
+                      style={PAY_NEO.key}
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        isShiftClosing ||
+                        !String(shiftTransferServerId || '').trim() ||
+                        shiftTransferTargets.length === 0
+                      }
+                      onClick={async () => {
+                        if (isShiftClosing) return;
+                        if (!String(shiftTransferServerId || '').trim()) return;
+                        setShowShiftTransferPickModal(false);
+                        setShowShiftCloseCashOk(false);
+                        await handleShiftClose();
+                      }}
+                      className={`flex-[1.4] rounded-xl border-0 py-3.5 font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isShiftClosing ||
+                        !String(shiftTransferServerId || '').trim() ||
+                        shiftTransferTargets.length === 0
+                          ? CLOSING_PAD_NEO_PRESS
+                          : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                      }`}
+                      style={
+                        isShiftClosing ||
+                        !String(shiftTransferServerId || '').trim() ||
+                        shiftTransferTargets.length === 0
+                          ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                          : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                      }
+                    >
+                      {isShiftClosing ? 'Processing…' : 'Confirm & Shift Close'}
+                    </button>
                   </div>
                 </div>
               </div>

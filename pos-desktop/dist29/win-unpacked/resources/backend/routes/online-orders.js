@@ -9,6 +9,7 @@ const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 const preorderReprintService = require('../services/preorderReprintService');
+const { resolveServicePattern } = require('../utils/orderServicePattern');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -250,8 +251,8 @@ function startOrderListener(restaurantId) {
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
 
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -268,7 +269,8 @@ function startOrderListener(restaurantId) {
               paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
               rf.readyTime || null,
               rf.pickupMinutes,
-              'online'
+              'online',
+              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
             ]
           );
           localOrder = { id: result.lastID };
@@ -457,8 +459,15 @@ function formatOrderForFrontend(order) {
     null;
 
   const paymentStatus = (order.paymentStatus || 'pending').toLowerCase();
-  const isPaid = paymentStatus === 'paid' || paymentStatus === 'completed' ||
-                 order.status === 'paid' || order.paid === true;
+  const statusLc = String(order.status || '').toLowerCase();
+  const isPaid =
+    paymentStatus === 'paid' ||
+    paymentStatus === 'completed' ||
+    statusLc === 'paid' ||
+    statusLc === 'completed' ||
+    statusLc === 'closed' ||
+    order.paid === true ||
+    order.isPaid === true;
 
   return {
     id: order.id,
@@ -684,9 +693,10 @@ router.get('/:restaurantId', async (req, res) => {
       limit: parseInt(limit) || 50
     });
 
+    // 결제 후 SQLite는 PAID 등 — 투고패널 온라인 카드는 픽업 전까지 유지(READY). 숨김은 픽업·VOID·머지 등만.
     const SQLITE_HIDE = new Set([
-      'MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED',
-      'VOIDED', 'VOID', 'CLOSED', 'PICKED_UP',
+      'MERGED', 'CANCELLED', 'REFUNDED',
+      'VOIDED', 'VOID', 'PICKED_UP',
     ]);
 
     // 각 온라인 주문에 대해 SQLite ID를 조회하거나 생성
@@ -722,8 +732,8 @@ router.get('/:restaurantId', async (req, res) => {
 
         try {
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -735,7 +745,8 @@ router.get('/:restaurantId', async (req, res) => {
               firebaseOrderId,
               rf.readyTime || null,
               rf.pickupMinutes,
-              'online'
+              'online',
+              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
             ]
           );
           localOrder = { id: result.lastID, order_number: null };
@@ -783,6 +794,24 @@ router.get('/:restaurantId', async (req, res) => {
         formatted.posOrderNumber = localOrder.order_number;
         formatted.orderNumber = localOrder.order_number;
         formatted.order_number = localOrder.order_number;
+      }
+      if (localOrder?.id) {
+        try {
+          const sqliteRow = await dbGet(
+            'SELECT status, payment_status FROM orders WHERE id = ?',
+            [localOrder.id]
+          );
+          if (sqliteRow) {
+            const ss = String(sqliteRow.status || '').toUpperCase();
+            const ps = String(sqliteRow.payment_status || '').toLowerCase();
+            if (ss === 'PAID' || ps === 'paid' || ps === 'completed') {
+              formatted.paymentStatus = 'paid';
+              formatted.isPaid = true;
+            }
+          }
+        } catch (e) {
+          console.warn('[Online] GET list SQLite paid merge:', e.message);
+        }
       }
       return formatted;
     }));

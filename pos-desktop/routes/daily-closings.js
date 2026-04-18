@@ -1217,7 +1217,9 @@ module.exports = (db) => {
       if (!serverId) return res.status(400).json({ success: false, error: 'serverId required' });
 
       const unpaidOrders = await dbAll(`
-        SELECT id, order_number, order_type, total, status, table_id, server_id, server_name, created_at
+        SELECT id, order_number, order_type, total, status,
+          table_id, table_name, fulfillment_mode, customer_name,
+          channel, order_source, server_id, server_name, created_at
         FROM orders
         WHERE COALESCE(server_id, '') = ?
           AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')

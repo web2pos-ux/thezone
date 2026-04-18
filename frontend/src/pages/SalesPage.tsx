@@ -8463,7 +8463,22 @@ const SalesPage: React.FC = () => {
         break;
       case 'Closing':
         console.log('Closing button clicked');
-        setShowClosingModal(true);
+        void (async () => {
+          try {
+            const list = await clockInOutApi.getClockedInEmployees();
+            if (!Array.isArray(list) || list.length === 0) {
+              alert(
+                'Day Closing requires an active Clock In.\n\nShift Close ends your shift (Clock Out). Please Clock In again before Day Closing.'
+              );
+              setShowClockInModal(true);
+              return;
+            }
+            setShowClosingModal(true);
+          } catch (e) {
+            console.error('Clock-in check failed:', e);
+            alert('Could not verify clock-in status. Please try again.');
+          }
+        })();
         break;
       case 'Opening':
         console.log('Opening button clicked');

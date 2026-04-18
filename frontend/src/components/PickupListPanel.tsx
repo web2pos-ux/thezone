@@ -145,6 +145,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
         readyTimeLabel: o.ready_time || o.readyTimeLabel || '',
         number: o.order_number || o.number || '',
         channel: classifyPickupChannel(o),
+        online_tip: o.online_tip,
       }));
 
       const sorted = sortOrders(mapped);
@@ -232,6 +233,7 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
             tax: data.order?.tax ?? 0,
             total: data.order?.total ?? order.total ?? 0,
             adjustments_json: data.order?.adjustments_json ?? order.adjustments_json ?? null,
+            online_tip: (data.order as any)?.online_tip ?? (order as any)?.online_tip ?? 0,
           };
           setSelectedOrder(prev => prev && String(prev.id) === String(order.id)
             ? { ...prev, fullOrder, isLoading: false }
@@ -598,6 +600,18 @@ const PickupListPanel: React.FC<PickupListPanelProps> = ({
                   <span>${Number(info.amount || 0).toFixed(2)}</span>
                 </div>
               ))}
+              {(() => {
+                const tipAmt = Number(
+                  (order.fullOrder as any)?.online_tip ?? (order as any).online_tip ?? 0
+                );
+                if (!Number.isFinite(tipAmt) || tipAmt <= 0.005) return null;
+                return (
+                  <div className="flex justify-between text-sm font-semibold text-emerald-800">
+                    <span>Tip (online)</span>
+                    <span>${tipAmt.toFixed(2)}</span>
+                  </div>
+                );
+              })()}
               <div className="flex justify-between text-base font-bold border-t pt-1">
                 <span>Total</span>
                 <span className="text-blue-600">${finalTotal.toFixed(2)}</span>

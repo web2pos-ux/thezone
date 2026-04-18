@@ -109,6 +109,23 @@ async function syncSqliteReadyFieldsFromFirebase(localOrderId, order, createdAtS
   }
 }
 
+function parseFirebaseOrderTip(order) {
+  const raw = order?.tip ?? order?.tipAmount ?? order?.tip_amount ?? order?.gratuity ?? 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+async function syncSqliteOnlineTipFromFirebase(localOrderId, order) {
+  if (localOrderId == null || !Number.isFinite(Number(localOrderId))) return;
+  const tip = parseFirebaseOrderTip(order);
+  try {
+    await dbRun('UPDATE orders SET online_tip = ? WHERE id = ?', [tip, localOrderId]);
+  } catch (e) {
+    console.warn('[Online] syncSqliteOnlineTipFromFirebase:', e.message);
+  }
+}
+
 // orders 테이블 마이그레이션 (컬럼 추가)
 (async () => {
   const migrations = [
@@ -118,6 +135,7 @@ async function syncSqliteReadyFieldsFromFirebase(localOrderId, order, createdAtS
     { col: 'payment_transaction_id', sql: 'ALTER TABLE orders ADD COLUMN payment_transaction_id TEXT' },
     { col: 'card_last4', sql: 'ALTER TABLE orders ADD COLUMN card_last4 TEXT' },
     { col: 'paid_at', sql: 'ALTER TABLE orders ADD COLUMN paid_at TEXT' },
+    { col: 'online_tip', sql: 'ALTER TABLE orders ADD COLUMN online_tip REAL DEFAULT 0' },
   ];
   for (const m of migrations) {
     try {
@@ -246,13 +264,14 @@ function startOrderListener(restaurantId) {
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
         const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
         const rf = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStr);
+        const onlineTipVal = parseFirebaseOrderTip(order);
 
         if (!localOrder) {
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
 
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -271,6 +290,7 @@ function startOrderListener(restaurantId) {
               rf.pickupMinutes,
               'online',
               resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+              onlineTipVal,
             ]
           );
           localOrder = { id: result.lastID };
@@ -291,6 +311,7 @@ function startOrderListener(restaurantId) {
         }
         if (localOrder?.id) {
           await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStr);
+          await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -329,6 +350,7 @@ function startOrderListener(restaurantId) {
           const createdAtStr =
             typeof createdAt === 'string' ? createdAt : createdAt?.toISOString?.() ? createdAt.toISOString() : '';
           await syncSqliteReadyFieldsFromFirebase(lo.id, order, createdAtStr || null);
+          await syncSqliteOnlineTipFromFirebase(lo.id, order);
         }
       } catch (e) {
         console.warn('[Online] onOrderUpdate SQLite sync:', e.message);
@@ -498,7 +520,8 @@ function formatOrderForFrontend(order) {
     promotionType: order.promotionType || null,
     promotionPercent: order.promotionPercent || order.discountPercent || null,
     taxBreakdown: order.taxBreakdown || null,
-    deliveryFee: order.deliveryFee || 0
+    deliveryFee: order.deliveryFee || 0,
+    tip: parseFirebaseOrderTip(order),
   };
 }
 
@@ -722,11 +745,12 @@ router.get('/:restaurantId', async (req, res) => {
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
         const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
         const rf = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStr);
+        const onlineTipList = parseFirebaseOrderTip(order);
 
         try {
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode, service_pattern)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               null,
               'ONLINE',
@@ -740,6 +764,7 @@ router.get('/:restaurantId', async (req, res) => {
               rf.pickupMinutes,
               'online',
               resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+              onlineTipList,
             ]
           );
           localOrder = { id: result.lastID, order_number: null };
@@ -776,6 +801,7 @@ router.get('/:restaurantId', async (req, res) => {
                 ? createdAtForSync.toISOString()
                 : '';
           await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStrForSync || null);
+          await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
         } catch (e) {
           console.warn('[Online] GET list SQLite ready sync:', e.message);
         }
@@ -787,6 +813,29 @@ router.get('/:restaurantId', async (req, res) => {
         formatted.posOrderNumber = localOrder.order_number;
         formatted.orderNumber = localOrder.order_number;
         formatted.order_number = localOrder.order_number;
+      }
+      if (localOrder?.id) {
+        try {
+          const sqliteRow = await dbGet(
+            'SELECT status, payment_status, online_tip FROM orders WHERE id = ?',
+            [localOrder.id]
+          );
+          if (sqliteRow) {
+            const ss = String(sqliteRow.status || '').toUpperCase();
+            const ps = String(sqliteRow.payment_status || '').toLowerCase();
+            if (ss === 'PAID' || ps === 'paid' || ps === 'completed') {
+              formatted.paymentStatus = 'paid';
+              formatted.isPaid = true;
+            }
+            const ot = Number(sqliteRow.online_tip);
+            if (Number.isFinite(ot) && ot >= 0) {
+              formatted.tip = ot;
+              formatted.onlineTip = ot;
+            }
+          }
+        } catch (e) {
+          console.warn('[Online] GET list SQLite merge:', e.message);
+        }
       }
       return formatted;
     }));

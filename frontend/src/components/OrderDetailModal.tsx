@@ -240,6 +240,8 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
               total: data.order?.total ?? order.total ?? 0,
               adjustments: Array.isArray(data.adjustments) ? data.adjustments : [],
               adjustments_json: data.order?.adjustments_json ?? (order as any).adjustments_json ?? null,
+              online_tip: (data.order as any)?.online_tip ?? (order as any)?.online_tip ?? 0,
+              tip: (data.order as any)?.online_tip ?? (order as any)?.tip ?? 0,
               _fromBackend: true,
             };
             setSelectedOrderDetail({ ...order, fullOrder, isLoading: false });
@@ -1241,7 +1243,15 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                       (selectedOrderDetail as any).total ?? 0;
                     const storedTotal = Number(storedTotalRaw || 0);
                     const finalTotal = Number.isFinite(storedTotal) && storedTotal > 0 ? Number(storedTotal.toFixed(2)) : totalVal;
-                    
+                    const onlineTipAmt = Number(
+                      (selectedOrderDetail.fullOrder as any)?.online_tip ??
+                        (selectedOrderDetail as any)?.tip ??
+                        (selectedOrderDetail as any)?.onlineTip ??
+                        0
+                    );
+                    const showOnlineTip =
+                      selectedOrderType === 'online' && Number.isFinite(onlineTipAmt) && onlineTipAmt > 0.005;
+
                     return (
                       <>
                         <div className="flex justify-between text-sm">
@@ -1266,6 +1276,12 @@ const OrderDetailModal: React.FC<OrderDetailModalProps> = ({
                             <span>${Number(info.amount || 0).toFixed(2)}</span>
                           </div>
                         ))}
+                        {showOnlineTip && (
+                          <div className="flex justify-between text-sm font-semibold text-emerald-800">
+                            <span>Tip (online card)</span>
+                            <span>${onlineTipAmt.toFixed(2)}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-base font-bold border-t pt-1">
                           <span>Total</span>
                           <span className="text-blue-600">${finalTotal.toFixed(2)}</span>

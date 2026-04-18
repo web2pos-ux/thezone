@@ -13015,7 +13015,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                           <div className="fixed inset-0 z-40" onClick={() => setShowQsrMoreMenu(false)} />
                           <div className="absolute bottom-full right-0 mb-2 w-48 bg-[#e0e5ec] rounded-2xl p-2 z-50 shadow-[10px_10px_20px_#b8bec7,_-10px_-10px_20px_#ffffff]">
                             <button
-                              onClick={() => { setShowQsrMoreMenu(false); if (isDayClosed) { setShowOpeningModal(true); resetOpeningCashCounts(); } else { setShowClosingModal(true); } }}
+                              onClick={() => {
+                                setShowQsrMoreMenu(false);
+                                if (isDayClosed) {
+                                  setShowOpeningModal(true);
+                                  resetOpeningCashCounts();
+                                  return;
+                                }
+                                void (async () => {
+                                  try {
+                                    const list = await clockInOutApi.getClockedInEmployees();
+                                    if (!Array.isArray(list) || list.length === 0) {
+                                      alert(
+                                        'Day Closing requires an active Clock In.\n\nShift Close ends your shift (Clock Out). Please Clock In first (e.g. Sales screen → Clock In/Out).'
+                                      );
+                                      return;
+                                    }
+                                    setShowClosingModal(true);
+                                  } catch (e) {
+                                    console.error('Clock-in check failed:', e);
+                                    alert('Could not verify clock-in status. Please try again.');
+                                  }
+                                })();
+                              }}
                               className="w-full px-3 py-2 mb-2 rounded-xl text-left text-[13px] font-bold transition-all duration-150 select-none bg-gradient-to-b from-amber-100 to-[#e0e5ec] text-amber-900 shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:scale-[0.99]"
                             >
                               {isDayClosed ? 'Opening' : 'Closing'}

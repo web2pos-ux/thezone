@@ -1236,7 +1236,9 @@ module.exports = (db) => {
       if (!serverId) return res.status(400).json({ success: false, error: 'serverId required' });
 
       const unpaidOrders = await dbAll(`
-        SELECT id, order_number, order_type, total, status, table_id, server_id, server_name, created_at
+        SELECT id, order_number, order_type, total, status,
+          table_id, table_name, fulfillment_mode, customer_name,
+          channel, order_source, server_id, server_name, created_at
         FROM orders
         WHERE COALESCE(server_id, '') = ?
           AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
@@ -1251,6 +1253,50 @@ module.exports = (db) => {
       });
     } catch (error) {
       console.error('Check server unpaid error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  /** Shift Close 시 미결제 이전 대상: 출근 중(미퇴근) 직원 우선, 없으면 활성 직원 전체 (본인 제외) */
+  router.get('/shift-transfer-targets', async (req, res) => {
+    try {
+      const excludeId = String(req.query.excludeServerId || '').trim();
+      let rows;
+      if (excludeId) {
+        rows = await dbAll(`
+          SELECT DISTINCT e.id, e.name
+          FROM employees e
+          INNER JOIN clock_records cr ON cr.employee_id = e.id AND cr.clock_out_time IS NULL
+          WHERE e.status = 'active' AND e.id != ?
+          ORDER BY e.name COLLATE NOCASE
+        `, [excludeId]);
+      } else {
+        rows = await dbAll(`
+          SELECT DISTINCT e.id, e.name
+          FROM employees e
+          INNER JOIN clock_records cr ON cr.employee_id = e.id AND cr.clock_out_time IS NULL
+          WHERE e.status = 'active'
+          ORDER BY e.name COLLATE NOCASE
+        `);
+      }
+      if (!rows || rows.length === 0) {
+        if (excludeId) {
+          rows = await dbAll(`
+            SELECT id, name FROM employees
+            WHERE status = 'active' AND id != ?
+            ORDER BY name COLLATE NOCASE
+          `, [excludeId]);
+        } else {
+          rows = await dbAll(`
+            SELECT id, name FROM employees
+            WHERE status = 'active'
+            ORDER BY name COLLATE NOCASE
+          `);
+        }
+      }
+      res.json({ success: true, servers: rows || [] });
+    } catch (error) {
+      console.error('shift-transfer-targets error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -1275,21 +1321,40 @@ module.exports = (db) => {
 
       const orderIds = unpaid.map(o => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
+      const transferredAt = getLocalDatetimeString();
+      const fromSid = String(fromServerId);
+      const fromName = String(fromServerName || '').trim();
 
       // 단일 트랜잭션: 주문·결제·팁 소유를 A→B로 한 번에 이전 (부분 적용 방지)
+      // original_* / shift_transferred_at: 첫 이전 시 A·시각 고정, 재이전 시 최초 A 유지
       await dbRun('BEGIN TRANSACTION');
       try {
         await dbRun(`
-          UPDATE orders SET server_id = ?, server_name = ? WHERE id IN (${placeholders})
-        `, [String(toServerId), toServerName || '', ...orderIds]);
+          UPDATE orders SET
+            server_id = ?,
+            server_name = ?,
+            original_server_id = COALESCE(original_server_id, ?),
+            original_server_name = COALESCE(NULLIF(TRIM(original_server_name), ''), ?),
+            shift_transferred_at = ?
+          WHERE id IN (${placeholders})
+        `, [String(toServerId), toServerName || '', fromSid, fromName, transferredAt, ...orderIds]);
 
         await dbRun(`
-          UPDATE payments SET server_id = ? WHERE order_id IN (${placeholders}) AND UPPER(status) NOT IN ('REFUNDED','VOIDED')
-        `, [String(toServerId), ...orderIds]);
+          UPDATE payments SET
+            server_id = ?,
+            original_server_id = COALESCE(original_server_id, server_id),
+            original_server_name = COALESCE(NULLIF(TRIM(original_server_name), ''), ?),
+            shift_transferred_at = ?
+          WHERE order_id IN (${placeholders}) AND UPPER(status) NOT IN ('REFUNDED','VOIDED')
+        `, [String(toServerId), fromName, transferredAt, ...orderIds]);
 
         await dbRun(`
-          UPDATE tips SET employee_id = ? WHERE order_id IN (${placeholders})
-        `, [String(toServerId), ...orderIds]);
+          UPDATE tips SET
+            employee_id = ?,
+            original_employee_id = COALESCE(original_employee_id, employee_id),
+            shift_transferred_at = ?
+          WHERE order_id IN (${placeholders})
+        `, [String(toServerId), transferredAt, ...orderIds]);
 
         await dbRun('COMMIT');
       } catch (txErr) {
@@ -1314,7 +1379,15 @@ module.exports = (db) => {
   // ============ SHIFT CLOSE ============
   router.post('/shift-close', async (req, res) => {
     try {
-      const { countedCash = 0, cashDetails = {}, closedBy = '', serverId = '', serverPin = '' } = req.body;
+      const {
+        countedCash = 0,
+        cashDetails = {},
+        closedBy = '',
+        serverId = '',
+        serverPin = '',
+        transferToServerId = '',
+        transferToServerName = '',
+      } = req.body;
       const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
@@ -1322,18 +1395,74 @@ module.exports = (db) => {
         return res.status(400).json({ success: false, error: 'No active session found' });
       }
 
-      // Block if server still has unpaid orders
+      let transferredOrderIds = [];
+      let resolvedTransferToName = String(transferToServerName || '').trim();
+
       if (serverId) {
-        const unpaidCheck = await dbGet(`
-          SELECT COUNT(*) as cnt FROM orders
+        const unpaidRows = await dbAll(`
+          SELECT id FROM orders
           WHERE COALESCE(server_id, '') = ?
             AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
         `, [String(serverId)]);
-        if (unpaidCheck && unpaidCheck.cnt > 0) {
-          return res.status(400).json({
-            success: false,
-            error: `Server still has ${unpaidCheck.cnt} unpaid order(s). Transfer or complete them first.`
-          });
+        if (unpaidRows && unpaidRows.length > 0) {
+          const tid = String(transferToServerId || '').trim();
+          if (!tid || tid === String(serverId)) {
+            return res.status(400).json({
+              success: false,
+              code: 'TRANSFER_REQUIRED',
+              unpaidCount: unpaidRows.length,
+              error: 'Select another server to receive unpaid orders before Shift Close.',
+            });
+          }
+          if (!resolvedTransferToName) {
+            const empTo = await dbGet('SELECT name FROM employees WHERE id = ? AND status = ?', [tid, 'active']);
+            resolvedTransferToName = empTo?.name ? String(empTo.name) : '';
+          }
+          let fromServerNameForTransfer = String(closedBy || '').trim();
+          if (!fromServerNameForTransfer && serverId) {
+            const empFrom = await dbGet('SELECT name FROM employees WHERE id = ? AND status = ?', [String(serverId), 'active']);
+            fromServerNameForTransfer = empFrom?.name ? String(empFrom.name) : '';
+          }
+          const orderIds = unpaidRows.map((o) => o.id);
+          const placeholders = orderIds.map(() => '?').join(',');
+          await dbRun('BEGIN TRANSACTION');
+          try {
+            await dbRun(
+              `UPDATE orders SET
+                server_id = ?,
+                server_name = ?,
+                original_server_id = COALESCE(original_server_id, ?),
+                original_server_name = COALESCE(NULLIF(TRIM(original_server_name), ''), ?),
+                shift_transferred_at = ?
+              WHERE id IN (${placeholders})`,
+              [tid, resolvedTransferToName, String(serverId), fromServerNameForTransfer, now, ...orderIds]
+            );
+            await dbRun(
+              `UPDATE payments SET
+                server_id = ?,
+                original_server_id = COALESCE(original_server_id, server_id),
+                original_server_name = COALESCE(NULLIF(TRIM(original_server_name), ''), ?),
+                shift_transferred_at = ?
+              WHERE order_id IN (${placeholders}) AND UPPER(status) NOT IN ('REFUNDED','VOIDED')`,
+              [tid, fromServerNameForTransfer, now, ...orderIds]
+            );
+            await dbRun(
+              `UPDATE tips SET
+                employee_id = ?,
+                original_employee_id = COALESCE(original_employee_id, employee_id),
+                shift_transferred_at = ?
+              WHERE order_id IN (${placeholders})`,
+              [tid, now, ...orderIds]
+            );
+            await dbRun('COMMIT');
+            transferredOrderIds = orderIds;
+            console.log(
+              `[Shift-Close] Transferred ${orderIds.length} unpaid order(s) from server ${serverId} → ${tid} (${resolvedTransferToName})`
+            );
+          } catch (txErr) {
+            await dbRun('ROLLBACK').catch(() => {});
+            throw txErr;
+          }
         }
       }
 
@@ -1479,6 +1608,28 @@ module.exports = (db) => {
         [activeSession.session_id, shiftNumber]
       );
 
+      if (transferredOrderIds.length > 0 && shiftRecord?.id) {
+        try {
+          await dbRun(
+            `INSERT INTO shift_close_order_transfers (shift_closing_id, session_id, shift_number, from_server_id, from_server_name, to_server_id, to_server_name, order_ids_json, order_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              shiftRecord.id,
+              activeSession.session_id,
+              shiftNumber,
+              String(serverId),
+              closedBy || '',
+              String(transferToServerId || '').trim(),
+              resolvedTransferToName || '',
+              JSON.stringify(transferredOrderIds),
+              transferredOrderIds.length,
+            ]
+          );
+        } catch (auditErr) {
+          console.error('[Shift-Close] shift_close_order_transfers insert failed:', auditErr.message);
+        }
+      }
+
       let serverTipTotal = null;
       if (closedBy) {
         const serverTipData = await dbGet(`
@@ -1494,17 +1645,23 @@ module.exports = (db) => {
         serverTipTotal = Number(serverTipData?.server_tips || 0);
       }
 
-      // Auto Clock-Out: reuse the server's PIN
+      // Auto Clock-Out: Shift Close 시 해당 직원 오늘 미퇴근 기록이 있으면 퇴근 처리 (PIN은 선택, 직원 ID로 매칭)
       let clockOutResult = null;
-      if (serverId && serverPin) {
+      if (serverId) {
         try {
           const today = now.substring(0, 10);
-          const emp = await dbGet('SELECT id FROM employees WHERE id = ? AND pin = ? AND status = "active"', [serverId, serverPin]);
+          const emp = await dbGet('SELECT id FROM employees WHERE id = ? AND status = "active"', [serverId]);
           if (emp) {
-            const clockRec = await dbGet(
+            let clockRec = await dbGet(
               'SELECT * FROM clock_records WHERE employee_id = ? AND date(clock_in_time) = ? AND clock_out_time IS NULL',
               [serverId, today]
             );
+            if (!clockRec) {
+              clockRec = await dbGet(
+                'SELECT * FROM clock_records WHERE employee_id = ? AND clock_out_time IS NULL ORDER BY clock_in_time DESC LIMIT 1',
+                [serverId]
+              );
+            }
             if (clockRec) {
               const clockInTime = new Date(clockRec.clock_in_time);
               const totalHours = ((new Date(now)) - clockInTime) / (1000 * 60 * 60);
@@ -1514,10 +1671,12 @@ module.exports = (db) => {
               `, [now, totalHours.toFixed(2), clockRec.id]);
               await dbRun(`
                 UPDATE server_shifts SET clock_out_time = ?, status = 'closed', updated_at = datetime('now')
-                WHERE server_id = ? AND business_date = ? AND clock_record_id = ? AND status = 'open'
-              `, [now, serverId, today, clockRec.id]);
+                WHERE server_id = ? AND clock_record_id = ? AND status = 'open'
+              `, [now, serverId, clockRec.id]);
               clockOutResult = { success: true, totalHours: totalHours.toFixed(2) };
               console.log(`[Shift-Close] Auto clock-out: ${closedBy}(${serverId}), hours=${totalHours.toFixed(2)}`);
+            } else {
+              clockOutResult = { success: false, skipped: true, reason: 'no_open_clock_record' };
             }
           }
         } catch (coErr) {
@@ -1547,7 +1706,13 @@ module.exports = (db) => {
           tip_breakdown: tipBreakdown,
           session_opened_at: activeSession.opened_at,
           server_tip_total: serverTipTotal,
-          clock_out: clockOutResult
+          clock_out: clockOutResult,
+          unpaid_transferred_count: transferredOrderIds.length,
+          unpaid_transfer_to_server_id:
+            transferredOrderIds.length > 0 ? String(transferToServerId || '').trim() : null,
+          unpaid_transfer_to_server_name:
+            transferredOrderIds.length > 0 ? resolvedTransferToName || '' : null,
+          unpaid_transferred_order_ids: transferredOrderIds,
         }
       });
     } catch (error) {
@@ -1559,12 +1724,27 @@ module.exports = (db) => {
   // ============ CLOSING ============
   router.post('/closing', async (req, res) => {
     try {
-      const { closingCash = 0, closedBy = '', notes = '', cashBreakdown = {} } = req.body;
+      const { closingCash = 0, closedBy = '', notes = '', cashBreakdown = {}, employeeId = '' } = req.body;
       const now = getLocalDatetimeString();
 
       const activeSession = await getActiveSession();
       if (!activeSession) {
         return res.status(400).json({ success: false, error: 'No active session to close' });
+      }
+
+      const eid = String(employeeId || '').trim();
+      if (eid) {
+        const openClock = await dbGet(
+          `SELECT id FROM clock_records WHERE employee_id = ? AND clock_out_time IS NULL`,
+          [eid]
+        );
+        if (!openClock) {
+          return res.status(400).json({
+            success: false,
+            code: 'CLOCK_IN_REQUIRED',
+            error: 'Clock in is required before Day Close. Please clock in, then try again.',
+          });
+        }
       }
 
       const startTime = activeSession.opened_at;
