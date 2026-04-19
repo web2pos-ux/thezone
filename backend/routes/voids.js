@@ -8,8 +8,6 @@ const { isMasterPosPin } = require('../utils/masterPosPin');
 const PERMISSION_LEVELS_KEY = 'employee_permission_levels_v1';
 
 // Firebase 서비스 (선택적 - 없으면 무시)
-let firebaseService = null;
-try { firebaseService = require('../services/firebaseService'); } catch (e) { /* Firebase 없이도 동작 */ }
 
 // Restaurant ID 조회 헬퍼
 let cachedRestaurantId = null;
@@ -431,8 +429,9 @@ router.post('/orders/:orderId/void', async (req, res) => {
       }
     } catch (e) { /* 주문 정보 조회 실패 무시 */ }
 
-    // 전체 Void 후에도 Firestore가 pending이면 GET /online-orders/:rid 가 다시 넣음 — DB VOIDED 확인 시 cancelled 동기화
-    if (isEntireVoid && firebaseService && typeof firebaseService.updateOrderStatus === 'function') {
+    // 전체 Void 후 Firebase cancelled + void 문서 (오프라인 시 큐)
+    let firebaseOrderIdForVoid = '';
+    if (isEntireVoid) {
       try {
         const chk = await dbGet(`SELECT status, firebase_order_id FROM orders WHERE id = ?`, [orderId]);
         const st = String(chk?.status || '').toUpperCase();
@@ -440,12 +439,9 @@ router.post('/orders/:orderId/void', async (req, res) => {
           chk?.firebase_order_id != null && String(chk.firebase_order_id).trim() !== ''
             ? String(chk.firebase_order_id).trim()
             : '';
-        if (st === 'VOIDED' && fid) {
-          const rid = await getRestaurantId();
-          await firebaseService.updateOrderStatus(fid, 'cancelled', rid || null);
-        }
+        if (st === 'VOIDED' && fid) firebaseOrderIdForVoid = fid;
       } catch (fbErr) {
-        console.warn('[VOID] Firebase cancelled sync:', fbErr && fbErr.message ? fbErr.message : fbErr);
+        console.warn('[VOID] Firebase cancelled prep:', fbErr && fbErr.message ? fbErr.message : fbErr);
       }
     }
 
@@ -609,25 +605,34 @@ router.post('/orders/:orderId/void', async (req, res) => {
       }
     })();
 
-    // Firebase 동기화 (비차단)
+    // Firebase 동기화 (비차단, 오프라인 시 큐)
     try {
       const restaurantId = await getRestaurantId();
-      if (restaurantId && firebaseService && firebaseService.saveVoidToFirebase) {
-        await firebaseService.saveVoidToFirebase(restaurantId, {
-          voidId,
-          orderId: Number(orderId),
-          orderNumber,
-          tableName,
-          subtotal,
-          tax_total,
-          grand_total,
-          reason,
-          note,
-          source,
-          lines: lines.map(l => ({ name: l.name, qty: l.qty, amount: l.amount })),
-          created_by: created_by || null,
-          created_at: new Date().toISOString()
-        });
+      if (restaurantId) {
+        const firebaseSyncOrchestrator = require('../services/firebaseSyncOrchestrator');
+        await firebaseSyncOrchestrator.syncOrQueue(
+          'void_cancel_and_void_doc',
+          Number(orderId),
+          {
+            restaurantId,
+            firebaseOrderId: firebaseOrderIdForVoid || null,
+            voidData: {
+              voidId,
+              orderId: Number(orderId),
+              orderNumber,
+              tableName,
+              subtotal,
+              tax_total,
+              grand_total,
+              reason,
+              note,
+              source,
+              lines: lines.map(l => ({ name: l.name, qty: l.qty, amount: l.amount })),
+              created_by: created_by || null,
+              created_at: new Date().toISOString(),
+            },
+          },
+        );
       }
     } catch (fbErr) {
       console.warn('Firebase void sync failed (non-blocking):', fbErr?.message);

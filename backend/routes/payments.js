@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const firebaseService = require('../services/firebaseService');
+const firebaseSyncOrchestrator = require('../services/firebaseSyncOrchestrator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 module.exports = (db) => {
@@ -66,26 +66,30 @@ module.exports = (db) => {
 				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeAmt]
 			);
 			
-			// Firebase에도 결제 데이터 저장
+			// Firebase에도 결제 데이터 저장 (오프라인 시 큐)
 			try {
 				const restaurantId = await getRestaurantId();
 				if (restaurantId) {
-					await firebaseService.savePaymentToFirebase(restaurantId, {
-						paymentId: result.lastID,
-						orderId,
-						method,
-						amount,
-						tip: tipAmount,
-						ref,
-						status,
-						guestNumber,
-						createdAt
-					});
-					
-					// 게스트 번호가 있으면 게스트 결제 상태도 저장
-					if (guestNumber !== null) {
-						await firebaseService.saveGuestPaymentStatus(restaurantId, orderId, guestNumber, 'PAID');
-					}
+					await firebaseSyncOrchestrator.syncOrQueue(
+						'payment_bundle',
+						Number(orderId),
+						{
+							restaurantId,
+							orderId,
+							guestNumber,
+							paymentData: {
+								paymentId: result.lastID,
+								orderId,
+								method,
+								amount,
+								tip: tipAmount,
+								ref,
+								status,
+								guestNumber,
+								createdAt,
+							},
+						},
+					);
 				}
 			} catch (firebaseErr) {
 				console.warn('Firebase payment sync failed (non-fatal):', firebaseErr.message);

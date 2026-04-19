@@ -246,8 +246,10 @@ function startOrderListener(restaurantId) {
   const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
       if (
-        typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
-        firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
+        typeof firebaseService.isExcludedFromOnlineOrderChannel === 'function'
+          ? firebaseService.isExcludedFromOnlineOrderChannel(order)
+          : typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
+            firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
       ) {
         return;
       }
@@ -337,8 +339,10 @@ function startOrderListener(restaurantId) {
     },
     onOrderUpdate: async (order) => {
       if (
-        typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
-        firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
+        typeof firebaseService.isExcludedFromOnlineOrderChannel === 'function'
+          ? firebaseService.isExcludedFromOnlineOrderChannel(order)
+          : typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
+            firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
       ) {
         return;
       }

@@ -1510,6 +1510,94 @@ async function initDatabase(db) {
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_audit_log_time
       ON audit_log(timestamp)`);
 
+    // Firebase 동기화 큐 (오프라인 시 쓰기 대기 / DLQ)
+    await dbRun(`CREATE TABLE IF NOT EXISTS firebase_sync_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      order_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      sequence_key TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT,
+      last_error TEXT,
+      next_retry_at TEXT,
+      order_seq INTEGER NOT NULL DEFAULT 0,
+      deferral_reason TEXT
+    )`);
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_status ON firebase_sync_queue(status)`,
+    );
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order ON firebase_sync_queue(order_id)`,
+    );
+    await dbRun(`CREATE TABLE IF NOT EXISTS firebase_sync_dlq (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      queue_id INTEGER,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      order_id INTEGER,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      auto_retry_count INTEGER NOT NULL DEFAULT 0,
+      next_auto_retry_at TEXT,
+      auto_exhausted INTEGER NOT NULL DEFAULT 0,
+      deferral_reason TEXT,
+      queue_created_at TEXT
+    )`);
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_dlq_created ON firebase_sync_dlq(created_at)`);
+
+    try {
+      const fsqCols = await dbAll(`PRAGMA table_info(firebase_sync_queue)`);
+      const fsqNames = new Set((fsqCols || []).map((c) => c.name));
+      if (!fsqNames.has('sequence_key')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN sequence_key TEXT`);
+      }
+      if (!fsqNames.has('next_retry_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN next_retry_at TEXT`);
+      }
+      if (!fsqNames.has('order_seq')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN order_seq INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsqNames.has('deferral_reason')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN deferral_reason TEXT`);
+      }
+    } catch (mErr) {
+      console.warn('[dbInit] firebase_sync_queue migration:', mErr.message);
+    }
+    try {
+      const fsdlqCols = await dbAll(`PRAGMA table_info(firebase_sync_dlq)`);
+      const fsdlqNames = new Set((fsdlqCols || []).map((c) => c.name));
+      if (!fsdlqNames.has('auto_retry_count')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsdlqNames.has('next_auto_retry_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN next_auto_retry_at TEXT`);
+      }
+      if (!fsdlqNames.has('auto_exhausted')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN auto_exhausted INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsdlqNames.has('deferral_reason')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN deferral_reason TEXT`);
+      }
+      if (!fsdlqNames.has('queue_created_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN queue_created_at TEXT`);
+      }
+      await dbRun(
+        `UPDATE firebase_sync_dlq SET next_auto_retry_at = datetime('now', '+15 minutes')
+         WHERE next_auto_retry_at IS NULL AND IFNULL(auto_exhausted,0) = 0`,
+      );
+    } catch (dlqM) {
+      console.warn('[dbInit] firebase_sync_dlq migration:', dlqM.message);
+    }
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_type ON firebase_sync_queue(type)`,
+    );
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order_fifo ON firebase_sync_queue(order_id, id)`,
+    );
+
     console.log('[dbInit] Employee and Work Schedule tables ensured');
 
     console.log('[dbInit] All additional tables ensured');

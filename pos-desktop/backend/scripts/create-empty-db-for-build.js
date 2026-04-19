@@ -867,6 +867,39 @@ db.serialize(() => {
     payload_json TEXT, user_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // Firebase 동기화 큐 / DLQ
+  db.run(`CREATE TABLE IF NOT EXISTS firebase_sync_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    order_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    sequence_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT,
+    last_error TEXT,
+    next_retry_at TEXT,
+    order_seq INTEGER NOT NULL DEFAULT 0
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_status ON firebase_sync_queue(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order ON firebase_sync_queue(order_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_type ON firebase_sync_queue(type)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order_fifo ON firebase_sync_queue(order_id, id)`);
+  db.run(`CREATE TABLE IF NOT EXISTS firebase_sync_dlq (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_id INTEGER,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    order_id INTEGER,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    auto_retry_count INTEGER NOT NULL DEFAULT 0,
+    next_auto_retry_at TEXT,
+    auto_exhausted INTEGER NOT NULL DEFAULT 0
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_dlq_created ON firebase_sync_dlq(created_at)`);
+
   // ====== Waiting List ======
   db.run(`CREATE TABLE IF NOT EXISTS waiting_list (
     id INTEGER PRIMARY KEY, customer_name TEXT NOT NULL, phone_number TEXT, party_size INTEGER NOT NULL,

@@ -4,12 +4,71 @@
 const admin = require('firebase-admin');
 const { getLocalDateString, getLocalDatetimeString } = require('../utils/datetimeUtils');
 const path = require('path');
+const networkConnectivity = require('./networkConnectivityService');
+const {
+  mergePosMirrorFields,
+  isPosMirrorMetadataOrder,
+  LOCAL_MIRROR_WRITE_OPTIONS,
+  extractQueuedSyncProvenanceFromPayload,
+} = require('./firebaseConflictPolicy');
+
+function assertInternetForFirebaseAccess() {
+  if (!networkConnectivity.isInternetConnected()) {
+    const err = new Error('[Firebase] Blocked: network offline (ping)');
+    err.code = 'FIREBASE_OFFLINE';
+    throw err;
+  }
+}
 
 // 서비스 계정 키 경로 (읽기 전용 파일 - 빌드 리소스에서 읽음)
 // 패키징된 앱에서는 resources/backend/config에, 개발 모드에서는 backend/config에 위치
 const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
 const CONFIG_DIR = process.env.CONFIG_PATH || RESOURCES_CONFIG_DIR;
 const serviceAccountPath = path.join(RESOURCES_CONFIG_DIR, 'firebase-service-account.json');
+
+/** TZO 대시보드(Restaurant Settings → Online)와 동일한 드롭다운 값 */
+const PREP_TIME_ALLOWED = ['10m', '15m', '20m', '25m', '30m', '45m', '1h'];
+
+/**
+ * 채널 한 줄 — mode + time (항상 10m…1h 형식)
+ * 레거시 숫자만 있는 값(예: "15")도 POS/웹 UI select와 맞게 변환
+ */
+function normalizePrepTimeChannel(ch) {
+  if (!ch || typeof ch !== 'object') return { mode: 'auto', time: '15m' };
+  const mode = ch.mode === 'manual' ? 'manual' : 'auto';
+  let raw = String(ch.time != null ? ch.time : '15').trim();
+  let t = raw.toLowerCase();
+  if (/^\d+$/.test(t)) {
+    const n = parseInt(t, 10);
+    if (n === 60) t = '1h';
+    else if ([10, 15, 20, 25, 30, 45].includes(n)) t = `${n}m`;
+    else t = '15m';
+  } else if (t === '60m' || t === '60') {
+    t = '1h';
+  } else if (!/m$|h$/i.test(t)) {
+    const m = raw.match(/^(\d+)/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n === 60) t = '1h';
+      else if ([10, 15, 20, 25, 30, 45].includes(n)) t = `${n}m`;
+      else t = '15m';
+    } else {
+      t = '15m';
+    }
+  }
+  if (!PREP_TIME_ALLOWED.includes(t)) t = '15m';
+  return { mode, time: t };
+}
+
+/** Firebase restaurantSettings.prepTimeSettings 와 동일한 4채널 객체 */
+function normalizePrepTimeSettingsDocument(input) {
+  const channels = ['thezoneorder', 'ubereats', 'doordash', 'skipthedishes'];
+  const out = {};
+  for (const c of channels) {
+    out[c] = normalizePrepTimeChannel(input && input[c]);
+  }
+  return out;
+}
 
 let db = null;
 let isInitialized = false;
@@ -48,8 +107,9 @@ function initializeFirebase() {
   }
 }
 
-// Firestore 인스턴스 가져오기
+// Firestore 인스턴스 가져오기 (오프라인이면 호출하지 말 것 — ping 기준)
 function getFirestore() {
+  assertInternetForFirebaseAccess();
   if (!isInitialized) {
     initializeFirebase();
   }
@@ -57,9 +117,17 @@ function getFirestore() {
 }
 
 /**
+ * 온라인 주문 채널(리스너·SSE·목록)에서 제외할 POS 미러 여부.
+ * - 신규: `posConflictAuthority` / `posConflictPolicy` 메타( firebaseConflictPolicy )
+ * - 레거시: 배달·투고·픽업 등 source=POS 휴리스틱( isPosDeliveryMirrorFirestoreOrder )
+ */
+function isExcludedFromOnlineOrderChannel(order) {
+  return isPosMirrorMetadataOrder(order) || isPosDeliveryMirrorFirestoreOrder(order);
+}
+
+/**
  * POS가 대시보드 연동으로 `restaurants/{id}/orders`에 넣은 미러 문서(배달 DL·투고 TG 등, source=POS).
- * 앱 온라인 주문과 같은 컬렉션이라 여기 들어오면 SSE/SQLite 온라인 INSERT·패널 중복 카드가 생긴다.
- * 투고(TOGO)·픽업 등은 Thezone 앱 온라인 주문과 별개이므로 동일하게 제외한다.
+ * 메타 필드가 없는 기존 문서용 휴리스틱. 앱 온라인 주문과 같은 컬렉션이라 SSE/SQLite 중복 카드 방지.
  */
 function isPosDeliveryMirrorFirestoreOrder(order) {
   if (!order || typeof order !== 'object') return false;
@@ -110,7 +178,7 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
         snapshot.docChanges().forEach((change) => {
           const order = { id: change.doc.id, ...change.doc.data() };
 
-          if (isPosDeliveryMirrorFirestoreOrder(order)) {
+          if (isExcludedFromOnlineOrderChannel(order)) {
             return;
           }
           
@@ -139,7 +207,7 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
 }
 
 // 주문 결제 완료 업데이트 (paymentStatus, tip, paidAt)
-async function updateOrderAsPaid(restaurantId, orderId, { paymentMethod, tip }) {
+async function updateOrderAsPaid(restaurantId, orderId, { paymentMethod, tip }, extraFirestoreFields = null) {
   const firestore = getFirestore();
   if (!restaurantId || !orderId) return;
   const orderRef = firestore.collection('restaurants').doc(restaurantId).collection('orders').doc(String(orderId));
@@ -148,13 +216,15 @@ async function updateOrderAsPaid(restaurantId, orderId, { paymentMethod, tip }) 
     paymentMethod: paymentMethod || 'unknown',
     tip: Number(tip || 0),
     paidAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...mergePosMirrorFields({}),
+    ...(extraFirestoreFields && typeof extraFirestoreFields === 'object' ? extraFirestoreFields : {}),
   });
   console.log(`✅ Order ${orderId} marked as paid`);
 }
 
 // 주문 상태 변경 (서브컬렉션 우선, 글로벌 fallback)
-async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
+async function updateOrderStatus(orderId, newStatus, restaurantId = null, extraFirestoreFields = null) {
   const firestore = getFirestore();
   
   const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled', 'picked_up'];
@@ -164,7 +234,9 @@ async function updateOrderStatus(orderId, newStatus, restaurantId = null) {
 
   const updateData = {
     status: newStatus,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...mergePosMirrorFields({}),
+    ...(extraFirestoreFields && typeof extraFirestoreFields === 'object' ? extraFirestoreFields : {}),
   };
 
   const docId = String(orderId);
@@ -197,13 +269,14 @@ async function acceptOrder(orderId, prepTime, pickupTime, restaurantId = null, r
   const updateData = {
     status: 'confirmed',
     confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...mergePosMirrorFields({}),
   };
-  
+
   if (prepTime) {
     updateData.prepTime = prepTime;
   }
-  
+
   if (pickupTime) {
     updateData.pickupTime = pickupTime;
   }
@@ -231,7 +304,8 @@ async function rejectOrder(orderId, reason = '', restaurantId = null) {
     status: 'cancelled',
     rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
     rejectionReason: reason || 'Rejected by restaurant',
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    ...mergePosMirrorFields({}),
   };
 
   if (restaurantId) {
@@ -275,7 +349,7 @@ async function getOnlineOrders(restaurantId, options = {}) {
     // POS 패널: 결제 완료(completed)·paid 상태는 픽업 전까지 카드 유지. 제외는 취소·픽업완료·병합·환불만.
     const terminalFb = new Set(['cancelled', 'picked_up', 'merged', 'refunded']);
     const activeOrders = orders.filter((o) => !terminalFb.has(String(o.status || '').toLowerCase()));
-    const activeWithoutPosMirror = activeOrders.filter((o) => !isPosDeliveryMirrorFirestoreOrder(o));
+    const activeWithoutPosMirror = activeOrders.filter((o) => !isExcludedFromOnlineOrderChannel(o));
 
     // 결과를 createdAt 기준 내림차순 정렬 (클라이언트 사이드)
     activeWithoutPosMirror.sort((a, b) => {
@@ -449,11 +523,28 @@ async function uploadOrder(restaurantId, orderData) {
       orderDoc.readyTimeLabel = orderData.readyTimeLabel;
     }
 
-    // 서브컬렉션에 주문 저장
+    Object.assign(orderDoc, mergePosMirrorFields(orderData));
+    Object.assign(orderDoc, extractQueuedSyncProvenanceFromPayload(orderData));
+
+    // 서브컬렉션에 주문 저장 — 로컬에 이미 Firebase 문서 ID가 있으면 add 대신 set(merge)로 로컬 스냅샷이 클라우드를 덮어씀(스펙 6).
     const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
+    const existingFbIdRaw = orderData.firebase_order_id ?? orderData.firebaseOrderId;
+    const existingFbId =
+      existingFbIdRaw != null && String(existingFbIdRaw).trim() !== ''
+        ? String(existingFbIdRaw).trim()
+        : null;
+
+    if (existingFbId) {
+      await restaurantRef.collection('orders').doc(existingFbId).set(orderDoc, LOCAL_MIRROR_WRITE_OPTIONS);
+      console.log(
+        `✅ 주문 미러 동기화 (set+merge, Firebase ID: ${existingFbId}, Order Number: ${orderDoc.orderNumber})`,
+      );
+      return existingFbId;
+    }
+
     const docRef = await restaurantRef.collection('orders').add(orderDoc);
     console.log(`✅ 주문 업로드 완료 (Firebase ID: ${docRef.id}, Order Number: ${orderDoc.orderNumber})`);
-    
+
     return docRef.id;
   } catch (error) {
     console.error('❌ 주문 업로드 실패:', error.message);
@@ -700,7 +791,10 @@ async function getOnlineSettings(restaurantId) {
     const data = doc.data();
 
     const prepTimeRaw = data?.prepTimeSettings;
-    const prepTimeSettings = prepTimeRaw?.settings || prepTimeRaw || null;
+    const prepMerged = prepTimeRaw?.settings || prepTimeRaw || null;
+    const prepTimeSettings = prepMerged
+      ? normalizePrepTimeSettingsDocument(prepMerged)
+      : null;
 
     const pauseSettings = data?.pauseSettings || null;
     const dayOffDates = data?.dayOffSettings?.dates || [];
@@ -722,35 +816,24 @@ async function getOnlineSettings(restaurantId) {
   }
 }
 
-// Prep Time 설정 동기화 (POS → Firebase)
+// Prep Time 설정 동기화 (POS → Firebase) — TZO 대시보드와 동일: prepTimeSettings에 4채널 평면 저장
 async function syncPrepTimeSettings(restaurantId, prepTimeSettings) {
   try {
     const firestore = getFirestore();
     const settingsRef = firestore.collection('restaurantSettings').doc(restaurantId);
-    
-    const settingsDoc = await settingsRef.get();
-    
-    // prepTimeSettings 저장
-    const prepTimeData = {
-      settings: prepTimeSettings,
-      updatedAt: new Date()
-    };
-    
-    if (settingsDoc.exists) {
-      await settingsRef.update({
-        prepTimeSettings: prepTimeData,
-        prepTimeUpdatedAt: new Date()
-      });
-    } else {
-      await settingsRef.set({
+    const flat = normalizePrepTimeSettingsDocument(prepTimeSettings || {});
+
+    await settingsRef.set(
+      {
         restaurantId,
-        prepTimeSettings: prepTimeData,
-        prepTimeUpdatedAt: new Date(),
-        createdAt: new Date()
-      });
-    }
-    
-    console.log(`✅ Prep Time 설정 동기화 완료 (${restaurantId}):`, prepTimeSettings);
+        prepTimeSettings: flat,
+        prepTimeUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    console.log(`✅ Prep Time 설정 동기화 완료 (${restaurantId}) [flat, dashboard-compatible]:`, flat);
     return true;
   } catch (error) {
     console.error('❌ Prep Time 설정 동기화 실패:', error.message);
@@ -1137,7 +1220,9 @@ async function saveDailyClosing(restaurantId, closingData) {
       ...closingData,
       date,
       updatedAt: getLocalDatetimeString(),
-      syncedFromPOS: true
+      syncedFromPOS: true,
+      ...mergePosMirrorFields(closingData),
+      ...extractQueuedSyncProvenanceFromPayload(closingData),
     };
 
     await docRef.set(dataToSave, { merge: true });
@@ -1227,7 +1312,9 @@ async function savePaymentToFirebase(restaurantId, paymentData) {
     const dataToSave = {
       ...paymentData,
       syncedFromPOS: true,
-      syncedAt: getLocalDatetimeString()
+      syncedAt: getLocalDatetimeString(),
+      ...mergePosMirrorFields(paymentData),
+      ...extractQueuedSyncProvenanceFromPayload(paymentData),
     };
 
     // paymentId가 있으면 해당 문서에 저장, 없으면 자동 생성
@@ -1264,7 +1351,9 @@ async function saveTipToFirebase(restaurantId, tipData) {
     const dataToSave = {
       ...tipData,
       syncedFromPOS: true,
-      syncedAt: getLocalDatetimeString()
+      syncedAt: getLocalDatetimeString(),
+      ...mergePosMirrorFields(tipData),
+      ...extractQueuedSyncProvenanceFromPayload(tipData),
     };
 
     if (tipData.tipId) {
@@ -1282,7 +1371,7 @@ async function saveTipToFirebase(restaurantId, tipData) {
 }
 
 // 게스트 결제 상태 Firebase 저장
-async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status) {
+async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status, extraFirestoreFields = null) {
   if (!restaurantId || !orderId) {
     console.warn('⚠️ saveGuestPaymentStatus: restaurantId and orderId are required');
     return { success: false, error: 'Restaurant ID and Order ID are required' };
@@ -1300,12 +1389,17 @@ async function saveGuestPaymentStatus(restaurantId, orderId, guestNumber, status
       .collection('guestPayments')
       .doc(String(guestNumber));
 
-    await guestRef.set({
-      guestNumber,
-      status, // 'PAID', 'PARTIAL', 'UNPAID'
-      updatedAt: getLocalDatetimeString(),
-      syncedFromPOS: true
-    }, { merge: true });
+    await guestRef.set(
+      {
+        guestNumber,
+        status, // 'PAID', 'PARTIAL', 'UNPAID'
+        updatedAt: getLocalDatetimeString(),
+        syncedFromPOS: true,
+        ...mergePosMirrorFields({}),
+        ...(extraFirestoreFields && typeof extraFirestoreFields === 'object' ? extraFirestoreFields : {}),
+      },
+      { merge: true },
+    );
     
     console.log(`✅ Guest payment status saved to Firebase: order ${orderId}, guest ${guestNumber} = ${status}`);
     return { success: true };
@@ -1327,7 +1421,9 @@ async function saveRefundToFirebase(restaurantId, refundData) {
     const dataToSave = {
       ...refundData,
       syncedFromPOS: true,
-      syncedAt: getLocalDatetimeString()
+      syncedAt: getLocalDatetimeString(),
+      ...mergePosMirrorFields(refundData),
+      ...extractQueuedSyncProvenanceFromPayload(refundData),
     };
     if (refundData.refundId) {
       await refundsRef.doc(String(refundData.refundId)).set(dataToSave, { merge: true });
@@ -1361,7 +1457,9 @@ async function saveVoidToFirebase(restaurantId, voidData) {
     const dataToSave = {
       ...voidData,
       syncedFromPOS: true,
-      syncedAt: getLocalDatetimeString()
+      syncedAt: getLocalDatetimeString(),
+      ...mergePosMirrorFields(voidData),
+      ...extractQueuedSyncProvenanceFromPayload(voidData),
     };
 
     if (voidData.voidId) {
@@ -1378,10 +1476,46 @@ async function saveVoidToFirebase(restaurantId, voidData) {
   }
 }
 
+/**
+ * POS가 Firestore에 도달 가능한지 확인용 생체 신호 (인터넷 Ping과 별개).
+ * 소비자 앱 등에서 `lastAt`을 읽어 매장 수신 가능 여부 추정에 사용.
+ * 경로: restaurants/{restaurantId}/posPresence/heartbeat
+ */
+async function writePosHeartbeat(restaurantId) {
+  if (!restaurantId) {
+    return { success: false, error: 'restaurantId required' };
+  }
+  try {
+    assertInternetForFirebaseAccess();
+    const firestore = getFirestore();
+    const ref = firestore
+      .collection('restaurants')
+      .doc(String(restaurantId))
+      .collection('posPresence')
+      .doc('heartbeat');
+    await ref.set(
+      {
+        lastAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'pos-backend',
+      },
+      { merge: true }
+    );
+    return { success: true };
+  } catch (error) {
+    if (error && error.code === 'FIREBASE_OFFLINE') {
+      return { success: false, skipped: true, error: 'offline' };
+    }
+    console.warn('[Firebase] writePosHeartbeat:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   initializeFirebase,
   getFirestore,
+  writePosHeartbeat,
   isPosDeliveryMirrorFirestoreOrder,
+  isExcludedFromOnlineOrderChannel,
   listenToOnlineOrders,
   updateOrderStatus,
   updateOrderAsPaid,

@@ -480,9 +480,14 @@ const tableOperationsRoutes = require('./routes/table-operations')(db);
 const tableMoveHistoryRoutes = require('./routes/table-move-history')(db);
 const workScheduleRoutes = require('./routes/work-schedule');
 const giftCardsRoutes = require('./routes/gift-cards')(db);
-const { router: onlineOrdersRoutes, startOrderListener, broadcastToRestaurant, stopAllFirebaseOrderListeners } = require('./routes/online-orders');
+const {
+  router: onlineOrdersRoutes,
+  restartOnlineOrderListenersForRestaurant,
+  broadcastToRestaurant,
+  stopAllFirebaseOrderListeners,
+} = require('./routes/online-orders');
 const tableOrdersRoutes = require('./routes/table-orders')(db);
-const devicesRoutes = require('./routes/devices')(db);
+const devicesModule = require('./routes/devices')(db);
 const menuSyncRoutes = require('./routes/menu-sync');
 const callServerRoutes = require('./routes/call-server');
 const reportsRoutes = require('./routes/reports');
@@ -493,6 +498,7 @@ const menuVisibilityRoutes = require('./routes/menu-visibility')(db);
 const dailyClosingsRoutes = require('./routes/daily-closings')(db);
 const appSettingsRoutes = require('./routes/app-settings');
 const diagnosticsRoutes = require('./routes/diagnostics')(db);
+const networkRoutes = require('./routes/network')();
 const serverSettlementsRoutes = require('./routes/server-settlements');
 const settingsTransferRoutes = require('./routes/settings-transfer');
 
@@ -527,7 +533,7 @@ app.use('/api/table-orders', tableOrdersRoutes);
 app.use('/api/work-schedule', workScheduleRoutes);
 app.use('/api/gift-cards', giftCardsRoutes);
 app.use('/api/online-orders', onlineOrdersRoutes);
-app.use('/api/devices', devicesRoutes);
+app.use('/api/devices', devicesModule.router);
 app.use('/api/menu-sync', menuSyncRoutes);
 app.use('/api/call-server', callServerRoutes);
 app.use('/api/reports', reportsRoutes);
@@ -538,6 +544,9 @@ app.use('/api/menu-visibility', menuVisibilityRoutes);
 app.use('/api/daily-closings', dailyClosingsRoutes);
 app.use('/api/app-settings', appSettingsRoutes);
 app.use('/api/diagnostics', diagnosticsRoutes);
+app.use('/api/network', networkRoutes);
+const firebaseSyncDlqRoutes = require('./routes/firebase-sync-dlq')();
+app.use('/api/firebase-sync', firebaseSyncDlqRoutes);
 app.use('/api/server-settlements', serverSettlementsRoutes);
 app.use('/api/settings-transfer', settingsTransferRoutes);
 
@@ -664,6 +673,11 @@ app.get('/ping', (req, res) => {
   res.send('pong');
 });
 
+// 초경량 헬스 (인증 없음, 짧은 본문)
+app.get('/api/health/ok', (req, res) => {
+  res.status(200).type('text/plain').send('ok');
+});
+
 // --- Menu Item Colors API ---
 app.get('/api/menu-item-colors', (req, res) => {
   db.all('SELECT item_id, color FROM menu_item_colors', [], (err, rows) => {
@@ -740,8 +754,35 @@ app.put('/api/menu-item-colors', (req, res) => {
 const server = http.createServer(app);
 /** @type {ReturnType<typeof setInterval> | null} */
 let printerDispatchInterval = null;
-/** Firestore boot listeners (menu visibility, day off, pause, prep time) — unsubscribe on shutdown */
+/** Firestore boot listeners (menu visibility, day off, pause, prep time) — 오프라인 ping 시에는 유지(재구독 남발·무거운 메뉴 동기화 방지), 프로세스 종료 시에만 해제 */
 const firebaseBootUnsubs = [];
+const { registerFirebaseBootRealtimeListeners } = require('./services/firebaseBootRealtime');
+
+function stopAllFirebaseCloudForOffline() {
+  try {
+    stopAllFirebaseOrderListeners();
+  } catch (e) {
+    console.warn('[Backend] stopAllFirebaseOrderListeners:', e.message);
+  }
+  try {
+    require('./services/remoteSyncService').shutdown();
+  } catch (e) {
+    console.warn('[Backend] remoteSyncService.shutdown:', e.message);
+  }
+  try {
+    if (devicesModule && typeof devicesModule.detachPairingFirebaseListener === 'function') {
+      devicesModule.detachPairingFirebaseListener();
+    }
+  } catch (e) {
+    console.warn('[Backend] detachPairingFirebaseListener:', e.message);
+  }
+  try {
+    require('./services/firebasePosHeartbeatService').stop();
+  } catch (e) {
+    console.warn('[Backend] firebasePosHeartbeatService.stop:', e.message);
+  }
+  console.warn('[Backend] Firebase cloud reads/listeners stopped (offline ping)');
+}
 const io = new Server(server, {
   cors: {
     origin: function(origin, callback) {
@@ -902,175 +943,103 @@ server.listen(PORT, async () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
   console.log(`🔌 Socket.io ready for real-time updates`);
 
+  try {
+    const firebaseSyncQueueService = require('./services/firebaseSyncQueueService');
+    firebaseSyncQueueService.init(db);
+    const networkConnectivity = require('./services/networkConnectivityService');
+    await networkConnectivity.runInitialProbe();
+    networkConnectivity.startScheduler({
+      onBecameOnline: () => {
+        try {
+          const firebaseSyncOrchestrator = require('./services/firebaseSyncOrchestrator');
+          firebaseSyncOrchestrator.onNetworkRecovered().catch((e) =>
+            console.warn('[Backend] onNetworkRecovered (Firebase sync queue):', e.message),
+          );
+          if (typeof devicesModule.attachPairingFirebaseListener === 'function') {
+            devicesModule.attachPairingFirebaseListener().catch((e) =>
+              console.warn('[Backend] attachPairingFirebaseListener:', e.message),
+            );
+          }
+          const oo = require('./routes/online-orders');
+          if (oo.restartFirebaseListenersForSseClients) oo.restartFirebaseListenersForSseClients();
+          const remoteSyncService = require('./services/remoteSyncService');
+          db.get('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1', [], async (e2, r2) => {
+            if (e2 || !r2 || !r2.firebase_restaurant_id) return;
+            const rid = r2.firebase_restaurant_id;
+            try {
+              await remoteSyncService.initialize(rid);
+            } catch (e) {
+              console.warn('[Backend] remoteSyncService.initialize:', e.message);
+            }
+            try {
+              if (oo.restartOnlineOrderListenersForRestaurant) {
+                await oo.restartOnlineOrderListenersForRestaurant(rid);
+              }
+            } catch (e) {
+              console.warn('[Backend] restartOnlineOrderListenersForRestaurant:', e.message);
+            }
+            if (firebaseBootUnsubs.length === 0) {
+              try {
+                const unsubs = registerFirebaseBootRealtimeListeners(db, rid, broadcastToRestaurant);
+                unsubs.forEach((u) => firebaseBootUnsubs.push(u));
+              } catch (bootErr) {
+                console.warn('[Backend] registerFirebaseBootRealtimeListeners:', bootErr.message);
+              }
+            }
+            try {
+              require('./services/firebasePosHeartbeatService').start(rid);
+            } catch (hbErr) {
+              console.warn('[Backend] firebasePosHeartbeatService.start:', hbErr.message);
+            }
+          });
+        } catch (e) {
+          console.warn('[Backend] onBecameOnline:', e.message);
+        }
+      },
+      onBecameOffline: () => {
+        try {
+          stopAllFirebaseCloudForOffline();
+        } catch (e) {
+          console.warn('[Backend] onBecameOffline:', e.message);
+        }
+      },
+    });
+
+    const firebaseSyncOrchestrator = require('./services/firebaseSyncOrchestrator');
+    setInterval(() => {
+      firebaseSyncOrchestrator.processPendingJobs().catch(() => {});
+    }, 15 * 1000);
+  } catch (netErr) {
+    console.warn('[Backend] Network/queue bootstrap:', netErr.message);
+  }
+
   // Auto-initialize Remote Sync Service and Online Order Listener if restaurantId exists in DB
   try {
     const remoteSyncService = require('./services/remoteSyncService');
-    const { listenToMenuVisibilityChanges, listenToDayOffChanges, listenToPauseChanges, listenToPrepTimeChanges } = require('./services/firebaseService');
-    
+    const networkConnectivity = require('./services/networkConnectivityService');
+
     db.get('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1', [], async (err, row) => {
+      if (!networkConnectivity.isInternetConnected()) {
+        console.warn('[Boot] Firebase realtime services skipped: no external internet (ping)');
+        return;
+      }
       if (!err && row && row.firebase_restaurant_id) {
         const restaurantId = row.firebase_restaurant_id;
         console.log(`🔄 Auto-initializing services for restaurant: ${restaurantId}`);
-        
-        // 1. Remote Sync Service (Firebase Admin Control)
+
         await remoteSyncService.initialize(restaurantId);
-        
-        // 2. Online Order Listener (Real-time orders)
-        if (typeof startOrderListener === 'function') {
-          startOrderListener(restaurantId);
+
+        if (typeof restartOnlineOrderListenersForRestaurant === 'function') {
+          await restartOnlineOrderListenersForRestaurant(restaurantId);
         }
-        
-        // 3. Menu Visibility Listener (Firebase → POS 실시간 동기화)
-        const IdMapperService = require('./services/idMapperService');
-        const unsubMenuVis = listenToMenuVisibilityChanges(restaurantId, async (change) => {
-          try {
-            // 1차: IdMapperService로 Firebase ID → POS ID 매핑 시도
-            let posItemId = await IdMapperService.firebaseToLocal('menu_item', change.firebaseItemId);
-            
-            // 2차: ID 매핑 실패 시 아이템 이름으로 폴백
-            if (!posItemId && change.itemName) {
-              const posItem = await new Promise((resolve, reject) => {
-                db.get(
-                  'SELECT item_id FROM menu_items WHERE name = ?',
-                  [change.itemName],
-                  (err, row) => err ? reject(err) : resolve(row)
-                );
-              });
-              posItemId = posItem?.item_id;
-            }
-            
-            if (posItemId) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  `UPDATE menu_items SET 
-                    online_visible = ?, delivery_visible = ?,
-                    online_hide_type = ?, online_available_until = ?,
-                    delivery_hide_type = ?, delivery_available_until = ?
-                  WHERE item_id = ?`,
-                  [
-                    change.onlineVisible ? 1 : 0, 
-                    change.deliveryVisible ? 1 : 0, 
-                    change.onlineHideType || 'visible',
-                    change.onlineAvailableUntil || null,
-                    change.deliveryHideType || 'visible',
-                    change.deliveryAvailableUntil || null,
-                    posItemId
-                  ],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
-              console.log(`✅ POS visibility 동기화: ${change.itemName} [${change.firebaseItemId} → ${posItemId}] (type: ${change.onlineHideType}, until: ${change.onlineAvailableUntil})`);
-              // SSE로 POS UI에 Menu Hide 변경 알림
-              if (typeof broadcastToRestaurant === 'function') {
-                broadcastToRestaurant(restaurantId, {
-                  type: 'menu_visibility_changed',
-                  item: {
-                    item_id: posItemId,
-                    name: change.itemName,
-                    online_visible: change.onlineVisible ? 1 : 0,
-                    delivery_visible: change.deliveryVisible ? 1 : 0,
-                    online_hide_type: change.onlineHideType || 'visible',
-                    online_available_until: change.onlineAvailableUntil,
-                    delivery_hide_type: change.deliveryHideType || 'visible',
-                    delivery_available_until: change.deliveryAvailableUntil
-                  }
-                });
-              }
-            } else {
-              console.warn(`⚠️ POS visibility 동기화 건너뜀: ${change.itemName} - 매핑된 POS 아이템 없음`);
-            }
-          } catch (syncErr) {
-            console.warn(`⚠️ POS visibility 동기화 실패: ${change.itemName}`, syncErr.message);
-          }
-        });
-        if (typeof unsubMenuVis === 'function') firebaseBootUnsubs.push(unsubMenuVis);
-        console.log(`👂 Menu Visibility 리스너 활성화 - Firebase → POS 실시간 동기화 (IdMapper 사용)`);
-        
-        // 4. Day Off Listener (Firebase → POS 실시간 동기화)
-        const unsubDayOff = listenToDayOffChanges(restaurantId, async (change) => {
-          try {
-            if (!change.dates || !Array.isArray(change.dates)) return;
-            
-            // POS의 online_day_off 테이블과 동기화
-            // 먼저 기존 데이터 삭제 후 Firebase 데이터로 교체
-            await new Promise((resolve, reject) => {
-              db.run('DELETE FROM online_day_off', [], (err) => err ? reject(err) : resolve());
-            });
-            
-            // Firebase 데이터 삽입
-            for (const dayOff of change.dates) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  'INSERT INTO online_day_off (date, channels, type) VALUES (?, ?, ?)',
-                  [dayOff.date, dayOff.channels || 'all', dayOff.scheduleType || dayOff.type || 'closed'],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
-            }
-            
-            console.log(`✅ POS Day Off 동기화: ${change.dates.length}개 날짜 (${change.type})`);
-          } catch (syncErr) {
-            console.warn(`⚠️ POS Day Off 동기화 실패:`, syncErr.message);
-          }
-        });
-        if (typeof unsubDayOff === 'function') firebaseBootUnsubs.push(unsubDayOff);
-        console.log(`👂 Day Off 리스너 활성화 - Firebase → POS 실시간 동기화`);
-        
-        // 5. Pause Listener (Firebase → POS 실시간 동기화)
-        const unsubPause = listenToPauseChanges(restaurantId, async (change) => {
-          try {
-            if (!change.settings) return;
-            
-            for (const [channel, data] of Object.entries(change.settings)) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  `INSERT INTO online_pause_settings (channel, paused, paused_until, updated_at) 
-                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(channel) DO UPDATE SET 
-                     paused = excluded.paused, 
-                     paused_until = excluded.paused_until,
-                     updated_at = CURRENT_TIMESTAMP`,
-                  [channel, data.paused ? 1 : 0, data.pausedUntil || null],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
-            }
-            
-            console.log(`✅ POS Pause 동기화: ${Object.keys(change.settings).length}개 채널 (${change.type})`);
-          } catch (syncErr) {
-            console.warn(`⚠️ POS Pause 동기화 실패:`, syncErr.message);
-          }
-        });
-        if (typeof unsubPause === 'function') firebaseBootUnsubs.push(unsubPause);
-        console.log(`👂 Pause 리스너 활성화 - Firebase → POS 실시간 동기화`);
-        
-        // 6. Prep Time Listener (Firebase → POS 실시간 동기화)
-        const unsubPrep = listenToPrepTimeChanges(restaurantId, async (change) => {
-          try {
-            if (!change.settings) return;
-            
-            for (const [channel, data] of Object.entries(change.settings)) {
-              await new Promise((resolve, reject) => {
-                db.run(
-                  `INSERT INTO online_prep_time_settings (channel, mode, time, updated_at) 
-                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(channel) DO UPDATE SET 
-                     mode = excluded.mode, 
-                     time = excluded.time,
-                     updated_at = CURRENT_TIMESTAMP`,
-                  [channel, data.mode || 'auto', data.time || '15'],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
-            }
-            
-            console.log(`✅ POS Prep Time 동기화: ${Object.keys(change.settings).length}개 채널 (${change.type})`);
-          } catch (syncErr) {
-            console.warn(`⚠️ POS Prep Time 동기화 실패:`, syncErr.message);
-          }
-        });
-        if (typeof unsubPrep === 'function') firebaseBootUnsubs.push(unsubPrep);
-        console.log(`👂 Prep Time 리스너 활성화 - Firebase → POS 실시간 동기화`);
+
+        const unsubs = registerFirebaseBootRealtimeListeners(db, restaurantId, broadcastToRestaurant);
+        unsubs.forEach((u) => firebaseBootUnsubs.push(u));
+        try {
+          require('./services/firebasePosHeartbeatService').start(restaurantId);
+        } catch (hbErr) {
+          console.warn('[Boot] firebasePosHeartbeatService.start:', hbErr.message);
+        }
       }
     });
   } catch (syncErr) {
@@ -1140,7 +1109,18 @@ function gracefulShutdown(signal) {
     });
   } catch (_) { /* ignore */ }
   try {
+    if (devicesModule && typeof devicesModule.detachPairingFirebaseListener === 'function') {
+      devicesModule.detachPairingFirebaseListener();
+    }
+  } catch (_) { /* ignore */ }
+  try {
     require('./services/remoteSyncService').shutdown();
+  } catch (_) { /* ignore */ }
+  try {
+    require('./services/firebasePosHeartbeatService').stop();
+  } catch (_) { /* ignore */ }
+  try {
+    require('./services/networkConnectivityService').stopScheduler();
   } catch (_) { /* ignore */ }
   if (printerDispatchInterval) {
     try {

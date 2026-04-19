@@ -3,11 +3,16 @@
 
 const admin = require('firebase-admin');
 const path = require('path');
+const networkConnectivity = require('./networkConnectivityService');
+const { mergePosMirrorFields } = require('./firebaseConflictPolicy');
 
 // Firebase 초기화 확인 (읽기 전용 리소스 경로에서 서비스 계정 키 로드)
 const RESOURCES_CONFIG_DIR = path.join(__dirname, '..', 'config');
 
 function getFirestore() {
+  if (!networkConnectivity.isInternetConnected()) {
+    return null;
+  }
   try {
     if (admin.apps.length === 0) {
       admin.initializeApp({
@@ -38,6 +43,7 @@ function getHourString(date = new Date()) {
  * @param {Object} paymentData - 결제 정보
  * @param {string} restaurantId - Firebase 레스토랑 ID
  * @param {Object} options - { skipDailySales: true } orders 업로드 시 dailySales 중복 방지
+ * @param {Object} [options.syncProvenance] — 큐/DLQ 지연 동기 메타(posSyncDeferred 등), Firestore 문서에 병합
  */
 async function syncPaymentToFirebase(orderData, paymentData, restaurantId, options = {}) {
   const db = getFirestore();
@@ -45,6 +51,11 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
     console.warn('[SalesSync] Firebase not available');
     return null;
   }
+
+  const syncProv =
+    options.syncProvenance && typeof options.syncProvenance === 'object'
+      ? options.syncProvenance
+      : {};
 
   try {
     const now = new Date();
@@ -91,7 +102,11 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
           updateData.discountCount = admin.firestore.FieldValue.increment(1);
         }
         
-        transaction.update(dailySalesRef, updateData);
+        transaction.update(dailySalesRef, {
+          ...updateData,
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
+        });
       } else {
         // 새 문서 생성 (할인 정보 포함)
         const setData = {
@@ -105,7 +120,9 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
           totalDiscount: discountAmount,
           discountCount: discountAmount > 0 ? 1 : 0,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
         };
         
         transaction.set(dailySalesRef, setData);
@@ -127,7 +144,9 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
           totalTips: admin.firestore.FieldValue.increment(tipAmount),
           orderCount: admin.firestore.FieldValue.increment(1),
           [`dailySales.${dateStr}`]: admin.firestore.FieldValue.increment(paymentAmount),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
         });
       } else {
         transaction.set(monthlySalesRef, {
@@ -137,7 +156,9 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
           orderCount: 1,
           dailySales: { [dateStr]: paymentAmount },
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
         });
       }
     });
@@ -145,13 +166,18 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
     // 3. 실시간 대시보드용 현재 상태 업데이트
     const realtimeRef = restaurantRef.collection('realtime').doc('today');
     
-    await realtimeRef.set({
-      date: dateStr,
-      lastOrderTime: admin.firestore.FieldValue.serverTimestamp(),
-      lastOrderAmount: paymentData.amount || 0,
-      lastOrderType: orderData.orderType || 'DINE-IN',
-      lastPaymentMethod: paymentData.method || 'CASH'
-    }, { merge: true });
+    await realtimeRef.set(
+      {
+        date: dateStr,
+        lastOrderTime: admin.firestore.FieldValue.serverTimestamp(),
+        lastOrderAmount: paymentData.amount || 0,
+        lastOrderType: orderData.orderType || 'DINE-IN',
+        lastPaymentMethod: paymentData.method || 'CASH',
+        ...mergePosMirrorFields(orderData),
+        ...syncProv,
+      },
+      { merge: true },
+    );
 
     console.log(`[SalesSync] ✅ Synced: $${paymentData.amount} (${paymentData.method}) - ${dateStr}`);
     return { success: true, date: dateStr };
@@ -166,12 +192,18 @@ async function syncPaymentToFirebase(orderData, paymentData, restaurantId, optio
  * 주문 아이템별 매출 동기화 (메뉴 분석용)
  * @param {Object} orderData - 주문 정보 (아이템 포함)
  * @param {string} restaurantId - Firebase 레스토랑 ID
+ * @param {Object} [options] - { syncProvenance: { posSyncDeferred, ... } }
  */
-async function syncOrderItemsToFirebase(orderData, restaurantId) {
+async function syncOrderItemsToFirebase(orderData, restaurantId, options = {}) {
   const db = getFirestore();
   if (!db || !orderData.items || !Array.isArray(orderData.items)) {
     return null;
   }
+
+  const syncProv =
+    options.syncProvenance && typeof options.syncProvenance === 'object'
+      ? options.syncProvenance
+      : {};
 
   try {
     const dateStr = getDateString();
@@ -215,14 +247,18 @@ async function syncOrderItemsToFirebase(orderData, restaurantId) {
         
         transaction.update(itemSalesRef, {
           items,
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
         });
       } else {
         transaction.set(itemSalesRef, {
           date: dateStr,
           items: itemUpdates,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+          ...mergePosMirrorFields(orderData),
+          ...syncProv,
         });
       }
     });

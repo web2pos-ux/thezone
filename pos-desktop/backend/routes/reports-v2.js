@@ -3,6 +3,7 @@
 
 const express = require('express');
 const admin = require('firebase-admin');
+const networkConnectivity = require('../services/networkConnectivityService');
 
 const router = express.Router();
 const { getLocalDateString, getLocalDatetimeString } = require('../utils/datetimeUtils');
@@ -18,8 +19,11 @@ const getDatabase = () => db;
 const PAID_STATUSES_SQL = "UPPER(status) IN ('PAID','COMPLETED','CLOSED','PICKED_UP')";
 const PAID_STATUSES_SQL_O = "UPPER(o.status) IN ('PAID','COMPLETED','CLOSED','PICKED_UP')";
 
-// Firebase Firestore
+// Firebase Firestore (오프라인 ping 시 사용 안 함)
 const getFirestore = () => {
+  if (!networkConnectivity.isInternetConnected()) {
+    return null;
+  }
   try {
     if (admin.apps.length === 0) return null;
     return admin.firestore();

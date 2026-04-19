@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
+const firebaseSyncOrchestrator = require('../services/firebaseSyncOrchestrator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 
 // Restaurant ID 조회 헬퍼
@@ -332,13 +333,20 @@ module.exports = (db) => {
         console.error('Failed to reset daily order counter:', counterErr.message);
       }
 
-      // Firebase 동기화
+      // Firebase 동기화 (오프라인 시 큐)
       try {
         const restaurantId = await getRestaurantId();
         if (restaurantId) {
-          await firebaseService.saveDailyClosing(restaurantId, {
-            date: today, sessionId, openingCash, openedAt: now, openedBy, status: 'open'
-          });
+          await firebaseSyncOrchestrator.syncOrQueue(
+            'saveDailyClosing',
+            null,
+            {
+              restaurantId,
+              closingData: {
+                date: today, sessionId, openingCash, openedAt: now, openedBy, status: 'open',
+              },
+            },
+          );
         }
       } catch (firebaseError) {
         console.error('Firebase sync error (non-blocking):', firebaseError.message);
@@ -1852,14 +1860,21 @@ module.exports = (db) => {
         console.log('[daily-closings] waiting_list archived for', businessDate, 'then cleared, rows removed:', del?.changes ?? 0);
       } catch (e) { console.warn('Failed to archive/clear waiting_list on closing:', e?.message || e); }
 
-      // Firebase 동기화
+      // Firebase 동기화 (오프라인 시 큐)
       try {
         const restaurantId = await getRestaurantId();
         if (restaurantId) {
-          await firebaseService.saveDailyClosing(restaurantId, {
-            ...record, closingCash, expectedCash, cashDifference,
-            totalSales: salesData?.total_sales || 0, closedAt: now, closedBy, notes
-          });
+          await firebaseSyncOrchestrator.syncOrQueue(
+            'saveDailyClosing',
+            null,
+            {
+              restaurantId,
+              closingData: {
+                ...record, closingCash, expectedCash, cashDifference,
+                totalSales: salesData?.total_sales || 0, closedAt: now, closedBy, notes,
+              },
+            },
+          );
         }
       } catch (firebaseError) {
         console.error('Firebase sync error (non-blocking):', firebaseError.message);

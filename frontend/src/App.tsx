@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { MenuCacheProvider, prefetchMenuCache } from './contexts/MenuCacheContext';
 
@@ -8,6 +8,7 @@ import SetupPage from './pages/SetupPage';
 import SalesPage from './pages/SalesPage';
 import BackOfficeLayout from './components/BackOfficeLayout';
 import HandheldCallOverlay from './components/HandheldCallOverlay';
+import { DlqSyncModal } from './components/DlqSyncModal';
 import DayOpeningModal from './components/DayOpeningModal';
 import MenuListPage from './pages/MenuListPage';
 import MenuEditPage from './pages/MenuEditPage';
@@ -218,6 +219,159 @@ const isElectronRenderer = () => {
 
 const isLocalHost = (host: string) => host === 'localhost' || host === '127.0.0.1';
 
+type NetworkStatusResponse = {
+  online?: boolean;
+  queuePending?: number;
+  queueProcessing?: number;
+  queueTotalActive?: number;
+  dlqCount?: number;
+  /** Backend: firebase sync worker running */
+  queueSyncActive?: boolean;
+};
+
+/**
+ * Spec 7 — Minimal English status (fixed corner, brief OK flash).
+ * Offline / Syncing / Pending N / DLQ / short “Synced” when queue clears.
+ */
+const NetworkStatusBar: React.FC<{
+  onOpenDlq?: () => void;
+  dlqRefreshKey?: number;
+}> = ({ onOpenDlq, dlqRefreshKey = 0 }) => {
+  const [payload, setPayload] = useState<NetworkStatusResponse | null>(null);
+  const [okFlash, setOkFlash] = useState(false);
+  const prevActiveRef = useRef<number | null>(null);
+  const okFlashTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const apiUrl = getAPI_URL();
+        const res = await fetchWithTimeout(`${apiUrl}/network/status`, { cache: 'no-store' as any });
+        const json = (await res.json().catch(() => ({}))) as NetworkStatusResponse;
+        if (!cancelled && res.ok) {
+          const p = Number(json.queuePending || 0);
+          const pr = Number(json.queueProcessing || 0);
+          const totalActive =
+            json.queueTotalActive != null ? Number(json.queueTotalActive) : p + pr;
+          const prev = prevActiveRef.current;
+          if (
+            prev !== null &&
+            prev > 0 &&
+            totalActive === 0 &&
+            json.online !== false &&
+            Number(json.dlqCount || 0) === 0
+          ) {
+            setOkFlash(true);
+            if (okFlashTimerRef.current) window.clearTimeout(okFlashTimerRef.current);
+            okFlashTimerRef.current = window.setTimeout(() => {
+              okFlashTimerRef.current = undefined;
+              setOkFlash(false);
+            }, 2200);
+          }
+          prevActiveRef.current = totalActive;
+          setPayload(json);
+        }
+      } catch {
+        if (!cancelled) setPayload(null);
+      }
+    };
+    tick();
+    // Shorter interval while work may be in progress (catch Syncing / queue changes).
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      if (okFlashTimerRef.current) {
+        window.clearTimeout(okFlashTimerRef.current);
+        okFlashTimerRef.current = undefined;
+      }
+    };
+  }, [dlqRefreshKey]);
+
+  const offline = payload?.online === false;
+  const pending = Number(payload?.queuePending || 0);
+  const processing = Number(payload?.queueProcessing || 0);
+  const totalActive =
+    payload?.queueTotalActive != null
+      ? Number(payload.queueTotalActive)
+      : pending + processing;
+  const dlq = Number(payload?.dlqCount || 0);
+  const syncActive = payload?.queueSyncActive === true || processing > 0;
+
+  const showAlert =
+    payload != null && (offline || dlq > 0 || totalActive > 0 || syncActive);
+
+  let title = '';
+  let detail = '';
+  if (payload) {
+    if (offline) {
+      title = 'Offline';
+      detail =
+        totalActive > 0
+          ? `Firebase sync paused · Pending: ${totalActive}`
+          : 'Firebase sync paused';
+    } else if (dlq > 0) {
+      title = `DLQ: ${dlq}`;
+      detail = 'Review or retry';
+    } else if (syncActive) {
+      title = 'Syncing';
+      detail = totalActive > 0 ? `Pending: ${totalActive}` : 'Sending to cloud';
+    } else if (totalActive > 0) {
+      title = `Pending: ${totalActive}`;
+      detail = 'Queued for Firebase';
+    }
+  }
+
+  const pillBase =
+    'fixed bottom-3 right-3 z-[10000] max-w-[min(92vw,18rem)] rounded-md border px-2 py-1 shadow-md text-[11px] leading-snug font-medium tracking-tight';
+
+  return (
+    <>
+      {okFlash && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`${pillBase} border-emerald-700/50 bg-emerald-950/90 text-emerald-100`}
+        >
+          Synced
+        </div>
+      )}
+      {showAlert && !okFlash && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`${pillBase} text-white ${
+            offline
+              ? 'border-amber-800/60 bg-amber-950/92'
+              : dlq > 0
+                ? 'border-rose-800/60 bg-rose-950/92'
+                : syncActive
+                  ? 'border-sky-700/50 bg-sky-950/92'
+                  : 'border-slate-700/50 bg-slate-950/90'
+          }`}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-0.5">
+            <div>
+              <div className="font-semibold">{title}</div>
+              {detail ? <div className="text-[10px] opacity-85 font-normal">{detail}</div> : null}
+            </div>
+            {dlq > 0 && onOpenDlq ? (
+              <button
+                type="button"
+                className="shrink-0 text-[10px] underline underline-offset-2 text-white/90 hover:text-white"
+                onClick={onOpenDlq}
+              >
+                Details
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
 const RequireApprovedDevice: React.FC = () => {
   const location = useLocation();
   const [allowed, setAllowed] = useState<boolean | null>(null);
@@ -316,9 +470,21 @@ const RequireApprovedDevice: React.FC = () => {
 };
 
 function App() {
+  const [dlqModalOpen, setDlqModalOpen] = useState(false);
+  const [dlqRefreshKey, setDlqRefreshKey] = useState(0);
+
   return (
     <MenuCacheProvider>
       <BrowserRouter>
+        <NetworkStatusBar
+          onOpenDlq={() => setDlqModalOpen(true)}
+          dlqRefreshKey={dlqRefreshKey}
+        />
+        <DlqSyncModal
+          isOpen={dlqModalOpen}
+          onClose={() => setDlqModalOpen(false)}
+          onRetried={() => setDlqRefreshKey((k) => k + 1)}
+        />
         <Routes>
           {/* Remote Sub POS registration (iPad/Android/Windows browser) */}
           <Route path="/device-setup" element={<DeviceSetupPage />} />

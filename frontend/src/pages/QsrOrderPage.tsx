@@ -18261,11 +18261,29 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <div className="mt-2 pt-2 border-t border-gray-200">
                     <button onClick={async () => {
                       try {
-                        const response = await fetch(`${API_URL}/online-orders/prep-time-settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: prepTimeSettings }) });
+                        const restaurantId =
+                          localStorage.getItem('firebaseRestaurantId') ||
+                          localStorage.getItem('firebase_restaurant_id');
+                        const response = await fetch(`${API_URL}/online-orders/prep-time-settings`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ settings: prepTimeSettings, restaurantId }),
+                        });
                         const data = await response.json();
-                        if (data.success) { alert('Prep Time settings saved!'); localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings)); }
-                        else { alert('Failed to save: ' + (data.error || 'Unknown error')); }
-                      } catch (error) { alert('Failed to save settings'); }
+                        if (data.success) {
+                          localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                          if (data.firebaseSynced) await loadAllOnlineSettings();
+                          alert(
+                            data.firebaseSynced
+                              ? 'Prep Time saved and synced with Firebase (Dashboard → Online Settings).'
+                              : 'Prep Time saved locally. Firebase sync skipped — check Restaurant ID / network.'
+                          );
+                        } else {
+                          alert('Failed to save: ' + (data.error || 'Unknown error'));
+                        }
+                      } catch (error) {
+                        alert('Failed to save settings');
+                      }
                     }} className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-lg font-bold shadow-md transition-all">Save</button>
                   </div>
                 </div>

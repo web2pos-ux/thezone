@@ -4,6 +4,7 @@
 const admin = require('firebase-admin');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const networkConnectivity = require('./networkConnectivityService');
 
 // 데이터베이스 연결
 const getDatabase = () => {
@@ -14,6 +15,9 @@ const getDatabase = () => {
 // Firebase 초기화 확인
 const getFirestore = () => {
   try {
+    if (!networkConnectivity.isInternetConnected()) {
+      return null;
+    }
     if (admin.apps.length === 0) {
       // Firebase 초기화가 안 되어 있으면 null 반환
       console.log('Firebase not initialized, skipping sync');

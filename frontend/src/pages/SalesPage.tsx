@@ -11993,14 +11993,25 @@ const SalesPage: React.FC = () => {
                   <button
                     onClick={async () => {
                       try {
+                        const restaurantId =
+                          localStorage.getItem('firebaseRestaurantId') ||
+                          localStorage.getItem('firebase_restaurant_id');
                         const response = await fetch(`${API_URL}/online-orders/prep-time-settings`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ settings: prepTimeSettings })
+                          body: JSON.stringify({ settings: prepTimeSettings, restaurantId }),
                         });
                         const data = await response.json();
                         if (data.success) {
                           localStorage.setItem('prepTimeSettings', JSON.stringify(prepTimeSettings));
+                          if (data.firebaseSynced) {
+                            await loadAllOnlineSettings();
+                          }
+                          alert(
+                            data.firebaseSynced
+                              ? 'Prep Time saved and synced with Firebase (same as Dashboard → Online Settings).'
+                              : 'Prep Time saved locally. Firebase sync skipped — check Restaurant ID / network.'
+                          );
                         } else {
                           alert('Failed to save: ' + (data.error || 'Unknown error'));
                         }
