@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { MenuCacheProvider, prefetchMenuCache } from './contexts/MenuCacheContext';
 
@@ -60,6 +60,7 @@ import BackofficeSalesSummaryPage from './pages/BackofficeSalesSummaryPage';
 import BasicInfoPage from './pages/BasicInfoPage';
 import DeviceSetupPage from './pages/DeviceSetupPage';
 import { getAPI_URL } from './config/constants';
+import { NetworkSyncStatusProvider, useNetworkSyncStatus } from './contexts/NetworkSyncStatusContext';
 import ReportsDashboardPage from './pages/ReportsDashboardPage';
 import PosPromotionsPage from './pages/PosPromotionsPage';
 import DealerSettingsPage from './pages/DealerSettingsPage';
@@ -219,115 +220,41 @@ const isElectronRenderer = () => {
 
 const isLocalHost = (host: string) => host === 'localhost' || host === '127.0.0.1';
 
-type NetworkStatusResponse = {
-  online?: boolean;
-  queuePending?: number;
-  queueProcessing?: number;
-  queueTotalActive?: number;
-  dlqCount?: number;
-  /** Backend: firebase sync worker running */
-  queueSyncActive?: boolean;
-};
-
 /**
  * Spec 7 — Minimal English status (fixed corner, brief OK flash).
- * Offline / Syncing / Pending N / DLQ / short “Synced” when queue clears.
+ * `/sales` 에서는 Firebase 동기 pill 을 SalesPage 헤더(시간 왼쪽)로 옮김.
  */
-const NetworkStatusBar: React.FC<{
-  onOpenDlq?: () => void;
-  dlqRefreshKey?: number;
-}> = ({ onOpenDlq, dlqRefreshKey = 0 }) => {
-  const [payload, setPayload] = useState<NetworkStatusResponse | null>(null);
-  const [okFlash, setOkFlash] = useState(false);
-  const prevActiveRef = useRef<number | null>(null);
-  const okFlashTimerRef = useRef<number | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const apiUrl = getAPI_URL();
-        const res = await fetchWithTimeout(`${apiUrl}/network/status`, { cache: 'no-store' as any });
-        const json = (await res.json().catch(() => ({}))) as NetworkStatusResponse;
-        if (!cancelled && res.ok) {
-          const p = Number(json.queuePending || 0);
-          const pr = Number(json.queueProcessing || 0);
-          const totalActive =
-            json.queueTotalActive != null ? Number(json.queueTotalActive) : p + pr;
-          const prev = prevActiveRef.current;
-          if (
-            prev !== null &&
-            prev > 0 &&
-            totalActive === 0 &&
-            json.online !== false &&
-            Number(json.dlqCount || 0) === 0
-          ) {
-            setOkFlash(true);
-            if (okFlashTimerRef.current) window.clearTimeout(okFlashTimerRef.current);
-            okFlashTimerRef.current = window.setTimeout(() => {
-              okFlashTimerRef.current = undefined;
-              setOkFlash(false);
-            }, 2200);
-          }
-          prevActiveRef.current = totalActive;
-          setPayload(json);
-        }
-      } catch {
-        if (!cancelled) setPayload(null);
-      }
-    };
-    tick();
-    // Shorter interval while work may be in progress (catch Syncing / queue changes).
-    const id = window.setInterval(tick, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      if (okFlashTimerRef.current) {
-        window.clearTimeout(okFlashTimerRef.current);
-        okFlashTimerRef.current = undefined;
-      }
-    };
-  }, [dlqRefreshKey]);
-
-  const offline = payload?.online === false;
-  const pending = Number(payload?.queuePending || 0);
-  const processing = Number(payload?.queueProcessing || 0);
-  const totalActive =
-    payload?.queueTotalActive != null
-      ? Number(payload.queueTotalActive)
-      : pending + processing;
-  const dlq = Number(payload?.dlqCount || 0);
-  const syncActive = payload?.queueSyncActive === true || processing > 0;
-
-  const showAlert =
-    payload != null && (offline || dlq > 0 || totalActive > 0 || syncActive);
-
-  let title = '';
-  let detail = '';
-  if (payload) {
-    if (offline) {
-      title = 'Offline';
-      detail =
-        totalActive > 0
-          ? `Firebase sync paused · Pending: ${totalActive}`
-          : 'Firebase sync paused';
-    } else if (dlq > 0) {
-      title = `DLQ: ${dlq}`;
-      detail = 'Review or retry';
-    } else if (syncActive) {
-      title = 'Syncing';
-      detail = totalActive > 0 ? `Pending: ${totalActive}` : 'Sending to cloud';
-    } else if (totalActive > 0) {
-      title = `Pending: ${totalActive}`;
-      detail = 'Queued for Firebase';
-    }
-  }
+const NetworkStatusBar: React.FC = () => {
+  const location = useLocation();
+  const {
+    browserOnline,
+    okFlash,
+    disconnectedUi,
+    dlq,
+    syncActive,
+    showAlert,
+    title,
+    detail,
+    onOpenDlq,
+  } = useNetworkSyncStatus();
+  const hideFloatingSyncPill = location.pathname === '/sales';
 
   const pillBase =
     'fixed bottom-3 right-3 z-[10000] max-w-[min(92vw,18rem)] rounded-md border px-2 py-1 shadow-md text-[11px] leading-snug font-medium tracking-tight';
 
   return (
     <>
+      {!browserOnline ? (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="pointer-events-none fixed inset-x-0 top-2 z-[10001] flex justify-center px-2"
+        >
+          <span className="offline-alert-blink max-w-[min(96vw,36rem)] text-center text-[11px] font-semibold leading-snug text-red-500 [text-shadow:0_0_8px_rgba(0,0,0,0.85),0_1px_2px_rgba(0,0,0,0.75)]">
+            You are offline. Check your internet connection.
+          </span>
+        </div>
+      ) : null}
       {okFlash && (
         <div
           role="status"
@@ -337,12 +264,12 @@ const NetworkStatusBar: React.FC<{
           Synced
         </div>
       )}
-      {showAlert && !okFlash && (
+      {showAlert && !okFlash && !hideFloatingSyncPill && (
         <div
           role="status"
           aria-live="polite"
           className={`${pillBase} text-white ${
-            offline
+            disconnectedUi
               ? 'border-amber-800/60 bg-amber-950/92'
               : dlq > 0
                 ? 'border-rose-800/60 bg-rose-950/92'
@@ -476,10 +403,11 @@ function App() {
   return (
     <MenuCacheProvider>
       <BrowserRouter>
-        <NetworkStatusBar
-          onOpenDlq={() => setDlqModalOpen(true)}
+        <NetworkSyncStatusProvider
           dlqRefreshKey={dlqRefreshKey}
-        />
+          onOpenDlq={() => setDlqModalOpen(true)}
+        >
+        <NetworkStatusBar />
         <DlqSyncModal
           isOpen={dlqModalOpen}
           onClose={() => setDlqModalOpen(false)}
@@ -591,6 +519,7 @@ function App() {
           </Route>
         </Routes>
         <HandheldCallOverlay />
+        </NetworkSyncStatusProvider>
       </BrowserRouter>
     </MenuCacheProvider>
   );

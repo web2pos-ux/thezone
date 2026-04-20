@@ -31,7 +31,12 @@ import { getFirebasePromotions, FirebasePromotion, checkPromotionApplicable, cal
 import { ProTab } from '../components/ProTab';
 import { CacheDebugger } from '../components/CacheDebugger';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
-import { loadServerAssignment, saveServerAssignment, clearServerAssignment } from '../utils/serverAssignmentStorage';
+import {
+  loadServerAssignment,
+  saveServerAssignment,
+  clearServerAssignment,
+  POS_TABLE_MAP_SERVER_SESSION_ID,
+} from '../utils/serverAssignmentStorage';
 import {
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
   NEO_MODAL_BTN_PRESS,
@@ -440,6 +445,13 @@ const OrderPage = () => {
       } else {
         clearServerAssignment('session', locationKey);
       }
+      try {
+        saveServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID, {
+          serverId: server.id,
+          serverName: server.name,
+        });
+        window.dispatchEvent(new Event('posServerAssignmentUpdated'));
+      } catch {}
     },
     [tableIdFromState, orderIdFromState, locationKey]
   );
@@ -453,6 +465,10 @@ const OrderPage = () => {
 
   const clearServerAssignmentForContext = useCallback(() => {
     clearServerAssignment('session', locationKey);
+    try {
+      clearServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID);
+      window.dispatchEvent(new Event('posServerAssignmentUpdated'));
+    } catch {}
     if (tableIdFromState) {
       clearServerAssignment('table', tableIdFromState);
     }

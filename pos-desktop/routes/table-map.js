@@ -105,23 +105,27 @@ router.get('/elements', (req, res) => {
   
   const query = `
     SELECT 
-      element_id,
-      floor,
-      type,
-      x_pos,
-      y_pos,
-      width,
-      height,
-      rotation,
-      name,
-      fontSize,
-      color,
-      status,
-      current_order_id,
-      created_at
-    FROM table_map_elements 
-    WHERE floor = ?
-    ORDER BY element_id
+      t.element_id,
+      t.floor,
+      t.type,
+      t.x_pos,
+      t.y_pos,
+      t.width,
+      t.height,
+      t.rotation,
+      t.name,
+      t.fontSize,
+      t.color,
+      t.status,
+      t.current_order_id,
+      t.created_at,
+      o.status AS order_status,
+      o.server_name AS order_server_name,
+      o.server_id AS order_server_id
+    FROM table_map_elements t
+    LEFT JOIN orders o ON t.current_order_id = o.id
+    WHERE t.floor = ?
+    ORDER BY t.element_id
   `;
   
   db.all(query, [floor], (err, rows) => {
@@ -131,6 +135,40 @@ router.get('/elements', (req, res) => {
       console.error(`❌ ${floor} 요소 조회 API: 500 (데이터베이스 오류)`, err);
       return res.status(500).json({ error: '데이터베이스 오류' });
     }
+
+    try {
+      (rows || []).forEach((row) => {
+        const st = String(row?.status || 'Available');
+        const isOccupiedLike = st === 'Occupied' || st === 'Payment Pending';
+        const hasOrderId = row?.current_order_id != null && String(row.current_order_id) !== '';
+        const orderStatus = String(row?.order_status || '');
+        const isClosedOrder = orderStatus && (orderStatus.toUpperCase() === 'PAID' || orderStatus.toUpperCase() === 'VOIDED');
+        const isMissingOrder = hasOrderId && !orderStatus;
+
+        if (isOccupiedLike && (!hasOrderId || isClosedOrder || isMissingOrder)) {
+          row.status = 'Available';
+          row.current_order_id = null;
+          try {
+            db.run(
+              `UPDATE table_map_elements SET status = 'Available', current_order_id = NULL WHERE element_id = ?`,
+              [row.element_id],
+              () => {}
+            );
+          } catch {}
+        }
+        if (String(row?.status || '') === 'Preparing') {
+          row.status = 'Available';
+          row.current_order_id = null;
+          try {
+            db.run(
+              `UPDATE table_map_elements SET status = 'Available', current_order_id = NULL WHERE element_id = ?`,
+              [row.element_id],
+              () => {}
+            );
+          } catch {}
+        }
+      });
+    } catch {}
     
     // 데이터 변환: 데이터베이스 컬럼명을 프론트엔드 형식으로
     const elements = rows.map(row => ({
@@ -150,7 +188,9 @@ router.get('/elements', (req, res) => {
       fontSize: row.fontSize || 20,
       color: row.color || '#3B82F6',
       status: row.status || 'Available',
-      current_order_id: row.current_order_id || null
+      current_order_id: row.current_order_id || null,
+      order_server_name: row.current_order_id ? (row.order_server_name || null) : null,
+      order_server_id: row.current_order_id ? (row.order_server_id != null && row.order_server_id !== '' ? row.order_server_id : null) : null
     }));
     
     // console.log(`✅ ${floor} 요소 조회 완료: ${elements.length}개`);

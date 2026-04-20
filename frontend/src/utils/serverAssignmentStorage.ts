@@ -8,6 +8,9 @@ type AssignmentScope = 'table' | 'order' | 'session';
 
 const KEY_PREFIX = 'serverAssignment:';
 
+/** `scope: 'session'` — Sales 테이블맵 상단에 표시할 현재 POS 서버(서버선택모드) */
+export const POS_TABLE_MAP_SERVER_SESSION_ID = 'pos-table-map-active';
+
 const getStorage = (): Storage | null => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {

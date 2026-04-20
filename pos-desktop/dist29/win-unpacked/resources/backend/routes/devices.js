@@ -10,6 +10,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const networkConnectivity = require('../services/networkConnectivityService');
 
 module.exports = (db) => {
   // Helper functions
@@ -116,11 +117,33 @@ module.exports = (db) => {
   initTables().catch(err => console.error('Failed to init device tables:', err));
 
   // ==================== Firebase 페어링코드 실시간 리스너 ====================
-  (async () => {
+  /** @type {null | (() => void)} */
+  let pairingFirebaseUnsub = null;
+
+  function detachPairingFirebaseListener() {
+    if (typeof pairingFirebaseUnsub === 'function') {
+      try {
+        pairingFirebaseUnsub();
+      } catch (_) {
+        /* ignore */
+      }
+      pairingFirebaseUnsub = null;
+      console.log('[Pairing] Firebase listener detached');
+    }
+  }
+
+  async function attachPairingFirebaseListener() {
     try {
+      detachPairingFirebaseListener();
+
       const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
       const restaurantId = profile?.firebase_restaurant_id;
       if (!restaurantId) return;
+
+      if (!networkConnectivity.isInternetConnected()) {
+        console.log('[Pairing] Firebase listener skipped: offline (ping)');
+        return;
+      }
 
       let admin;
       try { admin = require('firebase-admin'); } catch { return; }
@@ -129,36 +152,41 @@ module.exports = (db) => {
       const firestore = admin.app().firestore();
       const docRef = firestore.collection('restaurants').doc(restaurantId);
 
-      docRef.onSnapshot(async (snap) => {
-        if (!snap.exists) return;
-        const data = snap.data();
-        const fbCode = data?.settings?.pairingCode || data?.pairingCode || null;
-        if (!fbCode) return;
+      pairingFirebaseUnsub = docRef.onSnapshot(
+        async (snap) => {
+          if (!snap.exists) return;
+          const data = snap.data();
+          const fbCode = data?.settings?.pairingCode || data?.pairingCode || null;
+          if (!fbCode) return;
 
-        const current = await getPairingCode();
-        if (current === fbCode) return;
+          const current = await getPairingCode();
+          if (current === fbCode) return;
 
-        console.log(`[Pairing] Firebase push → code changed: "${current}" → "${fbCode}"`);
-        await dbRun(
-          "INSERT INTO app_settings (setting_key, setting_value, description) VALUES ('pairing_code', ?, 'Device pairing code') ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?",
-          [fbCode, fbCode]
-        );
+          console.log(`[Pairing] Firebase push → code changed: "${current}" → "${fbCode}"`);
+          await dbRun(
+            "INSERT INTO app_settings (setting_key, setting_value, description) VALUES ('pairing_code', ?, 'Device pairing code') ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?",
+            [fbCode, fbCode]
+          );
 
-        await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [getLocalDatetimeString()]);
-        console.log('[Pairing] All existing tokens revoked due to code change');
+          await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [getLocalDatetimeString()]);
+          console.log('[Pairing] All existing tokens revoked due to code change');
 
-        try {
-          const io = require('express').application?.get?.('io');
-        } catch {}
-      }, (err) => {
-        console.warn('[Pairing] Firebase listener error:', err.message);
-      });
+          try {
+            const io = require('express').application?.get?.('io');
+          } catch {}
+        },
+        (err) => {
+          console.warn('[Pairing] Firebase listener error:', err.message);
+        }
+      );
 
       console.log(`[Pairing] Firebase listener active for restaurant ${restaurantId}`);
     } catch (e) {
       console.log('[Pairing] Firebase listener setup skipped:', e.message);
     }
-  })();
+  }
+
+  attachPairingFirebaseListener().catch((e) => console.log('[Pairing] initial attach:', e.message));
 
   // ==================== 페어링코드 관리 API ====================
 
@@ -199,11 +227,11 @@ module.exports = (db) => {
       const revokeCount = await dbRun("UPDATE device_tokens SET revoked = 1, revoked_at = ? WHERE revoked = 0", [getLocalDatetimeString()]);
       console.log(`[Pairing] Code updated → "${code}", ${revokeCount?.changes || 0} tokens revoked`);
 
-      // Firebase에도 동기화
+      // Firebase에도 동기화 (온라인 ping 있을 때만)
       try {
         const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
         const restaurantId = profile?.firebase_restaurant_id;
-        if (restaurantId) {
+        if (restaurantId && networkConnectivity.isInternetConnected()) {
           const admin = require('firebase-admin');
           if (admin.apps.length) {
             const firestore = admin.app().firestore();
@@ -213,6 +241,8 @@ module.exports = (db) => {
             );
             console.log('[Pairing] Synced to Firebase');
           }
+        } else if (restaurantId) {
+          console.warn('[Pairing] Firebase sync skipped (offline ping)');
         }
       } catch (e) {
         console.warn('[Pairing] Firebase sync failed:', e.message);
@@ -1189,7 +1219,7 @@ module.exports = (db) => {
     }
   });
 
-  return router;
+  return { router, attachPairingFirebaseListener, detachPairingFirebaseListener };
 };
 
 

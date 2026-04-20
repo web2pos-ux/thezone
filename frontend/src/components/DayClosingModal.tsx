@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
 import { getLocalDateString } from '../utils/datetimeUtils';
@@ -279,6 +279,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   /** If OK without receiver server — open picker modal instead of alert */
   const [showShiftTransferPickModal, setShowShiftTransferPickModal] = useState(false);
   const [shiftClosePreflightLoading, setShiftClosePreflightLoading] = useState(false);
+  /** 미결제 시 Transfer 모달을 시프트 캐시 화면당 1회 자동 표시 */
+  const shiftUnpaidTransferModalAutoShownRef = useRef(false);
   /** Employee used for Day Close access — Shift Close applies to this user */
   const [closingAccessEmployeeName, setClosingAccessEmployeeName] = useState<string>('');
   const [closingAccessEmployeeId, setClosingAccessEmployeeId] = useState<string>('');
@@ -893,6 +895,10 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     }
     let cancelled = false;
     setShiftClosePreflightLoading(true);
+    setShiftUnpaidCount(null);
+    setShiftUnpaidOrders([]);
+    setShiftTransferServerId('');
+    setShiftTransferTargets([]);
     (async () => {
       try {
         const [unpaidRes, targetsRes] = await Promise.all([
@@ -931,6 +937,24 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
       cancelled = true;
     };
   }, [showShiftCloseCashOk, closingAccessEmployeeId, isOpen]);
+
+  useEffect(() => {
+    if (showShiftCloseCashOk) shiftUnpaidTransferModalAutoShownRef.current = false;
+  }, [showShiftCloseCashOk]);
+
+  useEffect(() => {
+    if (!showShiftCloseCashOk || shiftClosePreflightLoading) return;
+    if (!closingAccessEmployeeId) return;
+    if (shiftUnpaidCount === null || shiftUnpaidCount <= 0) return;
+    if (shiftUnpaidTransferModalAutoShownRef.current) return;
+    shiftUnpaidTransferModalAutoShownRef.current = true;
+    setShowShiftTransferPickModal(true);
+  }, [
+    showShiftCloseCashOk,
+    shiftClosePreflightLoading,
+    shiftUnpaidCount,
+    closingAccessEmployeeId,
+  ]);
 
   useEffect(() => {
     if (!showShiftCloseCashOk) setShowShiftTransferPickModal(false);
@@ -2205,65 +2229,38 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                       shiftUnpaidCount !== null &&
                       shiftUnpaidCount > 0 && (
                         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-                          <div className="text-sm font-extrabold text-red-800 mb-1">
-                            You have unpaid orders ({shiftUnpaidCount})
+                          <div className="text-sm font-extrabold text-red-800">
+                            Unpaid orders: {shiftUnpaidCount}
                           </div>
-                          {shiftUnpaidOrders.length > 0 && (
-                            <ul className="mb-3 space-y-1.5 rounded-lg border border-amber-200 bg-white/90 px-3 py-2.5 list-none">
-                              {shiftUnpaidOrders.map((o, idx) => (
-                                <li
-                                  key={String(o.id ?? o.order_number ?? idx)}
-                                  className="text-sm font-semibold text-gray-900 leading-snug pl-3 border-l-4 border-amber-500"
-                                >
-                                  {formatShiftUnpaidOrderSummary(o)}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          <div className="text-sm font-extrabold text-amber-900 mb-1">
-                            Choose who receives these orders
-                          </div>
-                          <p className="text-xs text-amber-800 mb-3">
-                            Required to finish Shift Close. Orders, payments, and tips will move to the server you select.
+                          <p className="text-xs text-amber-900 mt-1 mb-2">
+                            A dialog lists orders and who to transfer to. You can open it again anytime.
                           </p>
-                          <div className="text-xs font-bold text-gray-700 mb-2">Servers available</div>
-                          {shiftTransferTargets.length === 0 ? (
-                            <p className="text-xs text-red-600">
-                              No other active servers. Add staff or have another server clock in.
-                            </p>
-                          ) : (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                              {shiftTransferTargets
-                                .slice()
-                                .sort((a, b) =>
-                                  String(a.name || a.id).localeCompare(String(b.name || b.id), 'en', {
-                                    sensitivity: 'base',
-                                  })
-                                )
-                                .map((s) => {
-                                  const sid = String(s.id);
-                                  const selected = String(shiftTransferServerId) === sid;
-                                  const label = (s.name || '').trim() ? s.name : `Server ${s.id}`;
-                                  return (
-                                    <button
-                                      key={sid}
-                                      type="button"
-                                      disabled={isShiftClosing}
-                                      onClick={() => setShiftTransferServerId(sid)}
-                                      className={[
-                                        'min-h-[76px] rounded-2xl px-3 py-3 text-center font-extrabold text-gray-900 transition-[box-shadow,transform,filter] duration-100 ease-out',
-                                        '[-webkit-tap-highlight-color:transparent] touch-manipulation disabled:opacity-50 disabled:cursor-not-allowed',
-                                        selected
-                                          ? 'shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] bg-[#dce0e8] ring-2 ring-amber-500 scale-[0.99]'
-                                          : 'shadow-[5px_5px_10px_#babecc,-5px_-5px_10px_#ffffff] bg-[#e8ecf2] hover:brightness-[1.02] active:shadow-[inset_5px_5px_10px_#babecc,inset_-5px_-5px_10px_#ffffff] active:translate-y-px active:scale-[0.99] active:brightness-[0.96]',
-                                      ].join(' ')}
-                                    >
-                                      <span className="text-sm leading-tight block">{label}</span>
-                                    </button>
-                                  );
-                                })}
-                            </div>
-                          )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={isShiftClosing}
+                              onClick={() => setShowShiftTransferPickModal(true)}
+                              className={`touch-manipulation rounded-xl border-0 px-4 py-2.5 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                                isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                              }`}
+                              style={
+                                isShiftClosing
+                                  ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                                  : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                              }
+                            >
+                              Transfer to…
+                            </button>
+                            {String(shiftTransferServerId || '').trim() ? (
+                              <span className="text-xs font-bold text-green-800">
+                                Selected:{' '}
+                                {shiftTransferTargets.find((s) => String(s.id) === String(shiftTransferServerId))
+                                  ?.name || `Server ${shiftTransferServerId}`}
+                              </span>
+                            ) : (
+                              <span className="text-xs font-semibold text-amber-800">No server selected yet</span>
+                            )}
+                          </div>
                         </div>
                       )}
                   </div>
@@ -2326,15 +2323,15 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     id="shift-transfer-pick-title"
                     className="text-lg font-extrabold text-gray-900 mb-1"
                   >
-                    Transfer unpaid orders to
+                    Transfer to
                   </h2>
                   {shiftUnpaidCount != null && shiftUnpaidCount > 0 && (
                     <div className="text-sm font-extrabold text-red-800 mb-2">
-                      You have unpaid orders ({shiftUnpaidCount})
+                      Unpaid ({shiftUnpaidCount})
                     </div>
                   )}
                   {shiftUnpaidOrders.length > 0 && (
-                    <ul className="mb-4 space-y-1.5 rounded-xl border border-amber-200 bg-white/95 px-3 py-2.5 list-none">
+                    <ul className="mb-4 max-h-[40vh] overflow-y-auto space-y-1.5 rounded-xl border border-amber-200 bg-white/95 px-3 py-2.5 list-none">
                       {shiftUnpaidOrders.map((o, idx) => (
                         <li
                           key={String(o.id ?? o.order_number ?? idx)}
@@ -2347,7 +2344,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                   )}
                   <p className="text-sm text-gray-600 mb-4">
                     {shiftUnpaidCount != null && shiftUnpaidCount > 0
-                      ? 'Tap a server below to receive the orders above.'
+                      ? 'Pick a server below.'
                       : 'Select a server.'}
                   </p>
                   {shiftTransferTargets.length === 0 ? (

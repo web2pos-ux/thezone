@@ -388,6 +388,20 @@ db.serialize(() => {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS shift_close_order_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shift_closing_id INTEGER,
+    session_id TEXT NOT NULL,
+    shift_number INTEGER NOT NULL,
+    from_server_id TEXT,
+    from_server_name TEXT,
+    to_server_id TEXT NOT NULL,
+    to_server_name TEXT,
+    order_ids_json TEXT,
+    order_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`);
+
   // ====== Admin Settings ======
   
   db.run(`CREATE TABLE IF NOT EXISTS admin_settings (
@@ -594,7 +608,11 @@ db.serialize(() => {
     tax_rate REAL DEFAULT 0,
     tax_breakdown TEXT,
     order_mode TEXT,
-    service_pattern TEXT
+    service_pattern TEXT,
+    original_server_id TEXT,
+    original_server_name TEXT,
+    shift_transferred_at TEXT,
+    online_tip REAL DEFAULT 0
   )`);
   
   db.run(`CREATE TABLE IF NOT EXISTS order_items (
@@ -637,6 +655,10 @@ db.serialize(() => {
     guest_number INTEGER,
     status TEXT,
     ref TEXT,
+    server_id TEXT,
+    original_server_id TEXT,
+    original_server_name TEXT,
+    shift_transferred_at TEXT,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
   )`);
   
@@ -844,6 +866,42 @@ db.serialize(() => {
     id INTEGER PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, action TEXT NOT NULL,
     payload_json TEXT, user_id TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  // Firebase 동기화 큐 / DLQ
+  db.run(`CREATE TABLE IF NOT EXISTS firebase_sync_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    order_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    sequence_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT,
+    last_error TEXT,
+    next_retry_at TEXT,
+    order_seq INTEGER NOT NULL DEFAULT 0,
+    deferral_reason TEXT
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_status ON firebase_sync_queue(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order ON firebase_sync_queue(order_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_type ON firebase_sync_queue(type)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order_fifo ON firebase_sync_queue(order_id, id)`);
+  db.run(`CREATE TABLE IF NOT EXISTS firebase_sync_dlq (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_id INTEGER,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    order_id INTEGER,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    auto_retry_count INTEGER NOT NULL DEFAULT 0,
+    next_auto_retry_at TEXT,
+    auto_exhausted INTEGER NOT NULL DEFAULT 0,
+    deferral_reason TEXT,
+    queue_created_at TEXT
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_dlq_created ON firebase_sync_dlq(created_at)`);
 
   // ====== Waiting List ======
   db.run(`CREATE TABLE IF NOT EXISTS waiting_list (

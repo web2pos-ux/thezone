@@ -3,6 +3,7 @@ const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const remoteSyncService = require('../services/remoteSyncService');
 const salesSyncService = require('../services/salesSyncService');
+const firebaseSyncOrchestrator = require('../services/firebaseSyncOrchestrator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 const { resolveServicePattern } = require('../utils/orderServicePattern');
 
@@ -281,7 +282,7 @@ module.exports = (db) => {
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
 			
-			// Firebase 주문/매출 동기화 (POS → Firebase orders → aggregateDailySalesOnOrderWrite)
+			// Firebase 주문/매출 동기화 (오프라인 시 큐)
 			try {
 				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || null;
 				if (restaurantId) {
@@ -293,14 +294,15 @@ module.exports = (db) => {
 						const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
 						const paymentMethod = (payments[0]?.method || 'CASH').toLowerCase().replace(/\s+/g, '_');
 						const firebaseOrderId = orderData.firebase_order_id;
+						const orderDataSafe = JSON.parse(JSON.stringify({ ...orderData, items: orderItems }));
 						if (firebaseOrderId) {
-							await firebaseService.updateOrderStatus(firebaseOrderId, 'completed', restaurantId);
-							await firebaseService.updateOrderAsPaid(restaurantId, firebaseOrderId, {
+							await firebaseSyncOrchestrator.syncOrQueue('order_close_status_and_paid', orderId, {
+								restaurantId,
+								firebaseOrderId,
 								paymentMethod,
-								tip: totalTips
+								totalTips,
 							});
 						} else if (!pickedUpBool) {
-							// Pay & Pickup(픽업 완료) 시: 새 Firebase orders 문서를 만들지 않음 → 투고패널/온라인 큐에 유령 카드 방지
 							const items = orderItems.map(oi => ({
 								name: oi.name,
 								quantity: oi.quantity || 1,
@@ -308,7 +310,7 @@ module.exports = (db) => {
 								subtotal: (oi.quantity || 1) * (oi.price || 0),
 								menuItemId: oi.item_id
 							}));
-							const payload = {
+							const uploadBody = {
 								...orderData,
 								items,
 								status: 'completed',
@@ -318,19 +320,22 @@ module.exports = (db) => {
 								paidAt: orderData.closed_at || orderData.created_at,
 								source: 'POS'
 							};
-							firebaseService.uploadOrder(restaurantId, payload).catch(err => console.warn('[Firebase] Order upload error:', err.message));
+							await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', orderId, {
+								restaurantId,
+								uploadBody,
+							});
 						}
-						salesSyncService.syncPaymentToFirebase(
-							{ ...orderData, items: orderItems },
-							{ amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
+						await firebaseSyncOrchestrator.syncOrQueue('sales_sync_payment', orderId, {
+							orderData: orderDataSafe,
+							paymentData: { amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
 							restaurantId,
-							{ skipDailySales: true }
-						).catch(err => console.warn('[SalesSync] Background sync error:', err.message));
+							options: { skipDailySales: true },
+						});
 						if (orderItems.length > 0) {
-							salesSyncService.syncOrderItemsToFirebase(
-								{ ...orderData, items: orderItems },
-								restaurantId
-							).catch(err => console.warn('[SalesSync] Item sync error:', err.message));
+							await firebaseSyncOrchestrator.syncOrQueue('sales_sync_order_items', orderId, {
+								orderData: orderDataSafe,
+								restaurantId,
+							});
 						}
 					}
 				}
@@ -559,7 +564,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				params.push(servicePatternFilter);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, o.service_pattern, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, o.service_pattern, o.online_tip, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);
@@ -654,26 +659,29 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				]);
 			}
 
-			// Firebase sync - Delivery Order (completed: pending이면 온라인 리스너·GET과 동일 컬렉션에서 중복 처리됨)
+			// Firebase sync - Delivery Order (오프라인 시 큐)
 			try {
 				const restaurantId = remoteSyncService.getRestaurantId();
 				if (restaurantId) {
-					await firebaseService.uploadOrder(restaurantId, {
-						orderNumber: `DL${id}`,
-						orderType: 'DELIVERY',
-						status: 'completed',
-						items: [],
-						total: 0,
-						tableId: `DL${id}`,
-						customerName: name || `${deliveryCompany} #${deliveryOrderNumber}`,
-						customerPhone: '',
-						source: 'POS',
-						deliveryCompany: deliveryCompany || '',
-						deliveryOrderNumber: deliveryOrderNumber || '',
-						prepTime: prepTime || 0,
-						readyTimeLabel: readyTimeLabel || ''
+					await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', null, {
+						restaurantId,
+						uploadBody: {
+							orderNumber: `DL${id}`,
+							orderType: 'DELIVERY',
+							status: 'completed',
+							items: [],
+							total: 0,
+							tableId: `DL${id}`,
+							customerName: name || `${deliveryCompany} #${deliveryOrderNumber}`,
+							customerPhone: '',
+							source: 'POS',
+							deliveryCompany: deliveryCompany || '',
+							deliveryOrderNumber: deliveryOrderNumber || '',
+							prepTime: prepTime || 0,
+							readyTimeLabel: readyTimeLabel || ''
+						},
 					});
-					console.log(`[Delivery-Orders] Order uploaded to Firebase: DL${id}`);
+					console.log(`[Delivery-Orders] Order uploaded to Firebase (or queued): DL${id}`);
 				}
 			} catch (fbErr) {
 				console.error('[Delivery-Orders] Firebase upload failed:', fbErr.message);
@@ -765,7 +773,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.get('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
-			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number, firebase_order_id FROM orders WHERE id = ?`, [orderId]);
+			const order = await dbGet(`SELECT id, order_number, order_type, subtotal, total, status, created_at, closed_at, table_id, server_id, server_name, customer_phone, customer_name, fulfillment_mode, ready_time, pickup_minutes, order_source, kitchen_note, tax, tax_rate, tax_breakdown, adjustments_json, service_charge, online_order_number, firebase_order_id, online_tip FROM orders WHERE id = ?`, [orderId]);
 			if (!order) return res.status(404).json({ success:false, error:'Order not found' });
 			const items = await dbAll(`SELECT id, item_id, name, quantity, price, guest_number, modifiers_json, memo_json, discount_json, split_denominator, split_numerator, order_line_id, item_source, togo_label, tax_group_id, printer_group_id FROM order_items WHERE order_id = ? ORDER BY id ASC`, [orderId]);
 			const adjustments = await dbAll(`SELECT id, kind, mode, value, amount_applied, label, applied_by_employee_id, applied_by_name, created_at FROM order_adjustments WHERE order_id = ? ORDER BY id ASC`, [orderId]);
@@ -1531,26 +1539,29 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				}
 			}
 
-			// 파이어베이스로 주문 업로드 (Dashboard 연동)
+			// 파이어베이스로 주문 업로드 (Dashboard 연동, 오프라인 시 큐)
 			try {
 				const restaurantId = remoteSyncService.getRestaurantId();
 				if (restaurantId) {
-					await firebaseService.uploadOrder(restaurantId, {
-						orderNumber: String(dailyNumber).padStart(3, '0'),
-						orderType: orderTypeToSave || 'POS',
-						status: 'completed', // POS에서 저장된 주문은 이미 확정된 상태로 간주
-						items: mergedItems.map(it => ({
-							name: it.name || '',
-							price: Number(it.price || it.totalPrice || 0),
-							quantity: Number(it.quantity || 1),
-							subtotal: Number(it.price || it.totalPrice || 0) * Number(it.quantity || 1),
-							options: it.modifiers || []
-						})),
-						total: total || 0,
-						tableId: tableId || '',
-						customerName: customerName || 'POS Order',
-						customerPhone: customerPhone || '',
-						source: 'POS'
+					await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', orderId, {
+						restaurantId,
+						uploadBody: {
+							orderNumber: String(dailyNumber).padStart(3, '0'),
+							orderType: orderTypeToSave || 'POS',
+							status: 'completed',
+							items: mergedItems.map(it => ({
+								name: it.name || '',
+								price: Number(it.price || it.totalPrice || 0),
+								quantity: Number(it.quantity || 1),
+								subtotal: Number(it.price || it.totalPrice || 0) * Number(it.quantity || 1),
+								options: it.modifiers || []
+							})),
+							total: total || 0,
+							tableId: tableId || '',
+							customerName: customerName || 'POS Order',
+							customerPhone: customerPhone || '',
+							source: 'POS'
+						},
 					});
 				}
 			} catch (firebaseErr) {

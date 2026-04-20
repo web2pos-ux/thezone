@@ -281,69 +281,72 @@ module.exports = (db) => {
 			await dbRun(updateSql, updateParams);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
-			
-			// Firebase 주문/매출 동기화 (오프라인 시 큐)
-			try {
-				const restaurantId = process.env.FIREBASE_RESTAURANT_ID || null;
-				if (restaurantId) {
-					const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [orderId]);
-					const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [orderId]);
-					const orderItems = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
-					if (orderData && payments.length > 0) {
-						const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
-						const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
-						const paymentMethod = (payments[0]?.method || 'CASH').toLowerCase().replace(/\s+/g, '_');
-						const firebaseOrderId = orderData.firebase_order_id;
-						const orderDataSafe = JSON.parse(JSON.stringify({ ...orderData, items: orderItems }));
-						if (firebaseOrderId) {
-							await firebaseSyncOrchestrator.syncOrQueue('order_close_status_and_paid', orderId, {
-								restaurantId,
-								firebaseOrderId,
-								paymentMethod,
-								totalTips,
-							});
-						} else if (!pickedUpBool) {
-							const items = orderItems.map(oi => ({
-								name: oi.name,
-								quantity: oi.quantity || 1,
-								price: oi.price || 0,
-								subtotal: (oi.quantity || 1) * (oi.price || 0),
-								menuItemId: oi.item_id
-							}));
-							const uploadBody = {
-								...orderData,
-								items,
-								status: 'completed',
-								paymentStatus: 'paid',
-								paymentMethod,
-								tip: totalTips,
-								paidAt: orderData.closed_at || orderData.created_at,
-								source: 'POS'
-							};
-							await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', orderId, {
-								restaurantId,
-								uploadBody,
-							});
-						}
-						await firebaseSyncOrchestrator.syncOrQueue('sales_sync_payment', orderId, {
-							orderData: orderDataSafe,
-							paymentData: { amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
-							restaurantId,
-							options: { skipDailySales: true },
-						});
-						if (orderItems.length > 0) {
-							await firebaseSyncOrchestrator.syncOrQueue('sales_sync_order_items', orderId, {
-								orderData: orderDataSafe,
-								restaurantId,
-							});
-						}
-					}
-				}
-			} catch (syncErr) {
-				console.warn('[Firebase] Sync skipped:', syncErr.message);
-			}
-			
+
 			res.json({ success: true, closedAt });
+
+			// Firebase 주문/매출 동기화 — HTTP 응답 후 백그라운드 (외부망 지연 시 결제 완료·영수증 흐름이 막히지 않도록)
+			setImmediate(() => {
+				(async () => {
+					try {
+						const restaurantId = process.env.FIREBASE_RESTAURANT_ID || null;
+						if (!restaurantId) return;
+						const orderData = await dbGet(`SELECT * FROM orders WHERE id = ?`, [orderId]);
+						const payments = await dbAll(`SELECT * FROM payments WHERE order_id = ? AND status = 'APPROVED'`, [orderId]);
+						const orderItems = await dbAll(`SELECT * FROM order_items WHERE order_id = ?`, [orderId]);
+						if (orderData && payments.length > 0) {
+							const totalPayment = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+							const totalTips = payments.reduce((sum, p) => sum + (p.tip || 0), 0);
+							const paymentMethod = (payments[0]?.method || 'CASH').toLowerCase().replace(/\s+/g, '_');
+							const firebaseOrderId = orderData.firebase_order_id;
+							const orderDataSafe = JSON.parse(JSON.stringify({ ...orderData, items: orderItems }));
+							if (firebaseOrderId) {
+								await firebaseSyncOrchestrator.syncOrQueue('order_close_status_and_paid', orderId, {
+									restaurantId,
+									firebaseOrderId,
+									paymentMethod,
+									totalTips,
+								});
+							} else if (!pickedUpBool) {
+								const items = orderItems.map(oi => ({
+									name: oi.name,
+									quantity: oi.quantity || 1,
+									price: oi.price || 0,
+									subtotal: (oi.quantity || 1) * (oi.price || 0),
+									menuItemId: oi.item_id
+								}));
+								const uploadBody = {
+									...orderData,
+									items,
+									status: 'completed',
+									paymentStatus: 'paid',
+									paymentMethod,
+									tip: totalTips,
+									paidAt: orderData.closed_at || orderData.created_at,
+									source: 'POS'
+								};
+								await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', orderId, {
+									restaurantId,
+									uploadBody,
+								});
+							}
+							await firebaseSyncOrchestrator.syncOrQueue('sales_sync_payment', orderId, {
+								orderData: orderDataSafe,
+								paymentData: { amount: totalPayment, tip: totalTips, method: payments[0]?.method || 'CASH' },
+								restaurantId,
+								options: { skipDailySales: true },
+							});
+							if (orderItems.length > 0) {
+								await firebaseSyncOrchestrator.syncOrQueue('sales_sync_order_items', orderId, {
+									orderData: orderDataSafe,
+									restaurantId,
+								});
+							}
+						}
+					} catch (syncErr) {
+						console.warn('[Firebase] Sync skipped (background close):', syncErr.message);
+					}
+				})().catch((e) => console.warn('[Firebase] Close background:', e && e.message ? e.message : e));
+			});
 		} catch (e) {
 			console.error('Failed to close order:', e);
 			res.status(500).json({ success:false, error: 'Failed to close order' });
@@ -1539,36 +1542,42 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				}
 			}
 
-			// 파이어베이스로 주문 업로드 (Dashboard 연동, 오프라인 시 큐)
-			try {
-				const restaurantId = remoteSyncService.getRestaurantId();
-				if (restaurantId) {
-					await firebaseSyncOrchestrator.syncOrQueue('firebase_upload_order', orderId, {
-						restaurantId,
-						uploadBody: {
-							orderNumber: String(dailyNumber).padStart(3, '0'),
-							orderType: orderTypeToSave || 'POS',
-							status: 'completed',
-							items: mergedItems.map(it => ({
-								name: it.name || '',
-								price: Number(it.price || it.totalPrice || 0),
-								quantity: Number(it.quantity || 1),
-								subtotal: Number(it.price || it.totalPrice || 0) * Number(it.quantity || 1),
-								options: it.modifiers || []
-							})),
-							total: total || 0,
-							tableId: tableId || '',
-							customerName: customerName || 'POS Order',
-							customerPhone: customerPhone || '',
-							source: 'POS'
-						},
-					});
-				}
-			} catch (firebaseErr) {
-				console.error('[Orders] Failed to upload to Firebase:', firebaseErr.message);
-			}
-
 			res.json({ success: true, orderId, dailyNumber, order_number: String(dailyNumber).padStart(3, '0'), createdAt });
+
+			// 클라우드 동기/큐는 HTTP 응답 후 백그라운드 — 외부 인터넷 지연 시에도 OK·Kitchen·테이블맵 이동이 막히지 않도록
+			const restaurantIdBg = remoteSyncService.getRestaurantId();
+			if (restaurantIdBg) {
+				const uploadBodyBg = {
+					orderNumber: String(dailyNumber).padStart(3, '0'),
+					orderType: orderTypeToSave || 'POS',
+					status: 'completed',
+					items: mergedItems.map(it => ({
+						name: it.name || '',
+						price: Number(it.price || it.totalPrice || 0),
+						quantity: Number(it.quantity || 1),
+						subtotal: Number(it.price || it.totalPrice || 0) * Number(it.quantity || 1),
+						options: it.modifiers || []
+					})),
+					total: total || 0,
+					tableId: tableId || '',
+					customerName: customerName || 'POS Order',
+					customerPhone: customerPhone || '',
+					source: 'POS'
+				};
+				setImmediate(() => {
+					firebaseSyncOrchestrator
+						.syncOrQueue('firebase_upload_order', orderId, {
+							restaurantId: restaurantIdBg,
+							uploadBody: uploadBodyBg,
+						})
+						.catch((firebaseErr) => {
+							console.error(
+								'[Orders] Firebase sync (background):',
+								firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr,
+							);
+						});
+				});
+			}
 		} catch (e) {
 			console.error('Failed to save order:', e);
 			res.status(500).json({ success:false, error: 'Failed to save order' });

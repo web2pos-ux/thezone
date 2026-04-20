@@ -7,6 +7,13 @@ import { API_URL } from '../config/constants';
 import { getModifierLayoutForCategory } from '../utils/modifierLayoutTemplate';
 import { reorderModifierSlotIds } from '../utils/modifierSlotReorder';
 import { fetchComposedModifierEntries } from '../utils/composedModifierEntries';
+import {
+  TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+  TABLE_MAP_TOGO_PANEL_SPLIT_OPTIONS,
+  readTableMapTogoPanelSplitFromStorage,
+  notifyTableMapTogoPanelSplitChanged,
+  type TableMapTogoPanelSplitPreset,
+} from '../utils/tableMapTogoPanelSplit';
 
 interface Category { category_id: number; name: string; }
 interface MenuItem { id: string; name: string; price: number; category_id?: number; }
@@ -125,6 +132,9 @@ const OrderPageManagerPage: React.FC = () => {
     } catch {}
     return true;
   });
+  const [togoPanelSplitPreset, setTogoPanelSplitPreset] = useState<TableMapTogoPanelSplitPreset>(() =>
+    readTableMapTogoPanelSplitFromStorage()
+  );
 
   const handleTogoPanelToggle = (enabled: boolean) => {
     try {
@@ -136,6 +146,22 @@ const OrderPageManagerPage: React.FC = () => {
       setTogoPanelEnabled(enabled);
     } catch {}
   };
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === TABLE_MAP_TOGO_PANEL_SPLIT_KEY) {
+        setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+      }
+      if (e.key === 'tableMapChannelVisibility' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          setTogoPanelEnabled(parsed?.togo !== false);
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // distance: 10 으로 완화 → 클릭 시 의도치 않은 드래그 방지
   const sensors = useSensors(
@@ -624,14 +650,14 @@ const OrderPageManagerPage: React.FC = () => {
         </div>
       </div>
 
-      {/* TOGO Panel Toggle */}
-      <div className="mb-6 bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-        <div className="flex items-center justify-between">
+      {/* TOGO Panel + screen ratio (accordion: expands when ON) */}
+      <div className="mb-6 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-4 flex items-center justify-between gap-4">
           <div>
             <h2 className="font-semibold text-gray-900 text-sm">TOGO Panel (Right Side)</h2>
             <p className="text-xs text-gray-500 mt-0.5">Show or hide the Togo/Delivery/Online order panel on the Sales screen</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button
               type="button"
               onClick={() => handleTogoPanelToggle(true)}
@@ -654,6 +680,47 @@ const OrderPageManagerPage: React.FC = () => {
             >
               OFF
             </button>
+          </div>
+        </div>
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none ${
+            togoPanelEnabled ? '[grid-template-rows:1fr]' : '[grid-template-rows:0fr]'
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="border-t border-gray-100 bg-gray-50/60 px-4 pb-4 pt-4">
+              <h3 className="font-semibold text-gray-900 text-sm">Table map / TOGO panel width</h3>
+              <p className="text-xs text-gray-500 mt-0.5 mb-3">Table map (left) : TOGO panel (right).</p>
+              <div className="grid grid-cols-3 gap-2 max-w-md">
+                {TABLE_MAP_TOGO_PANEL_SPLIT_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem(TABLE_MAP_TOGO_PANEL_SPLIT_KEY, opt.value);
+                        setTogoPanelSplitPreset(opt.value);
+                        window.dispatchEvent(
+                          new StorageEvent('storage', {
+                            key: TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+                            newValue: opt.value,
+                            url: window.location.href,
+                          } as StorageEventInit)
+                        );
+                        notifyTableMapTogoPanelSplitChanged();
+                      } catch {}
+                    }}
+                    className={`py-2 px-2 rounded-lg border-2 text-sm font-semibold transition-all ${
+                      togoPanelSplitPreset === opt.value
+                        ? 'border-violet-500 bg-violet-50 text-violet-800'
+                        : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>

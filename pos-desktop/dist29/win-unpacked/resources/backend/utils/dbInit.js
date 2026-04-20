@@ -529,6 +529,10 @@ async function initDatabase(db) {
       { col: 'order_mode', sql: "ALTER TABLE orders ADD COLUMN order_mode TEXT" },
       { col: 'service_charge', sql: "ALTER TABLE orders ADD COLUMN service_charge REAL DEFAULT 0" },
       { col: 'service_pattern', sql: "ALTER TABLE orders ADD COLUMN service_pattern TEXT" },
+      { col: 'original_server_id', sql: "ALTER TABLE orders ADD COLUMN original_server_id TEXT" },
+      { col: 'original_server_name', sql: "ALTER TABLE orders ADD COLUMN original_server_name TEXT" },
+      { col: 'shift_transferred_at', sql: "ALTER TABLE orders ADD COLUMN shift_transferred_at TEXT" },
+      { col: 'online_tip', sql: "ALTER TABLE orders ADD COLUMN online_tip REAL DEFAULT 0" },
     ];
     for (const m of ordersMigrations) {
       if (!ordersColNames.includes(m.col)) {
@@ -615,6 +619,15 @@ async function initDatabase(db) {
     if (!paymentsColNames.includes('server_id')) {
       try { await dbRun("ALTER TABLE payments ADD COLUMN server_id TEXT"); console.log('[dbInit] Added server_id to payments'); } catch (e) { console.error('[dbInit] payments.server_id:', e.message); }
     }
+    if (!paymentsColNames.includes('original_server_id')) {
+      try { await dbRun("ALTER TABLE payments ADD COLUMN original_server_id TEXT"); console.log('[dbInit] Added original_server_id to payments'); } catch (e) { console.error('[dbInit] payments.original_server_id:', e.message); }
+    }
+    if (!paymentsColNames.includes('original_server_name')) {
+      try { await dbRun("ALTER TABLE payments ADD COLUMN original_server_name TEXT"); console.log('[dbInit] Added original_server_name to payments'); } catch (e) { console.error('[dbInit] payments.original_server_name:', e.message); }
+    }
+    if (!paymentsColNames.includes('shift_transferred_at')) {
+      try { await dbRun("ALTER TABLE payments ADD COLUMN shift_transferred_at TEXT"); console.log('[dbInit] Added shift_transferred_at to payments'); } catch (e) { console.error('[dbInit] payments.shift_transferred_at:', e.message); }
+    }
 
     // Tips are NOT part of sales revenue; store them separately
     await dbRun(`CREATE TABLE IF NOT EXISTS tips (
@@ -627,6 +640,15 @@ async function initDatabase(db) {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
     )`);
+
+    const tipsColInfo = await dbAll("PRAGMA table_info(tips)");
+    const tipsColNames = tipsColInfo.map(c => c.name);
+    if (!tipsColNames.includes('original_employee_id')) {
+      try { await dbRun("ALTER TABLE tips ADD COLUMN original_employee_id TEXT"); console.log('[dbInit] Added original_employee_id to tips'); } catch (e) { console.error('[dbInit] tips.original_employee_id:', e.message); }
+    }
+    if (!tipsColNames.includes('shift_transferred_at')) {
+      try { await dbRun("ALTER TABLE tips ADD COLUMN shift_transferred_at TEXT"); console.log('[dbInit] Added shift_transferred_at to tips'); } catch (e) { console.error('[dbInit] tips.shift_transferred_at:', e.message); }
+    }
 
     await dbRun(`CREATE TABLE IF NOT EXISTS order_adjustments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -835,6 +857,21 @@ async function initDatabase(db) {
 
     await ensureDailyClosings();
     await ensureShiftClosings();
+
+    await dbRun(`CREATE TABLE IF NOT EXISTS shift_close_order_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shift_closing_id INTEGER,
+      session_id TEXT NOT NULL,
+      shift_number INTEGER NOT NULL,
+      from_server_id TEXT,
+      from_server_name TEXT,
+      to_server_id TEXT NOT NULL,
+      to_server_name TEXT,
+      order_ids_json TEXT,
+      order_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_shift_close_transfers_session ON shift_close_order_transfers(session_id, shift_number)`);
 
     await dbRun(`CREATE TABLE IF NOT EXISTS admin_settings (
       key TEXT PRIMARY KEY,
@@ -1472,6 +1509,94 @@ async function initDatabase(db) {
       ON audit_log(reference_id)`);
     await dbRun(`CREATE INDEX IF NOT EXISTS idx_audit_log_time
       ON audit_log(timestamp)`);
+
+    // Firebase 동기화 큐 (오프라인 시 쓰기 대기 / DLQ)
+    await dbRun(`CREATE TABLE IF NOT EXISTS firebase_sync_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      order_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      sequence_key TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT,
+      last_error TEXT,
+      next_retry_at TEXT,
+      order_seq INTEGER NOT NULL DEFAULT 0,
+      deferral_reason TEXT
+    )`);
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_status ON firebase_sync_queue(status)`,
+    );
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order ON firebase_sync_queue(order_id)`,
+    );
+    await dbRun(`CREATE TABLE IF NOT EXISTS firebase_sync_dlq (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      queue_id INTEGER,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      order_id INTEGER,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      auto_retry_count INTEGER NOT NULL DEFAULT 0,
+      next_auto_retry_at TEXT,
+      auto_exhausted INTEGER NOT NULL DEFAULT 0,
+      deferral_reason TEXT,
+      queue_created_at TEXT
+    )`);
+    await dbRun(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_dlq_created ON firebase_sync_dlq(created_at)`);
+
+    try {
+      const fsqCols = await dbAll(`PRAGMA table_info(firebase_sync_queue)`);
+      const fsqNames = new Set((fsqCols || []).map((c) => c.name));
+      if (!fsqNames.has('sequence_key')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN sequence_key TEXT`);
+      }
+      if (!fsqNames.has('next_retry_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN next_retry_at TEXT`);
+      }
+      if (!fsqNames.has('order_seq')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN order_seq INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsqNames.has('deferral_reason')) {
+        await dbRun(`ALTER TABLE firebase_sync_queue ADD COLUMN deferral_reason TEXT`);
+      }
+    } catch (mErr) {
+      console.warn('[dbInit] firebase_sync_queue migration:', mErr.message);
+    }
+    try {
+      const fsdlqCols = await dbAll(`PRAGMA table_info(firebase_sync_dlq)`);
+      const fsdlqNames = new Set((fsdlqCols || []).map((c) => c.name));
+      if (!fsdlqNames.has('auto_retry_count')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsdlqNames.has('next_auto_retry_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN next_auto_retry_at TEXT`);
+      }
+      if (!fsdlqNames.has('auto_exhausted')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN auto_exhausted INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!fsdlqNames.has('deferral_reason')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN deferral_reason TEXT`);
+      }
+      if (!fsdlqNames.has('queue_created_at')) {
+        await dbRun(`ALTER TABLE firebase_sync_dlq ADD COLUMN queue_created_at TEXT`);
+      }
+      await dbRun(
+        `UPDATE firebase_sync_dlq SET next_auto_retry_at = datetime('now', '+15 minutes')
+         WHERE next_auto_retry_at IS NULL AND IFNULL(auto_exhausted,0) = 0`,
+      );
+    } catch (dlqM) {
+      console.warn('[dbInit] firebase_sync_dlq migration:', dlqM.message);
+    }
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_type ON firebase_sync_queue(type)`,
+    );
+    await dbRun(
+      `CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order_fifo ON firebase_sync_queue(order_id, id)`,
+    );
 
     console.log('[dbInit] Employee and Work Schedule tables ensured');
 

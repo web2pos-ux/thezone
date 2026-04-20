@@ -65,37 +65,42 @@ module.exports = (db) => {
 				 VALUES(?,?,?,?,?,?,?,?,?)`,
 				[orderId, method, amount, tipAmount, ref, status, guestNumber, createdAt, changeAmt]
 			);
-			
-			// Firebase에도 결제 데이터 저장 (오프라인 시 큐)
-			try {
-				const restaurantId = await getRestaurantId();
-				if (restaurantId) {
-					await firebaseSyncOrchestrator.syncOrQueue(
-						'payment_bundle',
-						Number(orderId),
-						{
-							restaurantId,
-							orderId,
-							guestNumber,
-							paymentData: {
-								paymentId: result.lastID,
-								orderId,
-								method,
-								amount,
-								tip: tipAmount,
-								ref,
-								status,
-								guestNumber,
-								createdAt,
-							},
-						},
-					);
-				}
-			} catch (firebaseErr) {
-				console.warn('Firebase payment sync failed (non-fatal):', firebaseErr.message);
-			}
-			
+
 			res.json({ success:true, paymentId: result.lastID, createdAt });
+
+			// 클라우드 동기/큐는 HTTP 응답 후 — 외부망 지연 시 결제 완료·영수증 흐름이 막히지 않도록
+			setImmediate(() => {
+				getRestaurantId()
+					.then((restaurantIdBg) => {
+						if (!restaurantIdBg) return;
+						return firebaseSyncOrchestrator.syncOrQueue(
+							'payment_bundle',
+							Number(orderId),
+							{
+								restaurantId: restaurantIdBg,
+								orderId,
+								guestNumber,
+								paymentData: {
+									paymentId: result.lastID,
+									orderId,
+									method,
+									amount,
+									tip: tipAmount,
+									ref,
+									status,
+									guestNumber,
+									createdAt,
+								},
+							},
+						);
+					})
+					.catch((firebaseErr) => {
+						console.warn(
+							'Firebase payment sync (background):',
+							firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr,
+						);
+					});
+			});
 		} catch (e) {
 			console.error('Failed to create payment:', e);
 			res.status(500).json({ success:false, error:'Failed to create payment' });

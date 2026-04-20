@@ -880,7 +880,8 @@ db.serialize(() => {
     updated_at TEXT,
     last_error TEXT,
     next_retry_at TEXT,
-    order_seq INTEGER NOT NULL DEFAULT 0
+    order_seq INTEGER NOT NULL DEFAULT 0,
+    deferral_reason TEXT
   )`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_status ON firebase_sync_queue(status)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_queue_order ON firebase_sync_queue(order_id)`);
@@ -896,7 +897,9 @@ db.serialize(() => {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     auto_retry_count INTEGER NOT NULL DEFAULT 0,
     next_auto_retry_at TEXT,
-    auto_exhausted INTEGER NOT NULL DEFAULT 0
+    auto_exhausted INTEGER NOT NULL DEFAULT 0,
+    deferral_reason TEXT,
+    queue_created_at TEXT
   )`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_firebase_sync_dlq_created ON firebase_sync_dlq(created_at)`);
 

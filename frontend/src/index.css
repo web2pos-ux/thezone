@@ -26,6 +26,21 @@ html, body, #root {
   animation: slide-in-right 0.3s ease-out;
 }
 
+/* 오프라인 알림 상단 배너 — 텍스트 깜빡임 */
+@keyframes offline-alert-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.offline-alert-blink {
+  animation: offline-alert-blink 2.8s ease-in-out infinite;
+}
+
 :root,
 .menu-edit-scope {
   --layer-base: #3b82f6; /* 기본 파란색 */

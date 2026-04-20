@@ -119,7 +119,9 @@ router.get('/elements', (req, res) => {
       t.status,
       t.current_order_id,
       t.created_at,
-      o.status AS order_status
+      o.status AS order_status,
+      o.server_name AS order_server_name,
+      o.server_id AS order_server_id
     FROM table_map_elements t
     LEFT JOIN orders o ON t.current_order_id = o.id
     WHERE t.floor = ?
@@ -189,7 +191,9 @@ router.get('/elements', (req, res) => {
       fontSize: row.fontSize || 20,
       color: row.color || '#3B82F6',
       status: row.status || 'Available',
-      current_order_id: row.current_order_id || null
+      current_order_id: row.current_order_id || null,
+      order_server_name: row.current_order_id ? (row.order_server_name || null) : null,
+      order_server_id: row.current_order_id ? (row.order_server_id != null && row.order_server_id !== '' ? row.order_server_id : null) : null
     }));
     
     // console.log(`✅ ${floor} 요소 조회 완료: ${elements.length}개`);

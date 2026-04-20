@@ -499,7 +499,6 @@ const dailyClosingsRoutes = require('./routes/daily-closings')(db);
 const appSettingsRoutes = require('./routes/app-settings');
 const diagnosticsRoutes = require('./routes/diagnostics')(db);
 const networkRoutes = require('./routes/network')();
-const firebaseSyncDlqRoutes = require('./routes/firebase-sync-dlq')();
 const serverSettlementsRoutes = require('./routes/server-settlements');
 const settingsTransferRoutes = require('./routes/settings-transfer');
 
@@ -546,6 +545,7 @@ app.use('/api/daily-closings', dailyClosingsRoutes);
 app.use('/api/app-settings', appSettingsRoutes);
 app.use('/api/diagnostics', diagnosticsRoutes);
 app.use('/api/network', networkRoutes);
+const firebaseSyncDlqRoutes = require('./routes/firebase-sync-dlq')();
 app.use('/api/firebase-sync', firebaseSyncDlqRoutes);
 app.use('/api/server-settlements', serverSettlementsRoutes);
 app.use('/api/settings-transfer', settingsTransferRoutes);

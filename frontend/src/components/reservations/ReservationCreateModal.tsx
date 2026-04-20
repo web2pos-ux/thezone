@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { API_URL } from '../../config/constants';
 import VirtualKeyboard from '../order/VirtualKeyboard';
 import { Keyboard as KeyboardIcon } from 'lucide-react';
@@ -162,6 +162,16 @@ function formatReservationSlotEn(raw: string | undefined): string {
 	return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
+/** reservation_time HH:mm → minutes from midnight (sort / anchor) */
+function reservationTimeToMinutes(raw: string | undefined): number {
+	const m = String(raw || '').match(/^(\d{1,2}):(\d{2})/);
+	if (!m) return 99999;
+	const h = Number(m[1]);
+	const min = Number(m[2]);
+	if (!Number.isFinite(h) || !Number.isFinite(min)) return 99999;
+	return h * 60 + min;
+}
+
 /** When the reservation was created (DB created_at) */
 function formatBookedAtEn(raw: string | undefined): string {
 	if (!raw) return '—';
@@ -193,6 +203,7 @@ const buildMonth = (baseDate: Date) => {
 
 const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, onClose, onCreated, onTableStatusChanged }) => {
 	const anchorRef = useRef<HTMLDivElement | null>(null);
+	const createTodayResListScrollRef = useRef<HTMLDivElement | null>(null);
 	const slotModalRef = useRef<HTMLDivElement | null>(null);
 	const [slotModalStyle, setSlotModalStyle] = useState<React.CSSProperties>({});
 	const [name, setName] = useState<string>('');
@@ -503,6 +514,50 @@ const ReservationCreateModal: React.FC<ReservationCreateModalProps> = ({ open, o
 			setTodayReservations([]);
 		}
 	}, [loadMonthReservationCountsFromApi, today]);
+
+	/** Create 탭: 달력 아래 "Today's Reservation" 스크롤 앵커 — 분 단위 갱신 */
+	const [createTabTimeTick, setCreateTabTimeTick] = useState(0);
+	useEffect(() => {
+		if (!open || activeTab !== 'create') return;
+		const id = window.setInterval(() => setCreateTabTimeTick((t) => t + 1), 60000);
+		return () => window.clearInterval(id);
+	}, [open, activeTab]);
+
+	const createTabSortedTodayReservations = useMemo(() => {
+		void createTabTimeTick;
+		return (todayReservations || [])
+			.filter((r: any) => r.status !== 'cancelled' && r.status !== 'no_show')
+			.filter((r: any) => {
+				const d = normalizeReservationDateKey(r.reservation_date);
+				return !d || d === today;
+			})
+			.slice()
+			.sort(
+				(a: any, b: any) =>
+					reservationTimeToMinutes(a.reservation_time) - reservationTimeToMinutes(b.reservation_time),
+			);
+	}, [todayReservations, today, createTabTimeTick]);
+
+	const createTabTodayScrollIndex = useMemo(() => {
+		void createTabTimeTick;
+		const now = new Date();
+		const anchor = new Date(now.getTime() - 30 * 60 * 1000);
+		const anchorM = anchor.getHours() * 60 + anchor.getMinutes();
+		const idx = createTabSortedTodayReservations.findIndex(
+			(r: any) => reservationTimeToMinutes(r.reservation_time) >= anchorM,
+		);
+		return idx < 0 ? 0 : idx;
+	}, [createTabSortedTodayReservations, createTabTimeTick]);
+
+	useLayoutEffect(() => {
+		if (!open || activeTab !== 'create') return;
+		const root = createTodayResListScrollRef.current;
+		if (!root || createTabSortedTodayReservations.length === 0) return;
+		const el = root.querySelector(`[data-today-res-idx="${createTabTodayScrollIndex}"]`);
+		if (el && typeof (el as HTMLElement).scrollIntoView === 'function') {
+			(el as HTMLElement).scrollIntoView({ block: 'start', behavior: 'auto' });
+		}
+	}, [open, activeTab, createTabTodayScrollIndex, createTabSortedTodayReservations.length]);
 
 	/** 취소/노쇼 등 상태 변경 후 달력·오늘·선택일 타임라인 목록을 DB와 맞춤 */
 	const refreshReservationListsAfterStatusChange = useCallback(async () => {
@@ -1398,11 +1453,12 @@ const handleSave = async () => {
 
 				{/* ===== CREATE TAB ===== */}
 				{activeTab === 'create' && <>
-				{/* Main layout: calendar left, slot settings right */}
-				<div className="flex gap-2">
-					{/* Left: Calendar Section */}
-					<div className="flex-1 min-w-0">
-						<div className="flex items-center justify-center gap-2 mb-2">
+				{/* Main layout: top row calendar | Slot Settings (bottoms aligned); full-width Today's Reservation below */}
+				<div className="flex flex-col gap-2">
+					<div className="flex gap-2 items-stretch">
+					{/* Left: Calendar Section — calendar card flex-1 so its bottom aligns with Slot Settings */}
+					<div className="flex-1 min-w-0 flex flex-col min-h-0">
+						<div className="flex items-center justify-center gap-2 mb-2 shrink-0">
 							<button
 								type="button"
 								onClick={() => setAvailMonthOffset(prev => prev - 1)}
@@ -1428,12 +1484,19 @@ const handleSave = async () => {
 							</button>
 						</div>
 
-					{/* Availability calendar */}
-					<div ref={anchorRef} className="rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
-						<div className="grid grid-cols-7 gap-[5px] mb-2">
+					{/* Availability calendar — 연한 스카이 파스텔 배경 */}
+					<div
+						ref={anchorRef}
+						className="flex-1 flex flex-col min-h-0 rounded-[14px] p-3"
+						style={{
+							...PAY_NEO.inset,
+							background: 'linear-gradient(145deg, #e8f4fc 0%, #dbeafe 45%, #e0e7ff 100%)',
+						}}
+					>
+						<div className="grid grid-cols-7 gap-[5px] mb-2 shrink-0">
 							{['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <span key={d} className="text-center text-xs font-bold text-gray-500">{d}</span>)}
 						</div>
-						<div className="grid grid-cols-7 gap-[5px]">
+						<div className="grid grid-cols-7 gap-[5px] shrink-0">
 							{Array.from({ length: availabilityMonth.firstWeekday }).map((_, i) => (
 								<div key={`pad-av-${i}`} className="aspect-square w-full" aria-hidden />
 							))}
@@ -1483,11 +1546,18 @@ const handleSave = async () => {
 								);
 							})}
 							</div>
+						<div className="flex-1 min-h-0" aria-hidden="true" />
 					</div>
 				</div>
 
-					{/* Right: Slot Settings Panel */}
-					<div className="w-[160px] flex-shrink-0 rounded-[14px] p-3" style={{ ...PAY_NEO.inset }}>
+					{/* Right: Slot Settings Panel — 연한 라벤더·민트 파스텔 배경 */}
+					<div
+						className="w-[160px] flex-shrink-0 flex flex-col rounded-[14px] p-3"
+						style={{
+							...PAY_NEO.inset,
+							background: 'linear-gradient(145deg, #f3e8ff 0%, #ede9fe 40%, #ecfdf5 100%)',
+						}}
+					>
 						<div className="text-sm font-semibold text-gray-700 mb-3">⚙️ Slot Settings</div>
 						
 						<div className="mb-3">
@@ -1564,6 +1634,66 @@ const handleSave = async () => {
 						>
 							{slotsSaved ? '✓ Saved' : savingSlots ? 'Saving...' : 'Save'}
 						</button>
+					</div>
+					</div>
+
+					{/* Today's Reservation — 연한 피치·크림 파스텔 배경 */}
+					<div
+						className="w-full min-w-0 rounded-[14px] p-3"
+						style={{
+							...PAY_NEO.inset,
+							background: 'linear-gradient(145deg, #fff7ed 0%, #ffedd5 50%, #fef3c7 100%)',
+						}}
+					>
+						<div className="text-sm font-semibold text-gray-800 mb-2">Today&apos;s Reservation</div>
+						<div
+							ref={createTodayResListScrollRef}
+							className="max-h-[min(42vh,320px)] overflow-y-auto pr-0.5 [scrollbar-width:thin] [scrollbar-color:rgba(100,116,139,0.45)_transparent]"
+						>
+							{createTabSortedTodayReservations.length === 0 ? (
+								<div className="text-center text-xs text-gray-400 py-6">No reservations today.</div>
+							) : (
+								<div className="grid grid-cols-2 gap-x-3 gap-y-3">
+									{createTabSortedTodayReservations.map((r: any, i: number) => (
+										<div
+											key={String(r.id ?? `t-${i}`)}
+											data-today-res-idx={i}
+											className={`rounded-[10px] border-0 py-[5px] px-2.5 ${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS}`}
+											style={{
+												background: 'linear-gradient(160deg, #eceff4 0%, #e2e6ee 45%, #d6dbe4 100%)',
+												boxShadow:
+													'6px 6px 14px rgba(150, 158, 172, 0.52), -5px -5px 12px rgba(255, 255, 255, 0.94), 0 1px 0 rgba(255, 255, 255, 0.65)',
+												borderRadius: 10,
+												border: 0,
+											}}
+										>
+											<div className="flex items-baseline gap-1.5 min-w-0 leading-none">
+												<span className="text-sm font-extrabold text-blue-800 shrink-0 tracking-tight">
+													{formatReservationSlotEn(r.reservation_time)}
+												</span>
+												<span
+													className="text-sm font-semibold text-gray-900 truncate min-w-0 leading-none"
+													title={String(r.customer_name || '')}
+												>
+													{r.customer_name || 'Guest'}
+												</span>
+											</div>
+											<div className="flex items-center gap-1.5 min-w-0 mt-0.5 leading-none">
+												<span
+													className="text-xs text-gray-600 font-semibold truncate min-w-0 flex-1"
+													title={String(r.phone_number || r.phone || '')}
+												>
+													{formatPhone(String(r.phone_number || r.phone || '')) || '—'}
+												</span>
+												<span className="text-xs text-gray-500 font-semibold shrink-0 tabular-nums">
+													{r.party_size != null && r.party_size !== '' ? `Party ${r.party_size}` : '—'}
+												</span>
+											</div>
+										</div>
+									))}
+								</div>
+							)}
+						</div>
 					</div>
 				</div>
 

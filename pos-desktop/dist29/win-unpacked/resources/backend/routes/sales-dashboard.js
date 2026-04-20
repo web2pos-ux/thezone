@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const salesSyncService = require('../services/salesSyncService');
+const networkConnectivity = require('../services/networkConnectivityService');
 
 // GET /api/sales-dashboard/daily/:restaurantId
 // 일별 매출 조회
@@ -48,6 +49,13 @@ router.get('/monthly/:restaurantId', async (req, res) => {
 router.get('/realtime/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
+    if (!networkConnectivity.isInternetConnected()) {
+      return res.status(503).json({
+        success: false,
+        error: 'network_offline',
+        message: 'Firebase unavailable while offline (ping)',
+      });
+    }
     const admin = require('firebase-admin');
     
     if (admin.apps.length === 0) {

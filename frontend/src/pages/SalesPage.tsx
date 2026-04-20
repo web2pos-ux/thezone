@@ -11,14 +11,28 @@ import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import PinInputModal from '../components/PinInputModal';
 import clockInOutApi, { ClockedInEmployee } from '../services/clockInOutApi';
 import { useMenuCache } from '../contexts/MenuCacheContext';
+import { useNetworkSyncStatus } from '../contexts/NetworkSyncStatusContext';
 import { resolveMenuIdentifiers } from '../utils/menuIdentifier';
 import { fetchMenuStructure } from '../utils/menuDataFetcher';
 import { ensureOrderBootstrap } from '../utils/orderBootstrap';
 import ServerSelectionModal from '../components/ServerSelectionModal';
-import { clearServerAssignment } from '../utils/serverAssignmentStorage';
+import {
+  clearServerAssignment,
+  loadServerAssignment,
+  saveServerAssignment,
+  POS_TABLE_MAP_SERVER_SESSION_ID,
+} from '../utils/serverAssignmentStorage';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
+import {
+  readTableMapTogoPanelSplitFromStorage,
+  leftPercentFromSplitPreset,
+  togoPanelUiScaleFromPresets,
+  TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+  TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT,
+  type TableMapTogoPanelSplitPreset,
+} from '../utils/tableMapTogoPanelSplit';
 import {
   printReceipt,
   printKitchenTicket,
@@ -244,6 +258,9 @@ interface TableElement {
   color: string;
   status?: string;
   current_order_id?: number | null;
+  /** 연결된 주문의 서버 (테이블맵 API JOIN) — 시프트 이전 후 라벨 동기화용 */
+  order_server_name?: string | null;
+  order_server_id?: number | string | null;
 }
 
 interface CustomerSuggestion {
@@ -605,6 +622,71 @@ const DELIVERY_ORDER_MODAL_CHANNEL_BADGE: Record<
   Fantuan: { label: 'Fantuan', color: '#0f766e' },
 };
 
+type TableReservationDetailRow = { name: string; time: string; partySize: number };
+
+/** 맵 복원 시: Available 테이블·같은 테이블의 주문 ID 변경 시 예약 표시 캐시 제거 (결제 후 잔상 방지) */
+function purgeStaleTableReservationMaps(
+  elements: any[],
+  names: Record<string, string>,
+  details: Record<string, TableReservationDetailRow>,
+  prevOrderIdByTable: Record<string, string>
+): {
+  names: Record<string, string>;
+  details: Record<string, TableReservationDetailRow>;
+  nextOrderIdByTable: Record<string, string>;
+} {
+  const namesOut = { ...names };
+  const detailsOut = { ...details };
+  for (const el of elements) {
+    const st = String(el?.status || '');
+    if (st === 'Available' || st === 'Cleaning') {
+      const id = String(el.id);
+      delete namesOut[id];
+      delete detailsOut[id];
+    }
+  }
+  const nextOrderIdByTable: Record<string, string> = {};
+  for (const el of elements) {
+    const tid = String(el.id);
+    const st = String(el?.status || '');
+    const oid =
+      el?.current_order_id != null && String(el.current_order_id) !== ''
+        ? String(el.current_order_id)
+        : '';
+    if ((st === 'Occupied' || st === 'Payment Pending') && oid) {
+      const prev = prevOrderIdByTable[tid];
+      if (prev && prev !== oid) {
+        delete namesOut[tid];
+        delete detailsOut[tid];
+      }
+      nextOrderIdByTable[tid] = oid;
+    }
+  }
+  return { names: namesOut, details: detailsOut, nextOrderIdByTable };
+}
+
+/** 투고 패널 카드: 해당 주문을 받은 서버 이름 (DB 필드 → order 스코프 localStorage) */
+function pickPanelOrderServerLabel(order: any): string {
+  if (!order) return '';
+  const fo = order.fullOrder || {};
+  const raw =
+    order.serverName ||
+    order.server_name ||
+    fo.server_name ||
+    fo.serverName ||
+    '';
+  let t = String(raw || '').trim();
+  if (t) return t;
+  try {
+    const oid = order.order_id ?? order.id ?? fo?.localOrderId ?? fo?.id;
+    if (oid != null && oid !== '') {
+      const a = loadServerAssignment('order', oid);
+      if (a?.serverName && String(a.serverName).trim()) return String(a.serverName).trim();
+    }
+  } catch {}
+  return '';
+}
+
 const SalesPage: React.FC = () => {
   const [tableElements, setTableElements] = useState<TableElement[]>([]);
   const [screenSize, setScreenSize] = useState({ width: '1024', height: '768', scale: 1 });
@@ -613,6 +695,7 @@ const SalesPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const networkSync = useNetworkSyncStatus();
 
   // Floor ê´€ë ¨ ìƒíƒœ
   const [selectedFloor, setSelectedFloor] = useState('1F');
@@ -622,8 +705,10 @@ const SalesPage: React.FC = () => {
   const [pressedButton, setPressedButton] = useState<string | null>(null);
   const [tableOccupiedTimes, setTableOccupiedTimes] = useState<Record<string, number>>({});
   const [tableReservationNames, setTableReservationNames] = useState<Record<string, string>>({});
-  const [tableReservationDetails, setTableReservationDetails] = useState<Record<string, { name: string; time: string; partySize: number }>>({});
+  const [tableReservationDetails, setTableReservationDetails] = useState<Record<string, TableReservationDetailRow>>({});
   const [tableHoldInfo, setTableHoldInfo] = useState<Record<string, { customerName: string; reservationTime: string; reservationId: string }>>({});
+  /** 테이블맵 fetch 직전 점유 주문 ID — 동일 테이블에 다른 주문이 잡히면 예약 캐시 무효화 */
+  const tableMapOrderIdByTableRef = useRef<Record<string, string>>({});
   const [showReservedActionModal, setShowReservedActionModal] = useState<{ tableId: string; tableName: string; isHoldOrigin: boolean; customerName: string; reservationTime: string } | null>(null);
 
   const persistOccupiedTimes = useCallback(
@@ -661,6 +746,33 @@ const SalesPage: React.FC = () => {
       });
     },
     [persistOccupiedTimes]
+  );
+
+  const removeReservationDisplayCacheForTable = useCallback(
+    (tableId: string | number | null | undefined) => {
+      if (tableId == null || tableId === '') return;
+      const key = String(tableId);
+      setTableReservationDetails((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        try {
+          localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setTableReservationNames((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        try {
+          localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      delete tableMapOrderIdByTableRef.current[key];
+    },
+    [selectedFloor]
   );
 
   const transferOccupiedTimestamp = useCallback(
@@ -721,6 +833,9 @@ const SalesPage: React.FC = () => {
     return { togo: true, delivery: true };
   });
   const rightPanelVisible = channelVis.togo;
+  const [togoPanelSplitPreset, setTogoPanelSplitPreset] = useState<TableMapTogoPanelSplitPreset>(() =>
+    readTableMapTogoPanelSplitFromStorage()
+  );
   // 현재 시간 표시용 상태
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const now = new Date();
@@ -1484,14 +1599,19 @@ const SalesPage: React.FC = () => {
 
   const footerHeightPx = Math.round((isWidescreen ? 91 : 70) * footerUiScale);
   const contentHeightPx = Math.max(0, frameHeightPx - headerHeightPx - footerHeightPx);
-  // ì¢Œ/ìš° ë¹„ìœ¨ 66%/34%ë¡œ ë¶„í• 
-  const leftWidthPx = rightPanelVisible ? Math.round(frameWidthPx * (66 / 100)) : frameWidthPx;
+  // 좌(테이블맵)/우(투고 패널) 비율 — Order Screen Setup / Manager 에서 설정
+  const togoPanelLeftPct = leftPercentFromSplitPreset(togoPanelSplitPreset);
+  const leftWidthPx = rightPanelVisible ? Math.round(frameWidthPx * (togoPanelLeftPct / 100)) : frameWidthPx;
   const rightWidthPx = rightPanelVisible ? Math.max(0, frameWidthPx - leftWidthPx) : 0;
+  /** 기준 34% 우측 대비 현재 우측 비율로 상단 버튼·카드 밀도 */
+  const togoPanelUiScale = togoPanelUiScaleFromPresets(rightPanelVisible, togoPanelSplitPreset);
+  const togoTopBtnMinH = Math.max(40, Math.round(48 * togoPanelUiScale));
+  const togoBtnFontPx = Math.max(11, Math.round(footerButtonFontPx * togoPanelUiScale));
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
   // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
   // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
   const boMapHeight = Math.max(0, frameHeightPx - 56 - 70);
-  const boMapWidth = frameWidthPx * 0.66;
+  const boMapWidth = frameWidthPx * 0.75;
   const elementScaleX = leftWidthPx / boMapWidth;
   const elementScaleY = contentHeightPx / boMapHeight;
   const elementScale = Math.min(elementScaleX, elementScaleY);
@@ -1592,6 +1712,8 @@ const SalesPage: React.FC = () => {
   const [serverModalError, setServerModalError] = useState('');
   const [clockedInServers, setClockedInServers] = useState<ClockedInEmployee[]>([]);
   const [selectedTogoServer, setSelectedTogoServer] = useState<ClockedInEmployee | null>(null);
+  /** 서버선택모드일 때 테이블맵 상단 배지용 (Order/TOGO에서 저장한 세션 키 + TOGO 선택) */
+  const [tableMapHeaderServerName, setTableMapHeaderServerName] = useState<string | null>(null);
   const [togoOrderMeta, setTogoOrderMeta] = useState<Record<string, VirtualOrderMeta>>({});
   const [selectServerPromptEnabled, setSelectServerPromptEnabled] = useState(false);
   const shouldPromptServerSelection = selectServerPromptEnabled !== false;
@@ -1599,7 +1721,71 @@ const SalesPage: React.FC = () => {
   const [historyDetailsMap, setHistoryDetailsMap] = useState<Record<number, HistoryOrderDetailPayload>>({});
   const [historyOrderDetail, setHistoryOrderDetail] = useState<HistoryOrderDetailPayload | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
-  
+
+  const syncTableMapHeaderServer = useCallback(() => {
+    if (!shouldPromptServerSelection) {
+      setTableMapHeaderServerName(null);
+      return;
+    }
+    try {
+      const stored = loadServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID);
+      const fromTogo = selectedTogoServer?.employee_name?.trim();
+      const name =
+        (stored?.serverName && String(stored.serverName).trim()) || fromTogo || null;
+      setTableMapHeaderServerName(name);
+    } catch {
+      setTableMapHeaderServerName(selectedTogoServer?.employee_name?.trim() || null);
+    }
+  }, [shouldPromptServerSelection, selectedTogoServer]);
+
+  useEffect(() => {
+    syncTableMapHeaderServer();
+  }, [syncTableMapHeaderServer]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') syncTableMapHeaderServer();
+    };
+    const onPos = () => syncTableMapHeaderServer();
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onPos);
+    window.addEventListener('posServerAssignmentUpdated', onPos);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onPos);
+      window.removeEventListener('posServerAssignmentUpdated', onPos);
+    };
+  }, [syncTableMapHeaderServer]);
+
+  /** 테이블맵 타일: 테이블마다 OrderPage가 저장한 serverAssignment:table:{elementId} 재조회용 */
+  const [serverTableAssignmentTick, setServerTableAssignmentTick] = useState(0);
+
+  const tableServerLabelByElementId = useMemo(() => {
+    if (!shouldPromptServerSelection) return {} as Record<string, string>;
+    const out: Record<string, string> = {};
+    for (const el of tableElements) {
+      const typ = String(el.type || '');
+      if (!['rounded-rectangle', 'circle', 'bar', 'room'].includes(typ)) continue;
+      const id = String(el.id);
+      const fromOrder = (el as TableElement).order_server_name;
+      const orderName = fromOrder && String(fromOrder).trim();
+      if (orderName) {
+        out[id] = orderName;
+        continue;
+      }
+      const a = loadServerAssignment('table', id);
+      const name = a?.serverName && String(a.serverName).trim();
+      if (name) out[id] = name;
+    }
+    return out;
+  }, [shouldPromptServerSelection, tableElements, serverTableAssignmentTick]);
+
+  useEffect(() => {
+    const bump = () => setServerTableAssignmentTick((x) => x + 1);
+    window.addEventListener('posServerAssignmentUpdated', bump);
+    return () => window.removeEventListener('posServerAssignmentUpdated', bump);
+  }, []);
+
   // ì˜¤ëŠ˜ì˜ ì˜ˆì•½ í˜„í™© ìƒíƒœ
   const [todayReservations, setTodayReservations] = useState<any[]>([]);
   const togoTodayReservationsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -3598,6 +3784,27 @@ const SalesPage: React.FC = () => {
         }
         previousDeliveryPanelKeysRef.current = nextDelKeys;
 
+        try {
+          let orderSrvSynced = false;
+          for (const order of togoVisible) {
+            const oidRaw = (order as any).order_id != null && String((order as any).order_id).trim() !== ''
+              ? (order as any).order_id
+              : order.id;
+            if (oidRaw == null || oidRaw === '') continue;
+            const apiName = String((order as any).serverName || '').trim();
+            const apiSid = (order as any).serverId;
+            if (!apiName || apiSid == null || apiSid === '') continue;
+            try {
+              const cur = loadServerAssignment('order', oidRaw);
+              if (!cur || cur.serverName !== apiName || String(cur.serverId) !== String(apiSid)) {
+                saveServerAssignment('order', oidRaw, { serverId: String(apiSid), serverName: apiName });
+                orderSrvSynced = true;
+              }
+            } catch {}
+          }
+          if (orderSrvSynced) window.dispatchEvent(new Event('posServerAssignmentUpdated'));
+        } catch {}
+
         setTogoOrders(togoVisible);
         return nextMeta;
       });
@@ -4839,6 +5046,15 @@ const SalesPage: React.FC = () => {
 
   const startTogoOrderFlow = useCallback((server: ClockedInEmployee | null) => {
     setSelectedTogoServer(server);
+    if (server?.employee_id && server?.employee_name) {
+      try {
+        saveServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID, {
+          serverId: String(server.employee_id),
+          serverName: String(server.employee_name),
+        });
+        window.dispatchEvent(new Event('posServerAssignmentUpdated'));
+      } catch {}
+    }
     setPickupTime(15);
     setPickupAmPm(getCurrentAmPm());
     setPickupDateLabel(formatPickupDateLabel());
@@ -5309,18 +5525,64 @@ const SalesPage: React.FC = () => {
           });
         } catch {}
 
-        // 1) localStorageì—ì„œ ìš°ì„  ë³µì›
+        // 1) localStorage 복원 + Available/주문 변경 시 예약자명 캐시 정리 (결제 후 다음 손님에게 과거 예약자가 보이지 않도록)
         try {
           const tRaw = localStorage.getItem(`occupiedTimes_${selectedFloor}`);
           if (tRaw) setTableOccupiedTimes(JSON.parse(tRaw));
         } catch {}
         try {
-          const nRaw = localStorage.getItem(`reservedNames_${selectedFloor}`);
-          if (nRaw) setTableReservationNames(JSON.parse(nRaw));
+          let namesParsed: Record<string, string> = {};
+          let detailsParsed: Record<string, TableReservationDetailRow> = {};
+          try {
+            const nRaw = localStorage.getItem(`reservedNames_${selectedFloor}`);
+            if (nRaw) namesParsed = JSON.parse(nRaw);
+          } catch {}
+          try {
+            const dRaw = localStorage.getItem(`reservationDetails_${selectedFloor}`);
+            if (dRaw) detailsParsed = JSON.parse(dRaw);
+          } catch {}
+          const cleaned = purgeStaleTableReservationMaps(
+            patchedElements,
+            namesParsed,
+            detailsParsed,
+            tableMapOrderIdByTableRef.current
+          );
+          tableMapOrderIdByTableRef.current = cleaned.nextOrderIdByTable;
+          try {
+            localStorage.setItem(`reservedNames_${selectedFloor}`, JSON.stringify(cleaned.names));
+            localStorage.setItem(`reservationDetails_${selectedFloor}`, JSON.stringify(cleaned.details));
+          } catch {}
+          setTableReservationNames(cleaned.names);
+          setTableReservationDetails(cleaned.details);
         } catch {}
+
+        // 비어 있는 테이블의 테이블별 서버 캐시 제거 (다음 손님에게 이전 Jay/Bill 라벨이 남지 않도록)
+        // 점유 테이블: DB 연결 주문의 server_*가 로컬과 다르면 갱신 (시프트 클로징 넘겨받기 등)
         try {
-          const dRaw = localStorage.getItem(`reservationDetails_${selectedFloor}`);
-          if (dRaw) setTableReservationDetails(JSON.parse(dRaw));
+          let clearedSrv = false;
+          for (const element of patchedElements) {
+            const st = String(element?.status || '');
+            if (st === 'Available' || st === 'Cleaning') {
+              if (loadServerAssignment('table', element.id)) {
+                clearServerAssignment('table', element.id);
+                clearedSrv = true;
+              }
+            } else if (st === 'Occupied' || st === 'Payment Pending') {
+              const on = (element as any).order_server_name;
+              const oid = (element as any).order_server_id;
+              const nameTrim = on != null ? String(on).trim() : '';
+              if (!nameTrim || oid == null || oid === '') continue;
+              try {
+                const cur = loadServerAssignment('table', element.id);
+                const sidStr = String(oid);
+                if (!cur || cur.serverName !== nameTrim || String(cur.serverId) !== sidStr) {
+                  saveServerAssignment('table', element.id, { serverId: sidStr, serverName: nameTrim });
+                  clearedSrv = true;
+                }
+              } catch {}
+            }
+          }
+          if (clearedSrv) setServerTableAssignmentTick((x) => x + 1);
         } catch {}
 
         // 2) ì €ìž¥ê°’ì´ ì—†ì„ ë•Œë§Œ ì´ˆê¸° ë¶€íŒ… ë³´ì • (í˜„ìž¬ ì‹œê°„ì„ ì‹œë“œ)
@@ -5385,6 +5647,10 @@ const SalesPage: React.FC = () => {
       }
     }
   };
+
+  useEffect(() => {
+    tableMapOrderIdByTableRef.current = {};
+  }, [selectedFloor]);
 
   useEffect(() => {
     fetchTableMapData(true);  // ì´ˆê¸° ë¡œë”© ì‹œì—ë§Œ ë¡œë”© ìŠ¤í”¼ë„ˆ í‘œì‹œ
@@ -5524,9 +5790,18 @@ const SalesPage: React.FC = () => {
       if (e.key === 'fsrTogoButtonVisible') {
         setFsrTogoButtonVisible(e.newValue !== 'false');
       }
+      if (e.key === TABLE_MAP_TOGO_PANEL_SPLIT_KEY) {
+        setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+      }
     };
     window.addEventListener('storage', onChannelVisChange);
     return () => window.removeEventListener('storage', onChannelVisChange);
+  }, []);
+
+  useEffect(() => {
+    const onSplit = () => setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+    window.addEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onSplit);
+    return () => window.removeEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onSplit);
   }, []);
 
   // ë¼ìš°íŒ… ë³µê·€/íƒ­ ê°€ì‹œì„± ë³€ê²½ ì‹œ í•­ìƒ í™”ë©´ í¬ê¸° ìž¬ì ìš©
@@ -5565,6 +5840,9 @@ const SalesPage: React.FC = () => {
             delivery: parsed?.delivery !== false,
           });
         }
+      } catch {}
+      try {
+        setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
       } catch {}
       try {
         setFsrTogoButtonVisible(localStorage.getItem('fsrTogoButtonVisible') !== 'false');
@@ -6078,6 +6356,7 @@ const SalesPage: React.FC = () => {
             ));
           }
           clearOccupiedTimestamp(element.id);
+          removeReservationDisplayCacheForTable(element.id);
           try { localStorage.setItem('lastOccupiedTable', JSON.stringify({ tableId: element.id, floor: selectedFloor, status: holdForThisTable ? 'Reserved' : 'Available', ts: Date.now() })); } catch {}
           try {
             localStorage.removeItem(`splitGuests_${element.id}`);
@@ -10760,7 +11039,7 @@ const SalesPage: React.FC = () => {
           >
           {/* 1. ìƒë‹¨ ë°” (ê³ ì • ë†’ì´) */}
           <div className="h-14 bg-gradient-to-b from-blue-100 to-blue-50 border-b-2 border-blue-300 shadow-lg grid grid-cols-3 items-center px-4">
-            <div className="flex space-x-2 h-3/4 items-center">
+            <div className="flex min-w-0 space-x-2 h-3/4 items-center">
               {/* Floor íƒ­ - 1Fë§Œ í™œì„±í™” */}
               {floorList.map((floor) => (
                 <div key={floor} className="relative">
@@ -10780,10 +11059,49 @@ const SalesPage: React.FC = () => {
                   </button>
                 </div>
               ))}
+              {shouldPromptServerSelection && tableMapHeaderServerName ? (
+                <span
+                  className="max-w-[min(42vw,14rem)] truncate rounded-md border border-indigo-300/80 bg-white/95 px-2.5 py-1 text-xs font-semibold text-indigo-900 shadow-sm"
+                  title={tableMapHeaderServerName}
+                >
+                  서버: {tableMapHeaderServerName}
+                </span>
+              ) : null}
             </div>
-            {/* 현재 시간 (중앙) */}
-            <div className="flex justify-center items-center">
-              <span className="text-lg font-bold text-gray-700 tracking-wide">{currentTime}</span>
+            {/* Firebase sync 상태 + 현재 시간 (중앙) — 날짜/시간 왼쪽에 동기 pill */}
+            <div className="flex min-w-0 justify-center items-center gap-2">
+              {networkSync.showAlert && !networkSync.okFlash ? (
+                <div
+                  className={`pointer-events-auto max-w-[min(40vw,12rem)] shrink-0 rounded-md border px-2 py-0.5 text-left text-[10px] font-medium leading-snug text-white shadow-sm ${
+                    networkSync.disconnectedUi
+                      ? 'border-amber-800/60 bg-amber-950/92'
+                      : networkSync.dlq > 0
+                        ? 'border-rose-800/60 bg-rose-950/92'
+                        : networkSync.syncActive
+                          ? 'border-sky-700/50 bg-sky-950/92'
+                          : 'border-slate-700/50 bg-slate-950/90'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1.5">
+                    <div className="min-w-0">
+                      <div className="font-semibold">{networkSync.title}</div>
+                      {networkSync.detail ? (
+                        <div className="text-[9px] font-normal leading-tight opacity-85">{networkSync.detail}</div>
+                      ) : null}
+                    </div>
+                    {networkSync.dlq > 0 && networkSync.onOpenDlq ? (
+                      <button
+                        type="button"
+                        className="shrink-0 text-[9px] text-white/90 underline underline-offset-2 hover:text-white"
+                        onClick={networkSync.onOpenDlq}
+                      >
+                        Details
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              <span className="truncate text-lg font-bold tracking-wide text-gray-700">{currentTime}</span>
             </div>
             {/* Delivery + TOGO + Online Alert + EXIT 버튼 (오른쪽) */}
             <div className="flex justify-end items-center gap-1.5">
@@ -10869,7 +11187,7 @@ const SalesPage: React.FC = () => {
 
           {/* 2. ì¤‘ì•™ ì˜ì—­ (í”„ë ˆìž„ ë†’ì´ì—ì„œ í—¤ë”/í‘¸í„° ì œì™¸) */}
           <div className="flex-1 flex" style={{ height: `${contentHeightPx}px`, width: `${frameWidthPx}px` }}>
-            {/* 3. ì¢Œì¸¡ 66% - Table Map ì˜ì—­ */}
+            {/* 3. 좌측 75% - Table Map 영역 */}
             <div 
               className="relative"
               style={{ width: `${leftWidthPx}px`, height: `${contentHeightPx}px` }}
@@ -10956,6 +11274,9 @@ const SalesPage: React.FC = () => {
                             element.type === 'bar' ||
                             element.type === 'room' ||
                             element.type === 'circle';
+                          const tableServerLabelForEl = tableServerLabelByElementId[String(element.id)];
+                          const showTableServerOnMap =
+                            isGlassTable && shouldPromptServerSelection && tableServerLabelForEl;
                           const glossRadius = element.type === 'circle' ? '50%' : '26px';
                           const holdData = tableHoldInfo[String(element.id)];
                           const isReservedWithHold = element.status === 'Reserved' && holdData;
@@ -11007,6 +11328,24 @@ const SalesPage: React.FC = () => {
                                   transformOrigin: 'center'
                                 }}
                               >
+                                {showTableServerOnMap ? (
+                                  <div
+                                    style={{
+                                      fontSize: Math.max(7, Math.round(timeFont * 0.62)),
+                                      fontWeight: 800,
+                                      marginBottom: 2,
+                                      maxWidth: '96%',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      color: '#312e81',
+                                      opacity: 0.98,
+                                    }}
+                                    title={`서버: ${tableServerLabelForEl}`}
+                                  >
+                                    {tableServerLabelForEl}
+                                  </div>
+                                ) : null}
                                 <div style={{ fontSize: nameFontSize, fontWeight: 800 }}>{firstLine}</div>
                                 {secondLine ? (
                                   <div style={{ fontSize: timeFont, fontWeight: 700, marginTop: 2, opacity: 0.85 }}>{secondLine}</div>
@@ -11025,10 +11364,10 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 4. ìš°ì¸¡ 34% - Togo/Delivery Order í˜„í™©íŒ */}
+          {/* 4. 우측 25% - Togo/Delivery Order 현황판 */}
           {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
-            {/* ìƒë‹¨ ê³ ì • ë²„íŠ¼ ì˜ì—­ */}
-            <div className="flex gap-3 pt-1 px-3 pb-2 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
+            {/* 상단 고정 버튼 영역 */}
+            <div className="flex gap-2 pt-1 px-2 pb-1.5 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
               {([
                 { label: 'DLV', onClick: handleNewDeliveryClick },
                 { label: 'ONLINE', onClick: handleNewOnlineClick },
@@ -11057,11 +11396,12 @@ const SalesPage: React.FC = () => {
                     key={label}
                     type="button"
                     onClick={onClick}
-                    className="relative flex-1 min-h-[48px] flex items-center justify-center"
+                    className="relative flex-1 flex items-center justify-center"
                     style={{
                       borderRadius: '40px',
                       border: 'none',
-                      fontSize: `var(--bottom-bar-btn-font, ${footerButtonFontPx}px)`,
+                      minHeight: togoTopBtnMinH,
+                      fontSize: `${togoBtnFontPx}px`,
                       fontWeight: 700,
                       letterSpacing: '-0.02em',
                       cursor: 'pointer',
@@ -11083,8 +11423,8 @@ const SalesPage: React.FC = () => {
               })}
             </div>
             {/* 스크롤 주문 목록 — Thezone_Backup/TogoPannel: grid-cols-2 좌 Delivery / 우 Togo+Online 통합 */}
-            <div className="flex-1 overflow-auto px-2 pb-[85px]">
-              <div className="grid grid-cols-2 gap-2">
+            <div className="flex-1 overflow-auto px-1.5 pb-[72px]">
+              <div className="grid grid-cols-2 gap-1.5">
                 {/* 왼쪽: Delivery */}
                 <div className="space-y-1 min-w-0">
                   {(() => {
@@ -11159,6 +11499,7 @@ const SalesPage: React.FC = () => {
                         (order as any).fullOrder?.externalOrderNumber ||
                         deliveryMeta.orderNumber
                       );
+                      const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(order) : '';
                       return (
                         <div
                           key={`delivery-${order.id}`}
@@ -11175,7 +11516,7 @@ const SalesPage: React.FC = () => {
                             </div>
                           )}
                           <button 
-                            className={`w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#5c4a3d',
                               border: 'none',
@@ -11209,12 +11550,23 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
-                            <div className="text-[13px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                            {orderPanelServerLabel ? (
+                              <div
+                                className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
+                                style={{
+                                  color: isSourceTogo || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
+                                }}
+                                title={`서버: ${orderPanelServerLabel}`}
+                              >
+                                {orderPanelServerLabel}
+                              </div>
+                            ) : null}
+                            <div className="text-[11px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
                               <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
-                              <span role="status" className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
+                              <span role="status" className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
                               <span className="font-bold text-right">{deliveryDisplayNumber}</span>
                             </div>
-                            <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
+                            <div className="text-[10px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
                               <span>{deliveryDisplayTime}</span>
                               <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{deliveryExternalNumber}</span>
                             </div>
@@ -11330,6 +11682,7 @@ const SalesPage: React.FC = () => {
                         const tIsPickedUp = tStatus === 'PICKED_UP';
                         const tCanSwipePickup = tIsPaid && !tIsPickedUp;
                         if (tIsPickedUp) return null;
+                        const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(order) : '';
                         return (
                           <div key={`togo-${order.id}`} className="relative overflow-hidden rounded-lg">
                             {tCanSwipePickup && swipeDragState?.id === String(order.id) && swipeDragState.offsetX < -20 && (
@@ -11344,7 +11697,7 @@ const SalesPage: React.FC = () => {
                             )}
                             <button
                               type="button"
-                              className={`relative z-10 w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                              className={`relative z-10 w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                               style={{
                                 background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d5c48',
                                 border: 'none',
@@ -11384,21 +11737,32 @@ const SalesPage: React.FC = () => {
                                   }
                                 : {})}
                             >
+                              {orderPanelServerLabel ? (
+                                <div
+                                  className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
+                                  style={{
+                                    color: isSourceTogo || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
+                                  }}
+                                  title={`서버: ${orderPanelServerLabel}`}
+                                >
+                                  {orderPanelServerLabel}
+                                </div>
+                              ) : null}
                               <div
-                                className="mb-0.5 flex items-center justify-between text-[13px]"
+                                className="mb-0.5 flex items-center justify-between text-[11px]"
                                 style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                               >
                                 <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
                                 <span
                                   role="status"
-                                  className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                  className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
                                 >
                                   {tIsPaid ? 'READY' : 'UNPAID'}
                                 </span>
                                 <span className="font-bold text-right">{formatPosNumber(order.number)}</span>
                               </div>
                               <div
-                                className="flex items-center justify-between text-[12px]"
+                                className="flex items-center justify-between text-[10px]"
                                 style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}
                               >
                                 <span>{formatTimeAmPm(String(order.readyTimeLabel || order.time || ''))}</span>
@@ -11484,6 +11848,7 @@ const SalesPage: React.FC = () => {
                       })();
                       const displayTime = formatTimeAmPm(onlineReadyDisplayRaw);
                       if (oIsPickedUp) return null;
+                      const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(card) : '';
                       return (
                         <div key={`online-${card.id}`} className="relative overflow-hidden rounded-lg">
                           {onlineCanSwipePickup && swipeDragState?.id === String(card.id) && swipeDragState.offsetX < -20 && (
@@ -11498,7 +11863,7 @@ const SalesPage: React.FC = () => {
                           )}
                           <button
                             type="button"
-                            className={`relative z-10 w-full rounded-lg px-2.5 py-1 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                            className={`relative z-10 w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d4a6b',
                               border: 'none',
@@ -11538,20 +11903,31 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
+                            {orderPanelServerLabel ? (
+                              <div
+                                className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
+                                style={{
+                                  color: isSourceOnline || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
+                                }}
+                                title={`서버: ${orderPanelServerLabel}`}
+                              >
+                                {orderPanelServerLabel}
+                              </div>
+                            ) : null}
                             <div
-                              className="mb-0.5 flex items-center justify-between text-[13px]"
+                              className="mb-0.5 flex items-center justify-between text-[11px]"
                               style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                             >
                               <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>ONLINE</span>
                               <span
                                 role="status"
-                                className={`inline-flex shrink-0 items-center text-[8px] font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
                               >
                                 {oIsPaid ? 'READY' : 'UNPAID'}
                               </span>
                               <span className="font-bold text-right">{onlinePosDisplayNumber}</span>
                             </div>
-                            <div className="text-[12px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
+                            <div className="text-[10px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
                               <span>{displayTime}</span>
                               <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>
                                 {onlinePanelDisplayId}
@@ -11568,7 +11944,7 @@ const SalesPage: React.FC = () => {
 
             {/* í•˜ë‹¨ í”Œë¡œíŒ… ì˜ˆì•½ í˜„í™© - Online+Togo ê·¸ë¦¬ë“œì™€ ë™ì¼í•œ ë„ˆë¹„ — 소프트 네오모픽 입체 패널 */}
             <div
-              className="absolute z-[100] flex min-h-0 max-h-[82.32px] flex-col rounded-[14px] border-0 px-3 py-2"
+              className="absolute z-[100] flex min-h-0 max-h-[72px] flex-col rounded-[14px] border-0 px-2.5 py-1.5"
               style={{
                 left: '3px',
                 right: '15px',
@@ -11579,7 +11955,7 @@ const SalesPage: React.FC = () => {
               }}
             >
               <div className="mb-1 flex flex-shrink-0 items-center justify-between">
-                <div className="flex items-center gap-1.5 text-[13px] font-extrabold leading-tight text-amber-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.45)]">
+                <div className="flex items-center gap-1.5 text-[12px] font-extrabold leading-tight text-amber-950 drop-shadow-[0_1px_0_rgba(255,255,255,0.45)]">
                   Today's Reservations ({todayReservations.length})
                 </div>
               </div>
@@ -11588,7 +11964,7 @@ const SalesPage: React.FC = () => {
               ) : (
                 <div
                   ref={togoTodayReservationsScrollRef}
-                  className={`min-h-0 overflow-x-hidden pr-0 max-h-[60.48px] sm:max-h-[64.68px] ${
+                  className={`min-h-0 overflow-x-hidden pr-0 max-h-[52px] sm:max-h-[56px] ${
                     todayReservations.length > 4 ? 'overflow-y-auto' : 'overflow-hidden'
                   } [scrollbar-width:thin] [scrollbar-color:rgba(120,53,15,0.38)_transparent] [&::-webkit-scrollbar]:w-[5px] [&::-webkit-scrollbar-button]:hidden [&::-webkit-scrollbar-button]:h-0 [&::-webkit-scrollbar-button]:w-0 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-0 [&::-webkit-scrollbar-thumb]:bg-amber-900/35 [&::-webkit-scrollbar-thumb]:hover:bg-amber-900/50`}
                   style={{ WebkitOverflowScrolling: 'touch' }}
@@ -11600,7 +11976,7 @@ const SalesPage: React.FC = () => {
                       <li
                         key={res.id || idx}
                         data-togo-residx={idx}
-                        className={`pointer-events-none cursor-default select-none flex min-h-[18px] min-w-0 items-baseline gap-1 py-[1.4px] text-[12px] leading-tight pl-0.5 ${
+                        className={`pointer-events-none cursor-default select-none flex min-h-[16px] min-w-0 items-baseline gap-1 py-[1px] text-[11px] leading-tight pl-0.5 ${
                           isCol1
                             ? 'border-r border-amber-300/90 pr-2 mr-1'
                             : 'pl-1.5 pr-0.5'

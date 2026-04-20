@@ -16,7 +16,7 @@ const POS_POLICY = 'local_overwrites_cloud';
 const DEFERRAL_REASON_OFFLINE = 'offline';
 const DEFERRAL_REASON_LIVE_SYNC_FAILED = 'live_sync_failed';
 
-/** Firestore에 실릴 "지연 동기" 출처 메타 키(주문·결제·매출 등 공통). */
+/** Firestore에 실릴 “지연 동기” 출처 메타 키(주문·결제·매출 등 공통). */
 const QUEUED_SYNC_PROVENANCE_KEYS = [
   'posSyncDeferred',
   'posSyncDeferralReason',
@@ -90,6 +90,10 @@ function isPosMirrorMetadataOrder(order) {
   return false;
 }
 
+/**
+ * SQLite datetime 문자열을 ISO로 근사(표시·비교용). 파싱 실패 시 현재 시각.
+ * @param {string|null|undefined} s
+ */
 function sqliteDatetimeToIsoOrNow(s) {
   if (s == null || String(s).trim() === '') return new Date().toISOString();
   const str = String(s).trim();
@@ -102,8 +106,13 @@ function sqliteDatetimeToIsoOrNow(s) {
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
+/**
+ * payload에 섞인 큐 출처 메타만 골라 Firestore에 넣는다(나머지 필드는 각 서비스가 담당).
+ * @param {Record<string, unknown>|null|undefined} payload
+ */
 function extractQueuedSyncProvenanceFromPayload(payload) {
   if (!payload || typeof payload !== 'object') return {};
+  /** @type {Record<string, unknown>} */
   const out = {};
   for (const k of QUEUED_SYNC_PROVENANCE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(payload, k) && payload[k] != null) {
@@ -113,6 +122,13 @@ function extractQueuedSyncProvenanceFromPayload(payload) {
   return out;
 }
 
+/**
+ * SQLite `firebase_sync_queue` / `firebase_sync_dlq` 행 → Firestore 공통 메타.
+ * 실시간이 아니라 큐를 거쳐 늦게 반영된 쓰기임을 표시한다.
+ *
+ * @param {Record<string, unknown>|null|undefined} row
+ * @param {{ fromDlq?: boolean }} [opts]
+ */
 function mergeQueuedSyncProvenanceFields(row, opts = {}) {
   if (!row || typeof row !== 'object') return {};
   const fromDlq = opts.fromDlq === true;
@@ -121,6 +137,7 @@ function mergeQueuedSyncProvenanceFields(row, opts = {}) {
       ? String(row.deferral_reason).trim()
       : 'legacy_queue';
   const queuedAtRaw = fromDlq ? row.queue_created_at || row.created_at : row.created_at;
+  /** @type {Record<string, unknown>} */
   const out = {
     posSyncDeferred: true,
     posSyncDeferralReason: reason,

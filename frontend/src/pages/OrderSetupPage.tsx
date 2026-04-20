@@ -2,6 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import { getLocalDatetimeString } from '../utils/datetimeUtils';
+import {
+  TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+  TABLE_MAP_TOGO_PANEL_SPLIT_OPTIONS,
+  readTableMapTogoPanelSplitFromStorage,
+  notifyTableMapTogoPanelSplitChanged,
+  type TableMapTogoPanelSplitPreset,
+} from '../utils/tableMapTogoPanelSplit';
 
 interface Menu {
   menu_id: number;
@@ -44,6 +51,9 @@ const OrderSetupPage = () => {
     } catch {}
     return true;
   });
+  const [togoPanelSplitPreset, setTogoPanelSplitPreset] = useState<TableMapTogoPanelSplitPreset>(() =>
+    readTableMapTogoPanelSplitFromStorage()
+  );
   const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
     try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch {} return true;
   });
@@ -163,6 +173,9 @@ const OrderSetupPage = () => {
       }
       if (e.key === 'fsrTogoButtonVisible') {
         setFsrTogoButtonVisible(e.newValue !== 'false');
+      }
+      if (e.key === TABLE_MAP_TOGO_PANEL_SPLIT_KEY) {
+        setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
       }
     };
     window.addEventListener('storage', onStorageChange);
@@ -575,12 +588,57 @@ const OrderSetupPage = () => {
                       </div>
                     </div>
 
-                    {/* TOGO Panel */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">TOGO Panel (Right Side)</label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: true }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(true); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${togoPanelEnabled ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>ON</button>
-                        <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: false }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(false); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${!togoPanelEnabled ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>OFF</button>
+                    {/* TOGO Panel + screen ratio (accordion: expands when ON) */}
+                    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+                      <div className="p-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">TOGO Panel (Right Side)</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: true }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(true); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${togoPanelEnabled ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>ON</button>
+                          <button type="button" onClick={() => { try { const raw = localStorage.getItem('tableMapChannelVisibility'); const current = raw ? JSON.parse(raw) : { togo: true, delivery: true }; const updated = { ...current, togo: false }; localStorage.setItem('tableMapChannelVisibility', JSON.stringify(updated)); window.dispatchEvent(new StorageEvent('storage', { key: 'tableMapChannelVisibility', newValue: JSON.stringify(updated) })); setTogoPanelEnabled(false); } catch {} }} className={`py-2 px-3 rounded-lg border-2 text-sm font-semibold transition-all ${!togoPanelEnabled ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>OFF</button>
+                        </div>
+                      </div>
+                      <div
+                        className={`grid transition-[grid-template-rows] duration-300 ease-in-out motion-reduce:transition-none ${
+                          togoPanelEnabled ? '[grid-template-rows:1fr]' : '[grid-template-rows:0fr]'
+                        }`}
+                      >
+                        <div className="min-h-0 overflow-hidden">
+                          <div className="border-t border-gray-100 bg-gray-50/60 px-3 pb-3 pt-3">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Table map / TOGO panel width
+                            </label>
+                            <p className="text-xs text-gray-500 mb-2">Table map (left) : TOGO panel (right).</p>
+                            <div className="grid grid-cols-3 gap-2">
+                              {TABLE_MAP_TOGO_PANEL_SPLIT_OPTIONS.map((opt) => (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  onClick={() => {
+                                    try {
+                                      localStorage.setItem(TABLE_MAP_TOGO_PANEL_SPLIT_KEY, opt.value);
+                                      setTogoPanelSplitPreset(opt.value);
+                                      window.dispatchEvent(
+                                        new StorageEvent('storage', {
+                                          key: TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+                                          newValue: opt.value,
+                                          url: window.location.href,
+                                        } as StorageEventInit)
+                                      );
+                                      notifyTableMapTogoPanelSplitChanged();
+                                    } catch {}
+                                  }}
+                                  className={`py-2 px-2 rounded-lg border-2 text-sm font-semibold transition-all ${
+                                    togoPanelSplitPreset === opt.value
+                                      ? 'border-violet-500 bg-violet-50 text-violet-800'
+                                      : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
 

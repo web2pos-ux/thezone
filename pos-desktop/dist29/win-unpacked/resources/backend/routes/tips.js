@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const firebaseService = require('../services/firebaseService');
+const firebaseSyncOrchestrator = require('../services/firebaseSyncOrchestrator');
 
 module.exports = (db) => {
   const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
@@ -62,19 +62,26 @@ module.exports = (db) => {
         [orderId, tipAmount, paymentMethod, employeeId, guestNumber, createdAt]
       );
 
-      // Firebase에도 팁 데이터 저장 (별도 컬렉션)
+      // Firebase에도 팁 데이터 저장 (오프라인 시 큐)
       try {
         const restaurantId = await getRestaurantId();
-        if (restaurantId && typeof firebaseService.saveTipToFirebase === 'function') {
-          await firebaseService.saveTipToFirebase(restaurantId, {
-            tipId: result.lastID,
-            orderId,
-            amount: tipAmount,
-            method: paymentMethod,
-            employeeId,
-            guestNumber,
-            createdAt
-          });
+        if (restaurantId) {
+          await firebaseSyncOrchestrator.syncOrQueue(
+            'saveTipToFirebase',
+            Number(orderId),
+            {
+              restaurantId,
+              tipData: {
+                tipId: result.lastID,
+                orderId,
+                amount: tipAmount,
+                method: paymentMethod,
+                employeeId,
+                guestNumber,
+                createdAt,
+              },
+            },
+          );
         }
       } catch (firebaseErr) {
         console.warn('Firebase tip sync failed (non-fatal):', firebaseErr.message);
