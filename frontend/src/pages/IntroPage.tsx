@@ -37,12 +37,15 @@ async function getIntroScreenLoginMinLevel(): Promise<number> {
   return fb;
 }
 
-const getStoredOperationMode = (): 'QSR' | 'FSR' => {
+const getStoredOperationMode = (): 'QSR' | 'FSR' | 'BISTRO' => {
   try {
     const raw = localStorage.getItem('pos_setup_config');
     if (!raw) return 'FSR';
-    const parsed = JSON.parse(raw) as { operationMode?: 'QSR' | 'FSR' };
-    return parsed?.operationMode === 'QSR' ? 'QSR' : 'FSR';
+    const parsed = JSON.parse(raw) as { operationMode?: string };
+    const u = String(parsed?.operationMode || '').toUpperCase();
+    if (u === 'QSR') return 'QSR';
+    if (u === 'BISTRO') return 'BISTRO';
+    return 'FSR';
   } catch {
     return 'FSR';
   }
@@ -52,7 +55,8 @@ const IntroPage: React.FC = () => {
   const navigate = useNavigate();
   /** PIN 검증은 고정값만 사용하지만, 다른 화면과 동일하게 API base는 유지 */
   void getAPI_BASE();
-  const targetPath = getStoredOperationMode() === 'QSR' ? '/qsr' : '/sales';
+  const mode = getStoredOperationMode();
+  const targetPath = mode === 'QSR' ? '/qsr' : mode === 'BISTRO' ? '/bistro' : '/sales';
 
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');

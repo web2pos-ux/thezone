@@ -5,8 +5,13 @@ import { getLocalDatetimeString } from '../utils/datetimeUtils';
 import {
   TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
   TABLE_MAP_TOGO_PANEL_SPLIT_OPTIONS,
+  TABLE_MAP_BISTRO_PANEL_SPLIT_KEY,
   readTableMapTogoPanelSplitFromStorage,
+  readBistroTableMapLeftPercentFromStorage,
+  persistBistroTableMapLeftPercent,
   notifyTableMapTogoPanelSplitChanged,
+  BISTRO_TABLE_MAP_LEFT_PCT_MIN,
+  BISTRO_TABLE_MAP_LEFT_PCT_MAX,
   type TableMapTogoPanelSplitPreset,
 } from '../utils/tableMapTogoPanelSplit';
 
@@ -29,11 +34,17 @@ interface OrderPageSetup {
 const orderTypes = [
   { id: 'pos', label: 'Dine-in Order (QSR Mode)' },
   { id: 'togo', label: 'Togo Order' },
-  { id: 'online', label: 'Online Order' },
+  { id: 'online', label: 'Bistro Mode' },
   { id: 'delivery', label: 'Delivery Order' },
   { id: 'table-qr', label: 'Table QR Order' },
   { id: 'kiosk', label: 'Kiosk Order' }
 ];
+
+/** Order Screen Manager 바로가기: `true`로 바꾸면 버튼 클릭 가능 */
+const ORDER_SCREEN_MANAGER_BUTTON_ENABLED = false;
+
+const orderScreenManagerButtonClass =
+  'w-full px-4 py-3 rounded-lg border font-semibold transition-colors border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:hover:bg-gray-100';
 
 type SetupSection = 'order-channel' | 'closing';
 
@@ -53,6 +64,9 @@ const OrderSetupPage = () => {
   });
   const [togoPanelSplitPreset, setTogoPanelSplitPreset] = useState<TableMapTogoPanelSplitPreset>(() =>
     readTableMapTogoPanelSplitFromStorage()
+  );
+  const [bistroTableMapLeftPct, setBistroTableMapLeftPct] = useState<number>(() =>
+    readBistroTableMapLeftPercentFromStorage()
   );
   const [fsrTogoButtonVisible, setFsrTogoButtonVisible] = useState<boolean>(() => {
     try { return localStorage.getItem('fsrTogoButtonVisible') !== 'false'; } catch {} return true;
@@ -176,6 +190,9 @@ const OrderSetupPage = () => {
       }
       if (e.key === TABLE_MAP_TOGO_PANEL_SPLIT_KEY) {
         setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+      }
+      if (e.key === TABLE_MAP_BISTRO_PANEL_SPLIT_KEY) {
+        setBistroTableMapLeftPct(readBistroTableMapLeftPercentFromStorage());
       }
     };
     window.addEventListener('storage', onStorageChange);
@@ -331,8 +348,10 @@ const OrderSetupPage = () => {
     navigate('/backoffice/orders');
   };
 
-  const canContinue = selectedOrderType && selectedMenu;
-  const canSave = selectedOrderType && selectedMenu;
+  const canContinue =
+    Boolean(selectedOrderType && selectedMenu) && selectedOrderType !== 'online';
+  const canSave =
+    Boolean(selectedOrderType && selectedMenu) && selectedOrderType !== 'online';
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
@@ -462,21 +481,93 @@ const OrderSetupPage = () => {
             </div>
           </div>
 
-          {/* Menu Selection */}
+          {/* Menu Selection (Bistro Mode: layout only — no menu/price on this column) */}
           <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Menu Selection</h2>
-            {isLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                <span className="ml-2 text-gray-600">Loading menus...</span>
+            {selectedOrderType === 'online' ? (
+              <div className="space-y-4">
+                <h2 className="text-xl font-semibold text-gray-900 mb-1">Bistro Mode</h2>
+                <p className="text-sm text-gray-500 mb-2">
+                  Table map / tab panel width (menu for orders uses POS Dine-in setup).
+                </p>
+                <div className="rounded-xl border border-gray-200 bg-gray-50/80 p-4 shadow-sm">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Table map / tab panel width
+                  </label>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Default 60 : 40. + widens the tab panel 5%, − narrows it 5%. Applies to{' '}
+                    <code className="rounded bg-gray-100 px-1">/bistro</code>.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm font-semibold text-gray-800 tabular-nums">
+                      Table {bistroTableMapLeftPct}% · Tab {100 - bistroTableMapLeftPct}%
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        title="Narrow tab panel (−5%)"
+                        disabled={bistroTableMapLeftPct >= BISTRO_TABLE_MAP_LEFT_PCT_MAX}
+                        onClick={() =>
+                          setBistroTableMapLeftPct(persistBistroTableMapLeftPercent(bistroTableMapLeftPct + 5))
+                        }
+                        className="flex h-9 w-10 items-center justify-center rounded-lg border-2 border-gray-300 bg-white text-lg font-bold text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        −
+                      </button>
+                      <button
+                        type="button"
+                        title="Widen tab panel (+5%)"
+                        disabled={bistroTableMapLeftPct <= BISTRO_TABLE_MAP_LEFT_PCT_MIN}
+                        onClick={() =>
+                          setBistroTableMapLeftPct(persistBistroTableMapLeftPercent(bistroTableMapLeftPct - 5))
+                        }
+                        className="flex h-9 w-10 items-center justify-center rounded-lg border-2 border-gray-300 bg-white text-lg font-bold text-gray-800 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <div className="grid grid-cols-1 gap-3">
+                    <button
+                      type="button"
+                      onClick={handleOpenOrderScreenManager}
+                      disabled={!ORDER_SCREEN_MANAGER_BUTTON_ENABLED}
+                      title={
+                        ORDER_SCREEN_MANAGER_BUTTON_ENABLED
+                          ? undefined
+                          : '비활성화됨. OrderSetupPage.tsx의 ORDER_SCREEN_MANAGER_BUTTON_ENABLED를 true로 설정하세요.'
+                      }
+                      className={orderScreenManagerButtonClass}
+                    >
+                      Open Order Screen Manager (Reorder via Drag & Drop)
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs text-gray-500">
+                    Save Configuration / Go to Order Screen apply to channels with menu selection; Bistro uses POS menu from Dine-in setup.
+                  </p>
+                </div>
               </div>
+            ) : isLoading ? (
+              <>
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">Menu Selection</h2>
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  <span className="ml-2 text-gray-600">Loading menus...</span>
+                </div>
+              </>
             ) : menus.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <p>No menus registered.</p>
-                <p className="text-sm">Please create a menu in Menu Manager first.</p>
-              </div>
+              <>
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">Menu Selection</h2>
+                <div className="text-center py-8 text-gray-500">
+                  <p>No menus registered.</p>
+                  <p className="text-sm">Please create a menu in Menu Manager first.</p>
+                </div>
+              </>
             ) : (
               <div className="space-y-4">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">Menu Selection</h2>
                 {/* Dropdown selector (hide for togo) */}
                 {selectedOrderType !== 'togo' && (
                 <div className="relative">
@@ -703,7 +794,13 @@ const OrderSetupPage = () => {
                     <button
                       type="button"
                       onClick={handleOpenOrderScreenManager}
-                      className="w-full mt-3 px-4 py-3 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 transition-colors"
+                      disabled={!ORDER_SCREEN_MANAGER_BUTTON_ENABLED}
+                      title={
+                        ORDER_SCREEN_MANAGER_BUTTON_ENABLED
+                          ? undefined
+                          : '비활성화됨. OrderSetupPage.tsx의 ORDER_SCREEN_MANAGER_BUTTON_ENABLED를 true로 설정하세요.'
+                      }
+                      className={`mt-3 ${orderScreenManagerButtonClass}`}
                     >
                       Open Order Screen Manager (Reorder via Drag & Drop)
                     </button>

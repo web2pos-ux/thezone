@@ -27,12 +27,20 @@ import { assignDailySequenceNumbers } from '../utils/orderSequence';
 import { getLocalDatetimeString, getLocalDateString } from '../utils/datetimeUtils';
 import {
   readTableMapTogoPanelSplitFromStorage,
+  readBistroTableMapLeftPercentFromStorage,
+  bistroPanelUiScaleFromLeftPct,
   leftPercentFromSplitPreset,
   togoPanelUiScaleFromPresets,
   TABLE_MAP_TOGO_PANEL_SPLIT_KEY,
+  TABLE_MAP_BISTRO_PANEL_SPLIT_KEY,
   TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT,
   type TableMapTogoPanelSplitPreset,
 } from '../utils/tableMapTogoPanelSplit';
+import BistroTabPanel from '../components/bistro/BistroTabPanel';
+import BistroContainerModal from '../components/bistro/BistroContainerModal';
+import { filterOrdersForBistroPanel, filterOrdersForContainer } from '../utils/bistroOrderHelpers';
+import { fetchOrdersForBistroSession } from '../utils/bistroSessionOrders';
+import { syncBistroTableMapFromOrders } from '../utils/bistroTableMapSync';
 import {
   printReceipt,
   printKitchenTicket,
@@ -695,6 +703,7 @@ const SalesPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const isBistroSalesRoute = location.pathname === '/bistro';
   const networkSync = useNetworkSyncStatus();
 
   // Floor ê´€ë ¨ ìƒíƒœ
@@ -833,8 +842,13 @@ const SalesPage: React.FC = () => {
     return { togo: true, delivery: true };
   });
   const rightPanelVisible = channelVis.togo;
+  /** Bistro(`/bistro`)는 투고 패널 토글과 무관하게 우측 탭 열 유지 */
+  const effectiveRightPanelVisible = isBistroSalesRoute || rightPanelVisible;
   const [togoPanelSplitPreset, setTogoPanelSplitPreset] = useState<TableMapTogoPanelSplitPreset>(() =>
     readTableMapTogoPanelSplitFromStorage()
+  );
+  const [bistroTableMapLeftPct, setBistroTableMapLeftPct] = useState<number>(() =>
+    readBistroTableMapLeftPercentFromStorage()
   );
   // 현재 시간 표시용 상태
   const [currentTime, setCurrentTime] = useState<string>(() => {
@@ -860,6 +874,45 @@ const SalesPage: React.FC = () => {
   const [softKbOpen, setSoftKbOpen] = useState(false);
   const [kbLang, setKbLang] = useState<string>('EN');
   const [refreshOrdersTrigger, setRefreshOrdersTrigger] = useState(0);
+
+  const [bistroSessionOrders, setBistroSessionOrders] = useState<any[]>([]);
+  const [bistroOrdersLoading, setBistroOrdersLoading] = useState(false);
+  const [bistroContainerModalOpen, setBistroContainerModalOpen] = useState(false);
+  const [bistroContainerModalId, setBistroContainerModalId] = useState('');
+  const [bistroContainerTitle, setBistroContainerTitle] = useState('');
+  const [bistroPendingTableElement, setBistroPendingTableElement] = useState<TableElement | null>(null);
+
+  const loadBistroSessionOrders = useCallback(async () => {
+    setBistroOrdersLoading(true);
+    try {
+      const list = await fetchOrdersForBistroSession();
+      setBistroSessionOrders(list);
+    } catch (e) {
+      console.warn('[SalesPage/Bistro] orders load', e);
+    } finally {
+      setBistroOrdersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isBistroSalesRoute) return;
+    void loadBistroSessionOrders();
+    const t = window.setInterval(() => void loadBistroSessionOrders(), 12000);
+    return () => window.clearInterval(t);
+  }, [isBistroSalesRoute, loadBistroSessionOrders]);
+
+  useEffect(() => {
+    if (!isBistroSalesRoute) return;
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void loadBistroSessionOrders();
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [isBistroSalesRoute, loadBistroSessionOrders]);
 
   // Reservation modal state
   const [showReservationModal, setShowReservationModal] = useState<boolean>(false);
@@ -1600,11 +1653,41 @@ const SalesPage: React.FC = () => {
   const footerHeightPx = Math.round((isWidescreen ? 91 : 70) * footerUiScale);
   const contentHeightPx = Math.max(0, frameHeightPx - headerHeightPx - footerHeightPx);
   // 좌(테이블맵)/우(투고 패널) 비율 — Order Screen Setup / Manager 에서 설정
-  const togoPanelLeftPct = leftPercentFromSplitPreset(togoPanelSplitPreset);
-  const leftWidthPx = rightPanelVisible ? Math.round(frameWidthPx * (togoPanelLeftPct / 100)) : frameWidthPx;
-  const rightWidthPx = rightPanelVisible ? Math.max(0, frameWidthPx - leftWidthPx) : 0;
+  const togoPanelLeftPct = isBistroSalesRoute
+    ? bistroTableMapLeftPct
+    : leftPercentFromSplitPreset(togoPanelSplitPreset);
+  const leftWidthPx = effectiveRightPanelVisible ? Math.round(frameWidthPx * (togoPanelLeftPct / 100)) : frameWidthPx;
+  const rightWidthPx = effectiveRightPanelVisible ? Math.max(0, frameWidthPx - leftWidthPx) : 0;
   /** 기준 34% 우측 대비 현재 우측 비율로 상단 버튼·카드 밀도 */
-  const togoPanelUiScale = togoPanelUiScaleFromPresets(rightPanelVisible, togoPanelSplitPreset);
+  const togoPanelUiScale = isBistroSalesRoute
+    ? bistroPanelUiScaleFromLeftPct(effectiveRightPanelVisible, bistroTableMapLeftPct)
+    : togoPanelUiScaleFromPresets(effectiveRightPanelVisible, togoPanelSplitPreset);
+
+  const bistroElementIdSet = useMemo(() => {
+    const set = new Set<string>();
+    tableElements.forEach((e: any) => {
+      if (e?.id != null) set.add(String(e.id));
+    });
+    return set;
+  }, [tableElements]);
+
+  const bistroTableStatusById = useMemo(() => {
+    const m: Record<string, string> = {};
+    tableElements.forEach((e: any) => {
+      if (e?.id != null) m[String(e.id)] = String(e.status || 'Available');
+    });
+    return m;
+  }, [tableElements]);
+
+  const bistroPanelOrders = useMemo(
+    () => filterOrdersForBistroPanel(bistroSessionOrders, bistroElementIdSet),
+    [bistroSessionOrders, bistroElementIdSet]
+  );
+
+  const bistroContainerModalOrders = useMemo(
+    () => filterOrdersForContainer(bistroSessionOrders, bistroContainerModalId),
+    [bistroSessionOrders, bistroContainerModalId]
+  );
   const togoTopBtnMinH = Math.max(40, Math.round(48 * togoPanelUiScale));
   const togoBtnFontPx = Math.max(11, Math.round(footerButtonFontPx * togoPanelUiScale));
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
@@ -5138,6 +5221,7 @@ const SalesPage: React.FC = () => {
     setTogoOrderMode('togo');
     setServerModalError('');
     setCustomerZip('');
+    setBistroPendingTableElement(null);
     if (shouldPromptServerSelection) {
       setSelectedTogoServer(null);
       setShowServerSelectionModal(true);
@@ -5366,6 +5450,7 @@ const SalesPage: React.FC = () => {
   const handleServerModalClose = () => {
     setShowServerSelectionModal(false);
     setSelectedTogoServer(null);
+    setBistroPendingTableElement(null);
   };
 
   const handleServerSelectForTogo = (employee: ClockedInEmployee) => {
@@ -5448,6 +5533,34 @@ const SalesPage: React.FC = () => {
       default:
         return 'Element'; // ë²ˆí˜¸ ì—†ìŒ
     }
+  };
+
+  const handleServerSelectionSelect = (employee: ClockedInEmployee) => {
+    if (!employee) return;
+    const pending = bistroPendingTableElement;
+    if (isBistroSalesRoute && pending) {
+      setShowServerSelectionModal(false);
+      setSelectedTogoServer(employee);
+      if (employee?.employee_id && employee?.employee_name) {
+        try {
+          saveServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID, {
+            serverId: String(employee.employee_id),
+            serverName: String(employee.employee_name),
+          });
+          window.dispatchEvent(new Event('posServerAssignmentUpdated'));
+        } catch {
+          /* ignore */
+        }
+      }
+      const raw = getElementDisplayName(pending) || '';
+      const firstLine = String(raw).split('\n')[0] || pending.text || String(pending.id);
+      setBistroContainerModalId(String(pending.id));
+      setBistroContainerTitle(firstLine);
+      setBistroContainerModalOpen(true);
+      setBistroPendingTableElement(null);
+      return;
+    }
+    handleServerSelectForTogo(employee);
   };
 
   // ë°±ì—”ë“œì—ì„œ í…Œì´ë¸” ë§µ ë°ì´í„° ê°€ì ¸ì˜¤ê¸°
@@ -5663,6 +5776,34 @@ const SalesPage: React.FC = () => {
     return () => clearInterval(tableRefreshInterval);
   }, [selectedFloor]);
 
+  useEffect(() => {
+    if (!isBistroSalesRoute || !tableElements.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const payload = tableElements.map((e: any) => ({
+          id: String(e.id),
+          status: String(e.status || 'Available'),
+          current_order_id:
+            e.current_order_id != null &&
+            String(e.current_order_id) !== '' &&
+            Number.isFinite(Number(e.current_order_id))
+              ? Number(e.current_order_id)
+              : null,
+        }));
+        const changed = await syncBistroTableMapFromOrders(payload, bistroSessionOrders);
+        if (!cancelled && changed) {
+          await fetchTableMapData(false);
+        }
+      } catch (e) {
+        console.warn('[SalesPage/Bistro] table map sync', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isBistroSalesRoute, tableElements, bistroSessionOrders, selectedFloor]);
+
   const checkHoldRef = useRef<() => Promise<void>>(undefined);
   checkHoldRef.current = async () => {
     try {
@@ -5793,13 +5934,19 @@ const SalesPage: React.FC = () => {
       if (e.key === TABLE_MAP_TOGO_PANEL_SPLIT_KEY) {
         setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
       }
+      if (e.key === TABLE_MAP_BISTRO_PANEL_SPLIT_KEY) {
+        setBistroTableMapLeftPct(readBistroTableMapLeftPercentFromStorage());
+      }
     };
     window.addEventListener('storage', onChannelVisChange);
     return () => window.removeEventListener('storage', onChannelVisChange);
   }, []);
 
   useEffect(() => {
-    const onSplit = () => setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+    const onSplit = () => {
+      setTogoPanelSplitPreset(readTableMapTogoPanelSplitFromStorage());
+      setBistroTableMapLeftPct(readBistroTableMapLeftPercentFromStorage());
+    };
     window.addEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onSplit);
     return () => window.removeEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onSplit);
   }, []);
@@ -6392,6 +6539,36 @@ const SalesPage: React.FC = () => {
       }
     } catch (e) {
       console.warn('handleTableClick failed:', e);
+    } finally {
+      setPressedTableId(prev => (prev === String(element.id) ? null : prev));
+    }
+  };
+
+  const handleBistroAwareTableClick = async (element: TableElement) => {
+    try {
+      if (!isBistroSalesRoute) {
+        await handleTableClick(element);
+        return;
+      }
+      if (
+        !(
+          element.type === 'rounded-rectangle' ||
+          element.type === 'circle' ||
+          element.type === 'bar' ||
+          element.type === 'room'
+        )
+      ) {
+        return;
+      }
+      if (isBillPrintMode || isMoveMergeMode || selectedWaitingEntry) {
+        await handleTableClick(element);
+        return;
+      }
+      setBistroPendingTableElement(element);
+      setServerModalError('');
+      setShowServerSelectionModal(true);
+    } catch (e) {
+      console.warn('handleBistroAwareTableClick failed:', e);
     } finally {
       setPressedTableId(prev => (prev === String(element.id) ? null : prev));
     }
@@ -11250,10 +11427,10 @@ const SalesPage: React.FC = () => {
                         if (isGlass) {
                           e.currentTarget.style.boxShadow = NEUMORPHIC_SHADOW_HOVER;
                         }
-                        handleTableClick(element);
+                        void handleBistroAwareTableClick(element);
                       }}
                       onTouchStart={() => setPressedTableId(String(element.id))}
-                      onTouchEnd={() => handleTableClick(element)}
+                      onTouchEnd={() => void handleBistroAwareTableClick(element)}
                       title={`${element.type} - ${element.status || 'Available'}`}
                     >
                       {element.type === 'restroom' ? (
@@ -11364,8 +11541,47 @@ const SalesPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 4. 우측 25% - Togo/Delivery Order 현황판 */}
-          {rightPanelVisible && <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
+          {/* 4. 우측 25% - Togo/Delivery 현황판 · Bistro 는 탭 카드 전용 */}
+          {effectiveRightPanelVisible && (
+          <div className="bg-blue-50 border-l border-gray-300 relative flex flex-col overflow-hidden" style={{ width: `${rightWidthPx}px`, height: `${contentHeightPx}px`, zIndex: 10 }}>
+            {isBistroSalesRoute ? (
+              <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <BistroTabPanel
+                    orders={bistroPanelOrders}
+                    tableStatusById={bistroTableStatusById}
+                    loading={bistroOrdersLoading}
+                    onRefresh={() => void loadBistroSessionOrders()}
+                    onSelectOrder={(orderId, tableId) => {
+                      const sess = loadServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID);
+                      const sid =
+                        sess?.serverId ||
+                        (selectedTogoServer?.employee_id != null
+                          ? String(selectedTogoServer.employee_id)
+                          : '');
+                      const sname =
+                        (sess?.serverName && String(sess.serverName).trim()) ||
+                        (selectedTogoServer?.employee_name && String(selectedTogoServer.employee_name).trim()) ||
+                        '';
+                      navigate('/sales/order', {
+                        state: {
+                          orderType: 'POS',
+                          menuId: defaultMenu.menuId,
+                          menuName: defaultMenu.menuName,
+                          tableId,
+                          orderId: String(orderId),
+                          loadExisting: true,
+                          fromBistro: true,
+                          floor: selectedFloor,
+                          ...(sid && sname ? { serverId: sid, serverName: sname } : {}),
+                        },
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+            ) : (
+            <>
             {/* 상단 고정 버튼 영역 */}
             <div className="flex gap-2 pt-1 px-2 pb-1.5 flex-shrink-0" style={{ background: '#F0F0F3', borderRadius: '0 0 16px 16px' }}>
               {([
@@ -11998,7 +12214,10 @@ const SalesPage: React.FC = () => {
                 </div>
               )}
             </div>
-          </div>}
+            </>
+            )}
+          </div>
+          )}
           </div>
           <div className="border-t py-1.5 pl-3 pr-3" data-pos-lock="sales-footer" style={{ height: `${footerHeightPx}px`, background: '#d1d5db', borderColor: '#c0c5cc' }}>
             <div className="grid grid-cols-10 h-full w-full" style={{ gap: `${footerGapPx}px` }}>
@@ -15281,8 +15500,44 @@ const SalesPage: React.FC = () => {
         error={serverModalError}
         employees={clockedInServers}
         onClose={handleServerModalClose}
-        onSelect={handleServerSelectForTogo}
+        onSelect={handleServerSelectionSelect}
       />
+      {isBistroSalesRoute ? (
+        <BistroContainerModal
+          open={bistroContainerModalOpen}
+          onClose={() => setBistroContainerModalOpen(false)}
+          containerId={bistroContainerModalId}
+          containerTitle={bistroContainerTitle}
+          containerOrders={bistroContainerModalOrders}
+          onRefreshOrders={() => {
+            void loadBistroSessionOrders();
+            void fetchTableMapData(false);
+          }}
+          onOpenOrder={(orderId, tableId) => {
+            const sess = loadServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID);
+            const sid =
+              sess?.serverId ||
+              (selectedTogoServer?.employee_id != null ? String(selectedTogoServer.employee_id) : '');
+            const sname =
+              (sess?.serverName && String(sess.serverName).trim()) ||
+              (selectedTogoServer?.employee_name && String(selectedTogoServer.employee_name).trim()) ||
+              '';
+            navigate('/sales/order', {
+              state: {
+                orderType: 'POS',
+                menuId: defaultMenu.menuId,
+                menuName: defaultMenu.menuName,
+                tableId,
+                orderId: String(orderId),
+                loadExisting: true,
+                fromBistro: true,
+                floor: selectedFloor,
+                ...(sid && sname ? { serverId: sid, serverName: sname } : {}),
+              },
+            });
+          }}
+        />
+      ) : null}
       <PaymentModal />
       <WaitingListModal
         open={showWaitingModal}

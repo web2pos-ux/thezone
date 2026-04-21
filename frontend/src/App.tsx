@@ -112,13 +112,17 @@ if (typeof window !== 'undefined') {
   window.addEventListener('resize', applyScreenSizeVars);
 }
 
-const getStoredOperationMode = (): 'QSR' | 'FSR' | null => {
+const getStoredOperationMode = (): 'QSR' | 'FSR' | 'BISTRO' | null => {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem('pos_setup_config');
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { operationMode?: 'QSR' | 'FSR' };
-    return parsed?.operationMode ?? null;
+    const parsed = JSON.parse(raw) as { operationMode?: string };
+    const u = String(parsed?.operationMode || '').toUpperCase();
+    if (u === 'QSR') return 'QSR';
+    if (u === 'BISTRO') return 'BISTRO';
+    if (u === 'FSR') return 'FSR';
+    return null;
   } catch (error) {
     console.warn('Failed to read operation mode from localStorage:', error);
     return null;
@@ -202,6 +206,13 @@ const SalesModeGate: React.FC = () => {
       </OpeningRequired>
     );
   }
+  if (mode === 'BISTRO') {
+    return (
+      <OpeningRequired>
+        <Navigate to="/bistro" replace />
+      </OpeningRequired>
+    );
+  }
   return (
     <OpeningRequired>
       <SalesPage />
@@ -223,6 +234,7 @@ const isLocalHost = (host: string) => host === 'localhost' || host === '127.0.0.
 /**
  * Spec 7 — Minimal English status (fixed corner, brief OK flash).
  * `/sales` 에서는 Firebase 동기 pill 을 SalesPage 헤더(시간 왼쪽)로 옮김.
+ * `/bistro` 는 `SalesPage` 재사용(동일 헤더); 플로팅 pill 은 숨기고 헤더 중앙에 동기 상태 표시.
  */
 const NetworkStatusBar: React.FC = () => {
   const location = useLocation();
@@ -237,7 +249,7 @@ const NetworkStatusBar: React.FC = () => {
     detail,
     onOpenDlq,
   } = useNetworkSyncStatus();
-  const hideFloatingSyncPill = location.pathname === '/sales';
+  const hideFloatingSyncPill = location.pathname === '/sales' || location.pathname === '/bistro';
 
   const pillBase =
     'fixed bottom-3 right-3 z-[10000] max-w-[min(92vw,18rem)] rounded-md border px-2 py-1 shadow-md text-[11px] leading-snug font-medium tracking-tight';
@@ -455,6 +467,7 @@ function App() {
           
           <Route element={<RequireApprovedDevice />}>
             <Route path="/sales" element={<SalesModeGate />} />
+            <Route path="/bistro" element={<OpeningRequired><SalesPage /></OpeningRequired>} />
             <Route path="/sales/order" element={
               <Suspense fallback={<div className="flex items-center justify-center h-screen bg-gray-100"><div className="text-xl">Loading...</div></div>}>
                 <OrderPage />

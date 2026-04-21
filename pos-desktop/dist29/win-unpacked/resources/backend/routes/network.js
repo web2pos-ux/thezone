@@ -16,6 +16,7 @@ module.exports = () => {
         lastCheckIso: networkConnectivity.getLastCheckIso(),
         syncState: networkConnectivity.getSyncState(),
         pingUrl: networkConnectivity.getPingUrl(),
+        pingUrls: networkConnectivity.getPingUrls(),
         queuePending: counts.pending,
         queueProcessing: counts.processing,
         queueTotalActive: counts.totalActive,

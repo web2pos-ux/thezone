@@ -61,6 +61,7 @@ import {
   persistModifierLayoutExplicitItemIds,
   MODIFIER_LAYOUT_EXPLICIT_ITEM_IDS_LS_KEY,
 } from '../utils/modifierLayoutExplicit';
+import { getBistroTabTableDisplayLabel } from '../utils/bistroOrderHelpers';
 import { PrintBillModal } from '../components/PrintBillModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
@@ -175,6 +176,8 @@ const OrderPage = () => {
   const customDiscountInputRef = useRef<HTMLInputElement | null>(null);
 
   const isSalesOrder = (location.pathname || '').startsWith('/sales/order');
+  /** 비스트로에서 진입 시 종료·복귀 경로 */
+  const exitToSalesPath = (location.state as any)?.fromBistro === true ? '/bistro' : '/sales';
   const shouldShowButtonPlaceholders = !isSalesOrder;
   
   // 반응형: 화면 너비 감지 (Back Office에서 작은 화면일 때 주문목록 숨김)
@@ -409,10 +412,21 @@ const OrderPage = () => {
       return;
     }
 
-    const stored =
-      (tableIdFromState ? loadServerAssignment('table', tableIdFromState) : null) ||
-      (orderIdFromState ? loadServerAssignment('order', orderIdFromState) : null) ||
-      loadServerAssignment('session', locationKey);
+    const posTableMapSession = loadServerAssignment('session', POS_TABLE_MAP_SERVER_SESSION_ID);
+    const tableStored = tableIdFromState ? loadServerAssignment('table', tableIdFromState) : null;
+    const orderStored = orderIdFromState ? loadServerAssignment('order', orderIdFromState) : null;
+    const navSessionStored = loadServerAssignment('session', locationKey);
+
+    const sessionOk = (s: typeof posTableMapSession) =>
+      Boolean(s?.serverId && String(s.serverName || '').trim());
+
+    let stored = null as ReturnType<typeof loadServerAssignment>;
+    if (st?.fromBistro === true) {
+      if (sessionOk(posTableMapSession)) stored = posTableMapSession;
+      else stored = tableStored || orderStored || navSessionStored;
+    } else {
+      stored = tableStored || orderStored || posTableMapSession || navSessionStored;
+    }
 
     if (stored) {
       setSelectedServer({ id: stored.serverId, name: stored.serverName });
@@ -503,14 +517,16 @@ const OrderPage = () => {
     if (!serverBootstrapComplete) return;
     if (selectedServer) return;
     if (serverPromptedRef.current) return;
+    const fromBistroNav = (location.state as any)?.fromBistro === true;
     const shouldPrompt =
       selectServerPromptEnabled &&
-      (normalizedOrderTypeLower === 'pos' || normalizedOrderTypeLower === 'togo');
+      (normalizedOrderTypeLower === 'pos' || normalizedOrderTypeLower === 'togo') &&
+      !fromBistroNav;
     if (shouldPrompt) {
       serverPromptedRef.current = true;
       setShowServerModal(true);
     }
-  }, [isSalesOrder, serverBootstrapComplete, selectedServer, selectServerPromptEnabled, normalizedOrderTypeLower]);
+  }, [isSalesOrder, serverBootstrapComplete, selectedServer, selectServerPromptEnabled, normalizedOrderTypeLower, location.key, locationState.fromBistro]);
 
   useEffect(() => {
     if (!showServerModal) return;
@@ -520,7 +536,7 @@ const OrderPage = () => {
   const handleServerModalClose = useCallback(() => {
     setShowServerModal(false);
     if (isSalesOrder) {
-      navigate('/sales');
+      navigate(exitToSalesPath);
     }
   }, [isSalesOrder, navigate]);
 
@@ -916,6 +932,14 @@ const handleVoidPinClear = useCallback(() => {
 
     const printTableName = resolvedTableName || tableNameFromState || '';
     const printServerName = selectedServer?.name || '';
+    const fromBistroKitchen =
+      (location.state as any)?.fromBistro === true || exitToSalesPath === '/bistro';
+    const bistroTableSpotLabel = fromBistroKitchen
+      ? getBistroTabTableDisplayLabel({
+          table_name: printTableName,
+          table_id: tableIdFromState || '',
+        })
+      : '';
     const reprintNum = normalizeDailyPosOrderNumber(savedOrderNumberRef.current);
     const printOrderNumber = reprintNum
       ? `#${reprintNum}`
@@ -932,12 +956,16 @@ const handleVoidPinClear = useCallback(() => {
           orderInfo: {
             orderNumber: printOrderNumber,
             table: printTableName,
+            tableName: printTableName,
             server: printServerName,
             orderType: orderTypeDisplay,
             channel: orderTypeDisplay,
             pickupTime: orderPickupInfo.readyTimeLabel || '',
             pickupMinutes: orderPickupInfo.pickupMinutes,
             kitchenNote: savedKitchenMemo || '',
+            customerName: getPersistableCustomerName() || '',
+            fromBistro: fromBistroKitchen,
+            bistroTableSpot: bistroTableSpotLabel,
           },
           isAdditionalOrder: false,
           isPaid: false,
@@ -2362,7 +2390,7 @@ const handleVoidPinClear = useCallback(() => {
     if (togoWalkInPayAfterInfoRef.current) {
       togoWalkInPayAfterInfoRef.current = false;
     }
-    navigate('/sales', { replace: true });
+    navigate(exitToSalesPath, { replace: true });
     } catch (e) {
       console.error(e);
       alert('Error during payment completion');
@@ -2683,7 +2711,7 @@ const handleVoidPinClear = useCallback(() => {
           clearServerAssignmentForContext();
           setSelectedServer(null);
           splitDiscountRef.current = null;
-          navigate('/sales', { replace: true });
+          navigate(exitToSalesPath, { replace: true });
 
           // Background finalization (no UI state updates)
           void (async () => {
@@ -2995,7 +3023,7 @@ const handleVoidPinClear = useCallback(() => {
     }
     clearServerAssignmentForContext();
     setSelectedServer(null);
-    navigate('/sales', { replace: true });
+    navigate(exitToSalesPath, { replace: true });
 
     // Background finalization
     void (async () => {
@@ -7208,6 +7236,14 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       // 통합 출력 API 호출 (프린터별로 한 번씩만 출력)
       const printTableName = resolvedTableName || tableNameFromState || '';
       const printServerName = selectedServer?.name || '';
+      const fromBistroKitchen =
+        (location.state as any)?.fromBistro === true || exitToSalesPath === '/bistro';
+      const bistroTableSpotLabel = fromBistroKitchen
+        ? getBistroTabTableDisplayLabel({
+            table_name: printTableName,
+            table_id: tableIdFromState || '',
+          })
+        : '';
       const kitchenNum = normalizeDailyPosOrderNumber(savedOrderNumberRef.current);
       const printOrderNumber = kitchenNum
         ? `#${kitchenNum}`
@@ -7245,6 +7281,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               customerPhone: getPersistableCustomerPhone() || '',
               onlineOrderNumber:
                 (orderType || '').toLowerCase() === 'online' ? onlineOrderNumberForKitchenRef.current || '' : '',
+              fromBistro: fromBistroKitchen,
+              bistroTableSpot: bistroTableSpotLabel,
             },
             isAdditionalOrder: wasUpdateMode,
             // 배달: 항상 PAID. 투고/온라인/픽업: 세션 결제 합이 총액에 도달하면 PAID(웨이트리스·영수용 복사 티켓에 UNPAID 방지)
@@ -7312,7 +7350,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
      
      if (!hasSplit) {
         await executePrintBill('ALL_DETAILS');
-        navigate('/sales', { replace: true });
+        navigate(exitToSalesPath, { replace: true });
      } else {
         setShowPrintBillModal(true);
      }
@@ -7490,7 +7528,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     clearServerAssignmentForContext();
     setSelectedServer(null);
 
-    navigate('/sales', {
+    navigate(exitToSalesPath, {
       replace: true,
       state:
         stateOrderId != null && stateOrderId !== ''
@@ -7533,7 +7571,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         } catch {}
         clearServerAssignmentForContext();
         setSelectedServer(null);
-        navigate('/sales', { replace: true });
+        navigate(exitToSalesPath, { replace: true });
         return;
       }
 
@@ -7668,7 +7706,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
       }
 
       // 5) 정리 및 이동: 테이블맵으로 이동하지만, VOID 표시를 유지하기 위해 로컬 스냅샷은 삭제하지 않음
-      navigate('/sales', { replace: true });
+      navigate(exitToSalesPath, { replace: true });
     } catch (e) {
       console.error('executeOkFlow failed', e);
       alert('OK processing failed');
@@ -7895,7 +7933,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         // 테이블맵으로 이동 (Receipt는 이미 개별 게스트 결제 시 출력됨)
         clearServerAssignmentForContext();
         setSelectedServer(null);
-        navigate('/sales', { replace: true });
+        navigate(exitToSalesPath, { replace: true });
       }
     } catch (err) {
       console.error('Auto-complete check error:', err);
@@ -10411,7 +10449,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                               setSoldOutMode(false);
                               setSelectedSoldOutType('');
                               if (soldOutModeFromSales) {
-                                navigate('/sales', { replace: true });
+                                navigate(exitToSalesPath, { replace: true });
                               }
                             }}
                             className="min-w-[120px] h-12 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-base font-semibold shadow"
@@ -14201,7 +14239,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             onPrintAllDetails={async () => {
                 await executePrintBill('ALL_DETAILS');
                 setShowPrintBillModal(false);
-                navigate('/sales', { replace: true });
+                navigate(exitToSalesPath, { replace: true });
             }}
             onPrintIndividualGuest={async (guestId) => {
                 await executePrintBill('INDIVIDUAL_GUEST', guestId);
@@ -14210,7 +14248,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             onPrintAllSeparateBills={async () => {
                 await executePrintBill('ALL_SEPARATE');
                 setShowPrintBillModal(false);
-                navigate('/sales', { replace: true });
+                navigate(exitToSalesPath, { replace: true });
             }}
             guestIds={Array.from(guestIds)}
         />
@@ -14566,7 +14604,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         onClose={() => {
           setShowSoldOutModal(false);
           if (soldOutModeFromSales) {
-            navigate('/sales', { replace: true });
+            navigate(exitToSalesPath, { replace: true });
           }
         }}
         menuId={menuId}

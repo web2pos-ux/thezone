@@ -622,6 +622,8 @@ function renderKitchenTicketGraphic(orderData) {
   console.log(`🍳 [GRAPHIC-TABLE-DEBUG] header.tableName="${header.tableName}" orderInfo.tableName="${orderInfo.tableName}" orderData.tableName="${orderData.tableName}" orderInfo.table="${orderInfo.table}" orderData.table="${orderData.table}" => tableName="${tableName}" channel="${channel}"`);
   const customerName = orderInfo.customerName || orderData.customerName || '';
   const customerPhone = orderInfo.customerPhone || orderData.customerPhone || '';
+  const fromBistroKitchen = !!(orderInfo.fromBistro || orderData.fromBistro);
+  const bistroSpotLabel = String(orderInfo.bistroTableSpot || orderData.bistroTableSpot || '').trim();
   const deliveryCompanyRaw =
     orderInfo.deliveryCompany || orderInfo.deliveryChannel ||
     orderData.deliveryCompany || orderData.deliveryChannel ||
@@ -742,6 +744,7 @@ function renderKitchenTicketGraphic(orderData) {
   let rightBoxChannelPart = '';
   let rightBoxInfoPart = '';
 
+  if (!fromBistroKitchen) {
   if (isPickupLike) {
     const phoneRaw = String(customerPhone || '').trim();
     const phoneDigits = phoneRaw.replace(/\D/g, '');
@@ -809,14 +812,20 @@ function renderKitchenTicketGraphic(orderData) {
     rightBoxChannelPart = channel || '';
     rightBoxText = channel || '';
   }
+  } else {
+    rightBoxText = '';
+    rightBoxChannelPart = '';
+    rightBoxInfoPart = '';
+  }
 
-  console.log(`🍳 [GRAPHIC-HEADER] leftBoxText="${leftBoxText}" rightBoxText="${rightBoxText}" channel="${channel}" tableName="${tableName}"`);
+  console.log(`🍳 [GRAPHIC-HEADER] leftBoxText="${leftBoxText}" rightBoxText="${rightBoxText}" channel="${channel}" tableName="${tableName}" fromBistro=${fromBistroKitchen}`);
 
   // Dine-in 스타일(흰배경/검정글씨/검정테두리) vs Takeout/Delivery 스타일(검정배경/흰글씨)
   const isDineInStyle = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS' || channel === 'EAT IN' || channel === 'EATIN' || channel === 'FOR HERE' || channel === 'FORHERE');
   const isDineInLikeForBoxes = isDineInStyle;
 
   const hasTwoBoxes = !!(leftBoxText && rightBoxText);
+  const useBistroTripleHeader = fromBistroKitchen && !!leftBoxText;
   const headerStartY = y;
   const headerFontSize = 55;
   const orderNumberFontSize = Math.max(8, Math.round(headerFontSize * 0.772));
@@ -849,105 +858,181 @@ function renderKitchenTicketGraphic(orderData) {
   let rightBoxW = headerW;
   const dividerW = 4;
 
-  if (hasTwoBoxes) {
-    ctx.font = orderNumFont;
-    const leftTextW = ctx.measureText(leftBoxText).width;
-    leftBoxW = Math.ceil(leftTextW + leftHeaderPadX * 2);
-    leftBoxW = Math.max(leftBoxW, Math.round(headerW * 0.178));
-    leftBoxW = Math.min(leftBoxW, Math.round(headerW * 0.347));
-    rightBoxW = Math.max(0, headerW - leftBoxW);
-  }
-
-  // 왼쪽 박스 그리기 (주문번호)
-  if (leftBoxW > 0) {
-    ctx.fillStyle = bg;
-    ctx.fillRect(headerX, headerStartY, leftBoxW, headerH);
-    if (isDineInLikeForBoxes) {
-      ctx.strokeStyle = fg;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(headerX, headerStartY, leftBoxW, headerH);
+  if (useBistroTripleHeader) {
+    const midStr = String(customerName || '').trim() || '—';
+    const rightStr = bistroSpotLabel || '—';
+    const centerY = headerStartY + headerH / 2;
+    const padX = orderHeaderPadX;
+    let wR = Math.max(72, Math.round(headerW * 0.17));
+    let wL = Math.max(86, Math.round(headerW * 0.2));
+    let wM = headerW - wL - wR - dividerW * 2;
+    if (wM < 72) {
+      wL = Math.max(72, Math.round(headerW * 0.18));
+      wR = Math.max(64, Math.round(headerW * 0.14));
+      wM = Math.max(48, headerW - wL - wR - dividerW * 2);
     }
+
+    const drawVertDivider = (atX) => {
+      ctx.fillStyle = fg;
+      ctx.fillRect(atX - dividerW / 2, headerStartY + 4, dividerW, headerH - 8);
+    };
+
+    const drawBoxStroke = (bx, bw) => {
+      ctx.fillStyle = bg;
+      ctx.fillRect(bx, headerStartY, bw, headerH);
+      if (isDineInLikeForBoxes) {
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(bx, headerStartY, bw, headerH);
+      }
+    };
+
+    const fitTextInWidth = (text, maxW, baseSize) => {
+      let t = String(text || '');
+      let fs = baseSize;
+      ctx.font = `bold ${fs}px "${FONT_FAMILY}`;
+      while (fs > 8 && ctx.measureText(t).width > maxW) {
+        fs -= 1;
+        ctx.font = `bold ${fs}px "${FONT_FAMILY}`;
+      }
+      while (t.length > 1 && ctx.measureText(t).width > maxW) {
+        t = t.slice(0, -1);
+      }
+      return { text: t, fontPx: fs };
+    };
+
+    let x = headerX;
+    drawBoxStroke(x, wL);
     ctx.font = orderNumFont;
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(leftBoxText, headerX + leftBoxW / 2, headerStartY + headerH / 2);
-  }
+    ctx.fillText(leftBoxText, x + wL / 2, centerY);
+    x += wL;
+    drawVertDivider(x);
+    x += dividerW;
 
-  // 구분선 (왼쪽 박스와 오른쪽 박스 사이)
-  if (hasTwoBoxes) {
-    ctx.fillStyle = fg;
-    ctx.fillRect(headerX + leftBoxW - dividerW / 2, headerStartY + 4, dividerW, headerH - 8);
-  }
-
-  // 오른쪽 박스 그리기 (채널 + 정보)
-  if (rightBoxW > 0) {
-    const rightBoxX = headerX + leftBoxW;
-    ctx.fillStyle = bg;
-    ctx.fillRect(rightBoxX, headerStartY, rightBoxW, headerH);
-    if (isDineInLikeForBoxes) {
-      ctx.strokeStyle = fg;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(rightBoxX, headerStartY, rightBoxW, headerH);
-    }
-
-    ctx.font = channelFont;
+    drawBoxStroke(x, wM);
+    const maxMid = Math.max(0, wM - padX * 2);
+    const midFit = fitTextInWidth(midStr, maxMid, channelFontSize);
+    ctx.font = `bold ${midFit.fontPx}px "${FONT_FAMILY}`;
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const maxRightTextW = Math.max(0, rightBoxW - orderHeaderPadX * 2);
+    ctx.fillText(midFit.text, x + wM / 2, centerY);
+    x += wM;
+    drawVertDivider(x);
+    x += dividerW;
 
-    if (rightBoxInfoPart) {
-      // 채널명-부가정보를 하이픈으로 연결하여 렌더링 (예: ONLINE-7777, UBER-5DIS59)
-      const channelWithHyphen = `${rightBoxChannelPart}-`;
-      const spaceBetween = 0;
+    drawBoxStroke(x, wR);
+    const maxRt = Math.max(0, wR - padX * 2);
+    const rtFit = fitTextInWidth(rightStr, maxRt, channelFontSize);
+    ctx.font = `bold ${rtFit.fontPx}px "${FONT_FAMILY}`;
+    ctx.fillStyle = fg;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(rtFit.text, x + wR / 2, centerY);
+  } else {
+    if (hasTwoBoxes) {
+      ctx.font = orderNumFont;
+      const leftTextW = ctx.measureText(leftBoxText).width;
+      leftBoxW = Math.ceil(leftTextW + leftHeaderPadX * 2);
+      leftBoxW = Math.max(leftBoxW, Math.round(headerW * 0.178));
+      leftBoxW = Math.min(leftBoxW, Math.round(headerW * 0.347));
+      rightBoxW = Math.max(0, headerW - leftBoxW);
+    }
+
+    // 왼쪽 박스 그리기 (주문번호)
+    if (leftBoxW > 0) {
+      ctx.fillStyle = bg;
+      ctx.fillRect(headerX, headerStartY, leftBoxW, headerH);
+      if (isDineInLikeForBoxes) {
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(headerX, headerStartY, leftBoxW, headerH);
+      }
+      ctx.font = orderNumFont;
+      ctx.fillStyle = fg;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(leftBoxText, headerX + leftBoxW / 2, headerStartY + headerH / 2);
+    }
+
+    // 구분선 (왼쪽 박스와 오른쪽 박스 사이)
+    if (hasTwoBoxes) {
+      ctx.fillStyle = fg;
+      ctx.fillRect(headerX + leftBoxW - dividerW / 2, headerStartY + 4, dividerW, headerH - 8);
+    }
+
+    // 오른쪽 박스 그리기 (채널 + 정보)
+    if (rightBoxW > 0) {
+      const rightBoxX = headerX + leftBoxW;
+      ctx.fillStyle = bg;
+      ctx.fillRect(rightBoxX, headerStartY, rightBoxW, headerH);
+      if (isDineInLikeForBoxes) {
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(rightBoxX, headerStartY, rightBoxW, headerH);
+      }
+
       ctx.font = channelFont;
-      const channelTextW = ctx.measureText(channelWithHyphen).width;
+      ctx.fillStyle = fg;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const maxRightTextW = Math.max(0, rightBoxW - orderHeaderPadX * 2);
 
-      // 부가정보에 사용 가능한 너비
-      const availableForInfo = Math.max(0, maxRightTextW - channelTextW - spaceBetween);
+      if (rightBoxInfoPart) {
+        // 채널명-부가정보를 하이픈으로 연결하여 렌더링 (예: ONLINE-7777, UBER-5DIS59)
+        const channelWithHyphen = `${rightBoxChannelPart}-`;
+        const spaceBetween = 0;
+        ctx.font = channelFont;
+        const channelTextW = ctx.measureText(channelWithHyphen).width;
 
-      // 부가정보 폰트 크기 계산 (박스에 맞춰 축소)
-      let infoFontSize = channelFontSize;
-      ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
-      let infoW = ctx.measureText(rightBoxInfoPart).width;
-      if (infoW > availableForInfo && availableForInfo > 0) {
-        infoFontSize = Math.max(8, Math.round(infoFontSize * (availableForInfo / infoW)));
+        // 부가정보에 사용 가능한 너비
+        const availableForInfo = Math.max(0, maxRightTextW - channelTextW - spaceBetween);
+
+        // 부가정보 폰트 크기 계산 (박스에 맞춰 축소)
+        let infoFontSize = channelFontSize;
         ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
-        infoW = ctx.measureText(rightBoxInfoPart).width;
-        if (infoW > availableForInfo) {
-          infoFontSize = Math.max(8, Math.round(infoFontSize * 0.9));
+        let infoW = ctx.measureText(rightBoxInfoPart).width;
+        if (infoW > availableForInfo && availableForInfo > 0) {
+          infoFontSize = Math.max(8, Math.round(infoFontSize * (availableForInfo / infoW)));
           ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
           infoW = ctx.measureText(rightBoxInfoPart).width;
+          if (infoW > availableForInfo) {
+            infoFontSize = Math.max(8, Math.round(infoFontSize * 0.9));
+            ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
+            infoW = ctx.measureText(rightBoxInfoPart).width;
+          }
         }
-      }
 
-      // 전체 너비로 중앙 정렬 계산
-      const totalTextW = channelTextW + spaceBetween + infoW;
-      const startX = rightBoxX + (rightBoxW - totalTextW) / 2;
-      const centerY = headerStartY + headerH / 2;
+        // 전체 너비로 중앙 정렬 계산
+        const totalTextW = channelTextW + spaceBetween + infoW;
+        const startX = rightBoxX + (rightBoxW - totalTextW) / 2;
+        const centerY2 = headerStartY + headerH / 2;
 
-      // 채널명 + 하이픈 그리기 (고정 크기)
-      ctx.font = channelFont;
-      ctx.textAlign = 'left';
-      ctx.fillText(channelWithHyphen, startX, centerY);
+        // 채널명 + 하이픈 그리기 (고정 크기)
+        ctx.font = channelFont;
+        ctx.textAlign = 'left';
+        ctx.fillText(channelWithHyphen, startX, centerY2);
 
-      // 부가정보 그리기 (동적 크기)
-      ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
-      ctx.textAlign = 'left';
-      ctx.fillText(rightBoxInfoPart, startX + channelTextW + spaceBetween, centerY);
-    } else {
-      // 채널명만 있는 경우 (Table 1, EAT IN 등)
-      let displayText = rightBoxText;
-      if (ctx.measureText(displayText).width > maxRightTextW) {
-        const reducedSize = Math.max(8, Math.round(channelFontSize * 0.75));
-        ctx.font = `bold ${reducedSize}px "${FONT_FAMILY}`;
+        // 부가정보 그리기 (동적 크기)
+        ctx.font = `bold ${infoFontSize}px "${FONT_FAMILY}`;
+        ctx.textAlign = 'left';
+        ctx.fillText(rightBoxInfoPart, startX + channelTextW + spaceBetween, centerY2);
+      } else {
+        // 채널명만 있는 경우 (Table 1, EAT IN 등)
+        let displayText = rightBoxText;
         if (ctx.measureText(displayText).width > maxRightTextW) {
-          const smallerSize = Math.max(8, Math.round(channelFontSize * 0.6));
-          ctx.font = `bold ${smallerSize}px "${FONT_FAMILY}`;
+          const reducedSize = Math.max(8, Math.round(channelFontSize * 0.75));
+          ctx.font = `bold ${reducedSize}px "${FONT_FAMILY}`;
+          if (ctx.measureText(displayText).width > maxRightTextW) {
+            const smallerSize = Math.max(8, Math.round(channelFontSize * 0.6));
+            ctx.font = `bold ${smallerSize}px "${FONT_FAMILY}`;
+          }
         }
+        ctx.fillText(displayText, rightBoxX + rightBoxW / 2, headerStartY + headerH / 2);
       }
-      ctx.fillText(displayText, rightBoxX + rightBoxW / 2, headerStartY + headerH / 2);
     }
   }
 
@@ -1051,7 +1136,7 @@ function renderKitchenTicketGraphic(orderData) {
   // 고객 이름 (TOGO, ONLINE, DELIVERY는 위에서 이미 표시했으므로 제외)
   // PICKUP 채널 등에서만 표시
   const alreadyShowedCustomer = (channel === 'TOGO' || channel === 'ONLINE' || isDeliveryLike);
-  if (customerName && !alreadyShowedCustomer) {
+  if (customerName && !alreadyShowedCustomer && !fromBistroKitchen) {
     y = drawTextBlock(ctx, {
       text: `Customer: ${customerName}`,
       fontSize: Math.round(PRINTER_CONFIG.fontSize.normal * 1.3125),

@@ -155,7 +155,7 @@ function startBackend() {
         }).on('error', () => {
           // 아직 준비 안됨, 계속 대기
         });
-      }, 500);
+      }, 100);
 
       // 타임아웃 (30초)
       setTimeout(() => {
@@ -345,18 +345,16 @@ function createSplash() {
   // 로고 이미지 경로
   const logoPath = (getAppIconPath() || '').replace(/\\/g, '/');
 
+  // 스플래시는 외부 네트워크(구글 폰트) 없이 즉시 그림 — 오프라인/느린 DNS에서 기동 지연 방지
   splash.loadURL(`data:text/html,
     <html>
       <head>
         <meta charset="utf-8">
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;700&display=swap" rel="stylesheet">
       </head>
-      <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a5f,#2d5a87);border-radius:20px;font-family:'Lora',Georgia,serif;">
+      <body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:linear-gradient(135deg,#1e3a5f,#2d5a87);border-radius:20px;font-family:Georgia,'Times New Roman',serif;">
         <div style="text-align:center;color:white;">
           <img src="file:///${logoPath}" style="width:80px;height:80px;object-fit:contain;margin-bottom:15px;" onerror="this.style.display='none'"/>
-          <h1 style="font-size:22px;margin:0 0 10px 0;font-family:'Lora',Georgia,serif;font-weight:700;">TheZonePOS</h1>
+          <h1 style="font-size:22px;margin:0 0 10px 0;font-family:Georgia,'Times New Roman',serif;font-weight:700;">TheZonePOS</h1>
           <p style="font-size:14px;opacity:0.8;">Starting servers...</p>
           <div style="margin-top:20px;width:200px;height:4px;background:rgba(255,255,255,0.3);border-radius:2px;">
             <div style="width:0%;height:100%;background:white;border-radius:2px;animation:loading 2s ease-in-out infinite;"></div>

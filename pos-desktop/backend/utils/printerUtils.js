@@ -214,6 +214,34 @@ async function printTextToWindows(printerName, text, copies = 1) {
 }
 
 /**
+ * Bistro Kitchen 반전 헤더 1줄: `#주문 |   고객명   | T2` (고객명은 고정 폭 가운데 패딩).
+ * @param {number} widthChars 58mm≈32, 80mm≈42
+ */
+function formatBistroKitchenTicketHeaderLine(widthChars, orderNumberRaw, customerNameRaw, tableSpotRaw) {
+  const w = Number(widthChars);
+  const width = Number.isFinite(w) && w >= 24 ? Math.floor(w) : 42;
+  const rawNum = String(orderNumberRaw ?? '').replace(/^#/, '').trim();
+  const ord = rawNum ? `#${rawNum}` : '—';
+  const nameRaw = String(customerNameRaw ?? '').trim();
+  const cn = nameRaw || '—';
+  const spotRaw = String(tableSpotRaw ?? '').trim();
+  const spot = spotRaw || '—';
+  const leftSeg = `${ord} | `;
+  const rightSeg = ` | ${spot}`;
+  const inner = width - leftSeg.length - rightSeg.length;
+  if (inner < 1) {
+    const fallback = `${ord}|${cn}|${spot}`;
+    return fallback.length > width ? fallback.slice(0, width) : fallback;
+  }
+  let mid = cn;
+  if (mid.length > inner) mid = mid.slice(0, inner);
+  const padTotal = inner - mid.length;
+  const padL = Math.floor(padTotal / 2);
+  const padR = padTotal - padL;
+  return `${leftSeg}${' '.repeat(padL)}${mid}${' '.repeat(padR)}${rightSeg}`;
+}
+
+/**
  * Kitchen Ticket 텍스트 생성 (FSR/QSR 공통) - ESC/POS 그래픽 스타일
  * 반전 헤더, 큰 글씨 등을 지원
  */
@@ -318,6 +346,11 @@ function buildKitchenTicketText(orderData) {
     const ext = String(deliveryOrderNumber || '').replace(/^#\s*/, '').replace(/[^a-zA-Z0-9-]/g, '').toUpperCase();
     const channelPart = ext ? `${platform}-${ext}` : platform;
     headerText = cleanNum ? `#${cleanNum} ${channelPart}` : channelPart;
+  } else if (orderInfo.fromBistro || orderData.fromBistro) {
+    const pw = Number(orderData.paperWidth || orderInfo.paperWidth || header.paperWidth);
+    const lineChars = pw === 58 ? 32 : 42;
+    const spot = String(orderInfo.bistroTableSpot || orderData.bistroTableSpot || '').trim();
+    headerText = formatBistroKitchenTicketHeaderLine(lineChars, cleanNum || orderNumber, customerName, spot);
   } else if (tableName) {
     const isDineInLike = (channel === 'DINE-IN' || channel === 'POS' || channel === 'TABLE' || channel === 'HANDHELD' || channel === 'SUBPOS');
     if (cleanNum) {
@@ -354,8 +387,9 @@ function buildKitchenTicketText(orderData) {
   }
   output += NORMAL_SIZE + BOLD_OFF + LEFT;
   
-  // === 고객명 (TOGO/ONLINE/THEZONE 채널 제외) ===
-  if (customerName && channel !== 'ONLINE' && channel !== 'THEZONE' && channel !== 'TOGO' && channel !== 'TAKEOUT') {
+  // === 고객명 (TOGO/ONLINE/THEZONE 채널 제외, Bistro는 헤더에만 표시) ===
+  const isBistroOrder = !!(orderInfo.fromBistro || orderData.fromBistro);
+  if (customerName && !isBistroOrder && channel !== 'ONLINE' && channel !== 'THEZONE' && channel !== 'TOGO' && channel !== 'TAKEOUT') {
     output += BOLD_ON + customerName + BOLD_OFF + LF;
   }
   
@@ -1161,18 +1195,26 @@ function getElementValue(key, data) {
   
   switch (key) {
     case 'orderType':
+      if (oi.fromBistro) {
+        const spot = String(oi.bistroTableSpot || '').trim();
+        return spot ? `| ${spot}` : '| —';
+      }
       // FSR 테이블 주문: 헤더는 반드시 DINE-IN/T4 형식
       if (isDineInLike && table) return `DINE-IN / ${table}`;
       return channelUpper;
     case 'tableNumber':
+      if (oi.fromBistro) {
+        const cn = String(oi.customerName || '').trim();
+        return cn || '—';
+      }
       return table;
     case 'posOrderNumber':
+      if (oi.fromBistro) return '';
       if (isDineInLike && table) {
         const num = h.orderNumber || oi.orderNumber || oi.orderId || '';
         const clean = String(num).replace('#', '').trim();
         return clean ? `#${clean} ${table}` : table;
       }
-      return h.orderNumber || oi.orderNumber || oi.orderId || '';
       return h.orderNumber || oi.orderNumber || oi.orderId || '';
     case 'externalOrderNumber':
       return oi.deliveryOrderNumber || oi.externalOrderNumber || '';
@@ -1236,7 +1278,33 @@ function renderElement(key, style, data, width, LF) {
  */
 function renderMergedElement(merged, data, width, LF) {
   if (!merged) return '';
-  
+
+  const { orderInfo, orderData, header } = data;
+  const oi = orderInfo || orderData || {};
+  const h = header || {};
+  if (
+    oi.fromBistro &&
+    merged.leftElement?.key === 'tableNumber' &&
+    merged.rightElement?.key === 'orderType'
+  ) {
+    const rawNum = h.orderNumber || oi.orderNumber || oi.orderId || '';
+    const clean = String(rawNum).replace(/^#/, '').trim();
+    const singleLine = formatBistroKitchenTicketHeaderLine(
+      width,
+      clean || rawNum,
+      oi.customerName || '',
+      oi.bistroTableSpot || ''
+    );
+    let output = '';
+    if (merged.lineInverse) output += ESC_POS.REVERSE_ON;
+    output += getStyleCommand(merged.leftElement);
+    output += ESC_POS.CENTER + singleLine + LF;
+    output += getStyleResetCommand();
+    output += ESC_POS.LEFT;
+    if (merged.lineInverse) output += ESC_POS.REVERSE_OFF;
+    return output;
+  }
+
   const leftValue = getElementValue(merged.leftElement.key, data);
   const rightValue = getElementValue(merged.rightElement.key, data);
   

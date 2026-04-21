@@ -2250,13 +2250,36 @@ export default function PrinterPage() {
           {/* Font Size */}
           <div className="flex items-center gap-1 pointer-events-auto">
             <span className="text-sm text-gray-400">Size</span>
-            <input type="number" value={element.fontSize} onChange={(e) => onChange({ fontSize: parseInt(e.target.value) || 12 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" min={8} max={32} disabled={!isVisible} draggable="false" />
+            <input
+              type="number"
+              value={element.fontSize}
+              onChange={(e) => onChange({ fontSize: parseInt(e.target.value) || 12 })}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="w-12 p-1 border rounded text-sm text-center"
+              min={8}
+              max={32}
+              disabled={!isVisible}
+              draggable={false}
+            />
           </div>
           
           {/* Top Spacing (margin-top in px) */}
           <div className="flex items-center gap-1 pointer-events-auto">
             <span className="text-sm text-gray-400">Line</span>
-            <input type="number" value={element.lineSpacing} onChange={(e) => onChange({ lineSpacing: parseInt(e.target.value) || 0 })} onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} className="w-12 p-1 border rounded text-sm text-center" step={1} min={0} max={50} disabled={!isVisible} draggable="false" />
+            <input
+              type="number"
+              value={element.lineSpacing}
+              onChange={(e) => onChange({ lineSpacing: parseInt(e.target.value) || 0 })}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="w-12 p-1 border rounded text-sm text-center"
+              step={1}
+              min={0}
+              max={50}
+              disabled={!isVisible}
+              draggable={false}
+            />
           </div>
           
           
@@ -2279,7 +2302,16 @@ export default function PrinterPage() {
         
         {/* Text input (if showTextInput) */}
         {showTextInput && element.visible && onTextChange && (
-          <input type="text" value={textValue} onChange={(e) => onTextChange(e.target.value)} placeholder="Enter text..." className="w-full mt-1 p-1 border rounded text-xs" />
+          <input
+            type="text"
+            value={textValue}
+            onChange={(e) => onTextChange(e.target.value)}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            placeholder="Enter text..."
+            className="w-full mt-1 p-1 border rounded text-xs"
+            draggable={false}
+          />
         )}
       </div>
     );

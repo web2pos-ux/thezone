@@ -468,6 +468,7 @@ function renderKitchenTicketGraphic(orderData) {
   console.log(`🍳 [GRAPHIC-TABLE-DEBUG] header.tableName="${header.tableName}" orderInfo.tableName="${orderInfo.tableName}" orderData.tableName="${orderData.tableName}" orderInfo.table="${orderInfo.table}" orderData.table="${orderData.table}" => tableName="${tableName}" channel="${channel}"`);
   const customerName = orderInfo.customerName || orderData.customerName || '';
   const customerPhone = orderInfo.customerPhone || orderData.customerPhone || '';
+  const fromBistroKitchen = !!(orderInfo.fromBistro || orderData.fromBistro);
   const deliveryCompanyRaw =
     orderInfo.deliveryCompany || orderInfo.deliveryChannel ||
     orderData.deliveryCompany || orderData.deliveryChannel ||
@@ -575,6 +576,11 @@ function renderKitchenTicketGraphic(orderData) {
   } else if (channel === 'FOR HERE' || channel === 'FORHERE' || channel === 'EAT IN' || channel === 'EATIN') {
     const displayChannel = (channel === 'FORHERE') ? 'FOR HERE' : (channel === 'EATIN') ? 'EAT IN' : channel;
     headerText = cleanOrderNum ? `#${cleanOrderNum}  ${displayChannel}` : displayChannel;
+  } else if (fromBistroKitchen) {
+    const cn = String(customerName || '').trim() || '—';
+    const spot = String(orderInfo.bistroTableSpot || orderData.bistroTableSpot || '').trim() || '—';
+    const ord = cleanOrderNum ? `#${cleanOrderNum}` : '—';
+    headerText = `${ord}  |  ${cn}  |  ${spot}`;
   } else if (tableName) {
     const formatTbl = (s) => {
       const m1 = s.match(/^t\s*0*(\d+)\s*$/i);

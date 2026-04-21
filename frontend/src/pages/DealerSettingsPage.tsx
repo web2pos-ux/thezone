@@ -14,7 +14,7 @@ const DealerSettingsPage: React.FC = () => {
 
   const [restaurantId, setRestaurantId] = useState('');
   const [storeName, setStoreName] = useState('');
-  const [serviceMode, setServiceMode] = useState<'FSR' | 'QSR'>('FSR');
+  const [serviceMode, setServiceMode] = useState<'FSR' | 'QSR' | 'BISTRO'>('FSR');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [dealerRole, setDealerRole] = useState('');
@@ -51,7 +51,8 @@ const DealerSettingsPage: React.FC = () => {
       if (data.success) {
         setRestaurantId(data.data.restaurantId || '');
         setStoreName(data.data.storeName || '');
-        setServiceMode(data.data.serviceMode || 'FSR');
+        const m = String(data.data.serviceMode || 'FSR').toUpperCase();
+        setServiceMode(m === 'QSR' ? 'QSR' : m === 'BISTRO' ? 'BISTRO' : 'FSR');
       }
     } catch {}
   };
@@ -145,7 +146,7 @@ const DealerSettingsPage: React.FC = () => {
         {/* Service Mode */}
         <div className="mb-5">
           <label className="text-gray-400 text-xs block mb-1">Service Mode</label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-2">
             <button onClick={() => setServiceMode('FSR')}
               className={`h-14 rounded-lg font-bold text-lg border-2 transition-all ${serviceMode === 'FSR' ? 'bg-blue-600 border-blue-400 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
               FSR
@@ -153,6 +154,10 @@ const DealerSettingsPage: React.FC = () => {
             <button onClick={() => setServiceMode('QSR')}
               className={`h-14 rounded-lg font-bold text-lg border-2 transition-all ${serviceMode === 'QSR' ? 'bg-orange-600 border-orange-400 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
               QSR
+            </button>
+            <button onClick={() => setServiceMode('BISTRO')}
+              className={`h-14 rounded-lg font-bold text-lg border-2 transition-all ${serviceMode === 'BISTRO' ? 'bg-violet-600 border-violet-400 text-white' : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-400'}`}>
+              Bistro
             </button>
           </div>
         </div>

@@ -240,10 +240,10 @@ router.post('/store-settings', requireDealerAccess, async (req, res) => {
     const { role, name } = req.dealerInfo;
     
     // Validate service mode
-    if (serviceMode && !['QSR', 'FSR'].includes(serviceMode.toUpperCase())) {
+    if (serviceMode && !['QSR', 'FSR', 'BISTRO'].includes(serviceMode.toUpperCase())) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Service mode must be QSR or FSR' 
+        error: 'Service mode must be QSR, FSR, or BISTRO' 
       });
     }
     

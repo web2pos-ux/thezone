@@ -173,6 +173,9 @@ export interface KitchenTicketData {
     pickupTime?: string;
     table?: string;
     server?: string;
+    /** Bistro: kitchen 머지 행 — tableNumber 슬롯에 고객명, orderType 슬롯에 | T1 */
+    fromBistro?: boolean;
+    bistroTableSpot?: string;
   };
   items?: any[];  // 유연한 타입
   guestSections?: GuestSection[];
