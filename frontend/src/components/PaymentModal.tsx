@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { OrderItem } from '../pages/order/orderTypes';
 import { API_URL } from '../config/constants';
+import { loadTetraBridgeReady, purchaseOnTetraTerminal } from '../utils/tetraIntegratedPayment';
 import { PAY_NEO, PAY_NEO_CANVAS, SOFT_NEO } from '../utils/softNeumorphic';
 
 interface PaymentCompleteData {
@@ -28,7 +29,7 @@ interface PaymentModalProps {
 	subtotal: number;
 	taxLines: Array<{ name: string; amount: number }>; 
 	total: number;
-	onConfirm: (payload: { method: string; amount: number; tip: number; discountedGrand?: number }) => void;
+	onConfirm: (payload: { method: string; amount: number; tip: number; discountedGrand?: number; terminalRef?: string }) => void | Promise<void>;
 	onComplete?: (receiptCount: number) => void;
 	onPaymentComplete?: (data: PaymentCompleteData) => void;  // 결제 완료 시 별도 모달 표시용
 	channel?: string;
@@ -642,6 +643,48 @@ useEffect(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [selectedDiscountPercent]);
 
+  const tetraBridgeActiveRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const active = await loadTetraBridgeReady(API_URL);
+        if (!cancelled) tetraBridgeActiveRef.current = active;
+      } catch {
+        if (!cancelled) tetraBridgeActiveRef.current = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const confirmPaymentWithOptionalTetra = useCallback(
+    async (effectiveMethod: string, finalAmount: number, t: number, grand: number) => {
+      const payload: {
+        method: string;
+        amount: number;
+        tip: number;
+        discountedGrand: number;
+        terminalRef?: string;
+      } = {
+        method: effectiveMethod,
+        amount: parseFloat(finalAmount.toFixed(2)),
+        tip: parseFloat(t.toFixed(2)),
+        discountedGrand: grand,
+      };
+      if (isCardPaymentMethod(effectiveMethod) && tetraBridgeActiveRef.current) {
+        const totalCents = Math.round((finalAmount + t) * 100);
+        const invoice = `W${Date.now()}`.slice(-15);
+        const ref = await purchaseOnTetraTerminal(API_URL, totalCents, invoice);
+        if (ref) payload.terminalRef = ref;
+      }
+      await onConfirm(payload);
+    },
+    [onConfirm]
+  );
+
   // Removed auto-commit: 결제도구/금액 조합은 OK 시점에만 확정
 
   const finalizeAndComplete = async () => {
@@ -677,7 +720,7 @@ useEffect(() => {
         const displayAmount = Number((finalAmount + t).toFixed(2));
         setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount, tip: t, displayAmount }]);
         setRawAmountDigits('');
-        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
+        await confirmPaymentWithOptionalTetra(effectiveMethod, finalAmount, t, grand);
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
         setAmount('0.00');
         setTip('0');
@@ -794,7 +837,7 @@ useEffect(() => {
         const displayAmount = Number((finalAmount + t).toFixed(2));
         setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount, tip: t, displayAmount }]);
         setRawAmountDigits('');
-        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
+        await confirmPaymentWithOptionalTetra(effectiveMethod, finalAmount, t, grand);
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
         if (!isCashLikeMethod && rawAmt > finalAmount + 0.0005 && !cardOverpayToTip) {
           const upper = String(effectiveMethod || '').toUpperCase();
@@ -903,7 +946,7 @@ useEffect(() => {
       setIsProcessing(false);
       setCashReadyForOk(false);
       cashReadyDataRef.current = null;
-      showAlert('Payment failed. Please try again.');
+      showAlert(e instanceof Error && e.message ? e.message : 'Payment failed. Please try again.');
       try { console.error('Finalize failed', e); } catch {}
     }
   };
@@ -1152,7 +1195,7 @@ useEffect(() => {
         const displayAmount = Number((finalAmount + t).toFixed(2));
         setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount, tip: t, displayAmount }]);
         setRawAmountDigits('');
-        await onConfirm({ method: effectiveMethod, amount: parseFloat(finalAmount.toFixed(2)), tip: parseFloat(t.toFixed(2)), discountedGrand: grand });
+        await confirmPaymentWithOptionalTetra(effectiveMethod, finalAmount, t, grand);
         setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
         if (!isCashLikeMethod2 && currentAmt > finalAmount + 0.0005 && !cardOverpayToTip2) {
           const upper = String(effectiveMethod || '').toUpperCase();
@@ -1177,11 +1220,11 @@ useEffect(() => {
         setInputTarget('AMOUNT');
         setIsTipFocused(false);
         setIsProcessing(false);
-        showAlert('Payment failed. Please try again.');
+        showAlert(e instanceof Error && e.message ? e.message : 'Payment failed. Please try again.');
         try { console.error('Auto-commit failed', e); } catch {}
       }
     }
-  }, [method, amount, tip, cashPaidConfirmed, nonCashPaidConfirmed, grand, onConfirm, showClampPopup, showInfoPopup, onCreateAdhocGuests, isSplitActive, outstandingDue, isProcessing]);
+  }, [method, amount, tip, cashPaidConfirmed, nonCashPaidConfirmed, grand, onConfirm, confirmPaymentWithOptionalTetra, showClampPopup, showInfoPopup, onCreateAdhocGuests, isSplitActive, outstandingDue, isProcessing]);
 
   // Confirmed 결제를 반영해 최종 남은 금액(dueFull)과 화면 Due 값을 계산
   const due = useMemo(() => {
@@ -1672,12 +1715,7 @@ const addQuick = async (q: number) => {
         const displayAmount = Number((finalAmount + tipToSend).toFixed(2));
 				setOptimisticPayments(prev => [...prev, { tempId, method: effectiveMethod, amount: finalAmount, tip: tipToSend, displayAmount }]);
 				
-				await onConfirm({ 
-					method: effectiveMethod, 
-					amount: parseFloat(finalAmount.toFixed(2)), 
-					tip: parseFloat(tipToSend.toFixed(2)),
-					discountedGrand: grand
-				});
+				await confirmPaymentWithOptionalTetra(effectiveMethod, finalAmount, tipToSend, grand);
 				
 				setOptimisticPayments(prev => prev.filter(p => p.tempId !== tempId));
 				

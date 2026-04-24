@@ -9,6 +9,7 @@ const firebaseService = require('../services/firebaseService');
 const { getLocalDatetimeString, getLocalTimestampForFilename } = require('../utils/datetimeUtils');
 const { SyncLogService, SYNC_STATUS, SYNC_DIRECTION, SYNC_TYPE } = require('../services/syncLogService');
 const idMapperService = require('../services/idMapperService');
+const { writePublicMenuSnapshot } = require('../utils/publicMenuSnapshot');
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원)
 const { db, dbRun, dbAll, dbGet } = require('../db');
@@ -889,7 +890,14 @@ router.post('/sync-from-firebase', requireManager, async (req, res) => {
     await dbRun('COMMIT');
     transactionActive = false;
     console.log('✅ SQLite 트랜잭션 커밋 완료');
-    
+
+    // 온라인 주문: Firebase→POS 후에도 publicMenu/snapshot 이 갱신되도록 (클라우드 메뉴 = 스냅샷 소스)
+    try {
+      await writePublicMenuSnapshot(firestore, restaurantId);
+    } catch (snapErr) {
+      console.warn('[publicMenuSnapshot] sync-from-firebase:', snapErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Menu synchronized from Firebase',
@@ -1355,7 +1363,13 @@ router.post('/sync-to-firebase', requireManager, async (req, res) => {
     }
     
     console.log(`✅ 업로드 완료 - 카테고리: ${posCategories.length}, 아이템: ${uploadedItems}, 카테고리링크: 모디파이어(${catModLinksUploaded}), 세금(${catTaxLinksUploaded}), 프린터(${catPrinterLinksUploaded})`);
-    
+
+    try {
+      await writePublicMenuSnapshot(firestore, restaurantId);
+    } catch (snapErr) {
+      console.warn('[publicMenuSnapshot] sync-to-firebase:', snapErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Menu uploaded to Firebase',
@@ -3106,7 +3120,13 @@ router.post('/full-sync-to-firebase', requireManager, async (req, res) => {
         ...syncStats
       });
     }
-    
+
+    try {
+      await writePublicMenuSnapshot(firestore, restaurantId);
+    } catch (snapErr) {
+      console.warn('[publicMenuSnapshot] full-sync-to-firebase:', snapErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Full menu sync to Firebase completed',

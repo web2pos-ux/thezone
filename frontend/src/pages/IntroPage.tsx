@@ -8,6 +8,7 @@ import {
   clampPermLevel,
 } from '../constants/introScreenLoginPermission';
 import { isMasterPosPin } from '../constants/masterPosPin';
+import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
 
 /** 인트로 PIN: 레거시 고정값 또는 만능 PIN(1126) 또는 직원 PIN (Employee Manager → 최소 레벨 이상) */
 const INTRO_FALLBACK_PIN = '0888';
@@ -37,6 +38,17 @@ async function getIntroScreenLoginMinLevel(): Promise<number> {
   return fb;
 }
 
+const persistOperationMode = (operationMode: 'FSR' | 'QSR' | 'BISTRO') => {
+  try {
+    const existing = JSON.parse(localStorage.getItem('pos_setup_config') || '{}') as Record<string, unknown>;
+    existing.operationMode = operationMode;
+    localStorage.setItem('pos_setup_config', JSON.stringify(existing));
+  } catch {
+    localStorage.setItem('pos_setup_config', JSON.stringify({ operationMode }));
+  }
+};
+
+/** 일반 모드: 설정에 따른 Sales 진입 경로 */
 const getStoredOperationMode = (): 'QSR' | 'FSR' | 'BISTRO' => {
   try {
     const raw = localStorage.getItem('pos_setup_config');
@@ -55,8 +67,9 @@ const IntroPage: React.FC = () => {
   const navigate = useNavigate();
   /** PIN 검증은 고정값만 사용하지만, 다른 화면과 동일하게 API base는 유지 */
   void getAPI_BASE();
-  const mode = getStoredOperationMode();
-  const targetPath = mode === 'QSR' ? '/qsr' : mode === 'BISTRO' ? '/bistro' : '/sales';
+  const demo = isWeb2posDemoBuild();
+  const storedMode = getStoredOperationMode();
+  const targetPath = storedMode === 'QSR' ? '/qsr' : storedMode === 'BISTRO' ? '/bistro' : '/sales';
 
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
@@ -131,6 +144,15 @@ const IntroPage: React.FC = () => {
     if (valid) navigate('/backoffice');
   };
 
+  const goToMode = async (operationMode: 'FSR' | 'QSR' | 'BISTRO') => {
+    const valid = await verifyIntroPin();
+    if (!valid) return;
+    persistOperationMode(operationMode);
+    if (operationMode === 'QSR') navigate('/qsr');
+    else if (operationMode === 'BISTRO') navigate('/bistro');
+    else navigate('/sales');
+  };
+
   const goToSales = async () => {
     const valid = await verifyIntroPin();
     if (valid) navigate(targetPath);
@@ -166,14 +188,14 @@ const IntroPage: React.FC = () => {
         <h1 className="text-[2.5rem] leading-tight text-white mb-1" style={{ fontFamily: "'Lora', Georgia, serif", fontWeight: 700 }}>
           ThezonePOS
         </h1>
-        <p className="text-xl text-sky-400 mb-8 italic font-bold">One Touch, So Much</p>
+        <p className="text-lg text-sky-400 mb-5 italic font-bold sm:text-xl">One Touch, So Much</p>
 
         {/* PIN Dots */}
-        <div className="flex justify-center gap-3 mb-0.5">
+        <div className="flex justify-center gap-2.5 mb-0.5">
           {[0, 1, 2, 3].map((i) => (
             <div
               key={i}
-              className={`w-5 h-5 rounded-full border-2 ${pin.length > i ? 'bg-white border-white' : 'border-gray-400'}`}
+              className={`w-4 h-4 rounded-full border-2 ${pin.length > i ? 'bg-white border-white' : 'border-gray-400'}`}
             />
           ))}
         </div>
@@ -183,61 +205,111 @@ const IntroPage: React.FC = () => {
           {pinError && <p className="text-red-400 text-sm leading-tight">{pinError}</p>}
         </div>
 
-        {/* PIN Pad */}
-        <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 inline-block border border-white/20 -mt-1">
-          <div className="grid grid-cols-3 gap-3 mb-3">
+        {/* PIN Pad — compact glass panel */}
+        <div className="bg-white/[0.08] backdrop-blur-md rounded-xl px-3 py-2.5 inline-flex flex-col items-stretch w-[min(100vw-2rem,200px)] border border-white/15 shadow-sm -mt-0.5">
+          <div className="grid grid-cols-3 gap-2 mb-2 justify-items-center">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
               <button
                 key={num}
+                type="button"
                 onClick={() => handleNumber(num)}
-                className="w-[57px] h-[57px] rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white text-2xl font-semibold transition-all active:scale-95"
+                className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-lg font-semibold transition-all active:scale-[0.97] shadow-sm"
               >
                 {num}
               </button>
             ))}
             <button
+              type="button"
               onClick={handleClear}
-              className="w-[57px] h-[57px] rounded-full bg-red-500 hover:bg-red-600 text-white text-sm font-bold transition-all active:scale-95"
+              className="w-12 h-12 rounded-full bg-red-500/95 hover:bg-red-600 text-white text-[11px] font-bold leading-tight transition-all active:scale-[0.97]"
             >
               Clear
             </button>
             <button
+              type="button"
               onClick={() => handleNumber('0')}
-              className="w-[57px] h-[57px] rounded-full bg-white/10 hover:bg-white/20 border border-white/30 text-white text-2xl font-semibold transition-all active:scale-95"
+              className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-lg font-semibold transition-all active:scale-[0.97]"
             >
               0
             </button>
             <button
+              type="button"
               onClick={handleBackspace}
-              className="w-[57px] h-[57px] rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-2xl font-bold transition-all active:scale-95"
+              className="w-12 h-12 rounded-full bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold transition-all active:scale-[0.97]"
             >
               ←
             </button>
           </div>
 
           {/* Divider */}
-          <div className="border-t border-white/20 my-2"></div>
+          <div className="border-t border-white/15 my-1.5"></div>
 
-          {/* Navigation Buttons - BackOffice 1/3, Sales 2/3 */}
-          <div className="flex gap-2">
-            <button
-              onClick={goToBackOffice}
-              className="w-1/3 px-2 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 transition-all flex flex-row items-center justify-center gap-1.5 leading-tight py-1"
-              style={{ minHeight: '43px' }}
-            >
-              <span className="text-base shrink-0" aria-hidden>⚙️</span>
-              <span className="text-sm font-medium text-left">
-                <span className="block leading-tight">Back</span>
-                <span className="block leading-tight">Office</span>
-              </span>
-            </button>
-            <button
-              onClick={goToSales}
-              className="w-2/3 px-4 bg-white/10 hover:bg-white/20 border border-white/30 rounded-lg text-gray-300 text-sm font-medium transition-all flex items-center justify-center gap-2"
-              style={{ height: '43px' }}
-            >
-              <span>📋</span> Sales
-            </button>
+          {/* 데모: FSR/QSR/Bistro 선택 + Back Office 비활성 / 일반: Sales + Back Office */}
+          <div className="flex flex-col gap-1.5 w-full">
+            {demo ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void goToMode('FSR')}
+                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                >
+                  <span aria-hidden className="text-[15px]">🍽️</span>
+                  FSR Mode
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void goToMode('QSR')}
+                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                >
+                  <span aria-hidden className="text-[15px]">🥤</span>
+                  QSR Mode
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void goToMode('BISTRO')}
+                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                >
+                  <span aria-hidden className="text-[15px]">☕</span>
+                  Bistro Mode
+                </button>
+                <button
+                  type="button"
+                  disabled
+                  className="w-full px-2 py-2 bg-white/10 border border-white/25 rounded-md text-gray-300 text-[13px] font-semibold flex flex-row items-center justify-center gap-1.5 opacity-40 cursor-not-allowed"
+                  style={{ minHeight: '40px' }}
+                >
+                  <span className="text-[15px] shrink-0" aria-hidden>⚙️</span>
+                  <span className="text-[12px] font-medium text-left leading-tight">
+                    <span className="block">Back</span>
+                    <span className="block">Office</span>
+                  </span>
+                </button>
+              </>
+            ) : (
+              <div className="grid grid-cols-3 gap-1.5 w-full">
+                <button
+                  type="button"
+                  onClick={goToBackOffice}
+                  className="col-span-1 px-1.5 py-1.5 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-300 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1"
+                  style={{ minHeight: '40px' }}
+                >
+                  <span className="text-[15px] shrink-0" aria-hidden>⚙️</span>
+                  <span className="text-[12px] font-medium text-left leading-tight">
+                    <span className="block">Back</span>
+                    <span className="block">Office</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void goToSales()}
+                  className="col-span-2 px-2.5 py-1.5 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                  style={{ minHeight: '40px' }}
+                >
+                  <span aria-hidden className="text-[15px]">📋</span>
+                  Sales
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -8,6 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
 
 // Backend base URL (strip trailing /api if present)
 const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:3177').replace(/\/api\/?$/, '');
@@ -422,7 +423,7 @@ const SetupPage: React.FC = () => {
   
   // Options states
   const [serviceMode, setServiceMode] = useState<ServiceMode>('FSR');
-  const [dataOption, setDataOption] = useState<DataOption>('empty');
+  const [dataOption, setDataOption] = useState<DataOption>(() => (isWeb2posDemoBuild() ? 'existing' : 'empty'));
   const [setupProgress, setSetupProgress] = useState({ status: '', progress: 0 });
   
   // Target path state
@@ -616,6 +617,27 @@ const SetupPage: React.FC = () => {
     checkSetupStatus();
   }, []);
 
+  // 데모 패키지: 번들 DB의 service_type으로 Service Mode 기본값 맞춤 (수동 변경 가능)
+  useEffect(() => {
+    if (!isWeb2posDemoBuild() || step !== 'setup') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetchWithTimeout(`${API_BASE}/api/admin-settings/initial-setup-status`, { cache: 'no-store' as any });
+        const j = (await r.json().catch(() => ({}))) as { serviceType?: string | null };
+        if (cancelled) return;
+        const st = String(j.serviceType || '').toUpperCase();
+        if (st === 'QSR') setServiceMode('QSR');
+        else if (st === 'FSR') setServiceMode('FSR');
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
+
   // Test connection with Restaurant ID
   const testConnection = async () => {
     if (!restaurantId.trim()) {
@@ -680,11 +702,13 @@ const SetupPage: React.FC = () => {
         setSetupProgress({ status: 'Switching service mode...', progress: 20 });
       } else {
         setSetupProgress({ status: 'Preparing database...', progress: 20 });
-        
-        await fetch(`${API_URL}/firebase-setup/clear-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
+        const skipClearLocal = dataOption === 'existing';
+        if (!skipClearLocal) {
+          await fetch(`${API_URL}/firebase-setup/clear-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
       }
       
       setSetupProgress({ status: 'Saving restaurant info...', progress: 40 });

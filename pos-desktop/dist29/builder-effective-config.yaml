@@ -1,8 +1,8 @@
 directories:
   output: dist29
   buildResources: build
-appId: com.thezonepos.pos
-productName: TheZonePOS
+appId: com.thezonepos.pos.demo
+productName: TheZone POS Demo
 files:
   - filter:
       - main.js
@@ -47,13 +47,15 @@ win:
       arch:
         - x64
   icon: icon.ico
+  executableName: Thezone_Demo
 portable:
-  artifactName: ${productName}-Portable-${version}.${ext}
+  artifactName: Thezone_Demo_${version}-Portable.${ext}
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: TheZonePOS
+  shortcutName: Thezone Demo POS
   runAfterFinish: true
+  artifactName: Thezone_Demo_${version}-Setup.${ext}
 electronVersion: 28.3.3

@@ -1849,7 +1849,7 @@ const handleVoidPinClear = useCallback(() => {
     });
   };
 
-  const handleAddPayment = async ({ method, amount, tip, discountedGrand }:{ method:string; amount:number; tip:number; discountedGrand?: number }) => {
+  const handleAddPayment = async ({ method, amount, tip, discountedGrand, terminalRef }:{ method:string; amount:number; tip:number; discountedGrand?: number; terminalRef?: string }) => {
     try {
       // 저장된 주문 id가 없으므로, 우선 OK에서 저장되는 흐름과 달리 Payment에서는 주문 저장 선행 필요할 수 있음
       // 간단히 임시 order 저장 후 id 회수
@@ -1897,7 +1897,7 @@ const handleVoidPinClear = useCallback(() => {
           return next;
         });
         setSessionPayments(prev => {
-          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ];
+          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined, terminalRef } ];
           try { localStorage.setItem(`pendingPayments_${orderId}`, JSON.stringify(next)); } catch {}
           return next;
         });
@@ -1909,7 +1909,7 @@ const handleVoidPinClear = useCallback(() => {
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
         setSessionPayments(prev => {
-          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ];
+          const next = [ ...prev, { paymentId: tempId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), terminalRef } ];
           try { localStorage.setItem(`pendingPayments_${orderId}`, JSON.stringify(next)); } catch {}
           return next;
         });
@@ -2071,7 +2071,8 @@ const handleVoidPinClear = useCallback(() => {
                   method: p.method,
                   amount: Number((p.amount || 0).toFixed(2)),
                   tip: p.tip || 0,
-                  guestNumber: p.guestNumber ?? null
+                  guestNumber: p.guestNumber ?? null,
+                  ref: (p as { terminalRef?: string }).terminalRef || null
                 })
               });
               if (res.ok) {
@@ -2351,7 +2352,10 @@ const handleVoidPinClear = useCallback(() => {
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
             amount: p.amount || 0,
-            tip: p.tip || 0
+            tip: p.tip || 0,
+            ...(((p as { terminalRef?: string }).terminalRef)
+              ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+              : {})
           })),
           change: paymentCompleteData?.change || 0,
           cashTendered: (() => {
@@ -2527,7 +2531,8 @@ const handleVoidPinClear = useCallback(() => {
               method: p.method,
               amount: Number((p.amount || 0).toFixed(2)),
               tip: p.tip || 0,
-              guestNumber: p.guestNumber ?? null
+              guestNumber: p.guestNumber ?? null,
+              ref: (p as { terminalRef?: string }).terminalRef || null
             })
           });
           if (res.ok) {
@@ -2629,7 +2634,14 @@ const handleVoidPinClear = useCallback(() => {
                   rTaxTotal = Number(pmDiscount.taxesTotal.toFixed(2));
                   rGrand = Number(((pmDiscount.discountedSubtotal || 0) + (pmDiscount.taxesTotal || 0)).toFixed(2));
                 }
-                const rPayments = sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+                const rPayments = sessionPayments.map(p => ({
+                  method: p.method,
+                  amount: p.amount,
+                  tip: p.tip || 0,
+                  ...(((p as { terminalRef?: string }).terminalRef)
+                    ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+                    : {}),
+                }));
                 const receiptData = {
                   header: {
                     title: '*** RECEIPT ***',
@@ -2928,7 +2940,10 @@ const handleVoidPinClear = useCallback(() => {
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
             amount: p.amount || 0,
-            tip: p.tip || 0
+            tip: p.tip || 0,
+            ...(((p as { terminalRef?: string }).terminalRef)
+              ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+              : {})
           })),
           change: savedPaymentData?.change || 0,
           cashTendered: (() => {

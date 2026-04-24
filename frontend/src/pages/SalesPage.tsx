@@ -3,6 +3,8 @@ import { flushSync } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_URL } from '../config/constants';
 import { isMasterPosPin } from '../constants/masterPosPin';
+import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
+import { quitToOsFromPos } from '../utils/quitToOs';
 import { firebaseDb } from '../config/firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import ReservationCreateModal from '../components/reservations/ReservationCreateModal';
@@ -8901,6 +8903,7 @@ const SalesPage: React.FC = () => {
         openRefundModal();
         break;
       case 'Back Office':
+        if (isWeb2posDemoBuild()) break;
         navigate('/backoffice/tables');
         break;
       case 'QSR/Cafe':
@@ -10880,7 +10883,12 @@ const SalesPage: React.FC = () => {
             const receiptItems = normalizeReceiptItems(orderData);
             const receiptAdjustments = normalizeReceiptAdjustments(orderData);
             const actualPayments = sessionPaymentsFresh.length > 0
-              ? sessionPaymentsFresh.map((p: any) => ({ method: p.method, amount: p.amount, tip: (p.tip || 0) }))
+              ? sessionPaymentsFresh.map((p: any) => ({
+                  method: p.method,
+                  amount: p.amount,
+                  tip: p.tip || 0,
+                  ...(p.terminalRef ? { ref: p.terminalRef } : {}),
+                }))
               : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
             // Change should be calculated from FOOD portion only (amount - tip).
             // This prevents "cash tip" from being misinterpreted as change.
@@ -10992,7 +11000,12 @@ const SalesPage: React.FC = () => {
             const receiptItems = normalizeReceiptItems(orderData);
             const receiptAdjustments = normalizeReceiptAdjustments(orderData);
             const actualPayments = sessionPaymentsFresh.length > 0
-              ? sessionPaymentsFresh.map((p: any) => ({ method: p.method, amount: p.amount, tip: (p.tip || 0) }))
+              ? sessionPaymentsFresh.map((p: any) => ({
+                  method: p.method,
+                  amount: p.amount,
+                  tip: p.tip || 0,
+                  ...(p.terminalRef ? { ref: p.terminalRef } : {}),
+                }))
               : [{ method: 'PAID', amount: paymentOrder.total || 0 }];
             // Change should be calculated from FOOD portion only (amount - tip).
             // This prevents "cash tip" from being misinterpreted as change.
@@ -16097,7 +16110,7 @@ const SalesPage: React.FC = () => {
             setOnlineTogoSessionPayments(prev => prev.filter(p => !idSet.has(p.paymentId)));
           }
         }}
-        onConfirm={async (payload: { method: string; amount: number; tip: number }) => {
+        onConfirm={async (payload: { method: string; amount: number; tip: number; terminalRef?: string }) => {
           try {
             // Togo ì£¼ë¬¸ì˜ ê²½ìš° ì´ë¯¸ ë¡œì»¬ DBì— orderIdê°€ ìžˆìŒ
             // Online ì£¼ë¬¸ì˜ ê²½ìš° ë¡œì»¬ DBì— ì €ìž¥ë˜ì–´ ìžˆì§€ ì•Šìœ¼ë¯€ë¡œ ë¨¼ì € ì €ìž¥ í•„ìš”
@@ -16158,7 +16171,8 @@ const SalesPage: React.FC = () => {
                 method: payload.method,
                 amount: Number((payload.amount + payload.tip).toFixed(2)),
                 tip: payload.tip,
-                guestNumber: null
+                guestNumber: null,
+                ref: payload.terminalRef ?? null
               })
             });
             
@@ -16172,7 +16186,8 @@ const SalesPage: React.FC = () => {
                 paymentId: payData.paymentId,
                 method: payload.method,
                 amount: Number((payload.amount + payload.tip).toFixed(2)),
-                tip: payload.tip
+                tip: payload.tip,
+                ...(payload.terminalRef ? { terminalRef: payload.terminalRef } : {})
               }
             ]));
             
@@ -16308,7 +16323,7 @@ const SalesPage: React.FC = () => {
               setOrderListPaymentSessionPayments((prev) => prev.filter((p) => !idSet.has(p.paymentId)));
             }
           }}
-          onConfirm={async (payload: { method: string; amount: number; tip: number }) => {
+          onConfirm={async (payload: { method: string; amount: number; tip: number; terminalRef?: string }) => {
             try {
               const orderId = Number(orderListPaymentOrder?.id);
               if (!Number.isFinite(orderId)) return;
@@ -16322,6 +16337,7 @@ const SalesPage: React.FC = () => {
                   amount: Number((payload.amount + payload.tip).toFixed(2)),
                   tip: payload.tip,
                   guestNumber: null,
+                  ref: payload.terminalRef ?? null,
                 }),
               });
               if (!payRes.ok) throw new Error('Failed to save payment');
@@ -16334,6 +16350,7 @@ const SalesPage: React.FC = () => {
                   method: payload.method,
                   amount: Number((payload.amount + payload.tip).toFixed(2)),
                   tip: payload.tip,
+                  ...(payload.terminalRef ? { terminalRef: payload.terminalRef } : {}),
                 },
               ]));
             } catch (e) {
@@ -16754,12 +16771,13 @@ const SalesPage: React.FC = () => {
               <div className="space-y-3 px-4 py-4">
                 <button
                   type="button"
+                  disabled={isWeb2posDemoBuild()}
                   onClick={() => {
                     setShowExitModal(false);
                     setBackofficePinError('');
                     setShowBackofficePinModal(true);
                   }}
-                  className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
+                  className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation disabled:opacity-40 disabled:cursor-not-allowed`}
                   style={PAY_NEO_PRIMARY_BLUE}
                 >
                   Go to Back Office
@@ -16768,16 +16786,7 @@ const SalesPage: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setShowExitModal(false);
-                    try {
-                      if (window.electron && window.electron.quit) {
-                        window.electron.quit();
-                      } else {
-                        window.location.href = '/';
-                      }
-                    } catch (e) {
-                      console.error('Quit failed:', e);
-                      window.location.href = '/';
-                    }
+                    quitToOsFromPos();
                   }}
                   className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                   style={PAY_NEO_PRIMARY_AMBER}

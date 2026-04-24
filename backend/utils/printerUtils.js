@@ -3,6 +3,7 @@ const util = require('util');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { splitStoredTetraRef, truncateForReceipt } = require('./tetraReceiptRefDisplay');
 
 const execAsync = util.promisify(exec);
 
@@ -753,6 +754,20 @@ function buildReceiptText(receiptData) {
     output += DOUBLE_HEIGHT;
     receiptData.payments.forEach(p => {
       output += rightAlignText(`  ${p.method}:`, `$${Number(p.amount).toFixed(2)}`, width) + LF;
+      const rawRef = p.ref || p.terminalRef;
+      if (rawRef) {
+        const { host, auth } = splitStoredTetraRef(rawRef);
+        if (host || auth) {
+          output += NORMAL_SIZE;
+          if (host) {
+            output += rightAlignText('   Ref:', truncateForReceipt(host, width - 8), width) + LF;
+          }
+          if (auth) {
+            output += rightAlignText('   Auth:', truncateForReceipt(auth, width - 8), width) + LF;
+          }
+          output += DOUBLE_HEIGHT;
+        }
+      }
     });
     output += NORMAL_SIZE;
     
@@ -1894,6 +1909,24 @@ function buildReceiptTextWithLayout(receiptData, layout, type = 'receipt') {
       });
       output += getStyleResetCommand();
     }
+
+    (receiptData.payments || []).forEach((p) => {
+      const rawRef = p.ref || p.terminalRef;
+      if (!rawRef) return;
+      const { host, auth } = splitStoredTetraRef(rawRef);
+      const pds =
+        paymentDetailsStyle && typeof paymentDetailsStyle === 'object'
+          ? paymentDetailsStyle
+          : { fontSize: 10, visible: true };
+      output += getStyleCommand({ ...pds, fontSize: pds.fontSize || 10 });
+      if (host) {
+        output += rightAlignText('  Ref:', truncateForReceipt(host, width - 6), width) + LF;
+      }
+      if (auth) {
+        output += rightAlignText('  Auth:', truncateForReceipt(auth, width - 6), width) + LF;
+      }
+      output += getStyleResetCommand();
+    });
     
     // Cash Tendered
     if (receiptData.cashTendered && Number(receiptData.cashTendered) > 0) {

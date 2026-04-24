@@ -31,7 +31,9 @@
   },
   "scripts": {
     "start": "cross-env PORT=3088 react-scripts start",
+    "start:demo": "cross-env PORT=3088 REACT_APP_WEB2POS_DEMO=true react-scripts start",
     "build": "react-scripts build",
+    "build:demo": "cross-env REACT_APP_WEB2POS_DEMO=true react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

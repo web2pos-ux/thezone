@@ -1,6 +1,6 @@
 {
   "name": "thezonepos",
-  "version": "1.6.23",
+  "version": "1.6.28",
   "description": "TheZonePOS - Restaurant POS System",
   "main": "main.js",
   "author": "WEB2POS",
@@ -8,6 +8,8 @@
   "scripts": {
     "start": "electron .",
     "build:win": "electron-builder --win --x64",
+    "build:win:demo": "electron-builder --win --x64 --config electron-builder.demo.json",
+    "demo:pack": "node scripts/run-demo-build.cjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

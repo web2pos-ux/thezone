@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSerialPorts, SerialPort } from '../hooks/useSerialPorts';
 import PrintLayoutEditor from '../components/PrintLayoutEditor';
+import { TetraPosTerminalLinkPanel } from '../components/TetraPosTerminalLinkPanel';
+import { saveAndTestTetraTerminal } from '../utils/tetraHardwareTest';
+import { getIntegratedTetraSaveTestMissingFieldKeys } from '../utils/integratedTetraSaveTestValidation';
+import {
+  getTerminalHardwarePresetPatch,
+  TERMINAL_HARDWARE_PRESET_LABELS,
+  type TerminalHardwarePresetId,
+} from '../utils/terminalHardwarePresets';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
@@ -8,10 +16,18 @@ interface CreditCardReaderSettings {
   integrationMode: 'integrated' | 'standalone';
   terminalType: string;
   terminalId: string;
+  /** Vendor software / contract file ID; support reference — not sent on ECR purchase */
+  deviceContractRef: string;
+  /** Terminal admin menu PIN if prompted; optional; not sent on ECR purchase */
+  deviceAdminPin: string;
   merchantId: string;
   apiKey: string;
   apiEndpoint: string;
   connectionPort: string;
+  connectionKind: 'serial' | 'tcp';
+  tcpHost: string;
+  tcpPort: number;
+  baudRate: number;
   timeout: number;
 }
 
@@ -39,7 +55,8 @@ const HardwareManagerPage = () => {
   const [printerSaveStatus, setPrinterSaveStatus] = useState<'idle' | 'saved'>('idle');
   
   // Serial Printer Settings
-  const { ports, defaults, loading: serialLoading, error: serialError, fetchPorts, testPrint } = useSerialPorts();
+  const { ports, defaults, loading: serialLoading, error: serialError, fetchPorts, testPrint } =
+    useSerialPorts(API_URL);
   const [serialPrinterSettings, setSerialPrinterSettings] = useState<SerialPrinterSettings>(() => {
     const saved = localStorage.getItem('serialPrinter_settings');
     return saved ? JSON.parse(saved) : {
@@ -112,13 +129,23 @@ const HardwareManagerPage = () => {
     integrationMode: 'standalone',
     terminalType: '',
     terminalId: '',
+    deviceContractRef: '',
+    deviceAdminPin: '',
     merchantId: '',
     apiKey: '',
     apiEndpoint: '',
     connectionPort: '',
-    timeout: 30
+    connectionKind: 'serial',
+    tcpHost: '',
+    tcpPort: 0,
+    baudRate: 19200,
+    timeout: 120
   });
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [tetraTestStatus, setTetraTestStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [tetraTestMessage, setTetraTestMessage] = useState<string>('');
+  const [tetraSaveTestFieldErrors, setTetraSaveTestFieldErrors] = useState<string[]>([]);
+  const [terminalPresetDraft, setTerminalPresetDraft] = useState<TerminalHardwarePresetId>('none');
 
   // Load settings on mount
   useEffect(() => {
@@ -128,7 +155,7 @@ const HardwareManagerPage = () => {
         if (response.ok) {
           const data = await response.json();
           if (data.settings) {
-            setCreditCardSettings(data.settings);
+            setCreditCardSettings((prev) => ({ ...prev, ...data.settings }));
           }
         }
       } catch (error) {
@@ -318,31 +345,74 @@ const HardwareManagerPage = () => {
 
                 {/* Integrated Mode Settings */}
                 {creditCardSettings.integrationMode === 'integrated' && (
-                  <div className="border-t border-gray-200 pt-6">
-                    <h3 className="text-lg font-bold text-gray-800 mb-4">Terminal Configuration</h3>
-                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                      <div className="flex items-center gap-2 text-yellow-800">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className="border-t border-gray-200 pt-6 space-y-5">
+                    <h3 className="text-lg font-bold text-gray-800">Integrated terminal — settings</h3>
+
+                    <section className="rounded-xl border border-amber-200/80 bg-amber-50/80 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-amber-950 mb-3">Before you start</h4>
+                      <div className="flex items-center gap-2 text-amber-900">
+                        <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                         </svg>
                         <span className="font-semibold">Configuration Required</span>
                       </div>
-                      <p className="text-yellow-700 text-sm mt-1">
+                      <p className="text-amber-900/90 text-sm mt-2">
                         Please configure the terminal settings below to enable integrated payments.
                       </p>
-                    </div>
+                    </section>
 
-                    <div className="grid grid-cols-2 gap-6">
+                    <section className="rounded-xl border border-stone-200 bg-stone-50/90 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-stone-800 mb-3">Quick setup (optional)</h4>
+                      <label className="block text-sm font-semibold text-stone-700 mb-2">
+                        Field install — quick setup (optional)
+                      </label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <select
+                          value={terminalPresetDraft}
+                          onChange={(e) => {
+                            const id = e.target.value as TerminalHardwarePresetId;
+                            setTerminalPresetDraft('none');
+                            const patch = getTerminalHardwarePresetPatch(id);
+                            if (patch) {
+                              setCreditCardSettings(
+                                (prev) => ({ ...prev, ...patch }) as CreditCardReaderSettings
+                              );
+                            }
+                          }}
+                          className="px-4 py-2 border-2 border-stone-300 rounded-lg max-w-xl bg-white"
+                        >
+                          {(Object.keys(TERMINAL_HARDWARE_PRESET_LABELS) as TerminalHardwarePresetId[]).map((k) => (
+                            <option key={k} value={k}>
+                              {TERMINAL_HARDWARE_PRESET_LABELS[k]}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-xs text-stone-600 max-w-md">
+                          Applies model + integrated + serial defaults. You still choose COM (or switch to TCP), enter
+                          contract ID, then Save.
+                        </span>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-sky-200/90 bg-sky-50/80 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-sky-900 mb-4 pb-2 border-b border-sky-200/80">Terminal &amp; device</h4>
+                      <div className="grid grid-cols-2 gap-6">
                       {/* Terminal Type */}
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Terminal Type</label>
                         <select
                           value={creditCardSettings.terminalType}
                           onChange={(e) => setCreditCardSettings({ ...creditCardSettings, terminalType: e.target.value })}
-                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none ${
+                            tetraSaveTestFieldErrors.includes('terminalType')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
                         >
                           <option value="">Select Terminal Type</option>
                           <option value="ingenico">Ingenico</option>
+                          <option value="ingenico_tetra_semi">Ingenico Tetra (Semi-Integrated)</option>
+                          <option value="ingenico_move_5000">Ingenico Move 5000 (Semi-Integrated)</option>
                           <option value="verifone">Verifone</option>
                           <option value="pax">PAX</option>
                           <option value="clover">Clover</option>
@@ -364,6 +434,52 @@ const HardwareManagerPage = () => {
                         />
                       </div>
 
+                      <div className="col-span-2">
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          Device software / contract ID
+                        </label>
+                        <input
+                          type="text"
+                          value={creditCardSettings.deviceContractRef}
+                          onChange={(e) =>
+                            setCreditCardSettings({ ...creditCardSettings, deviceContractRef: e.target.value })
+                          }
+                          placeholder="From vendor email (optional)"
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none ${
+                            tetraSaveTestFieldErrors.includes('deviceContractRef')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Stored for your records and support calls; not sent on the ECR purchase wire.
+                        </p>
+                      </div>
+
+                      <div className="col-span-2">
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">
+                          Terminal admin PIN (optional)
+                        </label>
+                        <input
+                          type="password"
+                          value={creditCardSettings.deviceAdminPin}
+                          onChange={(e) =>
+                            setCreditCardSettings({ ...creditCardSettings, deviceAdminPin: e.target.value })
+                          }
+                          placeholder="Only if the device prompts on the keypad"
+                          autoComplete="new-password"
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          For on-device menus only. Leave blank if passwords were disabled. Not used by integrated sale commands.
+                        </p>
+                      </div>
+                    </div>
+                    </section>
+
+                    <section className="rounded-xl border border-violet-200/90 bg-violet-50/70 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-violet-900 mb-4 pb-2 border-b border-violet-200/80">Merchant &amp; API</h4>
+                      <div className="grid grid-cols-2 gap-6">
                       {/* Merchant ID */}
                       <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Merchant ID</label>
@@ -396,20 +512,161 @@ const HardwareManagerPage = () => {
                           value={creditCardSettings.apiEndpoint}
                           onChange={(e) => setCreditCardSettings({ ...creditCardSettings, apiEndpoint: e.target.value })}
                           placeholder="https://api.terminal.com/v1"
-                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none ${
+                            tetraSaveTestFieldErrors.includes('apiEndpoint')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
                         />
+                      </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-emerald-200/90 bg-emerald-50/60 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-emerald-900 mb-4 pb-2 border-b border-emerald-200/80">Connection (Serial / TCP)</h4>
+                      <div className="grid grid-cols-2 gap-6">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Tetra transport</label>
+                        <select
+                          value={creditCardSettings.connectionKind}
+                          onChange={(e) =>
+                            setCreditCardSettings({
+                              ...creditCardSettings,
+                              connectionKind: e.target.value as 'serial' | 'tcp',
+                            })
+                          }
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value="serial">Serial (COM / USB)</option>
+                          <option value="tcp">TCP (LAN / Wi‑Fi — terminal IP)</option>
+                        </select>
+                        <p className="text-xs text-gray-600 mt-2 space-y-1.5">
+                          <span className="block">
+                            There is no separate Wi‑Fi / Ethernet picker here. On the device (ADMIN, etc.), connect
+                            Wi‑Fi or Ethernet so it gets an IP, then choose <strong>TCP</strong> and enter that IP and
+                            the <strong>ECR / semi-integrated TCP port</strong> from your processor manual (e.g.
+                            Paystone). For USB, use <strong>Serial</strong> and a COM port only.
+                          </span>
+                          <span className="block text-amber-900/90 font-medium">
+                            This POS uses <strong>cleartext TCP only</strong> (no TLS/SSL handshake). If your manual lists
+                            separate SSL and non‑SSL ECR ports, use the <strong>non‑SSL / cleartext</strong> port. If only
+                            an SSL port exists, use <strong>Serial</strong> or confirm a cleartext ECR port with support.
+                          </span>
+                          <span className="block">
+                            <strong>Serial framing in software:</strong> 7 data bits, even parity, 1 stop bit at the baud
+                            you select (default 19200). Must match the terminal / dock configuration.
+                          </span>
+                        </p>
                       </div>
 
                       {/* Connection Port */}
-                      <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">Connection Port (Optional)</label>
+                      <div className="col-span-2 space-y-2">
+                        <label className="block text-sm font-semibold text-gray-700">Serial port (e.g. COM3)</label>
+                        {creditCardSettings.connectionKind === 'serial' && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => fetchPorts()}
+                              disabled={serialLoading}
+                              className="px-3 py-2 text-sm bg-white border-2 border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                            >
+                              {serialLoading ? 'Scanning…' : 'Refresh COM list'}
+                            </button>
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v) {
+                                  setCreditCardSettings({ ...creditCardSettings, connectionPort: v });
+                                }
+                              }}
+                              className="px-3 py-2 text-sm border-2 border-gray-300 rounded-lg min-w-[12rem]"
+                              aria-label="Pick detected COM port"
+                            >
+                              <option value="">Pick detected port…</option>
+                              {ports.map((p: SerialPort) => (
+                                <option key={p.path} value={p.path}>
+                                  {p.displayName || p.path}
+                                </option>
+                              ))}
+                            </select>
+                            {serialError && (
+                              <span className="text-xs text-red-600">COM list: {serialError}</span>
+                            )}
+                          </div>
+                        )}
                         <input
                           type="text"
                           value={creditCardSettings.connectionPort}
-                          onChange={(e) => setCreditCardSettings({ ...creditCardSettings, connectionPort: e.target.value })}
-                          placeholder="COM3 or IP:Port"
-                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                          onChange={(e) =>
+                            setCreditCardSettings({ ...creditCardSettings, connectionPort: e.target.value })
+                          }
+                          placeholder="COM3"
+                          disabled={creditCardSettings.connectionKind !== 'serial'}
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none disabled:bg-gray-100 ${
+                            tetraSaveTestFieldErrors.includes('connectionPort')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
                         />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">TCP host</label>
+                        <input
+                          type="text"
+                          value={creditCardSettings.tcpHost}
+                          onChange={(e) => setCreditCardSettings({ ...creditCardSettings, tcpHost: e.target.value })}
+                          placeholder="192.168.x.x"
+                          disabled={creditCardSettings.connectionKind !== 'tcp'}
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none disabled:bg-gray-100 ${
+                            tetraSaveTestFieldErrors.includes('tcpHost')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">TCP port</label>
+                        <input
+                          type="number"
+                          value={creditCardSettings.tcpPort || ''}
+                          onChange={(e) =>
+                            setCreditCardSettings({
+                              ...creditCardSettings,
+                              tcpPort: parseInt(e.target.value, 10) || 0,
+                            })
+                          }
+                          placeholder="5000"
+                          disabled={creditCardSettings.connectionKind !== 'tcp'}
+                          className={`w-full px-4 py-3 border-2 rounded-lg focus:outline-none disabled:bg-gray-100 ${
+                            tetraSaveTestFieldErrors.includes('tcpPort')
+                              ? 'border-red-500 focus:border-red-500'
+                              : 'border-gray-300 focus:border-blue-500'
+                          }`}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Serial baud rate</label>
+                        <select
+                          value={creditCardSettings.baudRate}
+                          onChange={(e) =>
+                            setCreditCardSettings({
+                              ...creditCardSettings,
+                              baudRate: parseInt(e.target.value, 10) || 19200,
+                            })
+                          }
+                          disabled={creditCardSettings.connectionKind !== 'serial'}
+                          className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none disabled:bg-gray-100"
+                        >
+                          <option value={4800}>4800</option>
+                          <option value={9600}>9600</option>
+                          <option value={19200}>19200 (default)</option>
+                          <option value={38400}>38400</option>
+                          <option value={115200}>115200</option>
+                        </select>
                       </div>
 
                       {/* Timeout */}
@@ -418,23 +675,71 @@ const HardwareManagerPage = () => {
                         <input
                           type="number"
                           value={creditCardSettings.timeout}
-                          onChange={(e) => setCreditCardSettings({ ...creditCardSettings, timeout: parseInt(e.target.value) || 30 })}
-                          min={10}
-                          max={120}
+                          onChange={(e) =>
+                            setCreditCardSettings({
+                              ...creditCardSettings,
+                              timeout: parseInt(e.target.value, 10) || 120,
+                            })
+                          }
+                          min={30}
+                          max={600}
                           className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                         />
                       </div>
                     </div>
+                    </section>
 
-                    {/* Test Connection Button */}
-                    <div className="mt-6 flex justify-end">
+                    <TetraPosTerminalLinkPanel apiPrefix={API_URL} />
+
+                    <section className="rounded-xl border border-slate-200 bg-slate-50/90 p-5 shadow-sm">
+                      <h4 className="text-sm font-bold text-slate-800 mb-3 pb-2 border-b border-slate-200/80">Verify connection</h4>
+                      <p className="text-sm text-gray-600 mb-4">
+                        API Endpoint can be <code className="bg-white/80 px-1 rounded border border-slate-200">host:port</code> for TCP if TCP host/port are empty.
+                      </p>
+
+                      <div className="flex flex-col items-end gap-2">
+                      {tetraTestMessage && (
+                        <p
+                          className={`text-sm max-w-xl text-right ${
+                            tetraTestStatus === 'error' ? 'text-red-600' : 'text-gray-700'
+                          }`}
+                        >
+                          {tetraTestMessage}
+                        </p>
+                      )}
                       <button
-                        onClick={() => alert('Connection test will be implemented later')}
-                        className="px-6 py-2 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-all"
+                        type="button"
+                        disabled={tetraTestStatus === 'running'}
+                        onClick={async () => {
+                          const missing = getIntegratedTetraSaveTestMissingFieldKeys(creditCardSettings);
+                          if (missing.length) {
+                            setTetraSaveTestFieldErrors(missing);
+                            setTetraTestStatus('error');
+                            setTetraTestMessage('Please fill in all required fields and try again.');
+                            return;
+                          }
+                          setTetraSaveTestFieldErrors([]);
+                          setTetraTestStatus('running');
+                          setTetraTestMessage('');
+                          try {
+                            const r = await saveAndTestTetraTerminal(
+                              API_URL,
+                              creditCardSettings as unknown as Record<string, unknown>
+                            );
+                            setTetraTestStatus(r.ok ? 'done' : 'error');
+                            setTetraTestMessage(r.message);
+                            if (r.ok) setTetraSaveTestFieldErrors([]);
+                          } catch (e: unknown) {
+                            setTetraTestStatus('error');
+                            setTetraTestMessage(e instanceof Error ? e.message : 'Test failed');
+                          }
+                        }}
+                        className="px-6 py-2 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-all disabled:bg-gray-400"
                       >
-                        Test Connection
+                        {tetraTestStatus === 'running' ? 'Testing…' : 'Save & test terminal (info)'}
                       </button>
                     </div>
+                    </section>
                   </div>
                 )}
 

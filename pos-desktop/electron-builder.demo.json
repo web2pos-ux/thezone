@@ -1,0 +1,67 @@
+{
+  "appId": "com.thezonepos.pos.demo",
+  "productName": "TheZone POS Demo",
+  "directories": {
+    "output": "dist29"
+  },
+  "files": [
+    "main.js",
+    "preload.js",
+    "updater.js",
+    "icon.ico",
+    "node_modules/**/*"
+  ],
+  "asarUnpack": [
+    "node_modules/sqlite3/**",
+    "node_modules/canvas/**",
+    "node_modules/@serialport/**",
+    "node_modules/serialport/**",
+    "node_modules/pdf-to-printer/**",
+    "node_modules/node-gyp-build/**",
+    "node_modules/bindings/**",
+    "node_modules/node-addon-api/**"
+  ],
+  "npmRebuild": false,
+  "extraResources": [
+    {
+      "from": "backend",
+      "to": "backend",
+      "filter": ["**/*", "!node_modules/**"]
+    },
+    {
+      "from": "frontend-build",
+      "to": "frontend/build",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "db",
+      "to": "db",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "apk",
+      "to": "apk",
+      "filter": ["*.apk"]
+    }
+  ],
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] }
+    ],
+    "icon": "icon.ico",
+    "executableName": "Thezone_Demo"
+  },
+  "portable": {
+    "artifactName": "Thezone_Demo_${version}-Portable.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": "always",
+    "createStartMenuShortcut": true,
+    "shortcutName": "Thezone Demo POS",
+    "runAfterFinish": true,
+    "artifactName": "Thezone_Demo_${version}-Setup.${ext}"
+  }
+}

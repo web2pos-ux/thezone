@@ -4,7 +4,7 @@ echo WEB2POS Build Script
 echo ================================================
 echo.
 
-REM 경로 설정
+REM Path variables
 set ROOT_DIR=%~dp0..
 set FRONTEND_DIR=%ROOT_DIR%\frontend
 set BACKEND_DIR=%ROOT_DIR%\backend
@@ -13,7 +13,12 @@ set DESKTOP_DIR=%~dp0
 echo [1/5] Building Frontend...
 echo ------------------------------------------------
 cd /d "%FRONTEND_DIR%"
-call npm run build
+if "%BUILD_DEMO%"=="1" (
+  echo BUILD_DEMO=1 -^> frontend build:demo ^(REACT_APP_WEB2POS_DEMO^)
+  call npm run build:demo
+) else (
+  call npm run build
+)
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Frontend build failed!
     exit /b 1
@@ -33,7 +38,7 @@ echo ------------------------------------------------
 if exist "%DESKTOP_DIR%backend" rmdir /s /q "%DESKTOP_DIR%backend"
 mkdir "%DESKTOP_DIR%backend"
 
-REM Copy backend files (excluding node_modules, uploads, and db)
+REM Copy backend (no node_modules, uploads, db)
 xcopy /s /e /i /y "%BACKEND_DIR%\*.js" "%DESKTOP_DIR%backend\"
 xcopy /s /e /i /y "%BACKEND_DIR%\routes" "%DESKTOP_DIR%backend\routes\"
 xcopy /s /e /i /y "%BACKEND_DIR%\services" "%DESKTOP_DIR%backend\services\"
@@ -69,21 +74,32 @@ echo ------------------------------------------------
 if exist "%DESKTOP_DIR%db" rmdir /s /q "%DESKTOP_DIR%db"
 mkdir "%DESKTOP_DIR%db"
 
-REM Copy empty database for fresh installation
+REM Optional: set DEMO_SNAPSHOT_DB=full path to web2pos.db before build to bundle snapshot
 if not exist "%DESKTOP_DIR%db-empty\web2pos.db" (
     echo ERROR: Missing %DESKTOP_DIR%db-empty\web2pos.db
     exit /b 1
 )
 copy /y "%DESKTOP_DIR%db-empty\web2pos.db" "%DESKTOP_DIR%db\"
 echo Empty database copied for new restaurant installation.
+if defined DEMO_SNAPSHOT_DB (
+    if exist "%DEMO_SNAPSHOT_DB%" (
+        copy /y "%DEMO_SNAPSHOT_DB%" "%DESKTOP_DIR%db\web2pos.db"
+        echo DEMO_SNAPSHOT_DB applied: "%DEMO_SNAPSHOT_DB%"
+    ) else (
+        echo ERROR: DEMO_SNAPSHOT_DB file not found: "%DEMO_SNAPSHOT_DB%"
+        exit /b 1
+    )
+)
 
 echo.
 echo [7/7] Resetting Setup Status for Fresh Installation...
 echo ------------------------------------------------
-REM Reset setup-status.json for fresh installation (BOM-free UTF-8)
+REM Reset setup-status.json (UTF-8 no BOM)
 powershell -Command "[IO.File]::WriteAllText('%DESKTOP_DIR%backend\config\setup-status.json', '{\"isFirstRun\":true,\"setupCompleted\":false,\"storeName\":\"\",\"restaurantId\":null,\"setupDate\":null}', (New-Object System.Text.UTF8Encoding $false))"
 echo Setup status reset for new restaurant.
 echo.
+
+cd /d "%DESKTOP_DIR%"
 
 echo ================================================
 echo Build preparation completed!

@@ -3,9 +3,7 @@
  * COM 포트 프린터 연결을 위한 API 호출 및 상태 관리
  */
 
-import { useState, useEffect, useCallback } from 'react';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 export interface SerialPort {
   path: string;
@@ -50,7 +48,15 @@ export interface PrintData {
   footer?: string;
 }
 
-export function useSerialPorts() {
+/**
+ * @param apiBase Optional API root (e.g. http://host:3177/api). Defaults to REACT_APP_API_URL or http://localhost:3177/api.
+ */
+export function useSerialPorts(apiBase?: string) {
+  const baseUrl = useMemo(
+    () => (apiBase || process.env.REACT_APP_API_URL || 'http://localhost:3177/api').replace(/\/$/, ''),
+    [apiBase]
+  );
+
   const [ports, setPorts] = useState<SerialPort[]>([]);
   const [defaults, setDefaults] = useState<SerialPortDefaults>({
     baudRate: 9600,
@@ -67,7 +73,7 @@ export function useSerialPorts() {
     setError(null);
     
     try {
-      const response = await fetch(`${API_URL}/printers/serial/ports`);
+      const response = await fetch(`${baseUrl}/printers/serial/ports`);
       const data = await response.json();
       
       if (data.success) {
@@ -83,18 +89,18 @@ export function useSerialPorts() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [baseUrl]);
 
   // 특정 포트 사용 가능 여부 확인
   const checkPort = useCallback(async (port: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/check/${port}`);
+      const response = await fetch(`${baseUrl}/printers/serial/check/${encodeURIComponent(port)}`);
       const data = await response.json();
       return data.success && data.available;
     } catch {
       return false;
     }
-  }, []);
+  }, [baseUrl]);
 
   // 테스트 출력
   const testPrint = useCallback(async (
@@ -102,7 +108,7 @@ export function useSerialPorts() {
     options?: SerialPortOptions
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/test`, {
+      const response = await fetch(`${baseUrl}/printers/serial/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port, ...options })
@@ -112,7 +118,7 @@ export function useSerialPorts() {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Network error' };
     }
-  }, []);
+  }, [baseUrl]);
 
   // 일반 출력
   const print = useCallback(async (
@@ -121,7 +127,7 @@ export function useSerialPorts() {
     options?: SerialPortOptions
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/print`, {
+      const response = await fetch(`${baseUrl}/printers/serial/print`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port, data: printData, options })
@@ -131,7 +137,7 @@ export function useSerialPorts() {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Network error' };
     }
-  }, []);
+  }, [baseUrl]);
 
   // 키친 티켓 출력
   const printKitchenTicket = useCallback(async (
@@ -152,7 +158,7 @@ export function useSerialPorts() {
     options?: SerialPortOptions
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/kitchen-ticket`, {
+      const response = await fetch(`${baseUrl}/printers/serial/kitchen-ticket`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port, ticket, options })
@@ -162,7 +168,7 @@ export function useSerialPorts() {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Network error' };
     }
-  }, []);
+  }, [baseUrl]);
 
   // 영수증 출력
   const printReceipt = useCallback(async (
@@ -187,7 +193,7 @@ export function useSerialPorts() {
     options?: SerialPortOptions
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/receipt`, {
+      const response = await fetch(`${baseUrl}/printers/serial/receipt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port, receipt, options })
@@ -197,7 +203,7 @@ export function useSerialPorts() {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Network error' };
     }
-  }, []);
+  }, [baseUrl]);
 
   // Cash Drawer 열기
   const openCashDrawer = useCallback(async (
@@ -205,7 +211,7 @@ export function useSerialPorts() {
     options?: SerialPortOptions
   ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const response = await fetch(`${API_URL}/printers/serial/open-drawer`, {
+      const response = await fetch(`${baseUrl}/printers/serial/open-drawer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port, options })
@@ -215,7 +221,7 @@ export function useSerialPorts() {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Network error' };
     }
-  }, []);
+  }, [baseUrl]);
 
   // 컴포넌트 마운트 시 포트 목록 조회
   useEffect(() => {

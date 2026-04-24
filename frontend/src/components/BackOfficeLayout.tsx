@@ -15,6 +15,7 @@ import {
   NEO_COLOR_BTN_PRESS_NO_SHIFT,
   NEO_PRESS_INSET_ONLY_NO_SHIFT,
 } from '../utils/softNeumorphic';
+import { quitToOsFromPos } from '../utils/quitToOs';
 
 const navLinks = [
   { path: '/backoffice/basic-info', label: 'Business Info', icon: 'custom' },
@@ -65,9 +66,17 @@ const reportSubMenus = [
   { path: '/backoffice/operational-report', label: 'Operational Report', icon: '⚙️' },
 ];
 
+const readSidebarCollapsed = (): boolean => {
+  try {
+    return window.localStorage.getItem('backoffice_sidebar_collapsed') === '1';
+  } catch {
+    return false;
+  }
+};
+
 const BackOfficeLayout = () => {
   const navigate = useNavigate();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [employeeMenuExpanded, setEmployeeMenuExpanded] = useState(false);
   const [hardwareMenuExpanded, setHardwareMenuExpanded] = useState(false);
   const [reportMenuExpanded, setReportMenuExpanded] = useState(false);
@@ -143,12 +152,15 @@ const BackOfficeLayout = () => {
   };
 
   return (
-    <div className="flex h-screen bg-gray-100 font-sans">
-      <aside className={`${sidebarCollapsed ? 'w-16' : 'w-64'} bg-gray-800 text-white flex flex-col transition-all duration-300 ease-in-out`}>
-        <div className="h-16 flex items-center justify-center px-4 border-b border-gray-700">
+    <div className="flex h-screen min-h-0 bg-gray-100 font-sans">
+      <aside
+        className={`${sidebarCollapsed ? 'w-16' : 'w-64'} shrink-0 bg-gray-800 text-white flex flex-col min-h-0 h-full transition-all duration-300 ease-in-out`}
+      >
+        <div className="h-16 shrink-0 flex items-center justify-center px-4 border-b border-gray-700">
           {!sidebarCollapsed && <span className="text-2xl font-bold">The Zone POS</span>}
         </div>
-        <nav className="flex-1 px-4 py-4">
+        <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+          <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-4">
           <ul>
             {/* Regular menu items */}
             {navLinks.map(({ path, label, icon }) => (
@@ -415,33 +427,36 @@ const BackOfficeLayout = () => {
             </li>
 
           </ul>
-          
-          {/* Exit Button */}
-          <div className="px-4 py-2 border-t border-gray-700">
-            <button
-              onClick={() => setShowExitModal(true)}
-              className={`w-full py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition-colors flex items-center justify-center gap-2 ${sidebarCollapsed ? 'px-2' : 'px-4'}`}
-              title="Exit Menu"
-            >
-              <span className="text-lg">🚪</span>
-              {!sidebarCollapsed && <span>Exit</span>}
-            </button>
+          </nav>
+
+          {/* Exit + sidebar collapse: fixed at bottom of panel (menu above scrolls) */}
+          <div className="shrink-0 border-t border-gray-700 bg-gray-800">
+            <div className="px-4 py-2">
+              <button
+                onClick={() => setShowExitModal(true)}
+                className={`w-full py-3 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition-colors flex items-center justify-center gap-2 ${sidebarCollapsed ? 'px-2' : 'px-4'}`}
+                title="Exit Menu"
+                type="button"
+              >
+                <span className="text-lg">🚪</span>
+                {!sidebarCollapsed && <span>Exit</span>}
+              </button>
+            </div>
+            <div className="px-4 py-2 flex justify-center border-t border-gray-700/80">
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                className={`rounded-lg border-2 border-white hover:bg-gray-700 transition-colors font-bold flex items-center justify-center ${sidebarCollapsed ? 'w-14 h-14 text-xl' : 'w-12 h-12 text-3xl'}`}
+                style={{ aspectRatio: '1 / 1' }}
+                title={sidebarCollapsed ? 'Expand menu panel' : 'Collapse menu panel'}
+              >
+                <span className="flex items-center justify-center w-full h-full">
+                  {sidebarCollapsed ? '›' : '‹'}
+                </span>
+              </button>
+            </div>
           </div>
-          
-          {/* Toggle Button */}
-          <div className="px-4 py-2 border-t border-gray-700 flex justify-center">
-            <button
-              onClick={toggleSidebar}
-              className={`rounded-lg border-2 border-white hover:bg-gray-700 transition-colors font-bold flex items-center justify-center ${sidebarCollapsed ? 'w-14 h-14 text-xl' : 'w-12 h-12 text-3xl'}`}
-              style={{ aspectRatio: '1 / 1' }}
-              title={sidebarCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
-            >
-              <span className="flex items-center justify-center w-full h-full">
-                {sidebarCollapsed ? '›' : '‹'}
-              </span>
-            </button>
-          </div>
-        </nav>
+        </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-auto">
         {/* The Outlet will render the matched child route component */}
@@ -482,16 +497,7 @@ const BackOfficeLayout = () => {
                   type="button"
                   onClick={() => {
                     setShowExitModal(false);
-                    try {
-                      if (window.electron && window.electron.quit) {
-                        window.electron.quit();
-                      } else {
-                        window.location.href = '/';
-                      }
-                    } catch (e) {
-                      console.error('Quit failed:', e);
-                      window.location.href = '/';
-                    }
+                    quitToOsFromPos();
                   }}
                   className={`flex w-full items-center justify-center gap-3 rounded-xl py-4 text-lg font-bold text-white ${NEO_COLOR_BTN_PRESS_NO_SHIFT} touch-manipulation`}
                   style={PAY_NEO_PRIMARY_AMBER}

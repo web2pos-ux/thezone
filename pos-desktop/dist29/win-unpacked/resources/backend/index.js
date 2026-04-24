@@ -501,6 +501,8 @@ const diagnosticsRoutes = require('./routes/diagnostics')(db);
 const networkRoutes = require('./routes/network')();
 const serverSettlementsRoutes = require('./routes/server-settlements');
 const settingsTransferRoutes = require('./routes/settings-transfer');
+const settingsHardwareRoutes = require('./routes/settings-hardware');
+const terminalTetraRoutes = require('./routes/terminal-tetra');
 
 app.use('/api/menus', menuRoutes);
 app.use('/api/menu', menuItemRoutes);
@@ -549,6 +551,8 @@ const firebaseSyncDlqRoutes = require('./routes/firebase-sync-dlq')();
 app.use('/api/firebase-sync', firebaseSyncDlqRoutes);
 app.use('/api/server-settlements', serverSettlementsRoutes);
 app.use('/api/settings-transfer', settingsTransferRoutes);
+app.use('/api/settings/hardware', settingsHardwareRoutes);
+app.use('/api/terminal-tetra', terminalTetraRoutes);
 
 // App Update Routes (앱 자동 업데이트)
 const appUpdateRoutes = require('./routes/app-update');

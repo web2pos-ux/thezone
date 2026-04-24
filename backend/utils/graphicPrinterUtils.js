@@ -6,6 +6,7 @@
 const { createCanvas, registerFont } = require('canvas');
 const path = require('path');
 const fs = require('fs');
+const { splitStoredTetraRef, truncateForReceipt } = require('./tetraReceiptRefDisplay');
 
 // Keep font family string consistent across the file.
 // (A missing FONT_FAMILY caused graphic Kitchen Ticket to crash and fall back to TEXT mode.)
@@ -2376,6 +2377,29 @@ function renderReceiptGraphic(receiptData) {
         fontStyle: 'normal',
         inverse: false
       });
+    });
+
+    (receiptData.payments || []).forEach((p) => {
+      const rawRef = (p && (p.ref || p.terminalRef)) || '';
+      if (!rawRef) return;
+      const { host, auth } = splitStoredTetraRef(rawRef);
+      const smallFs = Math.max(8, ITEM_BASE_FONT_SIZE - 2);
+      if (host) {
+        y = drawLeftRightText(ctx, 'Ref', truncateForReceipt(host, 28), y, {
+          fontSize: smallFs,
+          fontWeight: 'normal',
+          fontStyle: 'normal',
+          inverse: false,
+        });
+      }
+      if (auth) {
+        y = drawLeftRightText(ctx, 'Auth', truncateForReceipt(auth, 28), y, {
+          fontSize: smallFs,
+          fontWeight: 'normal',
+          fontStyle: 'normal',
+          inverse: false,
+        });
+      }
     });
 
     y += 6;

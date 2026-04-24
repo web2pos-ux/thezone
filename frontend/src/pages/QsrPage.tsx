@@ -20,6 +20,7 @@ import {
 } from '../utils/softNeumorphic';
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
+import { quitToOsFromPos } from '../utils/quitToOs';
 
 const QSR_PAGE_MODAL_PAD_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
 
@@ -2066,20 +2067,10 @@ const QsrPage: React.FC = () => {
                     </button>
                     <div className="border-t border-white/20 my-1" />
                     <button 
+                      type="button"
                       onClick={() => { 
                         setShowMoreMenu(false);
-                        try {
-                          if (window.electron && window.electron.quit) {
-                            // Electron 앱에서는 앱 종료
-                            window.electron.quit();
-                          } else {
-                            // 브라우저에서는 Intro 페이지로 이동
-                            window.location.href = '/';
-                          }
-                        } catch (e) {
-                          console.error('Quit failed:', e);
-                          window.location.href = '/';
-                        }
+                        quitToOsFromPos();
                       }}
                       className="w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition flex items-center gap-3"
                     >

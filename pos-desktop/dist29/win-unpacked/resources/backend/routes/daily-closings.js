@@ -1880,7 +1880,240 @@ module.exports = (db) => {
         console.error('Firebase sync error (non-blocking):', firebaseError.message);
       }
 
-      res.json({ success: true, message: 'Session closed successfully', data: record });
+      // --- Day Close: 모든 미퇴근 직원 자동 Clock Out + 서버/매니저용 Shift Report 자동 출력 ---
+      let dayCloseSummary = { autoClockOuts: 0, serverReportsPrinted: 0, printSkippedReason: null };
+      try {
+        const serverRowsForPrint = await dbAll(`
+          SELECT DISTINCT e.id, e.name
+          FROM employees e
+          INNER JOIN clock_records cr ON cr.employee_id = e.id AND cr.clock_out_time IS NULL
+          WHERE e.status = 'active'
+            AND (
+              LOWER(COALESCE(e.role, '')) LIKE '%server%'
+              OR LOWER(COALESCE(e.role, '')) LIKE '%manager%'
+            )
+          ORDER BY e.name COLLATE NOCASE
+        `);
+
+        const tp = [startTime, endTime];
+        const channelRowsDc = await dbAll(
+          `
+          SELECT
+            CASE
+              WHEN UPPER(o.order_type) IN ('POS','DINE_IN','DINE-IN','TABLE_ORDER','FOR HERE','FORHERE') THEN 'DINE_IN'
+              WHEN UPPER(o.order_type) IN ('TOGO','PICKUP','TAKEOUT') THEN 'TOGO'
+              WHEN UPPER(o.order_type) IN ('ONLINE','WEB','QR') THEN 'ONLINE'
+              WHEN UPPER(o.order_type) = 'DELIVERY' THEN 'DELIVERY'
+              ELSE 'OTHER'
+            END as ch,
+            COUNT(DISTINCT o.id) as cnt,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          GROUP BY ch
+        `,
+          tp
+        );
+        const chMapDc = {};
+        (channelRowsDc || []).forEach((r) => {
+          chMapDc[r.ch] = { sales: Number(r.sales), count: Number(r.cnt), tips: Number(r.tips) };
+        });
+
+        const paymentBreakdownRowsDc = await dbAll(
+          `
+          SELECT
+            UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+            COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as amount,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+          GROUP BY method
+          ORDER BY amount DESC
+        `,
+          tp
+        );
+        const paymentBreakdownDc = (paymentBreakdownRowsDc || []).map((r) => ({
+          method: r.method,
+          amount: Number(r.amount),
+          tips: Number(r.tips),
+        }));
+
+        const tipBreakdownRowsDc = await dbAll(
+          `
+          SELECT
+            UPPER(COALESCE(p.payment_method, 'OTHER')) as method,
+            COALESCE(SUM(COALESCE(p.tip, 0)), 0) as tips
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          WHERE o.created_at >= ? AND o.created_at <= ?
+            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+            AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+            AND COALESCE(p.tip, 0) > 0
+          GROUP BY method
+          ORDER BY tips DESC
+        `,
+          tp
+        );
+        const tipBreakdownDc = (tipBreakdownRowsDc || []).map((r) => ({
+          method: r.method,
+          tips: Number(r.tips),
+        }));
+
+        const openClockRows = await dbAll(
+          `SELECT id, employee_id, clock_in_time FROM clock_records WHERE clock_out_time IS NULL`
+        );
+        for (const rec of openClockRows || []) {
+          try {
+            const clockInTime = new Date(rec.clock_in_time);
+            const totalHours = (new Date(now) - clockInTime) / (1000 * 60 * 60);
+            const th = Number.isFinite(totalHours) && totalHours >= 0 ? totalHours.toFixed(2) : '0.00';
+            await dbRun(
+              `UPDATE clock_records SET clock_out_time = ?, total_hours = ?, status = 'clocked_out', updated_at = datetime('now') WHERE id = ?`,
+              [now, th, rec.id]
+            );
+            await dbRun(
+              `UPDATE server_shifts SET clock_out_time = ?, status = 'closed', updated_at = datetime('now')
+               WHERE server_id = ? AND clock_record_id = ? AND status = 'open'`,
+              [now, rec.employee_id, rec.id]
+            );
+            dayCloseSummary.autoClockOuts += 1;
+          } catch (coOne) {
+            console.error('[Day-Close] auto clock-out failed for record', rec?.id, coOne?.message || coOne);
+          }
+        }
+
+        let printerOptsDc = {};
+        try {
+          const layoutRowDc = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+          if (layoutRowDc && layoutRowDc.settings) {
+            const ls = JSON.parse(layoutRowDc.settings);
+            const pw = ls.billLayout?.paperWidth || ls.bill?.paperWidth || ls.paperWidth || 80;
+            printerOptsDc.paperWidth = pw;
+            const rp =
+              ls.billLayout?.rightPaddingPx ??
+              ls.billLayout?.rightPadding ??
+              ls.bill?.rightPaddingPx ??
+              ls.bill?.rightPadding ??
+              ls.rightPaddingPx ??
+              ls.rightPadding ??
+              null;
+            const rpn = Number(rp);
+            if (Number.isFinite(rpn) && rpn >= 0) printerOptsDc.rightPaddingPx = rpn;
+          }
+        } catch (eLayout) {
+          /* ignore */
+        }
+        const frontPrinterDc = await dbGet(
+          "SELECT selected_printer, graphic_scale FROM printers WHERE name LIKE '%Front%' AND selected_printer IS NOT NULL LIMIT 1"
+        );
+        let targetPrinterDc = frontPrinterDc?.selected_printer;
+        if (frontPrinterDc?.graphic_scale) printerOptsDc.graphicScale = Number(frontPrinterDc.graphic_scale);
+        if (!targetPrinterDc) {
+          const anyPrinterDc = await dbGet(
+            "SELECT selected_printer, graphic_scale FROM printers WHERE is_active = 1 AND selected_printer IS NOT NULL ORDER BY printer_id ASC LIMIT 1"
+          );
+          targetPrinterDc = anyPrinterDc?.selected_printer;
+          if (anyPrinterDc?.graphic_scale) printerOptsDc.graphicScale = Number(anyPrinterDc.graphic_scale);
+        }
+        if (!targetPrinterDc) {
+          dayCloseSummary.printSkippedReason = 'no_printer';
+          console.warn('[Day-Close] Shift report auto-print skipped: no printer configured');
+        } else {
+          const printTargets =
+            serverRowsForPrint && serverRowsForPrint.length > 0
+              ? serverRowsForPrint
+              : [{ id: eid || '0', name: String(closedBy || 'Day Close').trim() || 'Day Close' }];
+
+          const shiftBaseDc = {
+            shift_number: 'DAY',
+            shift_start: startTime,
+            shift_end: now,
+            total_sales: salesData?.total_sales || 0,
+            order_count: salesData?.order_count || 0,
+            dine_in_sales: chMapDc['DINE_IN']?.sales || 0,
+            dine_in_count: chMapDc['DINE_IN']?.count || 0,
+            dine_in_tips: chMapDc['DINE_IN']?.tips || 0,
+            togo_sales: chMapDc['TOGO']?.sales || 0,
+            togo_count: chMapDc['TOGO']?.count || 0,
+            togo_tips: chMapDc['TOGO']?.tips || 0,
+            online_sales: chMapDc['ONLINE']?.sales || 0,
+            online_count: chMapDc['ONLINE']?.count || 0,
+            online_tips: chMapDc['ONLINE']?.tips || 0,
+            delivery_sales: chMapDc['DELIVERY']?.sales || 0,
+            delivery_count: chMapDc['DELIVERY']?.count || 0,
+            delivery_tips: chMapDc['DELIVERY']?.tips || 0,
+            payment_breakdown: paymentBreakdownDc,
+            tip_breakdown: tipBreakdownDc,
+            opening_cash: openingCash,
+            counted_cash: closingCash,
+            expected_cash: expectedCash,
+            cash_sales: actualCashSales,
+            card_sales: paymentData?.card_sales || 0,
+            other_sales: paymentData?.other_sales || 0,
+            tip_total: paymentData?.tip_total || 0,
+            cash_details: JSON.stringify(cashBreakdown || {}),
+            session_opened_at: startTime,
+          };
+
+          const { buildGraphicShiftReport } = require('../utils/graphicPrinterUtils');
+          const { sendRawToPrinter } = require('../utils/printerUtils');
+
+          for (const srv of printTargets) {
+            try {
+              const srvName = String(srv?.name || '').trim();
+              if (!srvName) continue;
+              let serverTipTotalDc = 0;
+              try {
+                const serverTipDataDc = await dbGet(
+                  `
+                  SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) as server_tips
+                  FROM payments p
+                  JOIN orders o ON p.order_id = o.id
+                  WHERE o.created_at >= ? AND o.created_at <= ?
+                    AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+                    AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+                    AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
+                    AND o.server_name = ?
+                `,
+                  [startTime, endTime, srvName]
+                );
+                serverTipTotalDc = Number(serverTipDataDc?.server_tips || 0);
+              } catch (eTip) {
+                console.warn('[Day-Close] server tip query failed:', eTip?.message || eTip);
+              }
+              const shiftDataDc = {
+                ...shiftBaseDc,
+                closed_by: srvName,
+                server_tip_total: serverTipTotalDc,
+              };
+              const bufDc = buildGraphicShiftReport(shiftDataDc, printerOptsDc);
+              await sendRawToPrinter(targetPrinterDc, bufDc);
+              dayCloseSummary.serverReportsPrinted += 1;
+            } catch (ePrintOne) {
+              console.error('[Day-Close] shift report print failed for', srv?.name, ePrintOne?.message || ePrintOne);
+            }
+          }
+        }
+      } catch (dayCloseExtraErr) {
+        console.error('[Day-Close] auto clock-out / server reports:', dayCloseExtraErr?.message || dayCloseExtraErr);
+      }
+
+      res.json({
+        success: true,
+        message: 'Session closed successfully',
+        data: record,
+        dayCloseSummary,
+      });
     } catch (error) {
       console.error('Closing error:', error);
       res.status(500).json({ success: false, error: error.message });

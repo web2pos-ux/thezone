@@ -10,9 +10,14 @@ interface ElectronAPI {
   platform: string;
 }
 
+interface Web2posDemoBridge {
+  isDemo: boolean;
+}
+
 declare global {
   interface Window {
     electron?: ElectronAPI;
+    web2posDemo?: Web2posDemoBridge;
     require?: any;
   }
 }

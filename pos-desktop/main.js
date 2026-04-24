@@ -399,10 +399,10 @@ async function startApp() {
     // 스플래시 닫기
     splash.close();
     
-    // 메인 윈도우 먼저 생성 (사용자가 기다리지 않도록)
+    // IPC는 창 로드·클릭 전에 등록 (Go to Windows -> app-quit)
+    setupIpcHandlers();
     createWindow();
     createMenu();
-    setupIpcHandlers();
     
     // 앱 시작 완료
     isStartingApp = false;

@@ -9,6 +9,12 @@ import { API_URL } from '../config/constants';
 import { formatNameForDisplay, parseCustomerName } from '../utils/nameParser';
 import { getLocalDateString, getLocalDatetimeString } from '../utils/datetimeUtils';
 import { assignDailySequenceNumbers } from '../utils/orderSequence';
+import BistroManagerMapPreview from '../components/bistro/BistroManagerMapPreview';
+import {
+  TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT,
+  TABLE_MAP_BISTRO_PANEL_SPLIT_KEY,
+  readBistroTableMapLeftPercentFromStorage,
+} from '../utils/tableMapTogoPanelSplit';
 
 
 // 슬라이더 스타일
@@ -1181,6 +1187,21 @@ const TableMapManagerPage = () => {
     return () => clearInterval(interval);
   }, [tableElements]);
   const [selectedTab, setSelectedTab] = useState('table-map'); // 탭 상태 추가
+  const [bistroMapLeftPct, setBistroMapLeftPct] = useState(() => readBistroTableMapLeftPercentFromStorage());
+  useEffect(() => {
+    const onCustom = () => setBistroMapLeftPct(readBistroTableMapLeftPercentFromStorage());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === TABLE_MAP_BISTRO_PANEL_SPLIT_KEY) {
+        setBistroMapLeftPct(readBistroTableMapLeftPercentFromStorage());
+      }
+    };
+    window.addEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onCustom as EventListener);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(TABLE_MAP_TOGO_PANEL_SPLIT_CHANGED_EVENT, onCustom as EventListener);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
   const [selectedColor, setSelectedColor] = useState('#3B82F6'); // 선택된 색상
   const [showColorModal, setShowColorModal] = useState(false); // 색상 모달 표시 여부
   const [isColorModalForExisting, setIsColorModalForExisting] = useState(false); // 기존 요소 색상 변경 모드
@@ -3644,6 +3665,19 @@ const TableMapManagerPage = () => {
                     </button>
                   )}
 
+              {/* Bistro preview (POS /bistro layout) */}
+              <button
+                className={`w-auto px-4 py-1 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${
+                  selectedTab === 'bistro'
+                    ? 'bg-teal-600 text-white shadow-md transform scale-105'
+                    : 'bg-white text-gray-700 hover:bg-teal-50 hover:text-teal-700 border border-gray-200'
+                }`}
+                onClick={() => setSelectedTab('bistro')}
+                type="button"
+              >
+                Bistro
+              </button>
+
               {/* Manager 탭 */}
               <button
                 className={`w-auto px-4 py-1 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${
@@ -3662,6 +3696,15 @@ const TableMapManagerPage = () => {
               <div className="flex-1 flex overflow-hidden">
                 {selectedTab === 'manager' ? (
                   <ManagerPanel />
+                ) : selectedTab === 'bistro' ? (
+                  <div className="flex h-full min-h-0 w-full flex-1 flex-col items-stretch overflow-hidden">
+                    <BistroManagerMapPreview
+                      tableElements={tableElements}
+                      frameWidthPx={canvasWidthPx}
+                      frameHeightPx={canvasHeightPx}
+                      tableMapLeftPercent={bistroMapLeftPct}
+                    />
+                  </div>
                 ) : (
                   <>
                 

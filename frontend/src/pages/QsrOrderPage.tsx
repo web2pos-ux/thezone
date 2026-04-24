@@ -15,6 +15,8 @@ import ManagerPinModal from '../components/ManagerPinModal';
 import PinInputModal from '../components/PinInputModal';
 import { API_URL } from '../config/constants';
 import { isMasterPosPin } from '../constants/masterPosPin';
+import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
+import { quitToOsFromPos } from '../utils/quitToOs';
 import BottomActionBar from '../components/order/BottomActionBar';
 import ModifierPanel from '../components/order/ModifierPanel';
 import OrderCatalogPanel, { CatalogSnapshot } from './order/OrderCatalogPanel';
@@ -4182,7 +4184,7 @@ const handleVoidPinClear = useCallback(() => {
     });
   };
 
-  const handleAddPayment = async ({ method, amount, tip, change: changeVal = 0, discountedGrand: _discountedGrand }:{ method:string; amount:number; tip:number; change?: number; discountedGrand?: number }) => {
+  const handleAddPayment = async ({ method, amount, tip, change: changeVal = 0, discountedGrand: _discountedGrand, terminalRef }:{ method:string; amount:number; tip:number; change?: number; discountedGrand?: number; terminalRef?: string }) => {
     try {
       // 저장된 주문 id가 없으므로, 우선 OK에서 저장되는 흐름과 달리 Payment에서는 주문 저장 선행 필요할 수 있음
       // 간단히 임시 order 저장 후 id 회수
@@ -4210,7 +4212,7 @@ const handleVoidPinClear = useCallback(() => {
       const orderId = savedOrderIdRef.current as number;
       if (guestPaymentMode === 'ALL') {
         // 한 건 결제로 전체 금액(세금 포함)의 일부/전부를 결제
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null, changeAmount: changeVal }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: null, changeAmount: changeVal, ref: terminalRef || null }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // 로컬 집계: 전체 스코프의 결제 합계를 갱신하고, 게스트별 표시용으로는 동일 금액을 순서대로 소진하도록 가상 분배만 반영
@@ -4234,13 +4236,13 @@ const handleVoidPinClear = useCallback(() => {
           }
           return next;
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: undefined, terminalRef } ]));
         // Pay in Full(ALL) 흐름에서는 결제 직후 완료 판정을 시도하여 즉시 테이블맵으로 전환
         try { setTimeout(() => { try { handleCompletePayment(); } catch {} }, 0); } catch {}
         return;
       } else {
         // 단일 게스트 결제 저장
-        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), changeAmount: changeVal }) });
+        const payRes = await fetch(`${API_URL}/payments`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ orderId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), changeAmount: changeVal, ref: terminalRef || null }) });
         if (!payRes.ok) throw new Error('Failed to save payment');
         const payData = await payRes.json();
         // Track paid locally for live due update
@@ -4249,7 +4251,7 @@ const handleVoidPinClear = useCallback(() => {
           const current = prev[key] || 0;
           return { ...prev, [key]: Number((current + amount + tip).toFixed(2)) };
         });
-        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode) } ]));
+        setSessionPayments(prev => ([ ...prev, { paymentId: payData.paymentId, method, amount: Number((amount + tip).toFixed(2)), tip, guestNumber: Number(guestPaymentMode), terminalRef } ]));
         
         // 게스트 전액 결제 완료 시에만 Receipt 출력 (복합결제 중간에는 출력 안 함)
         try {
@@ -4290,9 +4292,21 @@ const handleVoidPinClear = useCallback(() => {
               // 해당 게스트의 모든 결제 내역 수집
               const guestPayments = sessionPayments
                 .filter(p => p.guestNumber === guestNum)
-                .map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+                .map(p => ({
+                  method: p.method,
+                  amount: p.amount,
+                  tip: p.tip || 0,
+                  ...(((p as { terminalRef?: string }).terminalRef)
+                    ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+                    : {}),
+                }));
               // 현재 결제도 추가
-              guestPayments.push({ method, amount: currentPayment, tip: tip || 0 });
+              guestPayments.push({
+                method,
+                amount: currentPayment,
+                tip: tip || 0,
+                ...(terminalRef ? { ref: terminalRef } : {}),
+              });
               
               const guestReceiptData = {
                 header: {
@@ -4636,7 +4650,10 @@ const handleVoidPinClear = useCallback(() => {
           payments: sessionPayments.map(p => ({
             method: p.method || 'Unknown',
             amount: p.amount || 0,
-            tip: p.tip || 0
+            tip: p.tip || 0,
+            ...(((p as { terminalRef?: string }).terminalRef)
+              ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+              : {})
           })),
           change: paymentCompleteData?.change || 0,
           cashTendered: (() => {
@@ -4879,7 +4896,14 @@ const handleVoidPinClear = useCallback(() => {
             total: qsr2Total,
             adjustments: qsr2Adjustments,
             payments: (() => {
-              const base = sessionPayments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 }));
+              const base = sessionPayments.map(p => ({
+                method: p.method,
+                amount: p.amount,
+                tip: p.tip || 0,
+                ...(((p as { terminalRef?: string }).terminalRef)
+                  ? { ref: (p as { terminalRef?: string }).terminalRef as string }
+                  : {}),
+              }));
               if (typeof tipOverride === 'number' && tipOverride > 0 && !base.some(p => p.tip > 0)) {
                 base.push({ method: 'CASH', amount: tipOverride, tip: tipOverride });
               }
@@ -5663,12 +5687,14 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
   const [backOfficePin, setBackOfficePin] = useState('');
   
   const handleBackOfficeAccess = () => {
+    if (isWeb2posDemoBuild()) return;
     setBackOfficePin('');
     setBackOfficePinError('');
     setShowBackOfficePinModal(true);
   };
   
   const verifyBackOfficePin = async (pin: string) => {
+    if (isWeb2posDemoBuild()) return;
     if (pin === '0000') {
       setBackOfficePinError('0000 cannot be used');
       setBackOfficePin('');
@@ -9213,7 +9239,12 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
               taxLines: [{ name: activeTaxes[0]?.name || 'Tax', rate: taxRate, amount: taxTotal }],
               taxesTotal: taxTotal,
               total,
-              payments: payments.map(p => ({ method: p.method, amount: p.amount, tip: p.tip || 0 })),
+              payments: payments.map(p => ({
+                method: p.method,
+                amount: p.amount,
+                tip: p.tip || 0,
+                ...((p as { ref?: string }).ref ? { ref: (p as { ref?: string }).ref as string } : {}),
+              })),
               tip: tipTotal,
               change: Math.max(0, Number(change.toFixed(2))),
               footer: { message: 'Thank you!' }
@@ -13065,13 +13096,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             <div className="my-2 h-px bg-gray-400/40" />
 
                             <button
-                              onClick={() => { setShowQsrMoreMenu(false); handleBackOfficeAccess(); }}
-                              className="w-full px-3 py-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
+                              type="button"
+                              disabled={isWeb2posDemoBuild()}
+                              onClick={() => {
+                                if (isWeb2posDemoBuild()) return;
+                                setShowQsrMoreMenu(false);
+                                handleBackOfficeAccess();
+                              }}
+                              className="w-full px-3 py-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff]"
                             >
                               Back Office
                             </button>
                             <button
-                              onClick={() => { setShowQsrMoreMenu(false); window.close(); }}
+                              type="button"
+                              onClick={() => {
+                                setShowQsrMoreMenu(false);
+                                quitToOsFromPos();
+                              }}
                               className="w-full px-3 py-2 mt-2 rounded-xl text-left text-[13px] font-bold text-gray-700 transition-all duration-150 select-none shadow-[6px_6px_12px_#b8bec7,_-6px_-6px_12px_#ffffff] hover:shadow-[8px_8px_16px_#b8bec7,_-8px_-8px_16px_#ffffff] active:shadow-[inset_4px_4px_8px_#b8bec7,_inset_-4px_-4px_8px_#ffffff] active:text-gray-500 active:scale-[0.99]"
                             >
                               Goto Windows
