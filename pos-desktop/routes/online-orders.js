@@ -8,7 +8,9 @@ const salesSyncService = require('../services/salesSyncService');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
+const preorderReprintService = require('../services/preorderReprintService');
 const { resolveServicePattern } = require('../utils/orderServicePattern');
+const networkConnectivityService = require('../services/networkConnectivityService');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -44,7 +46,7 @@ async function ensurePosDailyOrderNumberForOnlineSqliteRow(orderId, currentOrder
   return await assignPosDailyOrderNumberToSqliteOrder(orderId);
 }
 
-/** Firebase 온라인 주문 → SQLite orders.ready_time / pickup_minutes */
+/** Firebase 온라인 주문 → SQLite `orders.ready_time` / `orders.pickup_minutes` (GET /orders·Pickup List) */
 function parseFirebaseOrderCreatedAt(order, createdAtStrFallback) {
   if (createdAtStrFallback) {
     const d = new Date(createdAtStrFallback);
@@ -91,6 +93,7 @@ function sqliteReadyFieldsFromFirebaseOrder(order, createdAtStrFallback) {
   return { readyTime, pickupMinutes };
 }
 
+/** 기존 행(ready 비어 있음)에 Firebase 값 백필 */
 async function syncSqliteReadyFieldsFromFirebase(localOrderId, order, createdAtStrFallback) {
   const { readyTime, pickupMinutes } = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStrFallback);
   if (!readyTime && !(pickupMinutes != null && pickupMinutes > 0)) return;
@@ -109,6 +112,7 @@ async function syncSqliteReadyFieldsFromFirebase(localOrderId, order, createdAtS
   }
 }
 
+/** Firebase 온라인 주문 문서의 팁 → SQLite `orders.online_tip` (카드 결제 시 팁 등) */
 function parseFirebaseOrderTip(order) {
   const raw = order?.tip ?? order?.tipAmount ?? order?.tip_amount ?? order?.gratuity ?? 0;
   const n = Number(raw);
@@ -124,6 +128,21 @@ async function syncSqliteOnlineTipFromFirebase(localOrderId, order) {
   } catch (e) {
     console.warn('[Online] syncSqliteOnlineTipFromFirebase:', e.message);
   }
+}
+
+/** Kitchen/출력 헤더: SQLite `order_number`(일일 순번) 우선 — Sales 카드·POS 영수증과 동일 */
+function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
+  if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
+    const t = String(localOrder.order_number).trim().replace(/^#/, '');
+    if (t) {
+      const display = /^\d+$/.test(t) && t.length < 3 ? t.padStart(3, '0') : t;
+      return `#${display}`;
+    }
+  }
+  const fb = firebaseOrder?.orderNumber != null ? String(firebaseOrder.orderNumber).trim() : '';
+  if (fb) return fb.startsWith('#') ? fb : `#${fb}`;
+  if (localOrder?.id != null) return `#${localOrder.id}`;
+  return firebaseOrderId ? `#${firebaseOrderId}` : '#';
 }
 
 // orders 테이블 마이그레이션 (컬럼 추가)
@@ -146,21 +165,6 @@ async function syncSqliteOnlineTipFromFirebase(localOrderId, order) {
     }
   }
 })();
-
-/** Kitchen 헤더: SQLite orders.order_number(일일 순번) 우선 — 온라인 카드·POS와 동일 */
-function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
-  if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
-    const t = String(localOrder.order_number).trim().replace(/^#/, '');
-    if (t) {
-      const display = /^\d+$/.test(t) && t.length < 3 ? t.padStart(3, '0') : t;
-      return `#${display}`;
-    }
-  }
-  const fb = firebaseOrder?.orderNumber != null ? String(firebaseOrder.orderNumber).trim() : '';
-  if (fb) return fb.startsWith('#') ? fb : `#${fb}`;
-  if (localOrder?.id != null) return `#${localOrder.id}`;
-  return firebaseOrderId ? `#${firebaseOrderId}` : '#';
-}
 
 // Firebase 초기화 상태 확인
 let firebaseInitialized = false;
@@ -240,28 +244,28 @@ function startOrderListener(restaurantId) {
   if (activeListeners.has(restaurantId)) {
     return;
   }
+  if (!networkConnectivityService.isInternetConnected()) {
+    console.warn(`[Online] Offline: order listener not started (${restaurantId})`);
+    return;
+  }
 
   console.log(`👂 주문 리스너 시작: ${restaurantId}`);
 
   const unsubscribe = firebaseService.listenToOnlineOrders(restaurantId, {
     onNewOrder: async (order) => {
-      if (
-        typeof firebaseService.isExcludedFromOnlineOrderChannel === 'function'
-          ? firebaseService.isExcludedFromOnlineOrderChannel(order)
-          : typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
-            firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
-      ) {
-        return;
-      }
+      if (firebaseService.isExcludedFromOnlineOrderChannel(order)) return;
 
       const firebaseOrderId = order.id;
       let localOrder = null;
 
       const pStatus = (order.paymentStatus || 'pending').toLowerCase();
       const isPaid = pStatus === 'paid' || pStatus === 'completed' || order.paid === true;
-
+      
       try {
-        localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [firebaseOrderId]);
+        localOrder = await dbGet(
+          'SELECT id FROM orders WHERE firebase_order_id = ?',
+          [firebaseOrderId]
+        );
 
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
         const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
@@ -318,7 +322,7 @@ function startOrderListener(restaurantId) {
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
       }
-
+      
       const formatted = formatOrderForFrontend(order);
       formatted.localOrderId = localOrder?.id || null;
       try {
@@ -331,21 +335,14 @@ function startOrderListener(restaurantId) {
           }
         }
       } catch {}
-
+      
       broadcastToClients(restaurantId, {
         type: 'new_order',
-        order: formatted,
+        order: formatted
       });
     },
     onOrderUpdate: async (order) => {
-      if (
-        typeof firebaseService.isExcludedFromOnlineOrderChannel === 'function'
-          ? firebaseService.isExcludedFromOnlineOrderChannel(order)
-          : typeof firebaseService.isPosDeliveryMirrorFirestoreOrder === 'function' &&
-            firebaseService.isPosDeliveryMirrorFirestoreOrder(order)
-      ) {
-        return;
-      }
+      if (firebaseService.isExcludedFromOnlineOrderChannel(order)) return;
 
       try {
         const lo = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [order.id]);
@@ -362,7 +359,7 @@ function startOrderListener(restaurantId) {
 
       broadcastToClients(restaurantId, {
         type: 'order_updated',
-        order: formatOrderForFrontend(order),
+        order: formatOrderForFrontend(order)
       });
     },
     onError: (error) => {
@@ -395,6 +392,10 @@ function stopAllFirebaseOrderListeners() {
 // Firebase Online Settings 리스너 시작 (Prep Time, Pause, Day Off, Utility)
 function startSettingsListener(restaurantId) {
   if (activeSettingsListeners.has(restaurantId)) return;
+  if (!networkConnectivityService.isInternetConnected()) {
+    console.warn(`[Online] Offline: settings listener not started (${restaurantId})`);
+    return;
+  }
   if (!ensureFirebaseInit()) return;
 
   const firestore = firebaseService.getFirestore();
@@ -490,12 +491,20 @@ function formatOrderForFrontend(order) {
     null;
 
   const paymentStatus = (order.paymentStatus || 'pending').toLowerCase();
-  const isPaid = paymentStatus === 'paid' || paymentStatus === 'completed' ||
-                 order.status === 'paid' || order.paid === true;
+  const statusLc = String(order.status || '').toLowerCase();
+  const isPaid =
+    paymentStatus === 'paid' ||
+    paymentStatus === 'completed' ||
+    statusLc === 'paid' ||
+    statusLc === 'completed' ||
+    statusLc === 'closed' ||
+    order.paid === true ||
+    order.isPaid === true;
 
   return {
     id: order.id,
     orderNumber: resolvedOrderNumber,
+    /** POS SQLite 일일 순번 — 프론트가 camel/snake 모두에서 읽을 수 있게 */
     order_number: order.order_number != null && String(order.order_number).trim() !== '' ? String(order.order_number).trim() : null,
     customerName: order.customerName,
     customerPhone: order.customerPhone,
@@ -525,6 +534,7 @@ function formatOrderForFrontend(order) {
     promotionPercent: order.promotionPercent || order.discountPercent || null,
     taxBreakdown: order.taxBreakdown || null,
     deliveryFee: order.deliveryFee || 0,
+    /** 온라인(파이어베이스) 주문 팁 — SQLite `online_tip`과 병합될 수 있음 */
     tip: parseFirebaseOrderTip(order),
   };
 }
@@ -717,14 +727,17 @@ router.get('/:restaurantId', async (req, res) => {
       limit: parseInt(limit) || 50
     });
 
+    // 결제 후 SQLite는 PAID 등 — 투고패널 온라인 카드는 픽업 전까지 유지(READY). 숨김은 픽업·VOID·머지 등만.
     const SQLITE_HIDE = new Set([
-      'MERGED', 'COMPLETED', 'PAID', 'CANCELLED', 'REFUNDED',
-      'VOIDED', 'VOID', 'CLOSED', 'PICKED_UP',
+      'MERGED', 'CANCELLED', 'REFUNDED',
+      'VOIDED', 'VOID', 'PICKED_UP',
     ]);
 
+    // 각 온라인 주문에 대해 SQLite ID를 조회하거나 생성
     const ordersWithLocalId = await Promise.all(orders.map(async (order) => {
       const firebaseOrderId = order.id;
 
+      // 동일 firebase_order_id로 행이 여러 개면(구버그) VOIDED 행이 있으면 무조건 숨김
       const locals = await dbAll(
         'SELECT id, status, order_type, order_number FROM orders WHERE firebase_order_id = ?',
         [firebaseOrderId]
@@ -740,11 +753,12 @@ router.get('/:restaurantId', async (req, res) => {
       if (localOrder && SQLITE_HIDE.has(String(localOrder.status || '').toUpperCase())) {
         return null;
       }
-
+      
+      // 테이블로 이동된 주문 (order_type = 'POS')도 필터링
       if (localOrder && localOrder.order_type === 'POS') {
-        return null;
+        return null; // 테이블로 이동된 주문은 온라인 목록에서 제외
       }
-
+      
       if (!localOrder) {
         const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
         const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
@@ -772,7 +786,7 @@ router.get('/:restaurantId', async (req, res) => {
             ]
           );
           localOrder = { id: result.lastID, order_number: null };
-
+          
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
               await dbRun(
@@ -838,7 +852,7 @@ router.get('/:restaurantId', async (req, res) => {
             }
           }
         } catch (e) {
-          console.warn('[Online] GET list SQLite merge:', e.message);
+          console.warn('[Online] GET list SQLite paid merge:', e.message);
         }
       }
       return formatted;
@@ -865,7 +879,14 @@ router.get('/order/:orderId', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const order = await firebaseService.getOrderById(orderId);
+    let restaurantId = null;
+    try {
+      const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile WHERE id = 1');
+      restaurantId = profile?.firebase_restaurant_id || null;
+    } catch (_) {
+      /* ignore */
+    }
+    const order = await firebaseService.getOrderById(orderId, restaurantId);
 
     if (!order) {
       return res.status(404).json({ success: false, error: 'Order not found' });
@@ -1059,7 +1080,12 @@ router.post('/order/:orderId/cancel', async (req, res) => {
     }
 
     const { orderId } = req.params;
-    const result = await firebaseService.updateOrderStatus(orderId, 'cancelled');
+    let restaurantId = req.body?.restaurantId;
+    if (!restaurantId) {
+      const profile = await dbGet('SELECT firebase_restaurant_id FROM business_profile LIMIT 1');
+      restaurantId = profile?.firebase_restaurant_id;
+    }
+    const result = await firebaseService.updateOrderStatus(orderId, 'cancelled', restaurantId || null);
 
     res.json({
       success: true,
@@ -1135,6 +1161,17 @@ router.post('/order/:orderId/accept', async (req, res) => {
       console.warn('[ACCEPT] SQLite ready_time sync:', sqlErr.message);
     }
 
+    try {
+      await preorderReprintService.onOnlineOrderAccepted({
+        dbRun,
+        dbGet,
+        restaurantId: restaurantId || null,
+        orderId,
+      });
+    } catch (preErr) {
+      console.warn('[ACCEPT] preorder reprint schedule:', preErr && preErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Order accepted',
@@ -1171,141 +1208,170 @@ router.post('/order/:orderId/reject', async (req, res) => {
   }
 });
 
+/**
+ * 온라인(Firebase) 주문 → `/api/printers/print-order` 로 보내는 JSON 본문과 동일 구조.
+ * 실제 print POST 와 화면 미리보기 GET 이 공유한다.
+ */
+async function buildOnlineOrderKitchenPrintPayload(orderId, reqRestaurantId) {
+  if (!ensureFirebaseInit()) {
+    throw new Error('Firebase not initialized');
+  }
+  const order = await firebaseService.getOrderById(orderId, reqRestaurantId || null);
+  if (!order) {
+    throw new Error('Order not found');
+  }
+
+  const localOrder = await dbGet(
+    'SELECT id, order_number FROM orders WHERE firebase_order_id = ?',
+    [orderId]
+  );
+  const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, orderId);
+
+  console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase 표시번호: ${order.orderNumber}, sqlite id: ${localOrder?.id ?? '—'})`);
+
+  const printItems = [];
+  for (const item of (order.items || [])) {
+    let printerGroupIds = [];
+    let itemId = item.posItemId || null;
+    let categoryId = item.posCategoryId || null;
+
+    if (!itemId) {
+      const menuItem = await dbGet(
+        'SELECT item_id, category_id FROM menu_items WHERE name = ? OR short_name = ?',
+        [item.name, item.name]
+      );
+      if (menuItem) {
+        itemId = menuItem.item_id;
+        categoryId = menuItem.category_id;
+      }
+    }
+
+    if (itemId) {
+      const itemPrinterLinks = await dbAll(
+        'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
+        [itemId]
+      );
+
+      if (itemPrinterLinks && itemPrinterLinks.length > 0) {
+        printerGroupIds = itemPrinterLinks.map(l => l.printer_group_id);
+      } else if (categoryId) {
+        const categoryPrinterLinks = await dbAll(
+          'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
+          [categoryId]
+        );
+        if (categoryPrinterLinks && categoryPrinterLinks.length > 0) {
+          printerGroupIds = categoryPrinterLinks.map(l => l.printer_group_id);
+        }
+      }
+    }
+
+    if (printerGroupIds.length === 0) {
+      const defaultGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
+      if (defaultGroup) {
+        printerGroupIds.push(defaultGroup.id);
+        console.log(`⚠️ 수동출력 아이템 "${item.name}" - 프린터 그룹 없음, 기본 Kitchen 사용`);
+      }
+    }
+
+    console.log(`🖨️ 수동출력 아이템 "${item.name}" - posItemId: ${itemId}, categoryId: ${categoryId}, printerGroups: [${printerGroupIds.join(', ')}]`);
+
+    printItems.push({
+      id: itemId || 0,
+      name: item.name || 'Unknown Item',
+      quantity: item.quantity || 1,
+      price: item.price || 0,
+      printerGroupIds: printerGroupIds,
+      modifiers: (item.options || []).map(opt => ({
+        name: opt.choiceName || opt.name || '',
+        price: opt.price || 0
+      })),
+      specialInstructions: item.specialInstructions || ''
+    });
+  }
+
+  const prepTime = order.prepTime || order.prep_time || 20;
+  const pickupDate = new Date(Date.now() + prepTime * 60000);
+  const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  const pStatusLower = (order.paymentStatus || '').toLowerCase();
+  const orderIsPaid = order.status === 'paid' ||
+    pStatusLower === 'paid' ||
+    pStatusLower === 'completed' ||
+    order.paid === true ||
+    order.isPaid === true;
+
+  return {
+    orderInfo: {
+      orderNumber: localOrderNumber,
+      externalOrderNumber: localOrderNumber,
+      orderType: 'ONLINE',
+      table: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
+      customerName: order.customerName || '',
+      customerPhone: order.customerPhone || '',
+      notes: order.notes || '',
+      specialInstructions: order.notes || order.specialInstructions || '',
+      channel: 'THEZONE',
+      deliveryChannel: 'THEZONE',
+      orderSource: 'THEZONE',
+      firebaseOrderNumber: order.orderNumber,
+      prepTime: prepTime,
+      pickupMinutes: prepTime,
+      pickupTime: pickupTimeStr
+    },
+    items: printItems,
+    isAdditionalOrder: false,
+    isPaid: orderIsPaid,
+    isReprint: false
+  };
+}
+
 // ============================================
 // 프린터 출력 (온라인 주문용)
 // ============================================
 
+/** 화면 미리보기: print-order 와 동일한 JSON (GET) */
+router.get('/order/:orderId/kitchen-print-payload', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const restaurantId = req.query.restaurantId != null && String(req.query.restaurantId).trim() !== ''
+      ? String(req.query.restaurantId).trim()
+      : null;
+    const payload = await buildOnlineOrderKitchenPrintPayload(orderId, restaurantId);
+    res.json({ success: true, ...payload });
+  } catch (error) {
+    const msg = error && error.message;
+    const status = msg === 'Order not found' ? 404 : 500;
+    console.error('[Online] kitchen-print-payload:', msg || error);
+    res.status(status).json({ success: false, error: msg || String(error) });
+  }
+});
+
 // 온라인 주문 영수증 출력
 router.post('/order/:orderId/print', async (req, res) => {
   try {
-    if (!ensureFirebaseInit()) {
-      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
-    }
-
     const { orderId } = req.params;
     const { printerType = 'both', restaurantId: reqRestaurantId } = req.body;
 
-    const order = await firebaseService.getOrderById(orderId, reqRestaurantId || null);
-    if (!order) {
-      return res.status(404).json({ success: false, error: 'Order not found' });
+    let printPayload;
+    try {
+      printPayload = await buildOnlineOrderKitchenPrintPayload(orderId, reqRestaurantId || null);
+    } catch (e) {
+      const msg = e && e.message;
+      if (msg === 'Firebase not initialized') {
+        return res.status(500).json({ success: false, error: msg });
+      }
+      if (msg === 'Order not found') {
+        return res.status(404).json({ success: false, error: msg });
+      }
+      throw e;
     }
 
-    const restaurant = await firebaseService.getRestaurantById(order.restaurantId);
-    const restaurantName = restaurant?.name || '레스토랑';
-
-    const localOrder = await dbGet(
-      'SELECT id, order_number FROM orders WHERE firebase_order_id = ?',
-      [orderId]
-    );
-    const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, orderId);
-
-    console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase 표시번호: ${order.orderNumber}, sqlite id: ${localOrder?.id ?? '—'})`);
-
-    // 메뉴 아이템별 프린터 그룹 조회
-    const printItems = [];
-    for (const item of (order.items || [])) {
-      let printerGroupIds = [];
-      let itemId = item.posItemId || null;
-      let categoryId = item.posCategoryId || null;
-      
-      // posItemId가 있으면 직접 사용, 없으면 이름으로 검색
-      if (!itemId) {
-        const menuItem = await dbGet(
-          'SELECT item_id, category_id FROM menu_items WHERE name = ? OR short_name = ?',
-          [item.name, item.name]
-        );
-        if (menuItem) {
-          itemId = menuItem.item_id;
-          categoryId = menuItem.category_id;
-        }
-      }
-      
-      if (itemId) {
-        // 1. 아이템 직접 연결된 프린터 그룹 조회
-        const itemPrinterLinks = await dbAll(
-          'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
-          [itemId]
-        );
-        
-        if (itemPrinterLinks && itemPrinterLinks.length > 0) {
-          printerGroupIds = itemPrinterLinks.map(l => l.printer_group_id);
-        } else if (categoryId) {
-          // 2. 카테고리 프린터 그룹 조회
-          const categoryPrinterLinks = await dbAll(
-            'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
-            [categoryId]
-          );
-          if (categoryPrinterLinks && categoryPrinterLinks.length > 0) {
-            printerGroupIds = categoryPrinterLinks.map(l => l.printer_group_id);
-          }
-        }
-      }
-      
-      // 프린터 그룹을 찾지 못한 경우 기본 Kitchen 사용
-      if (printerGroupIds.length === 0) {
-        const defaultGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
-        if (defaultGroup) {
-          printerGroupIds.push(defaultGroup.id);
-          console.log(`⚠️ 수동출력 아이템 "${item.name}" - 프린터 그룹 없음, 기본 Kitchen 사용`);
-        }
-      }
-      
-      console.log(`🖨️ 수동출력 아이템 "${item.name}" - posItemId: ${itemId}, categoryId: ${categoryId}, printerGroups: [${printerGroupIds.join(', ')}]`);
-      
-      printItems.push({
-        id: itemId || 0,
-        name: item.name || 'Unknown Item',
-        quantity: item.quantity || 1,
-        price: item.price || 0,
-        printerGroupIds: printerGroupIds,
-        // 프린터가 "modifiers"를 기대함 - options를 modifiers로 변환
-        modifiers: (item.options || []).map(opt => ({
-          name: opt.choiceName || opt.name || '',
-          price: opt.price || 0
-        })),
-        specialInstructions: item.specialInstructions || ''
-      });
-    }
+    const localOrderNumber = printPayload.orderInfo.orderNumber;
 
     // 기존 프린터 시스템 사용하여 출력
     const http = require('http');
-    
-    // Pickup 시간 계산 (현재시간 + prepTime)
-    const prepTime = order.prepTime || order.prep_time || 20; // 기본 20분
-    const pickupDate = new Date(Date.now() + prepTime * 60000);
-    const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-    
-    // 결제 상태 확인 (Firebase에서 온라인 결제 완료 여부)
-    const pStatusLower = (order.paymentStatus || '').toLowerCase();
-    const orderIsPaid = order.status === 'paid' || 
-                       pStatusLower === 'paid' || 
-                       pStatusLower === 'completed' ||
-                       order.paid === true ||
-                       order.isPaid === true;
-    
-    const printData = JSON.stringify({
-      orderInfo: {
-        orderNumber: localOrderNumber,
-        externalOrderNumber: localOrderNumber, // TZO는 POS 주문번호 사용
-        orderType: 'ONLINE',
-        table: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
-        customerName: order.customerName || '',
-        customerPhone: order.customerPhone || '',
-        notes: order.notes || '',
-        specialInstructions: order.notes || order.specialInstructions || '', // Footer에 출력될 Special Instructions
-        channel: 'THEZONE',
-        deliveryChannel: 'THEZONE', // 출력물에 표시될 채널명
-        orderSource: 'THEZONE',
-        firebaseOrderNumber: order.orderNumber, // Firebase 주문번호는 별도 보관
-        prepTime: prepTime,
-        pickupMinutes: prepTime,
-        pickupTime: pickupTimeStr // 계산된 Pickup 시간
-      },
-      items: printItems,
-      isAdditionalOrder: false,
-      isPaid: orderIsPaid, // Firebase 결제 상태에 따라 PAID/UNPAID 출력
-      isReprint: false
-    });
+
+    const printData = JSON.stringify(printPayload);
 
     const printReq = http.request({
       hostname: 'localhost',
@@ -1335,7 +1401,7 @@ router.post('/order/:orderId/print', async (req, res) => {
       success: true,
       message: '출력 요청이 전송되었습니다',
       orderNumber: localOrderNumber,
-      externalOrderNumber: order.orderNumber,
+      externalOrderNumber: printPayload.orderInfo.firebaseOrderNumber,
       printerType
     });
   } catch (error) {
@@ -1749,8 +1815,10 @@ router.get('/utility-settings', async (req, res) => {
     }
 
     const utilitySettings = await firebaseService.getUtilitySettings(restaurantId);
-    const defaults = { bagFee: { enabled: false, amount: 0.10 }, utensils: { enabled: false } };
-    res.json({ success: true, utilitySettings: utilitySettings || defaults });
+    const defaults = { bagFee: { enabled: false, amount: 0.10 }, utensils: { enabled: false }, preOrderReprint: { enabled: false } };
+    const merged = { ...defaults, ...(utilitySettings || {}) };
+    if (!merged.preOrderReprint) merged.preOrderReprint = { enabled: false };
+    res.json({ success: true, utilitySettings: merged });
   } catch (error) {
     console.error('[UTILITY] Get error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -1779,6 +1847,9 @@ router.post('/utility-settings', async (req, res) => {
       },
       utensils: {
         enabled: Boolean(utilitySettings?.utensils?.enabled),
+      },
+      preOrderReprint: {
+        enabled: Boolean(utilitySettings?.preOrderReprint?.enabled),
       },
     };
 
@@ -1981,9 +2052,164 @@ function broadcastToRestaurant(restaurantId, data) {
   broadcastToClients(restaurantId, data);
 }
 
+/**
+ * 오프라인/끊김 동안 놓친 pending 온라인 주문을 Firestore에서 한 번 당겨와 SQLite에 맞춤 (증분).
+ * 리스너 재구독 직후 호출 — onSnapshot 초기 스냅샷은 new 알림을 생략하므로 DB 공백을 메움.
+ */
+async function catchUpPendingOnlineOrders(restaurantId) {
+  if (!restaurantId) return;
+  if (!networkConnectivityService.isInternetConnected()) return;
+  if (!ensureFirebaseInit()) return;
+
+  let orders;
+  try {
+    orders = await firebaseService.getOnlineOrders(restaurantId, { status: 'pending' });
+  } catch (e) {
+    console.warn('[Online] catchUpPendingOnlineOrders fetch:', e.message);
+    return;
+  }
+  if (!Array.isArray(orders) || orders.length === 0) return;
+
+  let inserted = 0;
+  for (const order of orders) {
+    if (firebaseService.isExcludedFromOnlineOrderChannel(order)) continue;
+
+    const firebaseOrderId = order.id;
+    let localOrder = null;
+    let didInsertThis = false;
+
+    const pStatus = (order.paymentStatus || 'pending').toLowerCase();
+    const isPaid = pStatus === 'paid' || pStatus === 'completed' || order.paid === true;
+
+    try {
+      localOrder = await dbGet('SELECT id FROM orders WHERE firebase_order_id = ?', [firebaseOrderId]);
+
+      const createdAt = order.createdAt?.toDate?.() || order.createdAt || new Date().toISOString();
+      const createdAtStr = typeof createdAt === 'string' ? createdAt : createdAt.toISOString();
+      const rf = sqliteReadyFieldsFromFirebaseOrder(order, createdAtStr);
+      const onlineTipVal = parseFirebaseOrderTip(order);
+
+      if (!localOrder) {
+        const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
+
+        const result = await dbRun(
+          `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            null,
+            'ONLINE',
+            order.total || 0,
+            'PENDING',
+            createdAtStr,
+            order.customerPhone || null,
+            order.customerName || null,
+            firebaseOrderId,
+            isPaid ? 'paid' : pStatus,
+            order.paymentMethod || 'cash',
+            order.paymentTransactionId || null,
+            order.cardLast4 || null,
+            paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
+            rf.readyTime || null,
+            rf.pickupMinutes,
+            'online',
+            resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+            onlineTipVal,
+          ]
+        );
+        localOrder = { id: result.lastID };
+
+        if (Array.isArray(order.items)) {
+          for (const item of order.items) {
+            await dbRun(
+              `INSERT INTO order_items (order_id, item_id, name, quantity, price)
+                 VALUES (?, ?, ?, ?, ?)`,
+              [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
+            );
+          }
+        }
+        await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
+        inserted += 1;
+        didInsertThis = true;
+        console.log(
+          `📥 catch-up 온라인 주문 SQLite 저장: id=${localOrder.id} firebase=${firebaseOrderId} | 결제: ${isPaid ? 'PAID' : pStatus}`
+        );
+      }
+      if (localOrder?.id) {
+        await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStr);
+        await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
+      }
+
+      if (didInsertThis && localOrder?.id) {
+        const formatted = formatOrderForFrontend(order);
+        formatted.localOrderId = localOrder.id;
+        try {
+          const r = await dbGet('SELECT order_number FROM orders WHERE id = ?', [localOrder.id]);
+          if (r?.order_number) {
+            formatted.posOrderNumber = r.order_number;
+            formatted.orderNumber = r.order_number;
+            formatted.order_number = r.order_number;
+          }
+        } catch {}
+
+        broadcastToClients(restaurantId, {
+          type: 'new_order',
+          order: formatted,
+        });
+      }
+    } catch (err) {
+      console.warn('[Online] catchUp order:', firebaseOrderId, err.message);
+    }
+  }
+
+  if (inserted > 0) {
+    console.log(`[Online] catchUpPendingOnlineOrders: ${restaurantId} — ${inserted} newly inserted`);
+  }
+}
+
+/**
+ * 주문·온라인 설정 Firestore 리스너를 한 번 끊었다가 다시 걸고, 증분 catch-up 실행.
+ */
+function restartOnlineOrderListenersForRestaurant(restaurantId) {
+  if (!restaurantId) return Promise.resolve();
+  if (!networkConnectivityService.isInternetConnected()) {
+    console.warn(`[Online] restartOnlineOrderListenersForRestaurant: offline (${restaurantId})`);
+    return Promise.resolve();
+  }
+  ensureFirebaseInit();
+  stopOrderListener(restaurantId);
+  stopSettingsListener(restaurantId);
+  startOrderListener(restaurantId);
+  startSettingsListener(restaurantId);
+  return catchUpPendingOnlineOrders(restaurantId);
+}
+
+/** 인터넷 복구 시 SSE에 연결된 레스토랑만 리스너 재시작 + 증분 catch-up */
+function restartFirebaseListenersForSseClients() {
+  try {
+    if (!networkConnectivityService.isInternetConnected()) return;
+    for (const restaurantId of sseClients.keys()) {
+      const clients = sseClients.get(restaurantId);
+      if (!clients || clients.size === 0) continue;
+      stopOrderListener(restaurantId);
+      stopSettingsListener(restaurantId);
+      startOrderListener(restaurantId);
+      startSettingsListener(restaurantId);
+      catchUpPendingOnlineOrders(restaurantId).catch((e) =>
+        console.warn('[Online] catchUpPendingOnlineOrders:', restaurantId, e.message)
+      );
+    }
+  } catch (e) {
+    console.warn('[Online] restartFirebaseListenersForSseClients:', e.message);
+  }
+}
+
 module.exports = {
   router,
   startOrderListener,
+  startSettingsListener,
+  restartOnlineOrderListenersForRestaurant,
+  catchUpPendingOnlineOrders,
+  restartFirebaseListenersForSseClients,
   broadcastToRestaurant,
   stopAllFirebaseOrderListeners,
 };

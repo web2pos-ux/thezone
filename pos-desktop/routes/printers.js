@@ -127,6 +127,12 @@ module.exports = (db) => {
     });
   });
 
+  function clampGraphicScale(raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 1.0;
+    return Math.min(1.5, Math.max(0.5, Number(n.toFixed(2))));
+  }
+
   // ==================== Printer debug file logging ====================
   // In packaged Electron app, CONFIG_PATH points to <userData>/config.
   // We'll write logs to <userData>/logs/printer-debug.log so issues are traceable even without a terminal.
@@ -1903,6 +1909,137 @@ module.exports = (db) => {
     } catch (err) {
       console.error('[Serial] Receipt print failed:', err);
       res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/printers/print-reservation-confirm — online reservation accept slip (graphic, receipt printer).
+   */
+  router.post('/print-reservation-confirm', async (req, res) => {
+    try {
+      const rc = req.body?.reservationConfirm || req.body;
+      if (!rc || typeof rc !== 'object') {
+        return res.status(400).json({ success: false, error: 'reservationConfirm payload required' });
+      }
+      const { sendRawToPrinter } = require('../utils/printerUtils');
+      const { buildGraphicReservationConfirm } = require('../utils/graphicPrinterUtils');
+
+      let targetPrinter = req.body?.printerName;
+      if (!targetPrinter) {
+        const frontPrinter = await dbGet(
+          "SELECT selected_printer FROM printers WHERE name LIKE '%Front%' OR name LIKE '%Receipt%' LIMIT 1"
+        );
+        targetPrinter = frontPrinter?.selected_printer;
+      }
+      if (!targetPrinter) {
+        return res.status(400).json({
+          success: false,
+          error: 'No printer configured. Please set up a Front/Receipt printer.',
+        });
+      }
+
+      const printData = { ...rc };
+      const layoutRow = await dbGet('SELECT settings FROM printer_layout_settings WHERE id = 1');
+      if (layoutRow?.settings) {
+        try {
+          const ls = JSON.parse(layoutRow.settings);
+          const rw = ls.receiptLayout?.paperWidth ?? ls.receipt?.paperWidth ?? ls.paperWidth;
+          if (rw === 58 || rw === 80) printData.paperWidth = rw;
+          const tm = Number(ls.receiptLayout?.topMargin ?? ls.receipt?.topMargin ?? ls.topMargin);
+          if (Number.isFinite(tm) && tm >= 0 && printData.topMargin == null) printData.topMargin = tm;
+          const rp = Number(
+            ls.receiptLayout?.rightPaddingPx ??
+              ls.receiptLayout?.rightPadding ??
+              ls.receipt?.rightPaddingPx ??
+              ls.receipt?.rightPadding ??
+              ls.rightPaddingPx ??
+              ls.rightPadding
+          );
+          if (Number.isFinite(rp) && rp >= 0 && printData.rightPaddingPx == null) {
+            printData.rightPaddingPx = Math.round(rp);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (printData.paperWidth == null) printData.paperWidth = 80;
+      if (printData.topMargin == null) printData.topMargin = 5;
+
+      try {
+        const row = await dbGet(
+          'SELECT graphic_scale FROM printers WHERE is_active = 1 AND selected_printer = ? LIMIT 1',
+          [targetPrinter]
+        );
+        const gs = Number(row?.graphic_scale);
+        if (Number.isFinite(gs) && gs > 0) printData.graphicScale = clampGraphicScale(gs);
+      } catch {
+        /* ignore */
+      }
+
+      const buf = buildGraphicReservationConfirm(printData, false, true);
+      const copies = Math.max(1, Math.min(5, Number(req.body?.copies) || 1));
+      for (let i = 0; i < copies; i++) {
+        await sendRawToPrinter(targetPrinter, buf);
+      }
+      return res.json({ success: true, message: 'Reservation confirmation slip printed', printer: targetPrinter });
+    } catch (err) {
+      console.error('[Printer API] print-reservation-confirm failed:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
+  /**
+   * POST /api/printers/preview-graphic-print
+   * Returns a PNG that matches the graphic-mode raster sent to the printer (kitchen / receipt / bill / reservation_confirm).
+   * Body: { kind, ...same fields as print-order|print-receipt|print-bill|reservationConfirm }
+   */
+  router.post('/preview-graphic-print', async (req, res) => {
+    try {
+      const kind = String(req.body?.kind || '').toLowerCase();
+      if (!['kitchen', 'receipt', 'bill', 'reservation_confirm'].includes(kind)) {
+        return res.status(400).json({
+          success: false,
+          error: 'kind must be kitchen, receipt, bill, or reservation_confirm',
+        });
+      }
+      if (!graphicPrinterUtils) {
+        return res.status(503).json({
+          success: false,
+          error: 'Graphic printer renderer is not available on this server (optional native dependency).',
+        });
+      }
+      const isBadString = (v) => {
+        if (v === null || v === undefined) return true;
+        const s = String(v).trim();
+        if (!s) return true;
+        const low = s.toLowerCase();
+        return low === 'null' || low === 'undefined';
+      };
+      const cleanString = (v) => (isBadString(v) ? '' : String(v).trim());
+      const joinAddressParts = (parts) =>
+        (parts || [])
+          .map(cleanString)
+          .filter((x) => !!x)
+          .join(', ');
+      const { buildPngBuffer, readPngDimensions } = require('../utils/graphicPrintPreview');
+      const png = await buildPngBuffer({
+        dbGet,
+        mergeItemsForPrint,
+        kind,
+        body: req.body,
+        helpers: { isBadString, cleanString, joinAddressParts },
+      });
+      const { width, height } = readPngDimensions(png);
+      return res.json({
+        success: true,
+        mimeType: 'image/png',
+        imageBase64: png.toString('base64'),
+        width,
+        height,
+      });
+    } catch (err) {
+      console.error('[Printer API] preview-graphic-print failed:', err);
+      return res.status(500).json({ success: false, error: err.message || String(err) });
     }
   });
 

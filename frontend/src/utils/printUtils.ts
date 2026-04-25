@@ -4,6 +4,7 @@
  */
 
 import { API_URL } from '../config/constants';
+import { isPrintPreviewModeEnabled } from './printPreviewMode';
 
 /** Sales 투고/온라인 패널 Unpaid → 결제 모달: 이 구간에서는 Kitchen(print-order) 금지 */
 const PANEL_TOGO_PAY_SUPPRESS_KITCHEN_UNTIL_KEY = 'panelTogoPaySuppressKitchenUntil';
@@ -185,7 +186,7 @@ export interface KitchenTicketData {
  * Receipt 출력 (FSR/QSR 공통)
  */
 export async function printReceipt(data: ReceiptData, copies: number = 2): Promise<void> {
-  if (!(await isSubPosPrintEnabled())) {
+  if (!(await isSubPosPrintEnabled()) && !isPrintPreviewModeEnabled()) {
     console.log('ℹ️ Sub POS print disabled — skipping receipt');
     return;
   }
@@ -215,7 +216,7 @@ export async function printKitchenTicket(data: KitchenTicketData, copies: number
     console.log('ℹ️ Kitchen ticket suppressed (Sales panel togo/online payment flow)');
     return;
   }
-  if (!(await isSubPosPrintEnabled())) {
+  if (!(await isSubPosPrintEnabled()) && !isPrintPreviewModeEnabled()) {
     console.log('ℹ️ Sub POS print disabled — skipping kitchen ticket');
     return;
   }
@@ -241,7 +242,7 @@ export async function printKitchenTicket(data: KitchenTicketData, copies: number
  * Bill 출력 (FSR/QSR 공통)
  */
 export async function printBill(data: ReceiptData, copies: number = 1): Promise<void> {
-  if (!(await isSubPosPrintEnabled())) {
+  if (!(await isSubPosPrintEnabled()) && !isPrintPreviewModeEnabled()) {
     console.log('ℹ️ Sub POS print disabled — skipping bill');
     return;
   }

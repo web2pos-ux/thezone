@@ -4,6 +4,11 @@ import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { installTableMapRetryHook } from './utils/retryQueue';
+import { installPrintPreviewFetchInterceptor } from './utils/printPreviewFetchInterceptor';
+
+try {
+  installPrintPreviewFetchInterceptor();
+} catch {}
 
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement

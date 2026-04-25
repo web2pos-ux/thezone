@@ -1208,142 +1208,170 @@ router.post('/order/:orderId/reject', async (req, res) => {
   }
 });
 
+/**
+ * 온라인(Firebase) 주문 → `/api/printers/print-order` 로 보내는 JSON 본문과 동일 구조.
+ * 실제 print POST 와 화면 미리보기 GET 이 공유한다.
+ */
+async function buildOnlineOrderKitchenPrintPayload(orderId, reqRestaurantId) {
+  if (!ensureFirebaseInit()) {
+    throw new Error('Firebase not initialized');
+  }
+  const order = await firebaseService.getOrderById(orderId, reqRestaurantId || null);
+  if (!order) {
+    throw new Error('Order not found');
+  }
+
+  const localOrder = await dbGet(
+    'SELECT id, order_number FROM orders WHERE firebase_order_id = ?',
+    [orderId]
+  );
+  const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, orderId);
+
+  console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase 표시번호: ${order.orderNumber}, sqlite id: ${localOrder?.id ?? '—'})`);
+
+  const printItems = [];
+  for (const item of (order.items || [])) {
+    let printerGroupIds = [];
+    let itemId = item.posItemId || null;
+    let categoryId = item.posCategoryId || null;
+
+    if (!itemId) {
+      const menuItem = await dbGet(
+        'SELECT item_id, category_id FROM menu_items WHERE name = ? OR short_name = ?',
+        [item.name, item.name]
+      );
+      if (menuItem) {
+        itemId = menuItem.item_id;
+        categoryId = menuItem.category_id;
+      }
+    }
+
+    if (itemId) {
+      const itemPrinterLinks = await dbAll(
+        'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
+        [itemId]
+      );
+
+      if (itemPrinterLinks && itemPrinterLinks.length > 0) {
+        printerGroupIds = itemPrinterLinks.map(l => l.printer_group_id);
+      } else if (categoryId) {
+        const categoryPrinterLinks = await dbAll(
+          'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
+          [categoryId]
+        );
+        if (categoryPrinterLinks && categoryPrinterLinks.length > 0) {
+          printerGroupIds = categoryPrinterLinks.map(l => l.printer_group_id);
+        }
+      }
+    }
+
+    if (printerGroupIds.length === 0) {
+      const defaultGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
+      if (defaultGroup) {
+        printerGroupIds.push(defaultGroup.id);
+        console.log(`⚠️ 수동출력 아이템 "${item.name}" - 프린터 그룹 없음, 기본 Kitchen 사용`);
+      }
+    }
+
+    console.log(`🖨️ 수동출력 아이템 "${item.name}" - posItemId: ${itemId}, categoryId: ${categoryId}, printerGroups: [${printerGroupIds.join(', ')}]`);
+
+    printItems.push({
+      id: itemId || 0,
+      name: item.name || 'Unknown Item',
+      quantity: item.quantity || 1,
+      price: item.price || 0,
+      printerGroupIds: printerGroupIds,
+      modifiers: (item.options || []).map(opt => ({
+        name: opt.choiceName || opt.name || '',
+        price: opt.price || 0
+      })),
+      specialInstructions: item.specialInstructions || ''
+    });
+  }
+
+  const prepTime = order.prepTime || order.prep_time || 20;
+  const pickupDate = new Date(Date.now() + prepTime * 60000);
+  const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  const pStatusLower = (order.paymentStatus || '').toLowerCase();
+  const orderIsPaid = order.status === 'paid' ||
+    pStatusLower === 'paid' ||
+    pStatusLower === 'completed' ||
+    order.paid === true ||
+    order.isPaid === true;
+
+  return {
+    orderInfo: {
+      orderNumber: localOrderNumber,
+      externalOrderNumber: localOrderNumber,
+      orderType: 'ONLINE',
+      table: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
+      customerName: order.customerName || '',
+      customerPhone: order.customerPhone || '',
+      notes: order.notes || '',
+      specialInstructions: order.notes || order.specialInstructions || '',
+      channel: 'THEZONE',
+      deliveryChannel: 'THEZONE',
+      orderSource: 'THEZONE',
+      firebaseOrderNumber: order.orderNumber,
+      prepTime: prepTime,
+      pickupMinutes: prepTime,
+      pickupTime: pickupTimeStr
+    },
+    items: printItems,
+    isAdditionalOrder: false,
+    isPaid: orderIsPaid,
+    isReprint: false
+  };
+}
+
 // ============================================
 // 프린터 출력 (온라인 주문용)
 // ============================================
 
+/** 화면 미리보기: print-order 와 동일한 JSON (GET) */
+router.get('/order/:orderId/kitchen-print-payload', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const restaurantId = req.query.restaurantId != null && String(req.query.restaurantId).trim() !== ''
+      ? String(req.query.restaurantId).trim()
+      : null;
+    const payload = await buildOnlineOrderKitchenPrintPayload(orderId, restaurantId);
+    res.json({ success: true, ...payload });
+  } catch (error) {
+    const msg = error && error.message;
+    const status = msg === 'Order not found' ? 404 : 500;
+    console.error('[Online] kitchen-print-payload:', msg || error);
+    res.status(status).json({ success: false, error: msg || String(error) });
+  }
+});
+
 // 온라인 주문 영수증 출력
 router.post('/order/:orderId/print', async (req, res) => {
   try {
-    if (!ensureFirebaseInit()) {
-      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
-    }
-
     const { orderId } = req.params;
     const { printerType = 'both', restaurantId: reqRestaurantId } = req.body;
 
-    const order = await firebaseService.getOrderById(orderId, reqRestaurantId || null);
-    if (!order) {
-      return res.status(404).json({ success: false, error: 'Order not found' });
+    let printPayload;
+    try {
+      printPayload = await buildOnlineOrderKitchenPrintPayload(orderId, reqRestaurantId || null);
+    } catch (e) {
+      const msg = e && e.message;
+      if (msg === 'Firebase not initialized') {
+        return res.status(500).json({ success: false, error: msg });
+      }
+      if (msg === 'Order not found') {
+        return res.status(404).json({ success: false, error: msg });
+      }
+      throw e;
     }
 
-    const restaurant = await firebaseService.getRestaurantById(order.restaurantId);
-    const restaurantName = restaurant?.name || '레스토랑';
-
-    // 로컬 POS 주문: 일일 order_number(카드·영수증과 동일) — 예전에는 id(9217 등)를 잘못 사용함
-    const localOrder = await dbGet(
-      'SELECT id, order_number FROM orders WHERE firebase_order_id = ?',
-      [orderId]
-    );
-    const localOrderNumber = resolveOnlineKitchenOrderNumberHeader(localOrder, order, orderId);
-
-    console.log(`🖨️ 온라인 주문 출력 시작: ${localOrderNumber} (Firebase 표시번호: ${order.orderNumber}, sqlite id: ${localOrder?.id ?? '—'})`);
-
-    // 메뉴 아이템별 프린터 그룹 조회
-    const printItems = [];
-    for (const item of (order.items || [])) {
-      let printerGroupIds = [];
-      let itemId = item.posItemId || null;
-      let categoryId = item.posCategoryId || null;
-      
-      // posItemId가 있으면 직접 사용, 없으면 이름으로 검색
-      if (!itemId) {
-        const menuItem = await dbGet(
-          'SELECT item_id, category_id FROM menu_items WHERE name = ? OR short_name = ?',
-          [item.name, item.name]
-        );
-        if (menuItem) {
-          itemId = menuItem.item_id;
-          categoryId = menuItem.category_id;
-        }
-      }
-      
-      if (itemId) {
-        // 1. 아이템 직접 연결된 프린터 그룹 조회
-        const itemPrinterLinks = await dbAll(
-          'SELECT printer_group_id FROM menu_printer_links WHERE item_id = ?',
-          [itemId]
-        );
-        
-        if (itemPrinterLinks && itemPrinterLinks.length > 0) {
-          printerGroupIds = itemPrinterLinks.map(l => l.printer_group_id);
-        } else if (categoryId) {
-          // 2. 카테고리 프린터 그룹 조회
-          const categoryPrinterLinks = await dbAll(
-            'SELECT printer_group_id FROM category_printer_links WHERE category_id = ?',
-            [categoryId]
-          );
-          if (categoryPrinterLinks && categoryPrinterLinks.length > 0) {
-            printerGroupIds = categoryPrinterLinks.map(l => l.printer_group_id);
-          }
-        }
-      }
-      
-      // 프린터 그룹을 찾지 못한 경우 기본 Kitchen 사용
-      if (printerGroupIds.length === 0) {
-        const defaultGroup = await dbGet("SELECT id FROM printer_groups WHERE name = 'Kitchen' AND is_active = 1");
-        if (defaultGroup) {
-          printerGroupIds.push(defaultGroup.id);
-          console.log(`⚠️ 수동출력 아이템 "${item.name}" - 프린터 그룹 없음, 기본 Kitchen 사용`);
-        }
-      }
-      
-      console.log(`🖨️ 수동출력 아이템 "${item.name}" - posItemId: ${itemId}, categoryId: ${categoryId}, printerGroups: [${printerGroupIds.join(', ')}]`);
-      
-      printItems.push({
-        id: itemId || 0,
-        name: item.name || 'Unknown Item',
-        quantity: item.quantity || 1,
-        price: item.price || 0,
-        printerGroupIds: printerGroupIds,
-        // 프린터가 "modifiers"를 기대함 - options를 modifiers로 변환
-        modifiers: (item.options || []).map(opt => ({
-          name: opt.choiceName || opt.name || '',
-          price: opt.price || 0
-        })),
-        specialInstructions: item.specialInstructions || ''
-      });
-    }
+    const localOrderNumber = printPayload.orderInfo.orderNumber;
 
     // 기존 프린터 시스템 사용하여 출력
     const http = require('http');
-    
-    // Pickup 시간 계산 (현재시간 + prepTime)
-    const prepTime = order.prepTime || order.prep_time || 20; // 기본 20분
-    const pickupDate = new Date(Date.now() + prepTime * 60000);
-    const pickupTimeStr = pickupDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-    
-    // 결제 상태 확인 (Firebase에서 온라인 결제 완료 여부)
-    const pStatusLower = (order.paymentStatus || '').toLowerCase();
-    const orderIsPaid = order.status === 'paid' || 
-                       pStatusLower === 'paid' || 
-                       pStatusLower === 'completed' ||
-                       order.paid === true ||
-                       order.isPaid === true;
-    
-    const printData = JSON.stringify({
-      orderInfo: {
-        orderNumber: localOrderNumber,
-        externalOrderNumber: localOrderNumber, // TZO는 POS 주문번호 사용
-        orderType: 'ONLINE',
-        table: order.orderType === 'pickup' ? 'PICKUP' : (order.orderType === 'delivery' ? 'DELIVERY' : 'ONLINE'),
-        customerName: order.customerName || '',
-        customerPhone: order.customerPhone || '',
-        notes: order.notes || '',
-        specialInstructions: order.notes || order.specialInstructions || '', // Footer에 출력될 Special Instructions
-        channel: 'THEZONE',
-        deliveryChannel: 'THEZONE', // 출력물에 표시될 채널명
-        orderSource: 'THEZONE',
-        firebaseOrderNumber: order.orderNumber, // Firebase 주문번호는 별도 보관
-        prepTime: prepTime,
-        pickupMinutes: prepTime,
-        pickupTime: pickupTimeStr // 계산된 Pickup 시간
-      },
-      items: printItems,
-      isAdditionalOrder: false,
-      isPaid: orderIsPaid, // Firebase 결제 상태에 따라 PAID/UNPAID 출력
-      isReprint: false
-    });
+
+    const printData = JSON.stringify(printPayload);
 
     const printReq = http.request({
       hostname: 'localhost',
@@ -1373,7 +1401,7 @@ router.post('/order/:orderId/print', async (req, res) => {
       success: true,
       message: '출력 요청이 전송되었습니다',
       orderNumber: localOrderNumber,
-      externalOrderNumber: order.orderNumber,
+      externalOrderNumber: printPayload.orderInfo.firebaseOrderNumber,
       printerType
     });
   } catch (error) {

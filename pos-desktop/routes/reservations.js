@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
+const { printReservationConfirmSlipAfterAccept } = require('../utils/reservationConfirmPrint');
 
 // Firebase 동기화 서비스
 let firebaseService = null;
@@ -1406,6 +1407,7 @@ router.get('/reservations/pending-online', async (req, res) => {
 // POST accept online reservation
 router.post('/reservations/accept-online', async (req, res) => {
   try {
+    const previewSlipOnly = String(req.get('x-web2pos-print-preview') || '').trim() === '1';
     const { firebase_doc_id, reservation_number, customer_name, phone_number, customer_email,
             reservation_date, reservation_time, party_size, tables_needed, deposit_amount, special_requests } = req.body;
 
@@ -1427,10 +1429,11 @@ router.post('/reservations/accept-online', async (req, res) => {
     const docRef = firestore.collection('restaurants').doc(restaurantId)
       .collection('reservations').doc(firebase_doc_id);
     
+    const confirmedAtIso = new Date().toISOString();
     await docRef.update({
       status: 'confirmed',
-      updated_at: new Date().toISOString(),
-      accepted_at: new Date().toISOString(),
+      updated_at: confirmedAtIso,
+      accepted_at: confirmedAtIso,
     });
 
     // 2. Save to POS database
@@ -1502,11 +1505,37 @@ router.post('/reservations/accept-online', async (req, res) => {
       }
     }
 
+    const slipPayload = {
+      reservationNumber: reservation_number,
+      reservation_number,
+      customerName: customer_name,
+      customer_name,
+      phoneNumber: phone_number,
+      phone_number,
+      reservationDate: reservation_date,
+      reservation_date,
+      reservationTime: reservation_time,
+      reservation_time,
+      partySize: party_size,
+      party_size,
+      tablesNeeded: tables_needed,
+      tables_needed,
+      specialRequests: special_requests || '',
+      special_requests: special_requests || '',
+      confirmedAtISO: confirmedAtIso,
+      assignedTableName: assignedTable?.tableName || assignedTable?.name || null,
+    };
+
+    if (!previewSlipOnly) {
+      await printReservationConfirmSlipAfterAccept(dbGet, slipPayload);
+    }
+
     res.json({
       success: true,
       message: 'Reservation accepted',
       posReservationId,
       assignedTable,
+      confirmedAt: confirmedAtIso,
     });
   } catch (error) {
     console.error('[Reservation Accept] Error:', error);

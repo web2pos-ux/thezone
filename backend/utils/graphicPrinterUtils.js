@@ -66,6 +66,14 @@ function clampNumber(n, min, max, fallback) {
   return Math.min(max, Math.max(min, num));
 }
 
+/** ESC/POS 대신 화면 미리보기용 PNG (캔버스 실사용 영역) */
+function exportImageDataToPngBuffer(imageData, width, height) {
+  const slice = createCanvas(width, height);
+  const sctx = slice.getContext('2d');
+  sctx.putImageData(imageData, 0, 0);
+  return slice.toBuffer('image/png');
+}
+
 function getLayoutFromPrintData(data) {
   return data?.layout || data?.layoutSettings || data?._layout || data?.receiptLayout || data?.billLayout || null;
 }
@@ -549,7 +557,7 @@ function drawLeftRightText(ctx, leftText, rightText, y, options = {}) {
  * @param {Object} orderData - 주문 데이터
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
-function renderKitchenTicketGraphic(orderData) {
+function renderKitchenTicketGraphic(orderData, exportFormat) {
   ensureFontsRegistered();
   // 상단 마진 (mm를 픽셀로 변환)
   const topMarginMm = orderData.topMargin || 5;
@@ -1442,7 +1450,9 @@ function renderKitchenTicketGraphic(orderData) {
   
   // 실제 사용된 높이로 이미지 추출
   const imageData = ctx.getImageData(0, 0, PRINTER_CONFIG.width, y);
-  
+  if (exportFormat === 'png') {
+    return exportImageDataToPngBuffer(imageData, PRINTER_CONFIG.width, y);
+  }
   return imageToEscPosRaster(imageData.data, PRINTER_CONFIG.width, y, orderData?.graphicScale);
 }
 
@@ -1451,7 +1461,7 @@ function renderKitchenTicketGraphic(orderData) {
  * @param {Object} receiptData - 영수증 데이터
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
-function renderReceiptGraphic(receiptData) {
+function renderReceiptGraphic(receiptData, exportFormat) {
   ensureFontsRegistered();
   
   // 용지 너비 설정 (58mm 또는 80mm)
@@ -2482,6 +2492,9 @@ function renderReceiptGraphic(receiptData) {
   // IMPORTANT: use the actual receipt width (58/80mm), not the global 80mm width,
   // otherwise the far-right edge can be clipped or the image can be cropped.
   const imageData = ctx.getImageData(0, 0, RECEIPT_WIDTH, y);
+  if (exportFormat === 'png') {
+    return exportImageDataToPngBuffer(imageData, RECEIPT_WIDTH, y);
+  }
   return imageToEscPosRaster(imageData.data, RECEIPT_WIDTH, y, receiptData?.graphicScale);
 }
 
@@ -2490,7 +2503,7 @@ function renderReceiptGraphic(receiptData) {
  * @param {Object} billData - Bill 데이터
  * @returns {Buffer} ESC/POS 비트맵 데이터
  */
-function renderBillGraphic(billData) {
+function renderBillGraphic(billData, exportFormat) {
   ensureFontsRegistered();
   // Receipt 렌더링 재사용하되 결제 정보 제외
   const billDataWithoutPayment = {
@@ -2503,7 +2516,7 @@ function renderBillGraphic(billData) {
     showTogoSeparator: false,
   };
   
-  return renderReceiptGraphic(billDataWithoutPayment);
+  return renderReceiptGraphic(billDataWithoutPayment, exportFormat);
 }
 
 /**
@@ -3833,6 +3846,243 @@ function renderOpeningReportGraphic(openingCash = 0, cashBreakdown = {}, printer
   return imageToEscPosRaster(imageData.data, WIDTH, y, printerOpts.graphicScale);
 }
 
+function formatReservationDateEnglish(raw) {
+  if (raw == null || raw === '') return '—';
+  const s = String(raw).trim();
+  if (!s) return '—';
+  const tryDate = s.includes('T') ? new Date(s) : new Date(`${s}T12:00:00`);
+  if (Number.isNaN(tryDate.getTime())) return s;
+  return tryDate.toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+function formatConfirmedAtLinesEnglish(iso) {
+  if (!iso) return { dateLine: '—', timeLine: '' };
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return { dateLine: String(iso), timeLine: '' };
+  return {
+    dateLine: d.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }),
+    timeLine: d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }),
+  };
+}
+
+function wrapReservationNoteLines(text, maxChars) {
+  const s = String(text || '').trim().replace(/\r\n/g, '\n');
+  if (!s) return [];
+  const parts = s.split('\n');
+  const out = [];
+  const n = Math.max(12, Math.min(42, maxChars));
+  for (const p of parts) {
+    const line = p.trim();
+    if (!line) continue;
+    for (let i = 0; i < line.length; i += n) {
+      out.push(line.slice(i, i + n));
+    }
+  }
+  return out;
+}
+
+/**
+ * Online reservation confirmation — receipt-width graphic slip (TOGO-style inverse title bar).
+ * @param {Object} data
+ * @param {'png'|undefined} exportFormat png for preview, else ESC/POS raster chunk
+ */
+function renderReservationConfirmGraphic(data, exportFormat) {
+  ensureFontsRegistered();
+  const paperWidth = getPrinterWidth(data?.paperWidth ?? 80);
+  const RECEIPT_PADDING = paperWidth === 384 ? 8 : 8;
+  const RECEIPT_RIGHT_PADDING = (() => {
+    const v = data?.rightPaddingPx ?? data?.rightPadding ?? null;
+    const rn = Number(v);
+    if (Number.isFinite(rn) && rn >= 0) return rn;
+    return paperWidth === 384 ? 30 : 10;
+  })();
+  const topMarginMm = clampNumber(data?.topMargin, 0, 120, 5);
+  const topMarginPx = Math.round(topMarginMm * 8);
+
+  let estH = topMarginPx + 560;
+  const canvas = createCanvas(paperWidth, estH);
+  const ctx = canvas.getContext('2d');
+  ctx._receiptWidth = paperWidth;
+  ctx._receiptPadding = RECEIPT_PADDING;
+  ctx._receiptRightPadding = RECEIPT_RIGHT_PADDING;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, paperWidth, estH);
+
+  let y = topMarginPx;
+
+  const headerH = 56;
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, y, paperWidth, headerH);
+  ctx.fillStyle = '#FFFFFF';
+  const titleFs = Math.round(PRINTER_CONFIG.fontSize.xxlarge * 0.92);
+  ctx.font = `bold ${titleFs}px "Arial", "Malgun Gothic", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Reservation.', paperWidth / 2, y + headerH / 2);
+  ctx.textAlign = 'left';
+  y += headerH + 10;
+
+  y = drawSeparator(ctx, y, 'solid');
+  y += 6;
+
+  const fs = PRINTER_CONFIG.fontSize.normal;
+  const fsLabel = Math.round(PRINTER_CONFIG.fontSize.small * 1.08);
+  const resNo = String(data?.reservationNumber ?? data?.reservation_number ?? '').trim() || '—';
+  const guest = String(data?.customerName ?? data?.customer_name ?? '').trim() || '—';
+  const resDate = formatReservationDateEnglish(data?.reservationDate ?? data?.reservation_date);
+  const resTime = String(data?.reservationTime ?? data?.reservation_time ?? '').trim() || '—';
+  const party =
+    data?.partySize != null || data?.party_size != null
+      ? String(data.partySize != null ? data.partySize : data.party_size)
+      : '—';
+  const tables =
+    data?.tablesNeeded != null || data?.tables_needed != null
+      ? String(data.tablesNeeded != null ? data.tablesNeeded : data.tables_needed)
+      : '—';
+  const phone = String(data?.phoneNumber ?? data?.phone_number ?? '').trim();
+
+  y = drawLeftRightText(ctx, 'Reservation ref.', resNo, y, { fontSize: fs, fontWeight: 'bold' });
+  y = drawLeftRightText(ctx, 'Guest name', guest, y, { fontSize: fs, fontWeight: '600' });
+  y = drawLeftRightText(ctx, 'Reservation date', resDate, y, { fontSize: fs });
+  y = drawLeftRightText(ctx, 'Reservation time', resTime, y, { fontSize: fs });
+  y = drawLeftRightText(ctx, 'Party size', party, y, { fontSize: fs });
+  y = drawLeftRightText(ctx, 'Tables needed', tables, y, { fontSize: fs });
+  if (phone) {
+    y = drawLeftRightText(ctx, 'Phone', phone, y, { fontSize: fs });
+  }
+  const tblName = String(data?.assignedTableName ?? '').trim();
+  if (tblName) {
+    y = drawLeftRightText(ctx, 'Assigned table', tblName, y, { fontSize: fs, fontWeight: 'bold' });
+  }
+
+  const spec = String(data?.specialRequests ?? data?.special_requests ?? '').trim();
+  if (spec) {
+    y += 6;
+    y = drawTextBlock(
+      ctx,
+      {
+        text: 'Special requests',
+        fontSize: fsLabel,
+        fontWeight: 'bold',
+        align: 'left',
+      },
+      y
+    );
+    const maxChars = paperWidth === 384 ? 16 : 22;
+    for (const ln of wrapReservationNoteLines(spec, maxChars)) {
+      y = drawTextBlock(
+        ctx,
+        {
+          text: ln,
+          fontSize: fsLabel,
+          fontWeight: 'normal',
+          align: 'left',
+        },
+        y
+      );
+    }
+  }
+
+  y += 8;
+  y = drawSeparator(ctx, y, 'double');
+  y += 6;
+
+  y = drawTextBlock(
+    ctx,
+    {
+      text: 'Confirmation recorded',
+      fontSize: Math.round(fs * 1.12),
+      fontWeight: 'bold',
+      align: 'center',
+    },
+    y
+  );
+  y += 4;
+  y = drawTextBlock(
+    ctx,
+    {
+      text: 'Confirmed at (POS)',
+      fontSize: fsLabel,
+      fontWeight: 'bold',
+      align: 'center',
+    },
+    y
+  );
+  const cf = formatConfirmedAtLinesEnglish(data?.confirmedAtISO ?? data?.confirmed_at);
+  y = drawTextBlock(
+    ctx,
+    {
+      text: cf.dateLine,
+      fontSize: Math.round(fs * 1.05),
+      fontWeight: 'bold',
+      align: 'center',
+    },
+    y
+  );
+  if (cf.timeLine) {
+    y = drawTextBlock(
+      ctx,
+      {
+        text: cf.timeLine,
+        fontSize: Math.round(fs * 1.08),
+        fontWeight: 'bold',
+        align: 'center',
+      },
+      y
+    );
+  }
+
+  y += 14;
+  y = drawTextBlock(
+    ctx,
+    {
+      text: 'Thank you — see you at the restaurant.',
+      fontSize: fsLabel,
+      fontWeight: 'normal',
+      align: 'center',
+    },
+    y
+  );
+  y += 24;
+
+  const imageData = ctx.getImageData(0, 0, paperWidth, y);
+  if (exportFormat === 'png') {
+    return exportImageDataToPngBuffer(imageData, paperWidth, y);
+  }
+  return imageToEscPosRaster(imageData.data, paperWidth, y, getGraphicScaleFromData(data));
+}
+
+function buildGraphicReservationConfirm(data, openDrawer = false, cut = true) {
+  const buffers = [ESC_POS.INIT];
+  if (openDrawer) {
+    buffers.push(ESC_POS.OPEN_DRAWER);
+  }
+  buffers.push(renderReservationConfirmGraphic(data));
+  if (cut) {
+    buffers.push(ESC_POS.LINE_FEED);
+    buffers.push(ESC_POS.LINE_FEED);
+    buffers.push(ESC_POS.LINE_FEED);
+    buffers.push(ESC_POS.CUT);
+  }
+  return Buffer.concat(buffers);
+}
+
 function buildGraphicOpeningReport(openingCash = 0, cashBreakdown = {}, printerOpts = {}) {
   const buffers = [ESC_POS.INIT];
   buffers.push(renderOpeningReportGraphic(openingCash, cashBreakdown, printerOpts));
@@ -3856,9 +4106,11 @@ module.exports = {
   renderSalesDashboardGraphic,
   renderShiftReportGraphic,
   renderOpeningReportGraphic,
+  renderReservationConfirmGraphic,
   buildGraphicKitchenTicket,
   buildGraphicReceipt,
   buildGraphicBill,
+  buildGraphicReservationConfirm,
   buildGraphicVoidTicket,
   buildGraphicZReport,
   buildGraphicItemReport,

@@ -8,6 +8,7 @@ import SetupPage from './pages/SetupPage';
 import SalesPage from './pages/SalesPage';
 import BackOfficeLayout from './components/BackOfficeLayout';
 import HandheldCallOverlay from './components/HandheldCallOverlay';
+import PrintPreviewModalHost from './components/PrintPreviewModalHost';
 import { DlqSyncModal } from './components/DlqSyncModal';
 import DayOpeningModal from './components/DayOpeningModal';
 import MenuListPage from './pages/MenuListPage';
@@ -420,6 +421,7 @@ function App() {
           onOpenDlq={() => setDlqModalOpen(true)}
         >
         <NetworkStatusBar />
+        <PrintPreviewModalHost />
         <DlqSyncModal
           isOpen={dlqModalOpen}
           onClose={() => setDlqModalOpen(false)}
