@@ -14,7 +14,7 @@ echo [1/5] Building Frontend...
 echo ------------------------------------------------
 cd /d "%FRONTEND_DIR%"
 if "%BUILD_DEMO%"=="1" (
-  echo BUILD_DEMO=1 -^> frontend build:demo ^(REACT_APP_WEB2POS_DEMO^)
+  echo BUILD_DEMO=1 -^> frontend build:demo ^(REACT_APP_WEB2POS_DEMO + REACT_APP_WEB2POS_PRINT_PREVIEW^)
   call npm run build:demo
 ) else (
   call npm run build
