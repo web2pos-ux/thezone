@@ -2922,13 +2922,32 @@ const SalesPage: React.FC = () => {
 
 
   const loadOnlineOrders = useCallback(async () => {
-    // ë¡œì»¬ ìŠ¤í† ë¦¬ì§€ì—ì„œ ìµœì‹  restaurantIdë¥¼ ê°€ì ¸ì˜´
-    const currentRestaurantId = localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    // localStorage → 없으면 SQLite business_profile( initial-setup-status )에서 보강 (데모·초기 기동 레이스 대응)
+    let currentRestaurantId =
+      localStorage.getItem('firebaseRestaurantId') || localStorage.getItem('firebase_restaurant_id');
+    if (!currentRestaurantId) {
+      try {
+        const res = await fetch(`${API_URL}/admin-settings/initial-setup-status`);
+        if (res.ok) {
+          const data = (await res.json().catch(() => null)) as { restaurantId?: string | null } | null;
+          const rid = data?.restaurantId != null ? String(data.restaurantId).trim() : '';
+          if (rid) {
+            localStorage.setItem('firebaseRestaurantId', rid);
+            localStorage.setItem('firebase_restaurant_id', rid);
+            currentRestaurantId = rid;
+            setOnlineOrderRestaurantId(rid);
+            setRestaurantIdReady(true);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     if (!currentRestaurantId) {
       if (onlineOrderRestaurantId) setOnlineOrderRestaurantId(null);
       return;
     }
-    
+
     if (currentRestaurantId !== onlineOrderRestaurantId) {
       setOnlineOrderRestaurantId(currentRestaurantId);
     }
@@ -3137,7 +3156,7 @@ const SalesPage: React.FC = () => {
 
   useEffect(() => {
     loadOnlineOrders();
-    const t = setInterval(loadOnlineOrders, 30000); // 30ì´ˆë§ˆë‹¤ ë°±ì—… ê°±ì‹ 
+    const t = setInterval(loadOnlineOrders, 30000); // 30초마다 백업 갱신
     return () => clearInterval(t);
   }, [loadOnlineOrders]);
 
