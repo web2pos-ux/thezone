@@ -205,15 +205,15 @@ const IntroPage: React.FC = () => {
           {pinError && <p className="text-red-400 text-sm leading-tight">{pinError}</p>}
         </div>
 
-        {/* PIN Pad — compact glass panel */}
-        <div className="bg-white/[0.08] backdrop-blur-md rounded-xl px-3 py-2.5 inline-flex flex-col items-stretch w-[min(100vw-2rem,200px)] border border-white/15 shadow-sm -mt-0.5">
-          <div className="grid grid-cols-3 gap-2 mb-2 justify-items-center">
+        {/* PIN Pad — tighter key gaps, narrower panel (same w-14 keys) */}
+        <div className="bg-white/[0.08] backdrop-blur-md rounded-xl px-3 py-3 inline-flex flex-col items-stretch w-[min(100vw-2rem,13.5rem)] border border-white/15 shadow-sm -mt-0.5">
+          <div className="grid grid-cols-3 gap-x-[calc(0.375rem*1.05)] gap-y-1.5 mb-2 justify-items-center">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
               <button
                 key={num}
                 type="button"
                 onClick={() => handleNumber(num)}
-                className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-lg font-semibold transition-all active:scale-[0.97] shadow-sm"
+                className="box-border w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-xl font-semibold leading-none transition-all active:scale-[0.97] shadow-sm"
               >
                 {num}
               </button>
@@ -221,21 +221,21 @@ const IntroPage: React.FC = () => {
             <button
               type="button"
               onClick={handleClear}
-              className="w-12 h-12 rounded-full bg-red-500/95 hover:bg-red-600 text-white text-[11px] font-bold leading-tight transition-all active:scale-[0.97]"
+              className="box-border w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] rounded-full bg-red-500/95 hover:bg-red-600 text-white text-xs font-bold leading-tight transition-all active:scale-[0.97] px-0.5"
             >
               Clear
             </button>
             <button
               type="button"
               onClick={() => handleNumber('0')}
-              className="w-12 h-12 rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-lg font-semibold transition-all active:scale-[0.97]"
+              className="box-border w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] rounded-full bg-white/10 hover:bg-white/18 border border-white/25 text-white text-xl font-semibold leading-none transition-all active:scale-[0.97]"
             >
               0
             </button>
             <button
               type="button"
               onClick={handleBackspace}
-              className="w-12 h-12 rounded-full bg-amber-500 hover:bg-amber-600 text-white text-lg font-bold transition-all active:scale-[0.97]"
+              className="box-border w-14 h-14 min-w-[3.5rem] min-h-[3.5rem] rounded-full bg-amber-500 hover:bg-amber-600 text-white text-xl font-bold leading-none transition-all active:scale-[0.97]"
             >
               ←
             </button>

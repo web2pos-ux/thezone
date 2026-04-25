@@ -1692,6 +1692,13 @@ const SalesPage: React.FC = () => {
   );
   const togoTopBtnMinH = Math.max(40, Math.round(48 * togoPanelUiScale));
   const togoBtnFontPx = Math.max(11, Math.round(footerButtonFontPx * togoPanelUiScale));
+  /** 우측 패널 Delivery / Togo / Online 주문 카드: 최소 높이(56×1.25×0.9×0.95 내림, 하한 56px) */
+  const togoPanelOrderCardMinHeightPx = Math.max(56, Math.floor(56 * 1.25 * 0.9 * 0.95));
+  const togoPanelCardLine1Px = Math.max(13, Math.round(11 * 1.33));
+  const togoPanelCardLine2Px = Math.max(12, Math.round(10 * 1.38));
+  const togoPanelCardBadgePx = Math.max(9, Math.round(7 * 1.36));
+  /** 둘째 줄 서버 칩(시간 오른쪽 라벨) — 공간 절약용 소형 */
+  const togoPanelCardServerChipPx = Math.max(7, Math.round(togoPanelCardLine2Px * 0.68));
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
   // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
   // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
@@ -2303,6 +2310,110 @@ const SalesPage: React.FC = () => {
       return `${h}:${min} ${ampm}`;
     }
     return raw;
+  };
+
+  /** 1행 POS 일일 번호와 동일 톤(색은 1행 헤더와 동일) */
+  const togoPanelPosLikeTextColor = (panelRowLightBg: boolean) =>
+    panelRowLightBg ? '#1e1e1e' : 'rgba(255,255,255,0.88)';
+
+  /** 우측 투고 패널 카드: 시각은 1행 POS#와 동일 px·font-bold, AM/PM만 더 작게 */
+  const renderTogoPanelTimeAmPm = (t?: string | null, panelRowLightBg = false): React.ReactNode => {
+    const s = formatTimeAmPm(t);
+    if (!s) return '';
+    const trimmed = s.trim();
+    const m = trimmed.match(/^(.+?)\s+(AM|PM)$/i);
+    const posColor = togoPanelPosLikeTextColor(panelRowLightBg);
+    const line1 = togoPanelCardLine1Px;
+    const merPx = Math.max(6, Math.round(line1 * 0.42));
+    if (!m) {
+      return (
+        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${line1}px` }}>
+          {s}
+        </span>
+      );
+    }
+    const clockPart = m[1];
+    const mer = m[2].toUpperCase() === 'PM' ? 'PM' : 'AM';
+    return (
+      <>
+        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${line1}px` }}>
+          {clockPart}
+        </span>
+        <span
+          className="tabular-nums font-semibold leading-none"
+          style={{ fontSize: `${merPx}px`, fontWeight: 600, color: posColor, opacity: panelRowLightBg ? 0.82 : 0.78 }}
+        >
+          {'\u00A0'}
+          {mer}
+        </span>
+      </>
+    );
+  };
+
+  /** 투고 패널 카드 2행 우측: 전화 4자리·이름·POS# — 전화는 1행 POS#와 동일 px·bold·전부 표시, 이름만 소형·촘촘 */
+  const renderTogoPanelDisplayIdContent = (
+    panelRowLightBg: boolean,
+    phone?: string | null,
+    name?: string | null,
+    posOrderNum?: string | number | null
+  ): React.ReactNode => {
+    const digits = (phone || '').replace(/\D/g, '');
+    if (digits.length > 0) {
+      const tail = digits.length > 4 ? digits.slice(-4) : digits;
+      const posColor = togoPanelPosLikeTextColor(panelRowLightBg);
+      return (
+        <span
+          className="shrink-0 whitespace-nowrap font-bold tabular-nums leading-none"
+          style={{ color: posColor, fontSize: `${togoPanelCardLine1Px}px` }}
+        >
+          {tail}
+        </span>
+      );
+    }
+    return (
+      <span
+        className="min-w-0 truncate pl-0 text-right font-semibold leading-none"
+        style={{
+          color: togoPanelPosLikeTextColor(panelRowLightBg),
+          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88))}px`,
+          maxWidth: '3.25rem',
+        }}
+      >
+        {formatTogoPanelDisplayId(phone, name, posOrderNum)}
+      </span>
+    );
+  };
+
+  const renderOnlineQueueCardSecondLineRightContent = (
+    panelRowLightBg: boolean,
+    phone?: string | null,
+    posOrderNum?: string | number | null
+  ): React.ReactNode => {
+    const digits = String(phone ?? '').replace(/\D/g, '');
+    if (digits.length > 0) {
+      const tail = digits.length > 4 ? digits.slice(-4) : digits;
+      const posColor = togoPanelPosLikeTextColor(panelRowLightBg);
+      return (
+        <span
+          className="shrink-0 whitespace-nowrap font-bold tabular-nums leading-none"
+          style={{ color: posColor, fontSize: `${togoPanelCardLine1Px}px` }}
+        >
+          {tail}
+        </span>
+      );
+    }
+    return (
+      <span
+        className="min-w-0 truncate pl-0 text-right font-semibold leading-none"
+        style={{
+          color: togoPanelPosLikeTextColor(panelRowLightBg),
+          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88))}px`,
+          maxWidth: '3.25rem',
+        }}
+      >
+        {formatOnlineQueueCardSecondLineRight(phone, posOrderNum)}
+      </span>
+    );
   };
 
   /** POS 일일 순번(데이 오픈 후 001~)만 표시. SQLite PK·타임스탬프·TZO- 등에서 숫자만 뽑아 큰 번호가 되는 것을 막음 */
@@ -11653,9 +11764,9 @@ const SalesPage: React.FC = () => {
             </div>
             {/* 스크롤 주문 목록 — Thezone_Backup/TogoPannel: grid-cols-2 좌 Delivery / 우 Togo+Online 통합 */}
             <div className="flex-1 overflow-auto px-1.5 pb-[72px]">
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-1">
                 {/* 왼쪽: Delivery */}
-                <div className="space-y-1 min-w-0">
+                <div className="min-w-0 space-y-[3px]">
                   {(() => {
                     const deliveryFiltered = [
                       ...togoOrders.filter(order => isRightPanelDeliveryOrder(order)),
@@ -11714,7 +11825,6 @@ const SalesPage: React.FC = () => {
                       }
                       const deliveryMeta = orderListGetDeliveryMeta((order as any).fullOrder || order);
                       const deliveryCardType = (order as any).virtualChannel === 'online' ? 'online' : 'delivery';
-                      const deliveryDisplayTime = formatTimeAmPm(String((order as any).readyTimeLabel || (order as any).time || ''));
                       const deliveryDisplayCompany = orderListNormalizeDeliveryAbbr(deliveryMeta.company) || 'DLV';
                       const deliveryDisplayNumber = formatPosNumber(
                         (order as any).order_number ||
@@ -11728,7 +11838,7 @@ const SalesPage: React.FC = () => {
                         (order as any).fullOrder?.externalOrderNumber ||
                         deliveryMeta.orderNumber
                       );
-                      const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(order) : '';
+                      const panelServerRow2 = pickPanelOrderServerLabel(order);
                       return (
                         <div
                           key={`delivery-${order.id}`}
@@ -11745,10 +11855,11 @@ const SalesPage: React.FC = () => {
                             </div>
                           )}
                           <button 
-                            className={`w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#5c4a3d',
                               border: 'none',
+                              minHeight: togoPanelOrderCardMinHeightPx,
                               boxShadow: isSourceTogo || isTargetSelectable
                                 ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
                                 : '-4px -4px 8px rgba(255,255,255,0.07), 4px 4px 10px rgba(0,0,0,0.35), inset 0 0.5px 0 rgba(255,255,255,0.10)',
@@ -11779,25 +11890,50 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
-                            {orderPanelServerLabel ? (
-                              <div
-                                className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
-                                style={{
-                                  color: isSourceTogo || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
-                                }}
-                                title={`서버: ${orderPanelServerLabel}`}
-                              >
-                                {orderPanelServerLabel}
-                              </div>
-                            ) : null}
-                            <div className="text-[11px] mb-0.5 flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                            <div className="mb-0.5 flex items-center justify-between font-semibold" style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
                               <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
-                              <span role="status" className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
+                              <span role="status" className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`} style={{ fontSize: `${togoPanelCardBadgePx}px` }}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
                               <span className="font-bold text-right">{deliveryDisplayNumber}</span>
                             </div>
-                            <div className="text-[10px] flex items-center justify-between" style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.60)' }}>
-                              <span>{deliveryDisplayTime}</span>
-                              <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>{deliveryExternalNumber}</span>
+                            <div
+                              className="flex items-center gap-0.5 font-medium"
+                              style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
+                            >
+                              <span className="inline-flex shrink-0 items-baseline">
+                                {renderTogoPanelTimeAmPm(
+                                  String((order as any).readyTimeLabel || (order as any).time || ''),
+                                  Boolean(isSourceTogo || isTargetSelectable)
+                                )}
+                              </span>
+                              <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">
+                                {panelServerRow2 ? (
+                                  <span
+                                    className="max-w-[4rem] shrink-0 truncate rounded px-0.5 py-0 text-center font-semibold leading-none"
+                                    style={{
+                                      fontSize: `${togoPanelCardServerChipPx}px`,
+                                      background: isSourceTogo || isTargetSelectable ? 'rgba(99,102,241,0.22)' : 'rgba(255,255,255,0.2)',
+                                      color: isSourceTogo || isTargetSelectable ? '#312e81' : '#f1f5f9',
+                                      border: isSourceTogo || isTargetSelectable ? '1px solid rgba(99,102,241,0.45)' : '1px solid rgba(255,255,255,0.28)',
+                                    }}
+                                    title={`서버: ${panelServerRow2}`}
+                                  >
+                                    {panelServerRow2}
+                                  </span>
+                                ) : null}
+                                <span
+                                  className={`min-w-0 text-right font-bold tabular-nums leading-none ${
+                                    String(deliveryExternalNumber).length > 14 ? 'truncate' : 'shrink-0 whitespace-nowrap'
+                                  }`}
+                                  style={{
+                                    fontSize: `${togoPanelCardLine1Px}px`,
+                                    color: togoPanelPosLikeTextColor(Boolean(isSourceTogo || isTargetSelectable)),
+                                    maxWidth: String(deliveryExternalNumber).length > 14 ? (panelServerRow2 ? '36%' : '52%') : undefined,
+                                  }}
+                                  title={deliveryExternalNumber}
+                                >
+                                  {deliveryExternalNumber}
+                                </span>
+                              </div>
                             </div>
                         </button>
                         </div>
@@ -11808,34 +11944,98 @@ const SalesPage: React.FC = () => {
                   )}
                 </div>
                 {/* 오른쪽: Togo + Online — Thezone_Backup/TogoPannel 통합 정렬 */}
-                <div className="space-y-1 min-w-0">
+                <div className="min-w-0 space-y-[3px]">
                   {(() => {
-                    const getPickupTimeMs = (order: any, type: 'togo' | 'online'): number => {
-                      if (type === 'togo') {
-                        const label = String(order.readyTimeLabel || order.time || '99:99');
-                        const [h, m] = label.split(':').map(Number);
-                        if (!Number.isNaN(h) && !Number.isNaN(m)) {
-                          const now = new Date();
-                          now.setHours(h, m, 0, 0);
-                          return now.getTime();
-                        }
-                        return Infinity;
+                    /** 카드 시각과 동일한 당일 시계 → 오늘/내일 절대 ms (지난 시각은 다음날로 롤) */
+                    const clockHmToDueMsTodayOrTomorrow = (h24: number, minute: number): number => {
+                      const d = new Date();
+                      d.setSeconds(0, 0);
+                      d.setMilliseconds(0);
+                      d.setHours(h24, minute, 0, 0);
+                      let t = d.getTime();
+                      const now = Date.now();
+                      if (t < now - 60_000) t += 86400000;
+                      return t;
+                    };
+                    /** formatTimeAmPm 경로와 맞춰 라벨을 픽업 due ms로 (AM/PM·24h·ISO 등) */
+                    const parsePickupClockLabelToDueMs = (rawInput: string): number => {
+                      const raw = String(rawInput || '').trim();
+                      if (!raw) return Infinity;
+                      const norm = formatTimeAmPm(raw);
+                      if (!norm) return Infinity;
+                      const ampmM = norm.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+                      if (ampmM) {
+                        let h = parseInt(ampmM[1], 10);
+                        const min = parseInt(ampmM[2], 10);
+                        if (!Number.isFinite(h) || !Number.isFinite(min)) return Infinity;
+                        const isPM = ampmM[3].toUpperCase() === 'PM';
+                        if (isPM && h < 12) h += 12;
+                        if (!isPM && h === 12) h = 0;
+                        return clockHmToDueMsTodayOrTomorrow(
+                          Math.max(0, Math.min(23, h)),
+                          Math.max(0, Math.min(59, min))
+                        );
                       }
-                      const pt = order.pickupTime;
+                      const m24 = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+                      if (m24) {
+                        const h = parseInt(m24[1], 10);
+                        const min = parseInt(m24[2], 10);
+                        if (!Number.isFinite(h) || !Number.isFinite(min)) return Infinity;
+                        return clockHmToDueMsTodayOrTomorrow(
+                          Math.max(0, Math.min(23, h)),
+                          Math.max(0, Math.min(59, min))
+                        );
+                      }
+                      const dIso = new Date(raw.replace(' ', 'T'));
+                      if (!Number.isNaN(dIso.getTime())) return dIso.getTime();
+                      return Infinity;
+                    };
+                    const togoRowPickupDueMs = (order: any): number => {
+                      const label = String(order.readyTimeLabel || order.time || '').trim();
+                      if (!label) return Infinity;
+                      return parsePickupClockLabelToDueMs(label);
+                    };
+                    /** ONLINE 카드 좌측 시각(onlineReadyDisplayRaw)과 동일 우선순위로 due ms */
+                    const onlineCardPickupDueMs = (card: any): number => {
+                      const fo = (card as any).fullOrder || {};
+                      const pt = card.pickupTime;
+                      if (pt instanceof Date && !Number.isNaN(pt.getTime())) return pt.getTime();
+                      if (pt && typeof pt === 'object' && (pt as any)._seconds != null) {
+                        const s = Number((pt as any)._seconds);
+                        if (Number.isFinite(s)) return s * 1000;
+                      }
+                      if (pt && typeof pt === 'object' && (pt as any).seconds != null) {
+                        const s = Number((pt as any).seconds);
+                        if (Number.isFinite(s)) return s * 1000;
+                      }
                       if (pt) {
-                        if (typeof pt === 'object' && '_seconds' in pt && (pt as any)._seconds)
-                          return (pt as any)._seconds * 1000;
-                        if (typeof pt === 'object' && 'seconds' in pt && (pt as any).seconds)
-                          return (pt as any).seconds * 1000;
                         const d = new Date(pt as any);
                         if (!Number.isNaN(d.getTime())) return d.getTime();
                       }
-                      const placed = order.placedTime || order.time;
-                      if (placed) {
-                        const d = new Date(placed);
-                        if (!Number.isNaN(d.getTime())) return d.getTime();
+                      const rtl =
+                        fo.readyTime ||
+                        fo.ready_time ||
+                        fo.readyTimeLabel ||
+                        fo.ready_time_label ||
+                        fo.pickupTimeLabel ||
+                        fo.pickup_time_label;
+                      if (rtl != null && String(rtl).trim() !== '') {
+                        return parsePickupClockLabelToDueMs(String(rtl).trim());
                       }
-                      return Infinity;
+                      const prepStr = prepTimeSettingsRef.current?.thezoneorder?.time || '20m';
+                      const prepMin = parseInt(String(prepStr).replace(/[^\d]/g, ''), 10) || 20;
+                      const placed = card.placedTime || fo.createdAt;
+                      let placedMs: number | null = null;
+                      if (placed instanceof Date) placedMs = placed.getTime();
+                      else if (placed && typeof placed === 'object') {
+                        const sec = (placed as any)._seconds ?? (placed as any).seconds;
+                        if (sec != null) placedMs = Number(sec) * 1000;
+                      } else if (placed) {
+                        const d = new Date(placed as any);
+                        if (!Number.isNaN(d.getTime())) placedMs = d.getTime();
+                      }
+                      if (placedMs != null && !Number.isNaN(placedMs)) return placedMs + prepMin * 60000;
+                      return parsePickupClockLabelToDueMs(String(card.time || '').trim());
                     };
                     // 온라인 앱 주문(onlineQueueCards)을 정본으로: 동일 주문의 SQLite 패널 행은 링크 키로 제외해 카드 1장만 표시
                     const onlineCardLinkIndexForTogoDedupe = (() => {
@@ -11880,23 +12080,21 @@ const SalesPage: React.FC = () => {
                         .filter((o) => !isRightPanelDeliveryOrder(o))
                         .filter((o) => orderListGetPickupChannel(o) !== 'online')
                         .filter((o) => !togoRowShadowedByOnlineQueueCard(o))
-                        .map((o) => {
-                          const pickupChannel = orderListGetPickupChannel(o);
-                          const type: 'togo' | 'online' = pickupChannel === 'online' ? 'online' : 'togo';
-                          return { order: o, type, pickupMs: getPickupTimeMs(o, type) };
-                        }),
+                        .map((o) => ({ order: o, type: 'togo' as const, pickupMs: togoRowPickupDueMs(o) })),
                       ...onlineQueueCards
                         .filter((o) => !isRightPanelDeliveryOrder(o))
-                        .map((o) => ({ order: o, type: 'online' as const, pickupMs: getPickupTimeMs(o, 'online') })),
+                        .map((o) => ({ order: o, type: 'online' as const, pickupMs: onlineCardPickupDueMs(o) })),
                     ];
+                    /** 픽업(표시) 시각 기준: 늦은 순(내림차순). 시각 없음(Infinity)은 맨 아래 */
                     combinedOrders.sort((a, b) => {
-                      const nowMs = Date.now();
-                      const overdueA = a.pickupMs < nowMs && a.pickupMs !== Infinity;
-                      const overdueB = b.pickupMs < nowMs && b.pickupMs !== Infinity;
-                      if (overdueA && !overdueB) return -1;
-                      if (!overdueA && overdueB) return 1;
-                      if (overdueA && overdueB) return a.pickupMs - b.pickupMs;
-                      return a.pickupMs - b.pickupMs;
+                      const ua = !Number.isFinite(a.pickupMs) || a.pickupMs === Infinity;
+                      const ub = !Number.isFinite(b.pickupMs) || b.pickupMs === Infinity;
+                      if (ua && ub) return String(a.order?.id ?? '').localeCompare(String(b.order?.id ?? ''));
+                      if (ua) return 1;
+                      if (ub) return -1;
+                      const d = b.pickupMs - a.pickupMs;
+                      if (d !== 0) return d;
+                      return String(a.order?.id ?? '').localeCompare(String(b.order?.id ?? ''));
                     });
                     return combinedOrders.map(({ order, type }) => {
                       if (type === 'togo') {
@@ -11911,7 +12109,7 @@ const SalesPage: React.FC = () => {
                         const tIsPickedUp = tStatus === 'PICKED_UP';
                         const tCanSwipePickup = tIsPaid && !tIsPickedUp;
                         if (tIsPickedUp) return null;
-                        const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(order) : '';
+                        const panelServerRow2 = pickPanelOrderServerLabel(order);
                         return (
                           <div key={`togo-${order.id}`} className="relative overflow-hidden rounded-lg">
                             {tCanSwipePickup && swipeDragState?.id === String(order.id) && swipeDragState.offsetX < -20 && (
@@ -11926,10 +12124,11 @@ const SalesPage: React.FC = () => {
                             )}
                             <button
                               type="button"
-                              className={`relative z-10 w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                              className={`relative z-10 w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                               style={{
                                 background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d5c48',
                                 border: 'none',
+                                minHeight: togoPanelOrderCardMinHeightPx,
                                 boxShadow:
                                   isSourceTogo || isTargetSelectable
                                     ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceTogo ? '3px #7C3AED' : '2px #8B5CF6'}`
@@ -11966,36 +12165,57 @@ const SalesPage: React.FC = () => {
                                   }
                                 : {})}
                             >
-                              {orderPanelServerLabel ? (
-                                <div
-                                  className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
-                                  style={{
-                                    color: isSourceTogo || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
-                                  }}
-                                  title={`서버: ${orderPanelServerLabel}`}
-                                >
-                                  {orderPanelServerLabel}
-                                </div>
-                              ) : null}
                               <div
-                                className="mb-0.5 flex items-center justify-between text-[11px]"
-                                style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
+                                className="mb-0.5 flex items-center justify-between font-semibold"
+                                style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                               >
                                 <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
                                 <span
                                   role="status"
-                                  className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                  className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                  style={{ fontSize: `${togoPanelCardBadgePx}px` }}
                                 >
                                   {tIsPaid ? 'READY' : 'UNPAID'}
                                 </span>
                                 <span className="font-bold text-right">{formatPosNumber(order.number)}</span>
                               </div>
                               <div
-                                className="flex items-center justify-between text-[10px]"
-                                style={{ color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}
+                                className="flex items-center gap-0.5 font-medium"
+                                style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
                               >
-                                <span>{formatTimeAmPm(String(order.readyTimeLabel || order.time || ''))}</span>
-                                <span className="font-bold">{formatTogoPanelDisplayId(order.phone, order.name, order.number)}</span>
+                                <span className="inline-flex shrink-0 items-baseline">
+                                  {renderTogoPanelTimeAmPm(
+                                    String(order.readyTimeLabel || order.time || ''),
+                                    Boolean(isSourceTogo || isTargetSelectable)
+                                  )}
+                                </span>
+                                <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">
+                                  {panelServerRow2 ? (
+                                    <span
+                                      className="max-w-[4rem] shrink-0 truncate rounded px-0.5 py-0 text-center font-semibold leading-none"
+                                      style={{
+                                        fontSize: `${togoPanelCardServerChipPx}px`,
+                                        background: isSourceTogo || isTargetSelectable ? 'rgba(99,102,241,0.22)' : 'rgba(255,255,255,0.2)',
+                                        color: isSourceTogo || isTargetSelectable ? '#312e81' : '#f1f5f9',
+                                        border: isSourceTogo || isTargetSelectable ? '1px solid rgba(99,102,241,0.45)' : '1px solid rgba(255,255,255,0.28)',
+                                      }}
+                                      title={`서버: ${panelServerRow2}`}
+                                    >
+                                      {panelServerRow2}
+                                    </span>
+                                  ) : null}
+                                  <div
+                                    className="min-w-0 flex flex-1 justify-end overflow-hidden"
+                                    title={formatTogoPanelDisplayId(order.phone, order.name, order.number)}
+                                  >
+                                    {renderTogoPanelDisplayIdContent(
+                                      Boolean(isSourceTogo || isTargetSelectable),
+                                      order.phone,
+                                      order.name,
+                                      order.number
+                                    )}
+                                  </div>
+                                </div>
                               </div>
                             </button>
                           </div>
@@ -12018,7 +12238,7 @@ const SalesPage: React.FC = () => {
                         (card as any).fullOrder?.customer_phone ||
                         (card as any).customerPhone ||
                         '';
-                      const onlinePanelDisplayId = formatOnlineQueueCardSecondLineRight(
+                      const onlinePanelDisplayIdTitle = formatOnlineQueueCardSecondLineRight(
                         phoneForOnlineSecond,
                         onlineDailyRaw
                       );
@@ -12075,9 +12295,8 @@ const SalesPage: React.FC = () => {
                         }
                         return String(card.time || '').trim();
                       })();
-                      const displayTime = formatTimeAmPm(onlineReadyDisplayRaw);
                       if (oIsPickedUp) return null;
-                      const orderPanelServerLabel = shouldPromptServerSelection ? pickPanelOrderServerLabel(card) : '';
+                      const panelServerRow2 = pickPanelOrderServerLabel(card);
                       return (
                         <div key={`online-${card.id}`} className="relative overflow-hidden rounded-lg">
                           {onlineCanSwipePickup && swipeDragState?.id === String(card.id) && swipeDragState.offsetX < -20 && (
@@ -12092,10 +12311,11 @@ const SalesPage: React.FC = () => {
                           )}
                           <button
                             type="button"
-                            className={`relative z-10 w-full rounded-lg px-2 py-0.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                            className={`relative z-10 w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d4a6b',
                               border: 'none',
+                              minHeight: togoPanelOrderCardMinHeightPx,
                               boxShadow:
                                 isSourceOnline || isTargetSelectable
                                   ? `inset 2px 2px 5px rgba(0,0,0,0.25), inset -1px -1px 4px rgba(255,255,255,0.08), 0 0 0 ${isSourceOnline ? '3px #7C3AED' : '2px #8B5CF6'}`
@@ -12132,35 +12352,53 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
-                            {orderPanelServerLabel ? (
-                              <div
-                                className="truncate text-center text-[8px] font-extrabold leading-tight mb-0.5"
-                                style={{
-                                  color: isSourceOnline || isTargetSelectable ? '#3730a3' : 'rgba(224,231,255,0.95)',
-                                }}
-                                title={`서버: ${orderPanelServerLabel}`}
-                              >
-                                {orderPanelServerLabel}
-                              </div>
-                            ) : null}
                             <div
-                              className="mb-0.5 flex items-center justify-between text-[11px]"
-                              style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
+                              className="mb-0.5 flex items-center justify-between font-semibold"
+                              style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                             >
                               <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>ONLINE</span>
                               <span
                                 role="status"
-                                className={`inline-flex shrink-0 items-center text-[7px] font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
+                                style={{ fontSize: `${togoPanelCardBadgePx}px` }}
                               >
                                 {oIsPaid ? 'READY' : 'UNPAID'}
                               </span>
                               <span className="font-bold text-right">{onlinePosDisplayNumber}</span>
                             </div>
-                            <div className="text-[10px] flex items-center justify-between" style={{ color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.65)' }}>
-                              <span>{displayTime}</span>
-                              <span className="truncate text-right ml-1 font-bold" style={{ maxWidth: '60%' }}>
-                                {onlinePanelDisplayId}
+                            <div
+                              className="flex items-center gap-0.5 font-medium"
+                              style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
+                            >
+                              <span className="inline-flex shrink-0 items-baseline">
+                                {renderTogoPanelTimeAmPm(onlineReadyDisplayRaw, Boolean(isSourceOnline || isTargetSelectable))}
                               </span>
+                              <div className="flex min-w-0 flex-1 items-center justify-end gap-0.5">
+                                {panelServerRow2 ? (
+                                  <span
+                                    className="max-w-[4rem] shrink-0 truncate rounded px-0.5 py-0 text-center font-semibold leading-none"
+                                    style={{
+                                      fontSize: `${togoPanelCardServerChipPx}px`,
+                                      background: isSourceOnline || isTargetSelectable ? 'rgba(99,102,241,0.22)' : 'rgba(255,255,255,0.2)',
+                                      color: isSourceOnline || isTargetSelectable ? '#312e81' : '#f1f5f9',
+                                      border: isSourceOnline || isTargetSelectable ? '1px solid rgba(99,102,241,0.45)' : '1px solid rgba(255,255,255,0.28)',
+                                    }}
+                                    title={`서버: ${panelServerRow2}`}
+                                  >
+                                    {panelServerRow2}
+                                  </span>
+                                ) : null}
+                                <div
+                                  className="min-w-0 flex flex-1 justify-end overflow-hidden"
+                                  title={onlinePanelDisplayIdTitle}
+                                >
+                                  {renderOnlineQueueCardSecondLineRightContent(
+                                    Boolean(isSourceOnline || isTargetSelectable),
+                                    phoneForOnlineSecond,
+                                    onlineDailyRaw
+                                  )}
+                                </div>
+                              </div>
                             </div>
                           </button>
                         </div>

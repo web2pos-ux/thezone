@@ -1226,10 +1226,16 @@ module.exports = (db) => {
         ORDER BY created_at DESC
       `, [String(serverId)]);
 
+      const { isBistroPartialSettlementMode } = require('../backend/utils/bistroClosingPartialSettlement');
+      const bistroPartialSettlement = await isBistroPartialSettlementMode(dbGet);
+      const unpaidCount = (unpaidOrders || []).length;
+      const transferRequired = unpaidCount > 0 && !bistroPartialSettlement;
+
       res.json({
         success: true,
-        hasUnpaid: (unpaidOrders || []).length > 0,
-        count: (unpaidOrders || []).length,
+        hasUnpaid: unpaidCount > 0,
+        transferRequired,
+        count: unpaidCount,
         orders: unpaidOrders || []
       });
     } catch (error) {
@@ -1305,7 +1311,7 @@ module.exports = (db) => {
         return res.status(400).json({ success: false, error: 'No active session found' });
       }
 
-      // Block if server still has unpaid orders
+      // Block if server still has unpaid orders (unless Bistro + Partial payments in close — open tabs stay)
       if (serverId) {
         const unpaidCheck = await dbGet(`
           SELECT COUNT(*) as cnt FROM orders
@@ -1313,10 +1319,16 @@ module.exports = (db) => {
             AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
         `, [String(serverId)]);
         if (unpaidCheck && unpaidCheck.cnt > 0) {
-          return res.status(400).json({
-            success: false,
-            error: `Server still has ${unpaidCheck.cnt} unpaid order(s). Transfer or complete them first.`
-          });
+          const bistroPartial = await require('../backend/utils/bistroClosingPartialSettlement').isBistroPartialSettlementMode(dbGet);
+          if (!bistroPartial) {
+            return res.status(400).json({
+              success: false,
+              error: `Server still has ${unpaidCheck.cnt} unpaid order(s). Transfer or complete them first.`
+            });
+          }
+          console.log(
+            `[Shift-Close] Bistro partial settlement: allowing shift close with ${unpaidCheck.cnt} open order(s) on server ${serverId}`
+          );
         }
       }
 
@@ -1626,10 +1638,17 @@ module.exports = (db) => {
         await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
       } catch (e) { /* */ }
 
-      // 테이블-주문 연결 해제: 마감 후 테이블 클릭 시 이전 주문(#695 등) 로드 방지 → 새 주문이 #001부터 시작
+      // 테이블-주문 연결: 레거시는 전부 해제. Bistro+Partial payments in close 는 미결제 탭(진행 주문)은 유지하고 결제완료/무효/고아 링크만 해제
       try {
-        await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
-        console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
+        const bistroClosingPartial = require('../backend/utils/bistroClosingPartialSettlement');
+        const bistroPartialTables = await bistroClosingPartial.isBistroPartialSettlementMode(dbGet);
+        const { sql: tableMapClearSql, mode: tableMapClearMode } = bistroClosingPartial.dayCloseTableMapClearSql(bistroPartialTables);
+        await dbRun(tableMapClearSql);
+        console.log(
+          tableMapClearMode === 'bistro_partial'
+            ? '✅ Day close: table links cleared for paid/void/orphan only (Bistro partial — open tabs preserved)'
+            : '✅ Table current_order_id cleared for fresh start after Day Closing'
+        );
       } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
 
       // Firebase 동기화

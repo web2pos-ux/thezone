@@ -273,6 +273,8 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
   const [showShiftCloseCashOk, setShowShiftCloseCashOk] = useState(false);
   /** Shift Close: unpaid count & transfer targets (for PIN employee) */
   const [shiftUnpaidCount, setShiftUnpaidCount] = useState<number | null>(null);
+  /** When false (Bistro + Partial in close), Shift Close does not require picking another server for open tabs */
+  const [shiftTransferRequired, setShiftTransferRequired] = useState(true);
   const [shiftUnpaidOrders, setShiftUnpaidOrders] = useState<ShiftUnpaidOrderRow[]>([]);
   const [shiftTransferTargets, setShiftTransferTargets] = useState<Array<{ id: string; name: string }>>([]);
   const [shiftTransferServerId, setShiftTransferServerId] = useState('');
@@ -887,6 +889,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     if (!showShiftCloseCashOk || !isOpen) return;
     if (!closingAccessEmployeeId) {
       setShiftUnpaidCount(0);
+      setShiftTransferRequired(true);
       setShiftUnpaidOrders([]);
       setShiftTransferTargets([]);
       setShiftTransferServerId('');
@@ -921,11 +924,17 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
           typeof unpaidJson.count === 'number' ? unpaidJson.count : rawOrders.length;
         setShiftUnpaidCount(cnt);
         setShiftUnpaidOrders(rawOrders);
+        const tr =
+          typeof unpaidJson.transferRequired === 'boolean'
+            ? unpaidJson.transferRequired
+            : cnt > 0;
+        setShiftTransferRequired(tr);
         setShiftTransferTargets(Array.isArray(targetsJson.servers) ? targetsJson.servers : []);
         setShiftTransferServerId('');
       } catch {
         if (!cancelled) {
           setShiftUnpaidCount(0);
+          setShiftTransferRequired(true);
           setShiftUnpaidOrders([]);
           setShiftTransferTargets([]);
         }
@@ -946,6 +955,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     if (!showShiftCloseCashOk || shiftClosePreflightLoading) return;
     if (!closingAccessEmployeeId) return;
     if (shiftUnpaidCount === null || shiftUnpaidCount <= 0) return;
+    if (!shiftTransferRequired) return;
     if (shiftUnpaidTransferModalAutoShownRef.current) return;
     shiftUnpaidTransferModalAutoShownRef.current = true;
     setShowShiftTransferPickModal(true);
@@ -953,6 +963,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
     showShiftCloseCashOk,
     shiftClosePreflightLoading,
     shiftUnpaidCount,
+    shiftTransferRequired,
     closingAccessEmployeeId,
   ]);
 
@@ -962,7 +973,12 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
 
   // ========== SHIFT CLOSE ==========
   const handleShiftClose = async () => {
-    if (closingAccessEmployeeId && shiftUnpaidCount !== null && shiftUnpaidCount > 0) {
+    if (
+      closingAccessEmployeeId &&
+      shiftUnpaidCount !== null &&
+      shiftUnpaidCount > 0 &&
+      shiftTransferRequired
+    ) {
       if (!String(shiftTransferServerId || '').trim()) {
         setShowShiftTransferPickModal(true);
         return;
@@ -2228,39 +2244,58 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                       closingAccessEmployeeId &&
                       shiftUnpaidCount !== null &&
                       shiftUnpaidCount > 0 && (
-                        <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-                          <div className="text-sm font-extrabold text-red-800">
-                            Unpaid orders: {shiftUnpaidCount}
+                        <div
+                          className={`mt-4 rounded-xl border px-4 py-3 ${
+                            shiftTransferRequired
+                              ? 'border-amber-300 bg-amber-50'
+                              : 'border-emerald-300 bg-emerald-50'
+                          }`}
+                        >
+                          <div
+                            className={`text-sm font-extrabold ${
+                              shiftTransferRequired ? 'text-red-800' : 'text-emerald-900'
+                            }`}
+                          >
+                            Open orders on this shift: {shiftUnpaidCount}
                           </div>
-                          <p className="text-xs text-amber-900 mt-1 mb-2">
-                            A dialog lists orders and who to transfer to. You can open it again anytime.
-                          </p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              disabled={isShiftClosing}
-                              onClick={() => setShowShiftTransferPickModal(true)}
-                              className={`touch-manipulation rounded-xl border-0 px-4 py-2.5 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
-                                isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
-                              }`}
-                              style={
-                                isShiftClosing
-                                  ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
-                                  : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
-                              }
-                            >
-                              Transfer to…
-                            </button>
-                            {String(shiftTransferServerId || '').trim() ? (
-                              <span className="text-xs font-bold text-green-800">
-                                Selected:{' '}
-                                {shiftTransferTargets.find((s) => String(s.id) === String(shiftTransferServerId))
-                                  ?.name || `Server ${shiftTransferServerId}`}
-                              </span>
-                            ) : (
-                              <span className="text-xs font-semibold text-amber-800">No server selected yet</span>
-                            )}
-                          </div>
+                          {shiftTransferRequired ? (
+                            <>
+                              <p className="text-xs text-amber-900 mt-1 mb-2">
+                                Pick another server to receive these checks, then confirm Shift Close.
+                              </p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={isShiftClosing}
+                                  onClick={() => setShowShiftTransferPickModal(true)}
+                                  className={`touch-manipulation rounded-xl border-0 px-4 py-2.5 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    isShiftClosing ? CLOSING_PAD_NEO_PRESS : NEO_COLOR_BTN_PRESS_NO_SHIFT
+                                  }`}
+                                  style={
+                                    isShiftClosing
+                                      ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
+                                      : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
+                                  }
+                                >
+                                  Transfer to…
+                                </button>
+                                {String(shiftTransferServerId || '').trim() ? (
+                                  <span className="text-xs font-bold text-green-800">
+                                    Selected:{' '}
+                                    {shiftTransferTargets.find((s) => String(s.id) === String(shiftTransferServerId))
+                                      ?.name || `Server ${shiftTransferServerId}`}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-semibold text-amber-800">No server selected yet</span>
+                                )}
+                              </div>
+                            </>
+                          ) : (
+                            <p className="text-xs text-emerald-900 mt-1 font-semibold leading-snug">
+                              Bistro partial close: these stay on the floor. Shift totals use money already taken
+                              only — you can Shift Close without transferring.
+                            </p>
+                          )}
                         </div>
                       )}
                   </div>
@@ -2284,6 +2319,7 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                             closingAccessEmployeeId &&
                             shiftUnpaidCount !== null &&
                             shiftUnpaidCount > 0 &&
+                            shiftTransferRequired &&
                             !String(shiftTransferServerId || '').trim()
                           ) {
                             setShowShiftTransferPickModal(true);
@@ -2343,9 +2379,11 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                     </ul>
                   )}
                   <p className="text-sm text-gray-600 mb-4">
-                    {shiftUnpaidCount != null && shiftUnpaidCount > 0
-                      ? 'Pick a server below.'
-                      : 'Select a server.'}
+                    {shiftTransferRequired
+                      ? shiftUnpaidCount != null && shiftUnpaidCount > 0
+                        ? 'Pick a server below.'
+                        : 'Select a server.'
+                      : 'Transfer is optional. Close this dialog and use OK → Shift Close, or transfer if you prefer.'}
                   </p>
                   {shiftTransferTargets.length === 0 ? (
                     <p className="text-sm text-red-600 mb-4">
@@ -2398,27 +2436,27 @@ const DayClosingModal: React.FC<DayClosingModalProps> = ({ isOpen, onClose, onCl
                       type="button"
                       disabled={
                         isShiftClosing ||
-                        !String(shiftTransferServerId || '').trim() ||
-                        shiftTransferTargets.length === 0
+                        (shiftTransferRequired &&
+                          (!String(shiftTransferServerId || '').trim() || shiftTransferTargets.length === 0))
                       }
                       onClick={async () => {
                         if (isShiftClosing) return;
-                        if (!String(shiftTransferServerId || '').trim()) return;
+                        if (shiftTransferRequired && !String(shiftTransferServerId || '').trim()) return;
                         setShowShiftTransferPickModal(false);
                         setShowShiftCloseCashOk(false);
                         await handleShiftClose();
                       }}
                       className={`flex-[1.4] rounded-xl border-0 py-3.5 font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
                         isShiftClosing ||
-                        !String(shiftTransferServerId || '').trim() ||
-                        shiftTransferTargets.length === 0
+                        (shiftTransferRequired &&
+                          (!String(shiftTransferServerId || '').trim() || shiftTransferTargets.length === 0))
                           ? CLOSING_PAD_NEO_PRESS
                           : NEO_COLOR_BTN_PRESS_NO_SHIFT
                       }`}
                       style={
                         isShiftClosing ||
-                        !String(shiftTransferServerId || '').trim() ||
-                        shiftTransferTargets.length === 0
+                        (shiftTransferRequired &&
+                          (!String(shiftTransferServerId || '').trim() || shiftTransferTargets.length === 0))
                           ? { ...PAY_NEO.inset, color: '#64748b', borderRadius: 12 }
                           : { ...OH_ACTION_NEO.orange, borderRadius: 12 }
                       }

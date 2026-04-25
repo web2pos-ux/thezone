@@ -359,8 +359,25 @@ module.exports = (db) => {
     }
   });
 
+  const getBistroClosingSql = async () => {
+    const {
+      isBistroPartialSettlementMode,
+      sqlOrderStatusForPaymentJoin,
+      sqlSessionOrdersTableFilter,
+      sqlSessionOrderAliasFilter,
+    } = require('../utils/bistroClosingPartialSettlement');
+    const bistroPartialSettlement = await isBistroPartialSettlementMode(dbGet);
+    return {
+      payOrd: `AND (${sqlOrderStatusForPaymentJoin(bistroPartialSettlement)})`,
+      ordTblWhere: sqlSessionOrdersTableFilter(bistroPartialSettlement),
+      oStat: (alias) => `AND (${sqlSessionOrderAliasFilter(alias, bistroPartialSettlement)})`,
+    };
+  };
+
   // ============ HELPER: Query sales data for a time range ============
   const querySalesData = async (startTime, endTime) => {
+    const { payOrd, ordTblWhere, oStat } = await getBistroClosingSql();
+
     const tf = { where: `created_at >= ? AND created_at <= ?`, params: [startTime, endTime] };
     // For JOIN queries: prefix all created_at with table alias
     const tfPrefixed = (alias) => ({
@@ -368,7 +385,6 @@ module.exports = (db) => {
       params: [startTime, endTime]
     });
 
-    const PAID_STATUSES = `UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')`;
     const PAY_STATUSES = `UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')`;
     const PAY_STATUSES_SOLO = `UPPER(status) IN ('APPROVED','COMPLETED','SETTLED','PAID')`;
 
@@ -385,7 +401,7 @@ module.exports = (db) => {
         MIN(created_at) as first_order_time,
         MAX(created_at) as last_order_time
       FROM orders 
-      WHERE ${tf.where} AND ${PAID_STATUSES}
+      WHERE ${tf.where} AND (${ordTblWhere})
     `, tf.params);
 
     // Payments-based totals (actual revenue collected) - source of truth
@@ -393,7 +409,7 @@ module.exports = (db) => {
       SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as payments_total
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
         AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
         AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
     `, tf.params);
@@ -412,7 +428,7 @@ module.exports = (db) => {
         COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as sales
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
         AND ${PAY_STATUSES}
         AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       GROUP BY ch
@@ -450,7 +466,7 @@ module.exports = (db) => {
           ), 0) as pst_total
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.id
-        WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        WHERE ${oTf.where} ${oStat('o')}
           AND COALESCE(oi.is_voided, 0) = 0
       `, oTf.params);
       gstTotal = Number(taxSplit?.gst_total || 0);
@@ -472,7 +488,7 @@ module.exports = (db) => {
         if (gstRate > 0) {
           const orders = await dbAll(`
             SELECT o.subtotal, o.tax FROM orders o
-            WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+            WHERE ${oTf.where} ${oStat('o')}
               AND COALESCE(o.tax, 0) > 0
           `, oTf.params);
           (orders || []).forEach(o => {
@@ -502,7 +518,7 @@ module.exports = (db) => {
       SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as non_cash_net
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE ${oTfCash.where} AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE ${oTfCash.where} ${payOrd}
       AND ${PAY_STATUSES}
       AND UPPER(p.payment_method) NOT IN ('CASH', 'NO_SHOW_FORFEITED')
     `, oTfCash.params);
@@ -511,7 +527,7 @@ module.exports = (db) => {
       SELECT COALESCE(SUM(COALESCE(p.tip, 0)), 0) as cash_tips
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE ${oTfCash.where} AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE ${oTfCash.where} ${payOrd}
       AND ${PAY_STATUSES} AND UPPER(p.payment_method) = 'CASH'
     `, oTfCash.params);
     const cashTipData = await dbGet(`
@@ -534,7 +550,7 @@ module.exports = (db) => {
           SELECT MAX(oi.guest_number) as max_g
           FROM order_items oi
           JOIN orders o ON oi.order_id = o.id
-          WHERE ${oTf.where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          WHERE ${oTf.where} ${oStat('o')}
           GROUP BY oi.order_id
         )
       `, oTf.params);
@@ -547,7 +563,7 @@ module.exports = (db) => {
       const gratuityData = await dbGet(`
         SELECT COALESCE(SUM(service_charge), 0) as gratuity_total
         FROM orders
-        WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        WHERE ${tf.where} AND (${ordTblWhere})
       `, tf.params);
       gratuityTotal = gratuityData?.gratuity_total || 0;
     } catch (e) { /* service_charge column may not exist */ }
@@ -571,7 +587,7 @@ module.exports = (db) => {
         COALESCE(SUM(CASE WHEN UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) NOT IN ('GIFT', 'COUPON', 'OTHER', 'NO_SHOW_FORFEITED') THEN COALESCE(p.tip, 0) ELSE 0 END), 0) as card_tips
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
         AND ${PAY_STATUSES}
     `, tf.params);
 
@@ -610,7 +626,7 @@ module.exports = (db) => {
         COUNT(DISTINCT CASE WHEN COALESCE(p.tip, 0) > 0 THEN p.order_id END) as tip_order_count
       FROM payments p
       JOIN orders o ON p.order_id = o.id
-      WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+      WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
         AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED'
       GROUP BY p.payment_method
       ORDER BY gross_amount DESC
@@ -702,7 +718,7 @@ module.exports = (db) => {
       FROM order_adjustments oa
       JOIN orders o ON oa.order_id = o.id
       WHERE ${tfPrefixed('o').where}
-        AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        ${oStat('o')}
         AND COALESCE(oa.amount_applied, 0) > 0
         AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
     `, tfPrefixed('o').params);
@@ -717,7 +733,7 @@ module.exports = (db) => {
         END
       ), 0) as discount_total
       FROM orders o
-      WHERE ${tfPrefixed('o').where} AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+      WHERE ${tfPrefixed('o').where} ${oStat('o')}
     `, tfPrefixed('o').params);
 
     const discountData = { discount_total: Number((Number(adjSumRow?.discount_total || 0) + Number(jsonAdjSumRow?.discount_total || 0)).toFixed(2)) };
@@ -730,7 +746,7 @@ module.exports = (db) => {
         FROM order_adjustments oa
         JOIN orders o ON oa.order_id = o.id
         WHERE ${tfPrefixed('o').where}
-          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          ${oStat('o')}
           AND COALESCE(oa.amount_applied, 0) > 0
           AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
       `, tfPrefixed('o').params);
@@ -738,7 +754,7 @@ module.exports = (db) => {
         SELECT COUNT(*) as cnt
         FROM orders o
         WHERE ${tfPrefixed('o').where}
-          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          ${oStat('o')}
           AND o.adjustments_json IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM order_adjustments oa WHERE oa.order_id = o.id)
           AND EXISTS (
@@ -762,7 +778,7 @@ module.exports = (db) => {
         FROM order_adjustments oa
         JOIN orders o ON oa.order_id = o.id
         WHERE ${oAdjTf.where}
-          AND UPPER(o.status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+          ${oStat('o')}
           AND COALESCE(oa.amount_applied, 0) > 0
           AND UPPER(COALESCE(oa.kind, '')) IN ('DISCOUNT', 'PROMOTION', 'CHANNEL_DISCOUNT', 'COUPON')
         ORDER BY oa.created_at ASC
@@ -787,7 +803,7 @@ module.exports = (db) => {
           END) as other_order_count
         FROM payments p
         JOIN orders o ON p.order_id = o.id
-        WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+        WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
           AND ${PAY_STATUSES}
         `,
         tf.params
@@ -810,7 +826,7 @@ module.exports = (db) => {
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) = 'CASH' AND COALESCE(p.tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd} AND ${PAY_STATUSES} AND UPPER(p.payment_method) = 'CASH' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND UPPER(payment_method) = 'CASH' AND COALESCE(amount, 0) > 0
         )
@@ -821,7 +837,7 @@ module.exports = (db) => {
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd} AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'CASH' AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND UPPER(payment_method) != 'CASH' AND COALESCE(amount, 0) > 0
         )
@@ -832,7 +848,7 @@ module.exports = (db) => {
         `
         SELECT COUNT(DISTINCT order_id) as cnt
         FROM (
-          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED') AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
+          SELECT p.order_id FROM payments p JOIN orders o ON p.order_id = o.id WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd} AND ${PAY_STATUSES} AND UPPER(p.payment_method) != 'NO_SHOW_FORFEITED' AND COALESCE(p.tip, 0) > 0
           UNION
           SELECT order_id FROM tips WHERE ${tf.where} AND COALESCE(amount, 0) > 0
         )
@@ -858,7 +874,7 @@ module.exports = (db) => {
           FROM payments p
           JOIN orders o ON p.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${payOrd}
             AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
           GROUP BY COALESCE(o.server_name, 'Unknown')
@@ -868,7 +884,7 @@ module.exports = (db) => {
           FROM tips t
           JOIN orders o ON t.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${oStat('o')}
           GROUP BY COALESCE(o.server_name, 'Unknown')
         ) combined
         GROUP BY server_name
@@ -1253,10 +1269,16 @@ module.exports = (db) => {
         ORDER BY created_at DESC
       `, [String(serverId)]);
 
+      const { isBistroPartialSettlementMode } = require('../utils/bistroClosingPartialSettlement');
+      const bistroPartialSettlement = await isBistroPartialSettlementMode(dbGet);
+      const unpaidCount = (unpaidOrders || []).length;
+      const transferRequired = unpaidCount > 0 && !bistroPartialSettlement;
+
       res.json({
         success: true,
-        hasUnpaid: (unpaidOrders || []).length > 0,
-        count: (unpaidOrders || []).length,
+        hasUnpaid: unpaidCount > 0,
+        transferRequired,
+        count: unpaidCount,
         orders: unpaidOrders || []
       });
     } catch (error) {
@@ -1406,13 +1428,20 @@ module.exports = (db) => {
       let transferredOrderIds = [];
       let resolvedTransferToName = String(transferToServerName || '').trim();
 
+      const { isBistroPartialSettlementMode } = require('../utils/bistroClosingPartialSettlement');
+      const bistroPartialSkipShiftTransfer = await isBistroPartialSettlementMode(dbGet);
+
       if (serverId) {
         const unpaidRows = await dbAll(`
           SELECT id FROM orders
           WHERE COALESCE(server_id, '') = ?
             AND UPPER(status) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED')
         `, [String(serverId)]);
-        if (unpaidRows && unpaidRows.length > 0) {
+        if (unpaidRows && unpaidRows.length > 0 && bistroPartialSkipShiftTransfer) {
+          console.log(
+            `[Shift-Close] Bistro partial settlement: skipping transfer of ${unpaidRows.length} open order(s); orders stay on server ${serverId}`
+          );
+        } else if (unpaidRows && unpaidRows.length > 0) {
           const tid = String(transferToServerId || '').trim();
           if (!tid || tid === String(serverId)) {
             return res.status(400).json({
@@ -1486,16 +1515,17 @@ module.exports = (db) => {
       const startTime = shiftStartTime;
       const endTime = now;
       const tf = { where: 'created_at >= ? AND created_at <= ?', params: [startTime, endTime] };
+      const { payOrd, ordTblWhere } = await getBistroClosingSql();
 
       console.log(`[Shift-Close] server=${closedBy}(${serverId}), time range: ${startTime} ~ ${endTime}`);
 
       const salesDataOrders = await dbGet(`
-        SELECT COUNT(*) as order_count FROM orders WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        SELECT COUNT(*) as order_count FROM orders WHERE ${tf.where} AND (${ordTblWhere})
       `, tf.params);
       const salesDataPt = await dbGet(`
         SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales
         FROM payments p JOIN orders o ON p.order_id = o.id
-        WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+        WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       `, tf.params);
@@ -1512,7 +1542,7 @@ module.exports = (db) => {
         FROM payments p
         JOIN orders o ON p.order_id = o.id
         WHERE o.created_at >= ? AND o.created_at <= ?
-          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
       `, tf.params);
 
@@ -1532,7 +1562,7 @@ module.exports = (db) => {
         FROM payments p
         JOIN orders o ON p.order_id = o.id
         WHERE o.created_at >= ? AND o.created_at <= ?
-          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         GROUP BY ch
@@ -1549,7 +1579,7 @@ module.exports = (db) => {
         FROM payments p
         JOIN orders o ON p.order_id = o.id
         WHERE o.created_at >= ? AND o.created_at <= ?
-          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
         GROUP BY method
@@ -1567,7 +1597,7 @@ module.exports = (db) => {
         FROM payments p
         JOIN orders o ON p.order_id = o.id
         WHERE o.created_at >= ? AND o.created_at <= ?
-          AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+          ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
           AND COALESCE(p.tip, 0) > 0
@@ -1645,7 +1675,7 @@ module.exports = (db) => {
           FROM payments p
           JOIN orders o ON p.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${payOrd}
             AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
             AND o.server_name = ?
@@ -1758,16 +1788,17 @@ module.exports = (db) => {
       const startTime = activeSession.opened_at;
       const endTime = now;
       const tf = { where: 'created_at >= ? AND created_at <= ?', params: [startTime, endTime] };
+      const { payOrd, ordTblWhere } = await getBistroClosingSql();
 
       // Fetch closing data - payments 기반 실결제 매출
       const salesDataOrders2 = await dbGet(`
         SELECT COUNT(*) as order_count, COALESCE(SUM(tax), 0) as tax_total
-        FROM orders WHERE ${tf.where} AND UPPER(status) IN ('PAID', 'PICKED_UP', 'CLOSED', 'COMPLETED')
+        FROM orders WHERE ${tf.where} AND (${ordTblWhere})
       `, tf.params);
       const salesDataPt2 = await dbGet(`
         SELECT COALESCE(SUM(p.amount - COALESCE(p.tip, 0)), 0) as total_sales
         FROM payments p JOIN orders o ON p.order_id = o.id
-        WHERE o.created_at >= ? AND o.created_at <= ? AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+        WHERE o.created_at >= ? AND o.created_at <= ? ${payOrd}
           AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
           AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
       `, tf.params);
@@ -1831,10 +1862,17 @@ module.exports = (db) => {
         await dbRun(`INSERT OR REPLACE INTO admin_settings(key, value) VALUES('daily_order_counter', '0')`);
       } catch (e) { /* */ }
 
-      // 테이블-주문 연결 해제: 마감 후 테이블 클릭 시 이전 주문(#695 등) 로드 방지 → 새 주문이 #001부터 시작
+      // 테이블-주문 연결: 레거시는 전부 해제. Bistro+Partial payments in close 는 미결제 탭(진행 주문)은 유지하고 결제완료/무효/고아 링크만 해제
       try {
-        await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id IS NOT NULL`);
-        console.log('✅ Table current_order_id cleared for fresh start after Day Closing');
+        const bistroClosingPartial = require('../utils/bistroClosingPartialSettlement');
+        const bistroPartialTables = await bistroClosingPartial.isBistroPartialSettlementMode(dbGet);
+        const { sql: tableMapClearSql, mode: tableMapClearMode } = bistroClosingPartial.dayCloseTableMapClearSql(bistroPartialTables);
+        await dbRun(tableMapClearSql);
+        console.log(
+          tableMapClearMode === 'bistro_partial'
+            ? '✅ Day close: table links cleared for paid/void/orphan only (Bistro partial — open tabs preserved)'
+            : '✅ Table current_order_id cleared for fresh start after Day Closing'
+        );
       } catch (e) { console.warn('Failed to clear table links on closing:', e?.message || e); }
 
       // 웨이팅: 마감 영업일·고객·인원·Assigned/Canceled/Not Assigned 이력을 archive에 보관 후 당일용 waiting_list만 비움
@@ -1912,7 +1950,7 @@ module.exports = (db) => {
           FROM payments p
           JOIN orders o ON p.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${payOrd}
             AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
           GROUP BY ch
@@ -1933,7 +1971,7 @@ module.exports = (db) => {
           FROM payments p
           JOIN orders o ON p.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${payOrd}
             AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
           GROUP BY method
@@ -1955,7 +1993,7 @@ module.exports = (db) => {
           FROM payments p
           JOIN orders o ON p.order_id = o.id
           WHERE o.created_at >= ? AND o.created_at <= ?
-            AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+            ${payOrd}
             AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
             AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
             AND COALESCE(p.tip, 0) > 0
@@ -2080,7 +2118,7 @@ module.exports = (db) => {
                   FROM payments p
                   JOIN orders o ON p.order_id = o.id
                   WHERE o.created_at >= ? AND o.created_at <= ?
-                    AND UPPER(o.status) IN ('PAID','PICKED_UP','CLOSED','COMPLETED')
+                    ${payOrd}
                     AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
                     AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
                     AND o.server_name = ?

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Edit, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import PrintLayoutEditor from '../components/PrintLayoutEditor';
+import { isPrintPreviewModeEnabled, setPrintPreviewModeExplicit } from '../utils/printPreviewMode';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3177/api';
 
@@ -982,6 +983,7 @@ const kitchenElementLabels: Record<string, string> = {
 
 export default function PrinterPage() {
   const [activeTab, setActiveTab] = useState<'printers' | 'newPrinter'>('printers');
+  const [printPreviewOrderMode, setPrintPreviewOrderMode] = useState<boolean>(() => isPrintPreviewModeEnabled());
   
   // Kitchen 프린터 타입 (Kitchen vs Waitress)
   const [kitchenPrinterType, setKitchenPrinterType] = useState<'kitchen' | 'waitress'>('kitchen');
@@ -4192,9 +4194,42 @@ export default function PrinterPage() {
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold">🖨️ Printer Settings</h1>
-        <div className="flex items-center gap-3">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <h1 className="text-3xl font-bold shrink-0">🖨️ Printer Settings</h1>
+          <div
+            className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 ${
+              printPreviewOrderMode
+                ? 'border-emerald-500/60 bg-emerald-50/90'
+                : 'border-slate-200 bg-slate-50'
+            }`}
+          >
+            <span
+              className={`whitespace-nowrap text-xs font-semibold sm:text-sm ${
+                printPreviewOrderMode ? 'text-emerald-900' : 'text-slate-600'
+              }`}
+            >
+              Screen output mode
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={printPreviewOrderMode}
+              aria-label="Screen output mode"
+              onClick={() => {
+                const next = !printPreviewOrderMode;
+                setPrintPreviewModeExplicit(next);
+                setPrintPreviewOrderMode(isPrintPreviewModeEnabled());
+              }}
+              className={`flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-1 ${
+                printPreviewOrderMode ? 'justify-end bg-emerald-600' : 'justify-start bg-slate-400'
+              }`}
+            >
+              <span className="pointer-events-none h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5" />
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 sm:justify-end">
           {isLoadingSettings && <span className="text-gray-500 text-sm">Loading...</span>}
           {hasUnsavedChanges && saveStatus === 'idle' && (
             <span className="text-orange-600 text-sm">● Unsaved changes</span>
