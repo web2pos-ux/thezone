@@ -1696,7 +1696,8 @@ const SalesPage: React.FC = () => {
   const togoPanelOrderCardMinHeightPx = Math.max(56, Math.floor(56 * 1.25 * 0.9 * 0.95));
   const togoPanelCardLine1Px = Math.max(13, Math.round(11 * 1.33));
   const togoPanelCardLine2Px = Math.max(12, Math.round(10 * 1.38));
-  const togoPanelCardBadgePx = Math.max(9, Math.round(7 * 1.36));
+  /** READY/UNPAID — POS#와 겹침 방지용으로 1행 대비 약간 작게 */
+  const togoPanelCardBadgePx = Math.max(8, Math.round(7 * 1.22));
   /** 둘째 줄 서버 칩(시간 오른쪽 라벨) — 공간 절약용 소형 */
   const togoPanelCardServerChipPx = Math.max(7, Math.round(togoPanelCardLine2Px * 0.68));
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
@@ -11909,10 +11910,12 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
-                            <div className="mb-0.5 flex items-center justify-between font-semibold" style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                              <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
+                            <div className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold" style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                              <span className="shrink-0 font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
                               <span role="status" className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`} style={{ fontSize: `${togoPanelCardBadgePx}px` }}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
-                              <span className="font-bold text-right">{deliveryDisplayNumber}</span>
+                              <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
+                                <span className="block truncate">{deliveryDisplayNumber}</span>
+                              </span>
                             </div>
                             <div
                               className="flex items-center gap-0.5 font-medium"
@@ -12193,10 +12196,10 @@ const SalesPage: React.FC = () => {
                                 : {})}
                             >
                               <div
-                                className="mb-0.5 flex items-center justify-between font-semibold"
+                                className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold"
                                 style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                               >
-                                <span className="font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
+                                <span className="shrink-0 font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
                                 <span
                                   role="status"
                                   className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
@@ -12204,7 +12207,9 @@ const SalesPage: React.FC = () => {
                                 >
                                   {tIsPaid ? 'READY' : 'UNPAID'}
                                 </span>
-                                <span className="font-bold text-right">{formatPosNumber(order.number)}</span>
+                                <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
+                                  <span className="block truncate">{formatPosNumber(order.number)}</span>
+                                </span>
                               </div>
                               <div
                                 className="flex items-center gap-0.5 font-medium"
@@ -12380,10 +12385,10 @@ const SalesPage: React.FC = () => {
                               : {})}
                           >
                             <div
-                              className="mb-0.5 flex items-center justify-between font-semibold"
+                              className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold"
                               style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                             >
-                              <span className="font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>ONLINE</span>
+                              <span className="shrink-0 font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>WEB</span>
                               <span
                                 role="status"
                                 className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
@@ -12391,7 +12396,9 @@ const SalesPage: React.FC = () => {
                               >
                                 {oIsPaid ? 'READY' : 'UNPAID'}
                               </span>
-                              <span className="font-bold text-right">{onlinePosDisplayNumber}</span>
+                              <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
+                                <span className="block truncate">{onlinePosDisplayNumber}</span>
+                              </span>
                             </div>
                             <div
                               className="flex items-center gap-0.5 font-medium"
@@ -14090,7 +14097,7 @@ const SalesPage: React.FC = () => {
                 })()
               : '';
           const cdNumber = cdOrder.number || cdOrder.order_number || '';
-          const cdChannelLabel = cdChannel === 'delivery' ? 'DLV' : cdChannel === 'online' ? 'ONLINE' : 'TOGO';
+          const cdChannelLabel = cdChannel === 'delivery' ? 'DLV' : cdChannel === 'online' ? 'WEB' : 'TOGO';
           const cdFo = (cdOrder as any).fullOrder || {};
           const cdPickupTimeFromDate = (v: any): string => {
             if (v == null) return '';
