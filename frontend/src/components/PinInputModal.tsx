@@ -18,6 +18,8 @@ interface PinInputModalProps {
   message?: string;
   isLoading?: boolean;
   error?: string;
+  /** 기본 4. 데모 백오피스 전용 길이(예: 10) 전달 시 해당 자리수까지 입력 후 제출 */
+  pinLength?: number;
 }
 
 const PinInputModal: React.FC<PinInputModalProps> = ({
@@ -28,8 +30,10 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
   message,
   isLoading = false,
   error,
+  pinLength = 4,
 }) => {
   const [pin, setPin] = useState<string>('');
+  const len = Math.max(4, Math.min(16, Math.floor(Number(pinLength)) || 4));
 
   useEffect(() => {
     if (isOpen) {
@@ -37,20 +41,20 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
     }
   }, [isOpen]);
 
-  useEffect(() => {
-    if (pin.length === 4) {
-      handleSubmit();
-    }
-  }, [pin]);
-
   const handleSubmit = () => {
-    if (pin.length === 4) {
+    if (pin.length === len) {
       onSubmit(pin);
     }
   };
 
+  useEffect(() => {
+    if (pin.length === len) {
+      handleSubmit();
+    }
+  }, [pin, len]);
+
   const handleNumberClick = (number: string) => {
-    if (pin.length < 4) {
+    if (pin.length < len) {
       setPin(pin + number);
     }
   };
@@ -68,7 +72,7 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
       handleNumberClick(e.key);
     } else if (e.key === 'Backspace') {
       handleBackspace();
-    } else if (e.key === 'Enter' && pin.length === 4) {
+    } else if (e.key === 'Enter' && pin.length === len) {
       handleSubmit();
     } else if (e.key === 'Escape') {
       onClose();
@@ -116,12 +120,14 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
           )}
 
           <div className="mb-5">
-            <div className="flex justify-center gap-3">
-              {[0, 1, 2, 3].map((index) => (
+            <div
+              className={`flex justify-center gap-2 flex-wrap ${len > 6 ? 'max-w-[22rem] mx-auto' : ''}`}
+            >
+              {Array.from({ length: len }, (_, index) => (
                 <div
                   key={index}
                   style={PAY_NEO.inset}
-                  className={`w-14 h-14 flex items-center justify-center text-3xl rounded-[14px] ${
+                  className={`${len > 6 ? 'w-11 h-11 text-2xl' : 'w-14 h-14 text-3xl'} flex items-center justify-center rounded-[14px] ${
                     pin.length > index ? 'text-blue-700' : 'text-slate-400'
                   }`}
                 >
@@ -202,12 +208,12 @@ const PinInputModal: React.FC<PinInputModalProps> = ({
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={pin.length !== 4 || isLoading}
+              disabled={pin.length !== len || isLoading}
               className={`flex-1 touch-manipulation rounded-[14px] px-4 py-3 font-bold hover:brightness-[1.02] disabled:cursor-not-allowed disabled:opacity-50 ${
-                pin.length === 4 && !isLoading ? NEO_COLOR_BTN_PRESS_NO_SHIFT : padNeoPress
+                pin.length === len && !isLoading ? NEO_COLOR_BTN_PRESS_NO_SHIFT : padNeoPress
               }`}
               style={
-                pin.length !== 4 || isLoading
+                pin.length !== len || isLoading
                   ? { ...PAY_NEO.inset, color: '#64748b' }
                   : PAY_NEO_PRIMARY_BLUE
               }

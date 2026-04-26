@@ -1,11 +1,11 @@
 @echo off
-REM Demo exe only. Does NOT bump pos-desktop package.json version.
+REM Demo exe: bump pos-desktop package.json patch, then build.bat + electron-builder demo.
 REM Output: dist29\Thezone_Demo_<version>-Setup.exe, Thezone_Demo_<version>-Portable.exe
 REM Optional: set DEMO_SNAPSHOT_DB=C:\full\path\web2pos.db
-REM Back Office buttons off: BUILD_DEMO=1 -> npm run build:demo
+REM BUILD_DEMO=1 -> npm run build:demo
 
 echo ================================================
-echo Demo executable (no version bump in package.json)
+echo Demo executable (version bump + package)
 echo ================================================
 echo.
 
@@ -21,7 +21,16 @@ if defined DEMO_SNAPSHOT_DB (
 
 cd /d "%~dp0"
 
-echo [1/2] build.bat (BUILD_DEMO=1) ...
+echo [0/3] Bump patch version (package.json) ...
+echo ------------------------------------------------
+node scripts\bump-desktop-version.mjs
+if %ERRORLEVEL% NEQ 0 (
+  echo ERROR: Version bump failed. Is Node.js installed?
+  exit /b 1
+)
+echo.
+
+echo [1/3] build.bat (BUILD_DEMO=1) ...
 echo ------------------------------------------------
 set BUILD_DEMO=1
 call build.bat
@@ -36,7 +45,7 @@ echo.
 REM build.bat ends in repo\backend cwd — npm must run from pos-desktop
 cd /d "%~dp0"
 
-echo [2/2] npm run build:win:demo (Thezone_Demo_VERSION-*.exe) ...
+echo [2/3] npm run build:win:demo (Thezone_Demo_VERSION-*.exe) ...
 echo ------------------------------------------------
 call npm run build:win:demo
 if %ERRORLEVEL% NEQ 0 (

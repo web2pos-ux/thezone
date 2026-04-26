@@ -114,6 +114,19 @@ function startBackend() {
     console.log('[Backend] Uploads path:', uploadsPath);
     console.log('[Backend] Config path:', configPath);
     console.log('[Backend] Backups path:', backupsPath);
+
+    // 데모 패키지: resources/demo.flag 또는 데모 실행 파일명 → 백엔드에서 데모 전용 백오피스 PIN 허용
+    try {
+      const demoFlagPackaged = path.join(process.resourcesPath, 'demo.flag');
+      const demoFlagDev = path.join(__dirname, 'demo.flag');
+      const exeGuess = String(app.getPath('exe') || '');
+      if (fs.existsSync(demoFlagPackaged) || fs.existsSync(demoFlagDev) || /Thezone_Demo/i.test(exeGuess)) {
+        process.env.WEB2POS_DEMO = '1';
+        console.log('[Backend] WEB2POS_DEMO=1 (demo app)');
+      }
+    } catch (e) {
+      console.warn('[Backend] Demo flag check failed:', e && e.message ? e.message : e);
+    }
     
     // 환경 변수 설정
     process.env.PORT = BACKEND_PORT;

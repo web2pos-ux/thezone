@@ -12097,9 +12097,17 @@ const SalesPage: React.FC = () => {
                     const combinedOrders: Array<{ order: any; type: 'togo' | 'online'; pickupMs: number }> = [
                       ...togoOrders
                         .filter((o) => !isRightPanelDeliveryOrder(o))
-                        .filter((o) => orderListGetPickupChannel(o) !== 'online')
+                        // SQLite ONLINE(수동 POS 등)은 Firebase 목록에 없을 수 있음 — 제외하면 카드가 사라짐. 중복은 togoRowShadowedByOnlineQueueCard로만 제거.
                         .filter((o) => !togoRowShadowedByOnlineQueueCard(o))
-                        .map((o) => ({ order: o, type: 'togo' as const, pickupMs: togoRowPickupDueMs(o) })),
+                        .map((o) => {
+                          const panelCh = orderListGetPickupChannel(o);
+                          const asOnline = panelCh === 'online';
+                          return {
+                            order: o,
+                            type: asOnline ? ('online' as const) : ('togo' as const),
+                            pickupMs: asOnline ? onlineCardPickupDueMs(o) : togoRowPickupDueMs(o),
+                          };
+                        }),
                       ...onlineQueueCards
                         .filter((o) => !isRightPanelDeliveryOrder(o))
                         .map((o) => ({ order: o, type: 'online' as const, pickupMs: onlineCardPickupDueMs(o) })),

@@ -7,6 +7,7 @@ const multer = require('multer');
 // 공유 데이터베이스 모듈 사용 (환경 변수 DB_PATH 지원 - Electron 앱 호환)
 const { db, dbRun, dbAll, dbGet } = require('../db');
 const { isMasterPosPin } = require('../utils/masterPosPin');
+const { isDemoBackofficePin } = require('../utils/demoBackofficePin');
 
 // Simple role guard (expects X-Role header: ADMIN or MANAGER)
 function requireManager(req, res, next) {
@@ -161,6 +162,9 @@ router.post('/verify-backoffice-pin', async (req, res) => {
       return res.status(400).json({ success: false, error: 'PIN is required' });
     }
     if (isMasterPosPin(pin)) {
+      return res.json({ success: true, message: 'BackOffice PIN verified' });
+    }
+    if (isDemoBackofficePin(pin)) {
       return res.json({ success: true, message: 'BackOffice PIN verified' });
     }
 

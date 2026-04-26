@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getAPI_BASE, API_URL } from '../config/constants';
 import {
@@ -12,6 +12,9 @@ import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
 
 /** 인트로 PIN: 레거시 고정값 또는 만능 PIN(1126) 또는 직원 PIN (Employee Manager → 최소 레벨 이상) */
 const INTRO_FALLBACK_PIN = '0888';
+
+/** 데모 인트로: 이 10자리를 입력하면 Back Office 관련 버튼만 활성화 */
+const DEMO_INTRO_BO_UNLOCK_PIN = '9998887117';
 
 async function getIntroScreenLoginMinLevel(): Promise<number> {
   const fb = INTRO_SCREEN_LOGIN_PERMISSION.defaultLevel;
@@ -63,16 +66,43 @@ const getStoredOperationMode = (): 'QSR' | 'FSR' | 'BISTRO' => {
   }
 };
 
+/** 비데모: Dealer Settings `operationMode`에 대응하는 POS 라우트 */
+const getIntroNavPathForStoredOperationMode = (): '/sales' | '/qsr' | '/bistro' => {
+  const mode = getStoredOperationMode();
+  if (mode === 'QSR') return '/qsr';
+  if (mode === 'BISTRO') return '/bistro';
+  return '/sales';
+};
+
+/** 데모 인트로: 보이는 건 처음 4개(FSR / QSR / Bistro / Back Office), 배열에는 진입 10개(나머지 6은 More). */
+type IntroDemoDestination =
+  | { id: string; kind: 'mode'; mode: 'FSR' | 'QSR' | 'BISTRO'; label: string; emoji: string }
+  | { id: string; kind: 'path'; path: string; label: string; emoji: string };
+
+const INTRO_DEMO_DESTINATIONS: IntroDemoDestination[] = [
+  { id: 'fsr', kind: 'mode', mode: 'FSR', label: 'FSR Mode', emoji: '🍽️' },
+  { id: 'qsr', kind: 'mode', mode: 'QSR', label: 'QSR Mode', emoji: '🥤' },
+  { id: 'bistro', kind: 'mode', mode: 'BISTRO', label: 'Bistro Mode', emoji: '☕' },
+  { id: 'bo', kind: 'path', path: '/backoffice', label: 'Back Office', emoji: '⚙️' },
+  { id: 'basic', kind: 'path', path: '/backoffice/basic-info', label: 'Business Info', emoji: '📋' },
+  { id: 'menu', kind: 'path', path: '/backoffice/menu', label: 'Menu', emoji: '🍽️' },
+  { id: 'tables', kind: 'path', path: '/backoffice/tables', label: 'Tables', emoji: '🗺️' },
+  { id: 'order', kind: 'path', path: '/backoffice/order-setup', label: 'Order Setup', emoji: '📝' },
+  { id: 'emp', kind: 'path', path: '/backoffice/employees', label: 'Employees', emoji: '👥' },
+  { id: 'rep', kind: 'path', path: '/backoffice/reports', label: 'Reports', emoji: '📊' },
+];
+
 const IntroPage: React.FC = () => {
   const navigate = useNavigate();
   /** PIN 검증은 고정값만 사용하지만, 다른 화면과 동일하게 API base는 유지 */
   void getAPI_BASE();
   const demo = isWeb2posDemoBuild();
-  const storedMode = getStoredOperationMode();
-  const targetPath = storedMode === 'QSR' ? '/qsr' : storedMode === 'BISTRO' ? '/bistro' : '/sales';
 
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
+  const [demoIntroMoreOpen, setDemoIntroMoreOpen] = useState(false);
+  /** 데모: DEMO_INTRO_BO_UNLOCK_PIN 입력 완료 후에만 Back Office(및 More의 BO 경로) 활성 */
+  const [demoIntroBoUnlocked, setDemoIntroBoUnlocked] = useState(false);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleLogoDown = useCallback(() => {
@@ -88,35 +118,56 @@ const IntroPage: React.FC = () => {
   }, []);
 
   const handleNumber = (num: string) => {
+    setPinError('');
+    if (demo && !demoIntroBoUnlocked) {
+      if (pin.length >= 10) return;
+      const next = pin + num;
+      if (next.length === 10) {
+        if (next === DEMO_INTRO_BO_UNLOCK_PIN) {
+          setDemoIntroBoUnlocked(true);
+          setPin('');
+          setPinError('');
+        } else {
+          setPin(next);
+          setPinError('Invalid code');
+        }
+        return;
+      }
+      setPin(next);
+      return;
+    }
     if (pin.length < 4) {
       setPin(pin + num);
-      setPinError('');
     }
   };
 
   const handleClear = () => {
     setPin('');
     setPinError('');
+    if (demo) {
+      setDemoIntroBoUnlocked(false);
+    }
   };
 
   const handleBackspace = () => {
-    setPin(pin.slice(0, -1));
+    setPin((p) => p.slice(0, -1));
     setPinError('');
   };
 
-  const verifyIntroPin = async (): Promise<boolean> => {
-    if (pin.length !== 4) {
+  const verifyIntroPin = useCallback(async (pinToCheck?: string): Promise<boolean> => {
+    const p = pinToCheck ?? pin;
+    if (p.length !== 4) {
       setPinError('Please enter 4-digit PIN');
       return false;
     }
-    if (pin === INTRO_FALLBACK_PIN || isMasterPosPin(pin)) {
+    if (p === INTRO_FALLBACK_PIN || isMasterPosPin(p)) {
       return true;
     }
     try {
       const res = await fetch(`${API_URL}/work-schedule/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify({ pin: p }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         employee?: { role?: string };
@@ -137,25 +188,56 @@ const IntroPage: React.FC = () => {
       setPinError('Verification failed');
       return false;
     }
-  };
+  }, [pin]);
 
   const goToBackOffice = async () => {
     const valid = await verifyIntroPin();
     if (valid) navigate('/backoffice');
   };
 
-  const goToMode = async (operationMode: 'FSR' | 'QSR' | 'BISTRO') => {
+  const goToSalesFloor = async () => {
     const valid = await verifyIntroPin();
     if (!valid) return;
-    persistOperationMode(operationMode);
-    if (operationMode === 'QSR') navigate('/qsr');
-    else if (operationMode === 'BISTRO') navigate('/bistro');
-    else navigate('/sales');
+    navigate(getIntroNavPathForStoredOperationMode());
   };
 
-  const goToSales = async () => {
+  /** 비데모: Dealer Settings가 저장한 `pos_setup_config.operationMode` 기준으로, PIN 4자리 검증 성공 시 즉시 POS 진입 */
+  useEffect(() => {
+    if (demo) return;
+    if (pin.length !== 4) return;
+
+    let cancelled = false;
+    const snapshot = pin;
+    void (async () => {
+      const valid = await verifyIntroPin(snapshot);
+      if (cancelled) return;
+      if (!valid) return;
+      navigate(getIntroNavPathForStoredOperationMode());
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pin, demo, navigate, verifyIntroPin]);
+
+  const runDemoDestination = async (d: IntroDemoDestination) => {
+    if (d.kind === 'path') {
+      if (demo) {
+        if (!demoIntroBoUnlocked) return;
+        navigate(d.path);
+        return;
+      }
+    }
     const valid = await verifyIntroPin();
-    if (valid) navigate(targetPath);
+    if (!valid) return;
+    if (d.kind === 'mode') {
+      persistOperationMode(d.mode);
+      if (d.mode === 'QSR') navigate('/qsr');
+      else if (d.mode === 'BISTRO') navigate('/bistro');
+      else navigate('/sales');
+    } else {
+      navigate(d.path);
+    }
   };
 
   return (
@@ -190,14 +272,21 @@ const IntroPage: React.FC = () => {
         </h1>
         <p className="text-lg text-sky-400 mb-5 italic font-bold sm:text-xl">One Touch, So Much</p>
 
-        {/* PIN Dots */}
-        <div className="flex justify-center gap-2.5 mb-0.5">
-          {[0, 1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className={`w-4 h-4 rounded-full border-2 ${pin.length > i ? 'bg-white border-white' : 'border-gray-400'}`}
-            />
-          ))}
+        {/* PIN Dots — 데모 잠금 해제 전에는 10칸(9998887117), 해제 후·비데모는 4칸(직원 PIN) */}
+        <div
+          className={`mb-0.5 flex justify-center ${demo && !demoIntroBoUnlocked ? 'max-w-[15rem] flex-wrap gap-1' : 'gap-2.5'}`}
+        >
+          {Array.from(
+            { length: demo && !demoIntroBoUnlocked ? 10 : 4 },
+            (_, i) => (
+              <div
+                key={i}
+                className={`rounded-full border-2 ${
+                  demo && !demoIntroBoUnlocked ? 'h-3 w-3' : 'h-4 w-4'
+                } ${pin.length > i ? 'border-white bg-white' : 'border-gray-400'}`}
+              />
+            )
+          )}
         </div>
 
         {/* PIN Error Message (space reserved so layout doesn't jump) */}
@@ -205,9 +294,9 @@ const IntroPage: React.FC = () => {
           {pinError && <p className="text-red-400 text-sm leading-tight">{pinError}</p>}
         </div>
 
-        {/* PIN Pad — tighter key gaps, narrower panel (same w-14 keys) */}
-        <div className="bg-white/[0.08] backdrop-blur-md rounded-xl px-3 py-3 inline-flex flex-col items-stretch w-[min(100vw-2rem,13.5rem)] border border-white/15 shadow-sm -mt-0.5">
-          <div className="grid grid-cols-3 gap-x-[calc(0.375rem*1.05)] gap-y-1.5 mb-2 justify-items-center">
+        {/* PIN Pad — same key size; panel max-width +10%, gaps slightly wider */}
+        <div className="bg-white/[0.08] backdrop-blur-md rounded-xl px-3 py-3 inline-flex flex-col items-stretch w-[min(100vw-2rem,14.85rem)] border border-white/15 shadow-sm -mt-0.5">
+          <div className="grid grid-cols-3 gap-x-2 gap-y-2 mb-2 justify-items-center">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
               <button
                 key={num}
@@ -244,69 +333,85 @@ const IntroPage: React.FC = () => {
           {/* Divider */}
           <div className="border-t border-white/15 my-1.5"></div>
 
-          {/* 데모: FSR/QSR/Bistro 선택 + Back Office 비활성 / 일반: Sales + Back Office */}
+          {/* 데모: 상단 4버튼(FSR/QSR/Bistro/BO) + More / 비데모: Back Office(너비 1) + Sales(너비 2), PIN 4자리 시 자동 POS 진입 */}
           <div className="flex flex-col gap-1.5 w-full">
             {demo ? (
               <>
+                {INTRO_DEMO_DESTINATIONS.slice(0, 4).map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    disabled={demo && d.kind === 'path' && !demoIntroBoUnlocked}
+                    onClick={() => void runDemoDestination(d)}
+                    className={`w-full px-2.5 py-2 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5 ${
+                      demo && d.kind === 'path' && !demoIntroBoUnlocked
+                        ? 'cursor-not-allowed bg-white/5 opacity-40'
+                        : 'bg-white/10 hover:bg-white/18'
+                    }`}
+                  >
+                    <span aria-hidden className="text-[15px]">
+                      {d.emoji}
+                    </span>
+                    {d.label}
+                  </button>
+                ))}
                 <button
                   type="button"
-                  onClick={() => void goToMode('FSR')}
-                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                  onClick={() => setDemoIntroMoreOpen((o) => !o)}
+                  className="w-full px-2 py-1.5 rounded-md border border-white/20 bg-black/25 text-[11px] font-semibold text-sky-200/95 hover:bg-black/35 hover:text-white transition-all"
                 >
-                  <span aria-hidden className="text-[15px]">🍽️</span>
-                  FSR Mode
+                  {demoIntroMoreOpen ? '▲ Hide 6 entries' : '▼ 6 more (Back Office)'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void goToMode('QSR')}
-                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
-                >
-                  <span aria-hidden className="text-[15px]">🥤</span>
-                  QSR Mode
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void goToMode('BISTRO')}
-                  className="w-full px-2.5 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
-                >
-                  <span aria-hidden className="text-[15px]">☕</span>
-                  Bistro Mode
-                </button>
-                <button
-                  type="button"
-                  disabled
-                  className="w-full px-2 py-2 bg-white/10 border border-white/25 rounded-md text-gray-300 text-[13px] font-semibold flex flex-row items-center justify-center gap-1.5 opacity-40 cursor-not-allowed"
-                  style={{ minHeight: '40px' }}
-                >
-                  <span className="text-[15px] shrink-0" aria-hidden>⚙️</span>
-                  <span className="text-[12px] font-medium text-left leading-tight">
-                    <span className="block">Back</span>
-                    <span className="block">Office</span>
-                  </span>
-                </button>
+                {demoIntroMoreOpen && (
+                  <div className="grid grid-cols-2 gap-1.5 w-full">
+                    {INTRO_DEMO_DESTINATIONS.slice(4).map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        disabled={demo && d.kind === 'path' && !demoIntroBoUnlocked}
+                        onClick={() => void runDemoDestination(d)}
+                        className={`px-1.5 py-1.5 border border-white/25 rounded-md text-gray-100 text-[11px] font-semibold transition-all flex flex-row items-center justify-center gap-1 ${
+                          demo && d.kind === 'path' && !demoIntroBoUnlocked
+                            ? 'cursor-not-allowed bg-white/5 opacity-40'
+                            : 'bg-white/10 hover:bg-white/18'
+                        }`}
+                      >
+                        <span aria-hidden className="text-[13px] shrink-0">
+                          {d.emoji}
+                        </span>
+                        <span className="truncate">{d.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </>
             ) : (
-              <div className="grid grid-cols-3 gap-1.5 w-full">
+              <div className="flex flex-row gap-1.5 w-full items-stretch">
                 <button
                   type="button"
-                  onClick={goToBackOffice}
-                  className="col-span-1 px-1.5 py-1.5 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-300 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1"
+                  onClick={() => void goToBackOffice()}
+                  title="Back Office"
+                  className="flex-[1] min-w-0 px-1 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-300 text-[10px] font-semibold transition-all flex flex-col items-center justify-center gap-0.5 leading-tight"
                   style={{ minHeight: '40px' }}
                 >
-                  <span className="text-[15px] shrink-0" aria-hidden>⚙️</span>
-                  <span className="text-[12px] font-medium text-left leading-tight">
+                  <span className="text-[14px] shrink-0 leading-none" aria-hidden>
+                    ⚙️
+                  </span>
+                  <span className="text-center px-0.5">
                     <span className="block">Back</span>
                     <span className="block">Office</span>
                   </span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => void goToSales()}
-                  className="col-span-2 px-2.5 py-1.5 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
+                  onClick={() => void goToSalesFloor()}
+                  className="flex-[2] min-w-0 px-2 py-2 bg-white/10 hover:bg-white/18 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5"
                   style={{ minHeight: '40px' }}
                 >
-                  <span aria-hidden className="text-[15px]">📋</span>
-                  Sales
+                  <span className="text-[15px] shrink-0" aria-hidden>
+                    💳
+                  </span>
+                  <span>Sales</span>
                 </button>
               </div>
             )}

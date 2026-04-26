@@ -5706,7 +5706,6 @@ const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
         navigate('/backoffice');
         return;
       }
-      
       const response = await fetch(`${API_URL}/employees/verify-pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

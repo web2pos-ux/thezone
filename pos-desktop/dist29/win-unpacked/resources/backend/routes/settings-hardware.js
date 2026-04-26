@@ -15,7 +15,7 @@ const defaultSettings = () => ({
   integrationMode: 'standalone',
   terminalType: 'ingenico_tetra_semi',
   terminalId: '',
-  /** Ingenico vendor software / contract file ID (e.g. KVMR…); support reference only — not sent on ECR wire */
+  /** Ingenico vendor software / contract file ID; support reference only — not sent on ECR wire */
   deviceContractRef: '',
   /** Terminal admin menu PIN if the device prompts; optional; not used by semi-integrated purchase frames */
   deviceAdminPin: '',

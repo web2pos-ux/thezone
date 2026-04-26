@@ -1,5 +1,6 @@
 /**
- * Tetra semi-integrated transport: RS232/USB (SerialPort) or TCP (terminal as server).
+ * Tetra semi-integrated transport: RS232/USB (SerialPort) or TCP.
+ * TCP: Node `net.Socket` cleartext only — no TLS. Use acquirer non-SSL ECR port or Serial if SSL-only.
  */
 
 'use strict';

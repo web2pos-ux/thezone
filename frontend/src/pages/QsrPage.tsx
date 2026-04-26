@@ -21,6 +21,7 @@ import {
 import VirtualKeyboard from '../components/order/VirtualKeyboard';
 import { useLayoutSettings } from '../hooks/useLayoutSettings';
 import { quitToOsFromPos } from '../utils/quitToOs';
+import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
 
 const QSR_PAGE_MODAL_PAD_PRESS = `${NEO_MODAL_BTN_PRESS} ${NEO_PREP_TIME_BTN_PRESS} touch-manipulation`;
 
@@ -130,7 +131,8 @@ const ONLINE_SETTINGS_KEY = 'qsr-online-settings';
 // ==================== Main Component ====================
 const QsrPage: React.FC = () => {
   const navigate = useNavigate();
-  
+  const web2posDemo = isWeb2posDemoBuild();
+
   // Layout Settings from Back Office
   const { layoutSettings, loadLayoutSettings } = useLayoutSettings();
   
@@ -2058,9 +2060,19 @@ const QsrPage: React.FC = () => {
                       <Clock className="w-4 h-4 text-white/70" />
                       Opening/Closing
                     </button>
-                    <button 
-                      onClick={() => { navigate('/backoffice/menu'); setShowMoreMenu(false); }}
-                      className="w-full px-4 py-3 text-left text-sm text-white hover:bg-white/10 transition flex items-center gap-3 border-t border-white/10"
+                    <button
+                      type="button"
+                      disabled={web2posDemo}
+                      onClick={() => {
+                        if (web2posDemo) return;
+                        navigate('/backoffice/menu');
+                        setShowMoreMenu(false);
+                      }}
+                      className={`w-full px-4 py-3 text-left text-sm border-t border-white/10 transition flex items-center gap-3 ${
+                        web2posDemo
+                          ? 'cursor-not-allowed text-white/40'
+                          : 'text-white hover:bg-white/10'
+                      }`}
                     >
                       <Settings className="w-4 h-4 text-white/70" />
                       Back Office

@@ -529,8 +529,35 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 						const isOpen = String(sess.status || '').toLowerCase() === 'open';
 						const closedAt = sess.closed_at ? String(sess.closed_at).trim() : '';
 						if (isOpen || !closedAt) {
-							clauses.push(`datetime(o.created_at) >= datetime(?)`);
-							params.push(openedAt);
+							let useBistroCarryover = false;
+							if (sessionScope) {
+								try {
+									const { isBistroPartialSettlementMode } = require('../utils/bistroClosingPartialSettlement');
+									useBistroCarryover = await isBistroPartialSettlementMode(dbGet);
+								} catch (_e) { /* */ }
+							}
+							if (useBistroCarryover) {
+								const openOr = `UPPER(COALESCE(o.status,'')) NOT IN ('PAID','PICKED_UP','CLOSED','COMPLETED','VOIDED','VOID','CANCELLED','CANCELED','MERGED')`;
+								clauses.push(`(
+									datetime(o.created_at) >= datetime(?)
+									OR (
+										${openOr}
+										AND (
+											EXISTS (SELECT 1 FROM table_map_elements t WHERE t.current_order_id = o.id)
+											OR EXISTS (
+												SELECT 1 FROM payments p WHERE p.order_id = o.id
+												AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
+												AND UPPER(COALESCE(p.payment_method,'')) != 'NO_SHOW_FORFEITED'
+											)
+										)
+									)
+								)`);
+								params.push(openedAt);
+								console.log('[GET /orders] session_scope: bistro partial — carry-over open/partial tabs included');
+							} else {
+								clauses.push(`datetime(o.created_at) >= datetime(?)`);
+								params.push(openedAt);
+							}
 						} else {
 							clauses.push(`datetime(o.created_at) >= datetime(?) AND datetime(o.created_at) <= datetime(?)`);
 							params.push(openedAt, closedAt);

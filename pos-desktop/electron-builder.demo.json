@@ -42,6 +42,10 @@
       "from": "apk",
       "to": "apk",
       "filter": ["*.apk"]
+    },
+    {
+      "from": "demo.flag",
+      "to": "demo.flag"
     }
   ],
   "win": {
