@@ -1696,10 +1696,20 @@ const SalesPage: React.FC = () => {
   const togoPanelOrderCardMinHeightPx = Math.max(56, Math.floor(56 * 1.25 * 0.9 * 0.95));
   const togoPanelCardLine1Px = Math.max(13, Math.round(11 * 1.33));
   const togoPanelCardLine2Px = Math.max(12, Math.round(10 * 1.38));
-  /** READY/UNPAID — POS#와 겹침 방지용으로 1행 대비 약간 작게 */
+  /** READY/UNPAID — 크기 유지(채널명·시각만 소폭 축소) */
   const togoPanelCardBadgePx = Math.max(8, Math.round(7 * 1.22));
-  /** 둘째 줄 서버 칩(시간 오른쪽 라벨) — 공간 절약용 소형 */
-  const togoPanelCardServerChipPx = Math.max(7, Math.round(togoPanelCardLine2Px * 0.68));
+  /** 1행 채널명(TOGO, WEB, UBER, DDASH, SKIP …) */
+  const togoPanelCardChannelPx = Math.max(12, Math.round(togoPanelCardLine1Px * 0.91));
+  /** 1행 우측 POS 일일 번호(#nnn) */
+  const togoPanelCardLine1PosNumberPx = Math.max(12, Math.round(togoPanelCardLine1Px * 0.91));
+  /** 2행 시각 숫자부(AM/PM 글자 크기는 renderTogoPanelTimeAmPm의 merPx 그대로) */
+  const togoPanelCardPickupClockPx = Math.max(11, Math.round(togoPanelCardLine1Px * 0.9));
+  /** 둘째 줄 서버 칩 */
+  const togoPanelCardServerChipPx = Math.max(7, Math.round(togoPanelCardLine2Px * 0.68 * 0.91));
+  /** 2행 우측 채널 주문번호·전화 4자리 등 */
+  const togoPanelCardChannelOrderPx = Math.max(10, Math.round(togoPanelCardLine1Px * 0.9));
+  /** 2행 기본(시간 영역 보조) — 아주 약간만 축소 */
+  const togoPanelCardLine2RowPx = Math.max(11, Math.round(togoPanelCardLine2Px * 0.93));
   // ìš”ì†ŒëŠ” BO ì¢Œí‘œ/í¬ê¸°ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©(ìŠ¤ì¼€ì¼ ì—†ìŒ)
   // BO TableMapManagerPageì™€ ì¢Œí‘œ ì¼ì¹˜ë¥¼ ìœ„í•œ ìŠ¤ì¼€ì¼ ê³„ì‚°
   // BOì—ì„œ í…Œì´ë¸”ë§µ ì˜ì—­ ë†’ì´: ìº”ë²„ìŠ¤ ë†’ì´ì˜ 93% (ìƒë‹¨ 7% í—¤ë” ì œì™¸)
@@ -2324,11 +2334,11 @@ const SalesPage: React.FC = () => {
     const trimmed = s.trim();
     const m = trimmed.match(/^(.+?)\s+(AM|PM)$/i);
     const posColor = togoPanelPosLikeTextColor(panelRowLightBg);
-    const line1 = togoPanelCardLine1Px;
-    const merPx = Math.max(6, Math.round(line1 * 0.42));
+    const clockPx = togoPanelCardPickupClockPx;
+    const merPx = Math.max(6, Math.round(togoPanelCardLine1Px * 0.42));
     if (!m) {
       return (
-        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${line1}px` }}>
+        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${clockPx}px` }}>
           {s}
         </span>
       );
@@ -2337,7 +2347,7 @@ const SalesPage: React.FC = () => {
     const mer = m[2].toUpperCase() === 'PM' ? 'PM' : 'AM';
     return (
       <>
-        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${line1}px` }}>
+        <span className="font-bold tabular-nums leading-none" style={{ color: posColor, fontSize: `${clockPx}px` }}>
           {clockPart}
         </span>
         <span
@@ -2365,7 +2375,7 @@ const SalesPage: React.FC = () => {
       return (
         <span
           className="shrink-0 whitespace-nowrap font-bold tabular-nums leading-none"
-          style={{ color: posColor, fontSize: `${togoPanelCardLine1Px}px` }}
+          style={{ color: posColor, fontSize: `${togoPanelCardChannelOrderPx}px` }}
         >
           {tail}
         </span>
@@ -2376,7 +2386,7 @@ const SalesPage: React.FC = () => {
         className="min-w-0 truncate pl-0 text-right font-semibold leading-none"
         style={{
           color: togoPanelPosLikeTextColor(panelRowLightBg),
-          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88))}px`,
+          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88 * 0.93))}px`,
           maxWidth: '3.25rem',
         }}
       >
@@ -2397,7 +2407,7 @@ const SalesPage: React.FC = () => {
       return (
         <span
           className="shrink-0 whitespace-nowrap font-bold tabular-nums leading-none"
-          style={{ color: posColor, fontSize: `${togoPanelCardLine1Px}px` }}
+          style={{ color: posColor, fontSize: `${togoPanelCardChannelOrderPx}px` }}
         >
           {tail}
         </span>
@@ -2408,7 +2418,7 @@ const SalesPage: React.FC = () => {
         className="min-w-0 truncate pl-0 text-right font-semibold leading-none"
         style={{
           color: togoPanelPosLikeTextColor(panelRowLightBg),
-          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88))}px`,
+          fontSize: `${Math.max(10, Math.round(togoPanelCardLine2Px * 0.88 * 0.93))}px`,
           maxWidth: '3.25rem',
         }}
       >
@@ -11875,7 +11885,7 @@ const SalesPage: React.FC = () => {
                             </div>
                           )}
                           <button 
-                            className={`w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                            className={`w-full rounded-lg px-[3px] py-1.5 text-left transition-all duration-200 relative z-10 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : dIsPickedUp ? '#E9D5FF' : '#5c4a3d',
                               border: 'none',
@@ -11910,16 +11920,16 @@ const SalesPage: React.FC = () => {
                                 }
                               : {})}
                           >
-                            <div className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold" style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
-                              <span className="shrink-0 font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
+                            <div className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold" style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}>
+                              <span className="shrink-0 font-bold" style={{ fontSize: `${togoPanelCardChannelPx}px`, color: isSourceTogo ? '#fff' : isTargetSelectable ? '#581c87' : '#d8b4fe' }}>{deliveryDisplayCompany}</span>
                               <span role="status" className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${dTreatAsPaid ? 'text-emerald-300' : 'text-red-300'}`} style={{ fontSize: `${togoPanelCardBadgePx}px` }}>{dTreatAsPaid ? 'READY' : 'UNPAID'}</span>
                               <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
-                                <span className="block truncate">{deliveryDisplayNumber}</span>
+                                <span className="block truncate" style={{ fontSize: `${togoPanelCardLine1PosNumberPx}px` }}>{deliveryDisplayNumber}</span>
                               </span>
                             </div>
                             <div
                               className="flex items-center gap-0.5 font-medium"
-                              style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
+                              style={{ fontSize: `${togoPanelCardLine2RowPx}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
                             >
                               <span className="inline-flex shrink-0 items-baseline">
                                 {renderTogoPanelTimeAmPm(
@@ -11947,7 +11957,7 @@ const SalesPage: React.FC = () => {
                                     String(deliveryExternalNumber).length > 14 ? 'truncate' : 'shrink-0 whitespace-nowrap'
                                   }`}
                                   style={{
-                                    fontSize: `${togoPanelCardLine1Px}px`,
+                                    fontSize: `${togoPanelCardChannelOrderPx}px`,
                                     color: togoPanelPosLikeTextColor(Boolean(isSourceTogo || isTargetSelectable)),
                                     maxWidth: String(deliveryExternalNumber).length > 14 ? (panelServerRow2 ? '36%' : '52%') : undefined,
                                   }}
@@ -12154,7 +12164,7 @@ const SalesPage: React.FC = () => {
                             )}
                             <button
                               type="button"
-                              className={`relative z-10 w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
+                              className={`relative z-10 w-full rounded-lg px-[3px] py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceTogo ? 'animate-pulse' : ''}`}
                               style={{
                                 background: isSourceTogo ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d5c48',
                                 border: 'none',
@@ -12197,9 +12207,9 @@ const SalesPage: React.FC = () => {
                             >
                               <div
                                 className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold"
-                                style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
+                                style={{ color: isSourceTogo || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                               >
-                                <span className="shrink-0 font-bold" style={{ color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
+                                <span className="shrink-0 font-bold" style={{ fontSize: `${togoPanelCardChannelPx}px`, color: isSourceTogo ? '#fff' : isTargetSelectable ? '#065f46' : '#6ee7b7' }}>TOGO</span>
                                 <span
                                   role="status"
                                   className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${tIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
@@ -12208,12 +12218,12 @@ const SalesPage: React.FC = () => {
                                   {tIsPaid ? 'READY' : 'UNPAID'}
                                 </span>
                                 <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
-                                  <span className="block truncate">{formatPosNumber(order.number)}</span>
+                                  <span className="block truncate" style={{ fontSize: `${togoPanelCardLine1PosNumberPx}px` }}>{formatPosNumber(order.number)}</span>
                                 </span>
                               </div>
                               <div
                                 className="flex items-center gap-0.5 font-medium"
-                                style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
+                                style={{ fontSize: `${togoPanelCardLine2RowPx}px`, color: isSourceTogo || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
                               >
                                 <span className="inline-flex shrink-0 items-baseline">
                                   {renderTogoPanelTimeAmPm(
@@ -12343,7 +12353,7 @@ const SalesPage: React.FC = () => {
                           )}
                           <button
                             type="button"
-                            className={`relative z-10 w-full rounded-lg px-2.5 py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
+                            className={`relative z-10 w-full rounded-lg px-[3px] py-1.5 text-left transition-all duration-200 ${isTargetSelectable && !isSourceOnline ? 'animate-pulse' : ''}`}
                             style={{
                               background: isSourceOnline ? '#A78BFA' : isTargetSelectable ? '#D4B8E8' : '#3d4a6b',
                               border: 'none',
@@ -12386,9 +12396,9 @@ const SalesPage: React.FC = () => {
                           >
                             <div
                               className="mb-0.5 flex min-w-0 items-center gap-1 font-semibold"
-                              style={{ fontSize: `${togoPanelCardLine1Px}px`, color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
+                              style={{ color: isSourceOnline || isTargetSelectable ? '#1e1e1e' : 'rgba(255,255,255,0.88)' }}
                             >
-                              <span className="shrink-0 font-bold" style={{ color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>WEB</span>
+                              <span className="shrink-0 font-bold" style={{ fontSize: `${togoPanelCardChannelPx}px`, color: isSourceOnline ? '#fff' : isTargetSelectable ? '#1e3a8a' : '#93c5fd' }}>WEB</span>
                               <span
                                 role="status"
                                 className={`inline-flex shrink-0 items-center font-semibold leading-none tracking-tight ${oIsPaid ? 'text-emerald-300' : 'text-red-300'}`}
@@ -12397,12 +12407,12 @@ const SalesPage: React.FC = () => {
                                 {oIsPaid ? 'READY' : 'UNPAID'}
                               </span>
                               <span className="min-w-0 flex-1 overflow-hidden text-right font-bold">
-                                <span className="block truncate">{onlinePosDisplayNumber}</span>
+                                <span className="block truncate" style={{ fontSize: `${togoPanelCardLine1PosNumberPx}px` }}>{onlinePosDisplayNumber}</span>
                               </span>
                             </div>
                             <div
                               className="flex items-center gap-0.5 font-medium"
-                              style={{ fontSize: `${togoPanelCardLine2Px}px`, color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
+                              style={{ fontSize: `${togoPanelCardLine2RowPx}px`, color: isSourceOnline || isTargetSelectable ? '#374151' : 'rgba(255,255,255,0.78)' }}
                             >
                               <span className="inline-flex shrink-0 items-baseline">
                                 {renderTogoPanelTimeAmPm(onlineReadyDisplayRaw, Boolean(isSourceOnline || isTargetSelectable))}
