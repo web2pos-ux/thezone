@@ -74,7 +74,7 @@ const getIntroNavPathForStoredOperationMode = (): '/sales' | '/qsr' | '/bistro' 
   return '/sales';
 };
 
-/** 데모 인트로: 보이는 건 처음 4개(FSR / QSR / Bistro / Back Office), 배열에는 진입 10개(나머지 6은 More). */
+/** 데모 인트로: 노출은 FSR / QSR / Bistro / Back Office 4개만. (BO는 9998887117 입력 시 잠금 해제) */
 type IntroDemoDestination =
   | { id: string; kind: 'mode'; mode: 'FSR' | 'QSR' | 'BISTRO'; label: string; emoji: string }
   | { id: string; kind: 'path'; path: string; label: string; emoji: string };
@@ -84,12 +84,6 @@ const INTRO_DEMO_DESTINATIONS: IntroDemoDestination[] = [
   { id: 'qsr', kind: 'mode', mode: 'QSR', label: 'QSR Mode', emoji: '🥤' },
   { id: 'bistro', kind: 'mode', mode: 'BISTRO', label: 'Bistro Mode', emoji: '☕' },
   { id: 'bo', kind: 'path', path: '/backoffice', label: 'Back Office', emoji: '⚙️' },
-  { id: 'basic', kind: 'path', path: '/backoffice/basic-info', label: 'Business Info', emoji: '📋' },
-  { id: 'menu', kind: 'path', path: '/backoffice/menu', label: 'Menu', emoji: '🍽️' },
-  { id: 'tables', kind: 'path', path: '/backoffice/tables', label: 'Tables', emoji: '🗺️' },
-  { id: 'order', kind: 'path', path: '/backoffice/order-setup', label: 'Order Setup', emoji: '📝' },
-  { id: 'emp', kind: 'path', path: '/backoffice/employees', label: 'Employees', emoji: '👥' },
-  { id: 'rep', kind: 'path', path: '/backoffice/reports', label: 'Reports', emoji: '📊' },
 ];
 
 const IntroPage: React.FC = () => {
@@ -100,8 +94,7 @@ const IntroPage: React.FC = () => {
 
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
-  const [demoIntroMoreOpen, setDemoIntroMoreOpen] = useState(false);
-  /** 데모: DEMO_INTRO_BO_UNLOCK_PIN 입력 완료 후에만 Back Office(및 More의 BO 경로) 활성 */
+  /** 데모: DEMO_INTRO_BO_UNLOCK_PIN(9998887117) 입력 완료 후에만 Back Office 버튼 활성 */
   const [demoIntroBoUnlocked, setDemoIntroBoUnlocked] = useState(false);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -272,21 +265,14 @@ const IntroPage: React.FC = () => {
         </h1>
         <p className="text-lg text-sky-400 mb-5 italic font-bold sm:text-xl">One Touch, So Much</p>
 
-        {/* PIN Dots — 데모 잠금 해제 전에는 10칸(9998887117), 해제 후·비데모는 4칸(직원 PIN) */}
-        <div
-          className={`mb-0.5 flex justify-center ${demo && !demoIntroBoUnlocked ? 'max-w-[15rem] flex-wrap gap-1' : 'gap-2.5'}`}
-        >
-          {Array.from(
-            { length: demo && !demoIntroBoUnlocked ? 10 : 4 },
-            (_, i) => (
-              <div
-                key={i}
-                className={`rounded-full border-2 ${
-                  demo && !demoIntroBoUnlocked ? 'h-3 w-3' : 'h-4 w-4'
-                } ${pin.length > i ? 'border-white bg-white' : 'border-gray-400'}`}
-              />
-            )
-          )}
+        {/* PIN Dots — 항상 4칸으로 표시(데모 BO 잠금 해제 코드는 내부적으로 최대 10자리까지 받지만 화면엔 노출하지 않음) */}
+        <div className="mb-0.5 flex justify-center gap-2.5">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div
+              key={i}
+              className={`rounded-full border-2 h-4 w-4 ${pin.length > i ? 'border-white bg-white' : 'border-gray-400'}`}
+            />
+          ))}
         </div>
 
         {/* PIN Error Message (space reserved so layout doesn't jump) */}
@@ -333,57 +319,31 @@ const IntroPage: React.FC = () => {
           {/* Divider */}
           <div className="border-t border-white/15 my-1.5"></div>
 
-          {/* 데모: 상단 4버튼(FSR/QSR/Bistro/BO) + More / 비데모: Back Office(너비 1) + Sales(너비 2), PIN 4자리 시 자동 POS 진입 */}
+          {/* 데모: FSR / QSR / Bistro / Back Office 4버튼만 노출 (BO는 9998887117 입력 시 활성화) / 비데모: Back Office(너비 1) + Sales(너비 2) */}
           <div className="flex flex-col gap-1.5 w-full">
             {demo ? (
               <>
-                {INTRO_DEMO_DESTINATIONS.slice(0, 4).map((d) => (
-                  <button
-                    key={d.id}
-                    type="button"
-                    disabled={demo && d.kind === 'path' && !demoIntroBoUnlocked}
-                    onClick={() => void runDemoDestination(d)}
-                    className={`w-full px-2.5 py-2 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5 ${
-                      demo && d.kind === 'path' && !demoIntroBoUnlocked
-                        ? 'cursor-not-allowed bg-white/5 opacity-40'
-                        : 'bg-white/10 hover:bg-white/18'
-                    }`}
-                  >
-                    <span aria-hidden className="text-[15px]">
-                      {d.emoji}
-                    </span>
-                    {d.label}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setDemoIntroMoreOpen((o) => !o)}
-                  className="w-full px-2 py-1.5 rounded-md border border-white/20 bg-black/25 text-[11px] font-semibold text-sky-200/95 hover:bg-black/35 hover:text-white transition-all"
-                >
-                  {demoIntroMoreOpen ? '▲ Hide 6 entries' : '▼ 6 more (Back Office)'}
-                </button>
-                {demoIntroMoreOpen && (
-                  <div className="grid grid-cols-2 gap-1.5 w-full">
-                    {INTRO_DEMO_DESTINATIONS.slice(4).map((d) => (
-                      <button
-                        key={d.id}
-                        type="button"
-                        disabled={demo && d.kind === 'path' && !demoIntroBoUnlocked}
-                        onClick={() => void runDemoDestination(d)}
-                        className={`px-1.5 py-1.5 border border-white/25 rounded-md text-gray-100 text-[11px] font-semibold transition-all flex flex-row items-center justify-center gap-1 ${
-                          demo && d.kind === 'path' && !demoIntroBoUnlocked
-                            ? 'cursor-not-allowed bg-white/5 opacity-40'
-                            : 'bg-white/10 hover:bg-white/18'
-                        }`}
-                      >
-                        <span aria-hidden className="text-[13px] shrink-0">
-                          {d.emoji}
-                        </span>
-                        <span className="truncate">{d.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                {INTRO_DEMO_DESTINATIONS.map((d) => {
+                  const boLocked = d.kind === 'path' && !demoIntroBoUnlocked;
+                  return (
+                    <button
+                      key={d.id}
+                      type="button"
+                      disabled={boLocked}
+                      onClick={() => void runDemoDestination(d)}
+                      className={`w-full px-2.5 py-2 border border-white/25 rounded-md text-gray-100 text-[13px] font-semibold transition-all flex flex-row items-center justify-center gap-1.5 ${
+                        boLocked
+                          ? 'cursor-not-allowed bg-white/5 opacity-40'
+                          : 'bg-white/10 hover:bg-white/18'
+                      }`}
+                    >
+                      <span aria-hidden className="text-[15px]">
+                        {d.emoji}
+                      </span>
+                      {d.label}
+                    </button>
+                  );
+                })}
               </>
             ) : (
               <div className="flex flex-row gap-1.5 w-full items-stretch">
