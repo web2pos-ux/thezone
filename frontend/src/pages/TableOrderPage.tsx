@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { ShoppingCart, Plus, Minus, X, Send, Utensils, Clock, Trash2, Bell, Receipt, Droplets, HelpCircle, CreditCard, UtensilsCrossed, Sparkles, Package } from 'lucide-react';
 import NeumorphicButton from '../components/NeumorphicButton';
 import SquareNeumorphicButton from '../components/SquareNeumorphicButton';
+import { getTableOrderSubmitSource } from '../utils/tableOrderSubmitSource';
 
 // 날아가는 아이템 인터페이스
 interface FlyingItem {
@@ -545,6 +546,7 @@ const TableOrderPage: React.FC = () => {
         store_id: effectiveStoreId,
         table_id: effectiveTableId,
         table_label: tableInfo?.table_label || effectiveTableId,
+        source: getTableOrderSubmitSource(),
         items: cart.map(item => ({
           item_id: item.item_id,
           name: item.name,

@@ -1,32 +1,58 @@
 /**
- * 핸드헬드 모드에서 Call Server 알림을 항상 표시하는 전역 오버레이
- * 핸드헬드 모드가 활성화되어 있으면 SalesPage, OrderPage 등 어디서든 표시됨
+ * 핸드헬드 / Sub POS 모드에서 Call Server 알림을 항상 표시하는 전역 오버레이
+ * Sub POS가 활성화되면 Socket은 device_sub_pos 룸으로 등록됩니다.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Bell, X, Check, Clock } from 'lucide-react';
 import { usePosSocket } from '../hooks/usePosSocket';
 
 const HANDHELD_MODE_KEY = 'handheld-mode-active';
+const SUB_POS_MODE_KEY = 'sub-pos-mode-active';
 
 interface HandheldConfig {
   active: boolean;
   posHost: string;
 }
 
+interface SubPosConfig {
+  active: boolean;
+  posHost: string;
+  deviceName?: string;
+}
+
+type OverlayMode = 'sub_pos' | 'handheld';
+
+interface OverlayConfig {
+  posHost: string;
+  mode: OverlayMode;
+  deviceName: string;
+}
+
 const HandheldCallOverlay: React.FC = () => {
-  const [config, setConfig] = useState<HandheldConfig | null>(null);
+  const [config, setConfig] = useState<OverlayConfig | null>(null);
   const [showPanel, setShowPanel] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
   useEffect(() => {
     const check = () => {
       try {
+        const subRaw = localStorage.getItem(SUB_POS_MODE_KEY);
+        if (subRaw) {
+          const sub: SubPosConfig = JSON.parse(subRaw);
+          if (sub.active && sub.posHost) {
+            const name = (sub.deviceName && String(sub.deviceName).trim()) || 'Sub POS';
+            setConfig({ posHost: sub.posHost, mode: 'sub_pos', deviceName: name });
+            return;
+          }
+        }
+      } catch {}
+      try {
         const raw = localStorage.getItem(HANDHELD_MODE_KEY);
         if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed.active) {
-            setConfig(parsed);
+          const parsed: HandheldConfig = JSON.parse(raw);
+          if (parsed.active && parsed.posHost) {
+            setConfig({ posHost: parsed.posHost, mode: 'handheld', deviceName: 'Handheld' });
             return;
           }
         }
@@ -45,8 +71,8 @@ const HandheldCallOverlay: React.FC = () => {
     dismissCall
   } = usePosSocket({
     serverUrl: config?.posHost || '',
-    deviceType: 'handheld',
-    deviceName: 'Handheld',
+    deviceType: config?.mode === 'sub_pos' ? 'sub_pos' : 'handheld',
+    deviceName: config?.deviceName || 'Handheld',
     onCallServerRequest: (call) => {
       setNotification(`🔔 ${call.table_label}: ${call.message}`);
       setShowPanel(true);
@@ -64,6 +90,8 @@ const HandheldCallOverlay: React.FC = () => {
   }, [notification]);
 
   if (!config) return null;
+
+  const ackName = config.deviceName || 'Staff';
 
   return (
     <>
@@ -132,7 +160,7 @@ const HandheldCallOverlay: React.FC = () => {
                       <div className="flex gap-2">
                         {call.status !== 'acknowledged' && (
                           <button
-                            onClick={() => acknowledgeCall(call.id, 'Handheld')}
+                            onClick={() => acknowledgeCall(call.id, ackName)}
                             className="px-3 py-1.5 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600 flex items-center gap-1"
                           >
                             <Check className="w-4 h-4" /> Ack

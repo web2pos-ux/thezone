@@ -240,15 +240,17 @@ export function usePosSocket(options: UsePosSocketOptions): UsePosSocketReturn {
     socketRef.current?.emit('table_status_changed', data);
   }, []);
 
-  // 컴포넌트 마운트 시 연결
+  // 서버 URL 또는 디바이스 식별이 바뀌면 끊고 다시 연결(register_device 룸 갱신)
   useEffect(() => {
-    if (serverUrl) {
-      connect();
+    if (!serverUrl) {
+      disconnect();
+      return undefined;
     }
+    connect();
     return () => {
       disconnect();
     };
-  }, [serverUrl, connect, disconnect]);
+  }, [serverUrl, deviceType, deviceName, connect, disconnect]);
 
   return {
     isConnected,

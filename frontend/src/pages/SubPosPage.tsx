@@ -30,14 +30,14 @@ const SubPosPage: React.FC = () => {
   useEffect(() => {
     const savedConfig = localStorage.getItem(SETUP_STORAGE_KEY);
     if (!savedConfig) {
-      navigate('/sub-pos-setup', { replace: true });
+      navigate('/subpos', { replace: true });
       return;
     }
 
     try {
       const parsed: SetupConfig = JSON.parse(savedConfig);
       if (!parsed.configured) {
-        navigate('/sub-pos-setup', { replace: true });
+        navigate('/subpos', { replace: true });
         return;
       }
 
@@ -58,7 +58,7 @@ const SubPosPage: React.FC = () => {
       // POS 테이블맵(SalesPage)으로 이동
       navigate('/sales', { replace: true });
     } catch {
-      navigate('/sub-pos-setup', { replace: true });
+      navigate('/subpos', { replace: true });
     }
   }, [navigate]);
 

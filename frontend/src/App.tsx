@@ -29,6 +29,7 @@ import TableOrderPage from './pages/TableOrderPage';
 import TableOrderSetupPage from './pages/TableOrderSetupPage';
 import HandheldSetupPage from './pages/HandheldSetupPage';
 import SubPosSetupPage from './pages/SubPosSetupPage';
+import SubPosPage from './pages/SubPosPage';
 import QsrSetupPage from './pages/QsrSetupPage';
 import QsrPage from './pages/QsrPage';
 import QsrOrderPage from './pages/QsrOrderPage';
@@ -365,12 +366,17 @@ const RequireApprovedDevice: React.FC = () => {
         // keep last_seen updated for approved devices
         if (status === 'active') {
           try {
+            let hbDeviceType: 'sub_pos' | 'handheld' = 'sub_pos';
+            try {
+              const t = localStorage.getItem('pos_device_type');
+              if (t === 'handheld' || t === 'sub_pos') hbDeviceType = t;
+            } catch {}
             await fetchWithTimeout(`${apiUrl}/devices/heartbeat`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 device_id: deviceId,
-                device_type: 'sub_pos',
+                device_type: hbDeviceType,
                 os_version: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
               }),
             }, 4000);
@@ -452,6 +458,8 @@ function App() {
           {/* 서브 POS (보조 결제 스테이션) */}
           <Route element={<RequireApprovedDevice />}>
             <Route path="/subpos" element={<SubPosSetupPage />} />
+            <Route path="/sub-pos" element={<SubPosPage />} />
+            <Route path="/sub-pos-setup" element={<Navigate to="/subpos" replace />} />
           </Route>
           
           {/* QSR / 카페 모드 */}

@@ -66,6 +66,8 @@ async function isSubPosPrintEnabled(): Promise<boolean> {
     if (resp.ok) {
       const data = await resp.json();
       _subPosPrintAllowed = data.value === 'true' || data.value === '1';
+    } else if (resp.status === 404) {
+      _subPosPrintAllowed = true;
     } else {
       _subPosPrintAllowed = false;
     }

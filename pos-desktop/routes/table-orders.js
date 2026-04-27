@@ -252,7 +252,14 @@ module.exports = (db) => {
 
     try {
       const createdAt = new Date().toISOString();
-      const orderSource = source === 'HANDHELD' ? 'HANDHELD' : 'TABLE_QR';
+      const srcNorm = String(source || 'TABLE_QR').toUpperCase().replace(/-/g, '_');
+      let orderSource = 'TABLE_QR';
+      if (srcNorm === 'HANDHELD') orderSource = 'HANDHELD';
+      else if (srcNorm === 'SUB_POS' || srcNorm === 'SUBPOS') orderSource = 'SUB_POS';
+      const isHandheldSource = orderSource === 'HANDHELD';
+      const isSubPosSource = orderSource === 'SUB_POS';
+      const staffLikeOrder = isHandheldSource || isSubPosSource;
+      const orderLinePrefix = isHandheldSource ? 'HH' : isSubPosSource ? 'SP' : 'TO';
 
       // 금액 계산
       const itemsSubtotal = items.reduce((sum, item) => {
@@ -337,10 +344,8 @@ module.exports = (db) => {
       } else {
         // 새 주문 생성 — POS 일일 순번은 Day Open 이후 orders.js POST 와 동일(admin_settings.daily_order_counter)
         isNewOrder = true;
-        const sessionKey =
-          source === 'HANDHELD'
-            ? `HH-${table_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-            : `TO-${table_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const sessionPrefix = isHandheldSource ? 'HH' : isSubPosSource ? 'SP' : 'TO';
+        const sessionKey = `${sessionPrefix}-${table_id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         orderId = sessionKey;
         const subtotalAfterDiscount = itemsSubtotal - promotionDiscount;
         const total = subtotalAfterDiscount * 1.05; // 세금 포함
@@ -373,7 +378,7 @@ module.exports = (db) => {
       // 2. order_items 테이블에 아이템 저장
       for (const item of items) {
         const modifiersJson = JSON.stringify(item.modifiers || []);
-        const orderLineId = `${source === 'HANDHELD' ? 'HH' : 'TO'}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const orderLineId = `${orderLinePrefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const guestNumber = item.guest_number || 1;
         
         await dbRun(`
@@ -412,11 +417,11 @@ module.exports = (db) => {
         console.log(`[${orderSource}] Could not update table status:`, e.message);
       }
 
-      // 5. Socket.io로 POS에 실시간 알림 전송
+      // 5. Socket.io로 POS에 실시간 알림 전송 + 핸드헬드/Sub POS에 테이블 상태 푸시
       try {
         const io = req.app.get('io');
         if (io) {
-          const eventName = source === 'HANDHELD' ? 'handheld_order_received' : 'table_order_received';
+          const eventName = staffLikeOrder ? 'handheld_order_received' : 'table_order_received';
           io.emit(eventName, {
             table_id,
             order_id: orderId,
@@ -428,6 +433,14 @@ module.exports = (db) => {
             source: orderSource
           });
           console.log(`[${orderSource}] 📡 Pushed to POS: ${eventName} for ${table_id}`);
+          const tablePayload = {
+            table_id,
+            status: 'Occupied',
+            current_order_id: posOrderId,
+            guests: guest_count || undefined
+          };
+          io.to('device_handheld').emit('table_updated', tablePayload);
+          io.to('device_sub_pos').emit('table_updated', tablePayload);
         }
       } catch (socketErr) {
         console.log(`[${orderSource}] Socket.io not available`);

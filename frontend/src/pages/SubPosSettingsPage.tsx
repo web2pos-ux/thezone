@@ -338,7 +338,7 @@ const SubPosSettingsPage: React.FC = () => {
           <div>
             <h4 className="font-medium text-blue-700 mb-2">Sub POS</h4>
             <ol className="text-sm text-blue-600 space-y-1 list-decimal list-inside">
-              <li>On the device browser, go to <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/subpos</code></li>
+              <li>On the device browser, go to <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/subpos</code> (same screen: <code className="bg-blue-100 px-1 rounded">/sub-pos</code>)</li>
               <li>Enter POS Host address + device name</li>
               <li>Setup complete → Shows the same screen as main POS</li>
             </ol>
