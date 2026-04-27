@@ -8,6 +8,7 @@ import SetupPage from './pages/SetupPage';
 import SalesPage from './pages/SalesPage';
 import BackOfficeLayout from './components/BackOfficeLayout';
 import HandheldCallOverlay from './components/HandheldCallOverlay';
+import RequireDeviceIntro from './components/RequireDeviceIntro';
 import PrintPreviewModalHost from './components/PrintPreviewModalHost';
 import { DlqSyncModal } from './components/DlqSyncModal';
 import DayOpeningModal from './components/DayOpeningModal';
@@ -408,7 +409,7 @@ const RequireApprovedDevice: React.FC = () => {
   if (!allowed) {
     const from = `${location.pathname}${location.search || ''}`;
     const suggestedType =
-      (from.startsWith('/handheld') ? 'handheld' : 'sub_pos');
+      from.startsWith('/handheld') || from.startsWith('/intro/handheld') ? 'handheld' : 'sub_pos';
     return <Navigate to="/device-setup" replace state={{ from, suggestedType }} />;
   }
 
@@ -441,6 +442,8 @@ function App() {
           <Route element={<RequireApprovedDevice />}>
             <Route path="/" element={<IntroPage />} />
             <Route path="/intro" element={<IntroPage />} />
+            <Route path="/intro/sub-pos" element={<IntroPage deviceEntry="sub_pos" />} />
+            <Route path="/intro/handheld" element={<IntroPage deviceEntry="handheld" />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/initial-setup" element={<InitialSetupPage />} />
           
@@ -450,16 +453,20 @@ function App() {
           <Route path="/table-order/:storeId/:tableId" element={<TableOrderPage />} />
           <Route path="/to/:storeId/:tableId" element={<TableOrderPage />} />
           
-          {/* 핸드헬드 POS (서버용 주문기) */}
+          {/* 핸드헬드 POS (서버용 주문기) — Intro PIN(세션) 후 접근 */}
           <Route element={<RequireApprovedDevice />}>
-            <Route path="/handheld" element={<HandheldSetupPage />} />
+            <Route element={<RequireDeviceIntro role="handheld" />}>
+              <Route path="/handheld" element={<HandheldSetupPage />} />
+            </Route>
           </Route>
           
-          {/* 서브 POS (보조 결제 스테이션) */}
+          {/* 서브 POS (보조 결제 스테이션) — Intro PIN(세션) 후 접근 */}
           <Route element={<RequireApprovedDevice />}>
-            <Route path="/subpos" element={<SubPosSetupPage />} />
-            <Route path="/sub-pos" element={<SubPosPage />} />
-            <Route path="/sub-pos-setup" element={<Navigate to="/subpos" replace />} />
+            <Route element={<RequireDeviceIntro role="sub_pos" />}>
+              <Route path="/subpos" element={<SubPosSetupPage />} />
+              <Route path="/sub-pos" element={<SubPosPage />} />
+              <Route path="/sub-pos-setup" element={<Navigate to="/subpos" replace />} />
+            </Route>
           </Route>
           
           {/* QSR / 카페 모드 */}

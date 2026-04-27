@@ -9,6 +9,8 @@ import {
 } from '../constants/introScreenLoginPermission';
 import { isMasterPosPin } from '../constants/masterPosPin';
 import { isWeb2posDemoBuild } from '../utils/web2posDemoBuild';
+import type { DeviceIntroRole } from '../constants/deviceIntroSession';
+import { setDeviceIntroSession } from '../constants/deviceIntroSession';
 
 /** 인트로 PIN: 레거시 고정값 또는 만능 PIN(1126) 또는 직원 PIN (Employee Manager → 최소 레벨 이상) */
 const INTRO_FALLBACK_PIN = '0888';
@@ -86,7 +88,12 @@ const INTRO_DEMO_DESTINATIONS: IntroDemoDestination[] = [
   { id: 'bo', kind: 'path', path: '/backoffice', label: 'Back Office', emoji: '⚙️' },
 ];
 
-const IntroPage: React.FC = () => {
+export type IntroPageProps = {
+  /** Sub POS / Handheld 전용 인트로: PIN 후 해당 모드로만 진입 */
+  deviceEntry?: DeviceIntroRole | null;
+};
+
+const IntroPage: React.FC<IntroPageProps> = ({ deviceEntry = null }) => {
   const navigate = useNavigate();
   /** PIN 검증은 고정값만 사용하지만, 다른 화면과 동일하게 API base는 유지 */
   void getAPI_BASE();
@@ -191,6 +198,11 @@ const IntroPage: React.FC = () => {
   const goToSalesFloor = async () => {
     const valid = await verifyIntroPin();
     if (!valid) return;
+    if (deviceEntry) {
+      setDeviceIntroSession(deviceEntry);
+      navigate(deviceEntry === 'handheld' ? '/handheld' : '/sub-pos');
+      return;
+    }
     navigate(getIntroNavPathForStoredOperationMode());
   };
 
@@ -205,13 +217,18 @@ const IntroPage: React.FC = () => {
       const valid = await verifyIntroPin(snapshot);
       if (cancelled) return;
       if (!valid) return;
+      if (deviceEntry) {
+        setDeviceIntroSession(deviceEntry);
+        navigate(deviceEntry === 'handheld' ? '/handheld' : '/sub-pos');
+        return;
+      }
       navigate(getIntroNavPathForStoredOperationMode());
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [pin, demo, navigate, verifyIntroPin]);
+  }, [pin, demo, navigate, verifyIntroPin, deviceEntry]);
 
   const runDemoDestination = async (d: IntroDemoDestination) => {
     if (d.kind === 'path') {
@@ -223,6 +240,11 @@ const IntroPage: React.FC = () => {
     }
     const valid = await verifyIntroPin();
     if (!valid) return;
+    if (deviceEntry) {
+      setDeviceIntroSession(deviceEntry);
+      navigate(deviceEntry === 'handheld' ? '/handheld' : '/sub-pos');
+      return;
+    }
     if (d.kind === 'mode') {
       persistOperationMode(d.mode);
       if (d.mode === 'QSR') navigate('/qsr');
@@ -264,6 +286,12 @@ const IntroPage: React.FC = () => {
           ThezonePOS
         </h1>
         <p className="text-lg text-sky-400 mb-5 italic font-bold sm:text-xl">One Touch, So Much</p>
+        {deviceEntry === 'sub_pos' && (
+          <p className="text-sm text-white/90 mb-3 font-semibold tracking-wide">Sub POS — staff PIN required</p>
+        )}
+        {deviceEntry === 'handheld' && (
+          <p className="text-sm text-white/90 mb-3 font-semibold tracking-wide">Handheld — staff PIN required</p>
+        )}
 
         {/* PIN Dots — 항상 4칸으로 표시(데모 BO 잠금 해제 코드는 내부적으로 최대 10자리까지 받지만 화면엔 노출하지 않음) */}
         <div className="mb-0.5 flex justify-center gap-2.5">
@@ -371,7 +399,7 @@ const IntroPage: React.FC = () => {
                   <span className="text-[15px] shrink-0" aria-hidden>
                     💳
                   </span>
-                  <span>Sales</span>
+                  <span>{deviceEntry === 'handheld' ? 'Handheld' : deviceEntry === 'sub_pos' ? 'Sub POS' : 'Sales'}</span>
                 </button>
               </div>
             )}

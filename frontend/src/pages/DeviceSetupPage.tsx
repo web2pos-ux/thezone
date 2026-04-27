@@ -24,11 +24,22 @@ const safeGetOriginLabel = () => {
   }
 };
 
+/** 기기 승인 후에는 항상 직원 Intro(PIN)부터 진입 */
+function deviceSetupContinueTarget(fromPath: string): string {
+  const path = (fromPath || '').split('?')[0] || '';
+  if (path === '/handheld' || path.startsWith('/handheld/')) return '/intro/handheld';
+  if (path === '/subpos' || path.startsWith('/subpos/') || path === '/sub-pos' || path.startsWith('/sub-pos/')) {
+    return '/intro/sub-pos';
+  }
+  return fromPath;
+}
+
 const DeviceSetupPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation() as any;
-  const from = (location?.state?.from as string) || '/intro';
   const suggestedType = (location?.state?.suggestedType as DeviceType) || 'sub_pos';
+  const fromDefault = suggestedType === 'handheld' ? '/intro/handheld' : '/intro/sub-pos';
+  const from = (location?.state?.from as string) || fromDefault;
 
   const originLabel = useMemo(() => safeGetOriginLabel(), []);
   const apiUrl = useMemo(() => getAPI_URL(), []);
@@ -313,11 +324,11 @@ const DeviceSetupPage: React.FC = () => {
           </div>
 
           <button
-            onClick={() => navigate(from, { replace: true })}
+            onClick={() => navigate(deviceSetupContinueTarget(from), { replace: true })}
             disabled={!canContinue}
             className="w-full px-4 py-3 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 disabled:opacity-40"
           >
-            {canContinue ? '계속 진행 (주문/결제 화면으로)' : '승인 대기 중 (Active 후 진행 가능)'}
+            {canContinue ? '계속 진행 (직원 PIN)' : '승인 대기 중 (Active 후 진행 가능)'}
           </button>
         </div>
       </div>

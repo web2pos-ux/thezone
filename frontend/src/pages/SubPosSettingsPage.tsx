@@ -338,7 +338,10 @@ const SubPosSettingsPage: React.FC = () => {
           <div>
             <h4 className="font-medium text-blue-700 mb-2">Sub POS</h4>
             <ol className="text-sm text-blue-600 space-y-1 list-decimal list-inside">
-              <li>On the device browser, go to <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/subpos</code> (same screen: <code className="bg-blue-100 px-1 rounded">/sub-pos</code>)</li>
+              <li>
+                Bookmark or &quot;Add to Home Screen&quot;: <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/intro/sub-pos</code> (shortcut page:{' '}
+                <code className="bg-blue-100 px-1 rounded">/launch-sub-pos.html</code>) — staff PIN first, then Sub POS setup / floor
+              </li>
               <li>Enter POS Host address + device name</li>
               <li>Setup complete → Shows the same screen as main POS</li>
             </ol>
@@ -346,7 +349,10 @@ const SubPosSettingsPage: React.FC = () => {
           <div>
             <h4 className="font-medium text-blue-700 mb-2">Handheld POS</h4>
             <ol className="text-sm text-blue-600 space-y-1 list-decimal list-inside">
-              <li>On smartphone/tablet browser, go to <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/handheld</code></li>
+              <li>
+                Bookmark or &quot;Add to Home Screen&quot;: <code className="bg-blue-100 px-1 rounded">http://[POS IP]:3000/intro/handheld</code> (shortcut:{' '}
+                <code className="bg-blue-100 px-1 rounded">/launch-handheld.html</code>) — staff PIN first
+              </li>
               <li>Enter POS Host address + test connection</li>
               <li>Setup complete → Same screen as POS + Call Server notifications</li>
             </ol>
