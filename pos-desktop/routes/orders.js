@@ -69,6 +69,28 @@ module.exports = (db) => {
 		return { appliedByEmployeeId, appliedByName };
 	}
 
+	/** table_map_elements 반영 후 Sub POS/핸드헬드 동기화 (table-operations와 동일 페이로드). */
+	function emitDeviceTableUpdatedFromElement(req, elementId, status, currentOrderId) {
+		try {
+			const io = req.app && req.app.get('io');
+			if (!io || elementId == null || String(elementId).trim() === '') return;
+			const tid = String(elementId);
+			const payload = {
+				table_id: tid,
+				element_id: tid,
+				status: String(status != null ? status : ''),
+			};
+			if (currentOrderId != null && currentOrderId !== '') {
+				const n = Number(currentOrderId);
+				if (Number.isFinite(n)) payload.current_order_id = n;
+			}
+			io.to('device_handheld').emit('table_updated', payload);
+			io.to('device_sub_pos').emit('table_updated', payload);
+		} catch (e) {
+			console.warn('[orders] emitDeviceTableUpdatedFromElement:', e && e.message);
+		}
+	}
+
 	// one-time init: ensure tables and indexes exist (sequential)
 	(async () => {
 		try {
@@ -273,9 +295,20 @@ module.exports = (db) => {
 
 			updateSql += ` WHERE id = ?`;
 			updateParams.push(orderId);
+			let tableElRows = [];
+			try {
+				tableElRows = await dbAll(`SELECT element_id FROM table_map_elements WHERE current_order_id = ?`, [orderId]);
+			} catch (e) {
+				tableElRows = [];
+			}
 			await dbRun(updateSql, updateParams);
 			// Atomically release any table linked to this order
 			await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
+			for (const row of tableElRows || []) {
+				if (row && row.element_id != null) {
+					emitDeviceTableUpdatedFromElement(req, row.element_id, 'Available', null);
+				}
+			}
 			
 			// Firebase 주문/매출 동기화 (POS → Firebase orders → aggregateDailySalesOnOrderWrite)
 			try {
@@ -1031,6 +1064,12 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 	router.delete('/:id', async (req, res) => {
 		try {
 			const orderId = Number(req.params.id);
+			let tableElRows = [];
+			try {
+				tableElRows = await dbAll(`SELECT element_id FROM table_map_elements WHERE current_order_id = ?`, [orderId]);
+			} catch (e) {
+				tableElRows = [];
+			}
 			await dbRun('BEGIN');
 			try {
 				await dbRun(`DELETE FROM order_adjustments WHERE order_id = ?`, [orderId]);
@@ -1042,6 +1081,11 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				await dbRun(`UPDATE table_map_elements SET current_order_id = NULL, status = 'Available' WHERE current_order_id = ?`, [orderId]);
 			} catch (e) { /* ignore if table not exists */ }
 			await dbRun('COMMIT');
+			for (const row of tableElRows || []) {
+				if (row && row.element_id != null) {
+					emitDeviceTableUpdatedFromElement(req, row.element_id, 'Available', null);
+				}
+			}
 			res.json({ success: true });
 		} catch (e) {
 			try { await dbRun('ROLLBACK'); } catch {}
