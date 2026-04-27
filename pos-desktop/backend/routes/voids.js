@@ -38,6 +38,28 @@ async function getRestaurantId() {
   return null;
 }
 
+/** table_map_elements 해제 반영 후 Sub POS/핸드헬드 동기화 (orders/table-operations와 동일 페이로드). */
+function emitDeviceTableUpdatedFromElement(req, elementId, status, currentOrderId) {
+	try {
+		const io = req.app && req.app.get('io');
+		if (!io || elementId == null || String(elementId).trim() === '') return;
+		const tid = String(elementId);
+		const payload = {
+			table_id: tid,
+			element_id: tid,
+			status: String(status != null ? status : ''),
+		};
+		if (currentOrderId != null && currentOrderId !== '') {
+			const n = Number(currentOrderId);
+			if (Number.isFinite(n)) payload.current_order_id = n;
+		}
+		io.to('device_handheld').emit('table_updated', payload);
+		io.to('device_sub_pos').emit('table_updated', payload);
+	} catch (e) {
+		console.warn('[voids] emitDeviceTableUpdatedFromElement:', e && e.message);
+	}
+}
+
 // 테이블 생성
 db.serialize(() => {
   db.run(`
@@ -335,6 +357,13 @@ router.post('/orders/:orderId/void', async (req, res) => {
     lines.forEach(l => stmt.run(voidId, l.order_line_id ?? null, l.menu_id ?? null, l.name ?? null, Number(l.qty||0), Number(l.amount||0), Number(l.tax||0), l.printer_group_id ?? null));
     await new Promise((resolve, reject) => stmt.finalize(err => err ? reject(err) : resolve()));
 
+    let tableElRowsForSocket = [];
+    try {
+      tableElRowsForSocket = await dbAll(`SELECT element_id FROM table_map_elements WHERE current_order_id = ?`, [orderId]);
+    } catch (e) {
+      tableElRowsForSocket = [];
+    }
+    let shouldEmitTableSocket = false;
     // 주문 항목( order_items )에 수량 반영 및 합계 재계산
     try {
       await dbRun('BEGIN');
@@ -403,10 +432,19 @@ router.post('/orders/:orderId/void', async (req, res) => {
         }
       }
       await dbRun('COMMIT');
+      shouldEmitTableSocket = (newTotal <= 0 || isEntireVoid);
     } catch (adjErr) {
       try { await dbRun('ROLLBACK'); } catch {}
       // 수량 반영 실패는 Void 자체를 실패시키진 않지만, 클라이언트에 경고 제공
       console.warn('Failed to adjust order_items after void:', adjErr && adjErr.message ? adjErr.message : adjErr);
+    }
+
+    if (shouldEmitTableSocket) {
+      for (const row of tableElRowsForSocket || []) {
+        if (row && row.element_id != null) {
+          emitDeviceTableUpdatedFromElement(req, row.element_id, 'Available', null);
+        }
+      }
     }
 
     // 감사 로그
