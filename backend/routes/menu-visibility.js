@@ -83,8 +83,10 @@ module.exports = (db) => {
           COALESCE(delivery_visible, 1) as delivery_visible,
           COALESCE(online_hide_type, 'visible') as online_hide_type,
           online_available_until,
+          online_available_from,
           COALESCE(delivery_hide_type, 'visible') as delivery_hide_type,
-          delivery_available_until
+          delivery_available_until,
+          delivery_available_from
         FROM menu_items
         WHERE category_id = ?
         ORDER BY sort_order, name
@@ -132,8 +134,8 @@ module.exports = (db) => {
       const { itemId } = req.params;
       const { 
         online_visible, delivery_visible,
-        online_hide_type, online_available_until,
-        delivery_hide_type, delivery_available_until
+        online_hide_type, online_available_until, online_available_from,
+        delivery_hide_type, delivery_available_until, delivery_available_from
       } = req.body;
       
       // 업데이트할 필드만 처리
@@ -160,6 +162,10 @@ module.exports = (db) => {
         updates.push('online_available_until = ?');
         params.push(online_available_until || null);
       }
+      if (online_available_from !== undefined) {
+        updates.push('online_available_from = ?');
+        params.push(online_available_from || null);
+      }
       
       // Delivery visibility
       if (typeof delivery_visible === 'number' || typeof delivery_visible === 'boolean') {
@@ -178,6 +184,10 @@ module.exports = (db) => {
       if (delivery_available_until !== undefined) {
         updates.push('delivery_available_until = ?');
         params.push(delivery_available_until || null);
+      }
+      if (delivery_available_from !== undefined) {
+        updates.push('delivery_available_from = ?');
+        params.push(delivery_available_from || null);
       }
       
       if (updates.length === 0) {
@@ -201,8 +211,8 @@ module.exports = (db) => {
             // 현재 아이템의 visibility 상태 조회 (세부 필드 포함)
             const currentItem = await dbGet(`
               SELECT online_visible, delivery_visible, 
-                     online_hide_type, online_available_until,
-                     delivery_hide_type, delivery_available_until 
+                     online_hide_type, online_available_until, online_available_from,
+                     delivery_hide_type, delivery_available_until, delivery_available_from 
               FROM menu_items WHERE item_id = ?
             `, [itemId]);
             
@@ -215,8 +225,10 @@ module.exports = (db) => {
                 deliveryVisible: currentItem?.delivery_visible === 1,
                 onlineHideType: currentItem?.online_hide_type || 'visible',
                 onlineAvailableUntil: currentItem?.online_available_until || null,
+                onlineAvailableFrom: currentItem?.online_available_from || null,
                 deliveryHideType: currentItem?.delivery_hide_type || 'visible',
-                deliveryAvailableUntil: currentItem?.delivery_available_until || null
+                deliveryAvailableUntil: currentItem?.delivery_available_until || null,
+                deliveryAvailableFrom: currentItem?.delivery_available_from || null
               }
             );
             console.log(`[MENU-VISIBILITY] Firebase sync: ${itemId} → ${firebaseItemId}`);

@@ -220,8 +220,10 @@ const startServer = async () => {
       const hasDeliveryVisible = columns.some(col => col.name === 'delivery_visible');
       const hasOnlineHideType = columns.some(col => col.name === 'online_hide_type');
       const hasOnlineAvailableUntil = columns.some(col => col.name === 'online_available_until');
+      const hasOnlineAvailableFrom = columns.some(col => col.name === 'online_available_from');
       const hasDeliveryHideType = columns.some(col => col.name === 'delivery_hide_type');
       const hasDeliveryAvailableUntil = columns.some(col => col.name === 'delivery_available_until');
+      const hasDeliveryAvailableFrom = columns.some(col => col.name === 'delivery_available_from');
       
       if (!hasOnlineVisible) {
         await dbRun("ALTER TABLE menu_items ADD COLUMN online_visible INTEGER DEFAULT 1");
@@ -247,6 +249,16 @@ const startServer = async () => {
       if (!hasDeliveryAvailableUntil) {
         await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_available_until TEXT");
         console.log("Successfully added 'delivery_available_until' column to 'menu_items' table.");
+      }
+      // Time-window 'from' columns (HH:MM) — when both from/until set with hide_type='time_limited',
+      // visibility is treated as a recurring daily window (e.g., 11:00–15:00).
+      if (!hasOnlineAvailableFrom) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN online_available_from TEXT");
+        console.log("Successfully added 'online_available_from' column to 'menu_items' table.");
+      }
+      if (!hasDeliveryAvailableFrom) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_available_from TEXT");
+        console.log("Successfully added 'delivery_available_from' column to 'menu_items' table.");
       }
     };
     
@@ -847,16 +859,18 @@ server.listen(PORT, async () => {
                 db.run(
                   `UPDATE menu_items SET 
                     online_visible = ?, delivery_visible = ?,
-                    online_hide_type = ?, online_available_until = ?,
-                    delivery_hide_type = ?, delivery_available_until = ?
+                    online_hide_type = ?, online_available_until = ?, online_available_from = ?,
+                    delivery_hide_type = ?, delivery_available_until = ?, delivery_available_from = ?
                   WHERE item_id = ?`,
                   [
                     change.onlineVisible ? 1 : 0, 
                     change.deliveryVisible ? 1 : 0, 
                     change.onlineHideType || 'visible',
                     change.onlineAvailableUntil || null,
+                    change.onlineAvailableFrom || null,
                     change.deliveryHideType || 'visible',
                     change.deliveryAvailableUntil || null,
+                    change.deliveryAvailableFrom || null,
                     posItemId
                   ],
                   (err) => err ? reject(err) : resolve()

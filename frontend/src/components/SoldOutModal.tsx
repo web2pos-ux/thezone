@@ -7,7 +7,18 @@ interface SoldOutModalProps {
   menuId?: number | string;
   apiUrl: string;
   menuItems: { id: string; name: string }[];
+  /** Optional: list of all modifiers (id, label) so modifier sold-outs can be shown by name. */
+  modifierItems?: { id: string; name: string }[];
   onSoldOutChange?: (soldOutIds: Set<string>, soldOutMap: Map<string, any>) => void;
+  /**
+   * Optional: receives current sold-out modifier ids + their per-id duration map.
+   * Called whenever the modal loads modifier sold-out records or the user
+   * extends / clears them in this modal.
+   */
+  onModifierSoldOutChange?: (
+    soldOutModifierIds: Set<string>,
+    soldOutModifierTimes: Map<string, { type: string; endTime: number; selector: string }>,
+  ) => void;
   onEnterSoldOutMode?: (durationType?: string) => void;
   currentUser?: string;
 }
@@ -18,20 +29,31 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
   menuId,
   apiUrl,
   menuItems,
+  modifierItems,
   onSoldOutChange,
+  onModifierSoldOutChange,
   onEnterSoldOutMode,
   currentUser = 'Staff'
 }) => {
   const [soldOutItems, setSoldOutItems] = useState<Set<string>>(new Set());
   const [soldOutTimes, setSoldOutTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
+  const [soldOutModifiers, setSoldOutModifiers] = useState<Set<string>>(new Set());
+  const [soldOutModifierTimes, setSoldOutModifierTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
   const [selectedExtendItemId, setSelectedExtendItemId] = useState<string | null>(null);
+  // When extending an entry, we also need to know whether it is an item or a modifier
+  // so the API call routes to the correct endpoint.
+  const [selectedExtendScope, setSelectedExtendScope] = useState<'item' | 'modifier'>('item');
   const [loading, setLoading] = useState(false);
 
   // Avoid infinite reload loops caused by parent passing a new callback identity on each render.
   const onSoldOutChangeRef = useRef<SoldOutModalProps['onSoldOutChange']>(onSoldOutChange);
+  const onModifierSoldOutChangeRef = useRef<SoldOutModalProps['onModifierSoldOutChange']>(onModifierSoldOutChange);
   useEffect(() => {
     onSoldOutChangeRef.current = onSoldOutChange;
   }, [onSoldOutChange]);
+  useEffect(() => {
+    onModifierSoldOutChangeRef.current = onModifierSoldOutChange;
+  }, [onModifierSoldOutChange]);
 
   const loadSoldOutFromServer = useCallback(async () => {
     if (!menuId) return;
@@ -43,23 +65,33 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
       const records = Array.isArray(data?.records) ? data.records : [];
       const itemSet = new Set<string>();
       const timesMap = new Map<string, { type: string; endTime: number; selector: string }>();
+      const modSet = new Set<string>();
+      const modTimesMap = new Map<string, { type: string; endTime: number; selector: string }>();
       
       records.forEach((r: any) => {
-        if (String(r.scope) === 'item') {
-          const itemId = String(r.key_id);
-          itemSet.add(itemId);
-          timesMap.set(itemId, {
-            // Backend returns `soldout_type`; keep `type` as backward-compatible fallback.
-            type: r.soldout_type || r.type || 'indefinite',
-            endTime: Number(r.end_time || 0),
-            selector: r.selector || currentUser
-          });
+        const scope = String(r.scope);
+        const id = String(r.key_id);
+        const info = {
+          // Backend returns `soldout_type`; keep `type` as backward-compatible fallback.
+          type: r.soldout_type || r.type || 'indefinite',
+          endTime: Number(r.end_time || 0),
+          selector: r.selector || currentUser,
+        };
+        if (scope === 'item') {
+          itemSet.add(id);
+          timesMap.set(id, info);
+        } else if (scope === 'modifier') {
+          modSet.add(id);
+          modTimesMap.set(id, info);
         }
       });
       
       setSoldOutItems(itemSet);
       setSoldOutTimes(timesMap);
+      setSoldOutModifiers(modSet);
+      setSoldOutModifierTimes(modTimesMap);
       onSoldOutChangeRef.current?.(itemSet, timesMap);
+      onModifierSoldOutChangeRef.current?.(modSet, modTimesMap);
     } catch (e) {
       console.error('Failed to load sold out items:', e);
     } finally {
@@ -92,16 +124,19 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
     onEnterSoldOutMode?.(option);
   };
 
-  const handleExtendSoldOut = (itemId: string) => {
-    setSelectedExtendItemId(prev => prev === itemId ? null : itemId);
+  const handleExtendSoldOut = (itemId: string, scope: 'item' | 'modifier' = 'item') => {
+    setSelectedExtendItemId(prev => (prev === itemId && selectedExtendScope === scope) ? null : itemId);
+    setSelectedExtendScope(scope);
   };
 
   const handleAddTimeToSoldOut = async (optionType: string) => {
     if (!selectedExtendItemId || !menuId) return;
     
+    const isModifier = selectedExtendScope === 'modifier';
     const now = Date.now();
-    const info = soldOutTimes.get(selectedExtendItemId);
-    const newTimes = new Map(soldOutTimes);
+    const info = isModifier
+      ? soldOutModifierTimes.get(selectedExtendItemId)
+      : soldOutTimes.get(selectedExtendItemId);
     
     let addMs = 0;
     let newType = optionType;
@@ -133,30 +168,61 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
       }
     }
     
-    newTimes.set(selectedExtendItemId, {
-      type: newType,
-      endTime: newEndTime,
-      selector: currentUser
-    });
+    const nextEntry = { type: newType, endTime: newEndTime, selector: currentUser };
     
-    setSoldOutTimes(newTimes);
-    
-    try {
-      await fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/item/${encodeURIComponent(selectedExtendItemId)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: newType, endTime: newEndTime, selector: currentUser })
-      });
-    } catch (e) {
-      console.error('Failed to update sold out item:', e);
+    if (isModifier) {
+      const newTimes = new Map(soldOutModifierTimes);
+      newTimes.set(selectedExtendItemId, nextEntry);
+      setSoldOutModifierTimes(newTimes);
+      try {
+        await fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(selectedExtendItemId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: newType, endTime: newEndTime, selector: currentUser })
+        });
+      } catch (e) {
+        console.error('Failed to update sold out modifier:', e);
+      }
+      onModifierSoldOutChange?.(soldOutModifiers, newTimes);
+    } else {
+      const newTimes = new Map(soldOutTimes);
+      newTimes.set(selectedExtendItemId, nextEntry);
+      setSoldOutTimes(newTimes);
+      try {
+        await fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/item/${encodeURIComponent(selectedExtendItemId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: newType, endTime: newEndTime, selector: currentUser })
+        });
+      } catch (e) {
+        console.error('Failed to update sold out item:', e);
+      }
+      onSoldOutChange?.(soldOutItems, newTimes);
     }
     
     setSelectedExtendItemId(null);
-    onSoldOutChange?.(soldOutItems, newTimes);
   };
 
-  const handleClearSoldOutItem = async (itemId: string) => {
+  const handleClearSoldOutItem = async (itemId: string, scope: 'item' | 'modifier' = 'item') => {
     if (!menuId) return;
+    
+    if (scope === 'modifier') {
+      const newSet = new Set(soldOutModifiers);
+      newSet.delete(itemId);
+      const newTimes = new Map(soldOutModifierTimes);
+      newTimes.delete(itemId);
+      setSoldOutModifiers(newSet);
+      setSoldOutModifierTimes(newTimes);
+      try {
+        await fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(itemId)}`, {
+          method: 'DELETE'
+        });
+      } catch (e) {
+        console.error('Failed to clear sold out modifier:', e);
+      }
+      onModifierSoldOutChange?.(newSet, newTimes);
+      return;
+    }
     
     const newItems = new Set(soldOutItems);
     newItems.delete(itemId);
@@ -182,8 +248,11 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
     if (!menuId) {
       setSoldOutItems(new Set());
       setSoldOutTimes(new Map());
+      setSoldOutModifiers(new Set());
+      setSoldOutModifierTimes(new Map());
       setSelectedExtendItemId(null);
       onSoldOutChangeRef.current?.(new Set(), new Map());
+      onModifierSoldOutChangeRef.current?.(new Set(), new Map());
       return;
     }
 
@@ -191,36 +260,48 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
     try {
       const mid = String(menuId);
 
-      // Use both local + server ids to be robust.
-      const allIds = new Set<string>(Array.from(soldOutItems).map(String));
+      // Use both local + server ids to be robust (items + modifiers).
+      const allItemIds = new Set<string>(Array.from(soldOutItems).map(String));
+      const allModIds = new Set<string>(Array.from(soldOutModifiers).map(String));
       try {
         const res = await fetch(`${apiUrl}/sold-out/${encodeURIComponent(mid)}`);
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
-          const serverItemIds: string[] = Array.isArray(data?.records)
-            ? data.records
-                .filter((r: any) => String(r.scope) === 'item')
-                .map((r: any) => String(r.key_id))
-            : [];
-          serverItemIds.forEach((id) => allIds.add(String(id)));
+          const records = Array.isArray(data?.records) ? data.records : [];
+          records.forEach((r: any) => {
+            const id = String(r.key_id);
+            if (String(r.scope) === 'item') allItemIds.add(id);
+            else if (String(r.scope) === 'modifier') allModIds.add(id);
+          });
         }
       } catch {}
 
-      await Promise.all(
-        Array.from(allIds).map((itemId) =>
+      await Promise.all([
+        ...Array.from(allItemIds).map((id) =>
           fetch(
-            `${apiUrl}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(String(itemId))}`,
+            `${apiUrl}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(String(id))}`,
             { method: 'DELETE' }
           ).catch(() => null)
-        )
-      );
+        ),
+        ...Array.from(allModIds).map((id) =>
+          fetch(
+            `${apiUrl}/sold-out/${encodeURIComponent(mid)}/modifier/${encodeURIComponent(String(id))}`,
+            { method: 'DELETE' }
+          ).catch(() => null)
+        ),
+      ]);
 
       const emptyItems = new Set<string>();
       const emptyTimes = new Map<string, { type: string; endTime: number; selector: string }>();
+      const emptyMods = new Set<string>();
+      const emptyModTimes = new Map<string, { type: string; endTime: number; selector: string }>();
       setSoldOutItems(emptyItems);
       setSoldOutTimes(emptyTimes);
+      setSoldOutModifiers(emptyMods);
+      setSoldOutModifierTimes(emptyModTimes);
       setSelectedExtendItemId(null);
       onSoldOutChangeRef.current?.(emptyItems, emptyTimes);
+      onModifierSoldOutChangeRef.current?.(emptyMods, emptyModTimes);
     } finally {
       setLoading(false);
     }
@@ -234,9 +315,19 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
     
     try {
       const putOps: Promise<any>[] = [];
+      // Items
       soldOutItems.forEach((itemId) => {
         const info = soldOutTimes.get(itemId) || { type: 'indefinite', endTime: 0, selector: currentUser };
         putOps.push(fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/item/${encodeURIComponent(String(itemId))}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: info.type || 'indefinite', endTime: typeof info.endTime === 'number' ? info.endTime : 0, selector: currentUser })
+        }));
+      });
+      // Modifiers
+      soldOutModifiers.forEach((modId) => {
+        const info = soldOutModifierTimes.get(modId) || { type: 'indefinite', endTime: 0, selector: currentUser };
+        putOps.push(fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(String(modId))}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: info.type || 'indefinite', endTime: typeof info.endTime === 'number' ? info.endTime : 0, selector: currentUser })
@@ -247,10 +338,18 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
         const res = await fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}`);
         if (res.ok) {
           const data = await res.json();
-          const serverItemIds: string[] = Array.isArray(data?.records) ? data.records.filter((r: any) => String(r.scope) === 'item').map((r: any) => String(r.key_id)) : [];
+          const records = Array.isArray(data?.records) ? data.records : [];
+          // Delete server-side items not in our local set
+          const serverItemIds: string[] = records.filter((r: any) => String(r.scope) === 'item').map((r: any) => String(r.key_id));
           serverItemIds.forEach((sid) => {
             if (!soldOutItems.has(String(sid))) {
               putOps.push(fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/item/${encodeURIComponent(String(sid))}`, { method: 'DELETE' }));
+            }
+          });
+          const serverModIds: string[] = records.filter((r: any) => String(r.scope) === 'modifier').map((r: any) => String(r.key_id));
+          serverModIds.forEach((sid) => {
+            if (!soldOutModifiers.has(String(sid))) {
+              putOps.push(fetch(`${apiUrl}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(String(sid))}`, { method: 'DELETE' }));
             }
           });
         }
@@ -344,63 +443,119 @@ const SoldOutModal: React.FC<SoldOutModalProps> = ({
             {/* Right column: list with per-item actions */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <div className="font-bold text-gray-700">Current Sold Out Items</div>
+                <div className="font-bold text-gray-700">Current Sold Out</div>
                 <button
                   type="button"
                   onClick={handleClearAll}
-                  disabled={loading || soldOutItems.size === 0}
+                  disabled={loading || (soldOutItems.size === 0 && soldOutModifiers.size === 0)}
                   className="h-8 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={loading || soldOutItems.size === 0
+                  style={loading || (soldOutItems.size === 0 && soldOutModifiers.size === 0)
                     ? { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff', color: '#9ca3af' }
                     : { background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: '3px 3px 6px #c9b0b0, -3px -3px 6px #ffffff', color: '#dc2626' }}
                 >
                   Clear All
                 </button>
               </div>
-              <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
-                {soldOutItems.size === 0 ? (
-                  <div className="text-sm text-gray-500">No items are currently sold out.</div>
-                ) : (
-                  Array.from(soldOutItems).map(itemId => {
-                    const item = menuItems.find(i => i.id === itemId);
-                    const info = soldOutTimes.get(itemId);
-                    if (!item) return null;
-                    const isSelected = selectedExtendItemId === itemId;
-                    const timeLabel = formatRemainingTime(info?.endTime || 0);
-                    return (
-                      <div
-                        key={itemId}
-                        className="flex items-center justify-between rounded-xl p-2.5 transition-all duration-200"
-                        style={isSelected
-                          ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 6px #a8b0c4, inset -3px -3px 6px #f0f5ff' }
-                          : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
-                      >
-                        <div>
-                          <div className="text-sm font-bold text-gray-700">{item.name}</div>
-                          <div className={`text-xs font-semibold ${info?.endTime === 0 ? 'text-orange-600' : 'text-blue-600'}`}>{timeLabel}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button 
-                            onClick={() => handleExtendSoldOut(itemId)} 
-                            className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
+              <div className="space-y-3 max-h-[52vh] overflow-y-auto pr-1">
+                {/* Items section */}
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-1 px-1">Items</div>
+                  <div className="space-y-2">
+                    {soldOutItems.size === 0 ? (
+                      <div className="text-xs text-gray-400 px-1">No items are currently sold out.</div>
+                    ) : (
+                      Array.from(soldOutItems).map(itemId => {
+                        const item = menuItems.find(i => i.id === itemId);
+                        const info = soldOutTimes.get(itemId);
+                        if (!item) return null;
+                        const isSelected = selectedExtendItemId === itemId && selectedExtendScope === 'item';
+                        const timeLabel = formatRemainingTime(info?.endTime || 0);
+                        return (
+                          <div
+                            key={`item-${itemId}`}
+                            className="flex items-center justify-between rounded-xl p-2.5 transition-all duration-200"
                             style={isSelected
-                              ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 6px #a8b0c4, inset -3px -3px 6px #f0f5ff', color: '#2563eb' }
-                              : { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: '4px 4px 8px #b0b8c9, -4px -4px 8px #ffffff', color: '#3b82f6' }}
+                              ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 6px #a8b0c4, inset -3px -3px 6px #f0f5ff' }
+                              : { background: 'linear-gradient(145deg, #eaeff6, #dce1e8)', boxShadow: '3px 3px 6px #b8bec7, -3px -3px 6px #ffffff' }}
                           >
-                            {isSelected ? 'Selected' : 'Extend'}
-                          </button>
-                          <button 
-                            onClick={() => { handleClearSoldOutItem(itemId); setSelectedExtendItemId(null); }} 
-                            className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
-                            style={{ background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: '4px 4px 8px #c9b0b0, -4px -4px 8px #ffffff', color: '#dc2626' }}
+                            <div>
+                              <div className="text-sm font-bold text-gray-700">{item.name}</div>
+                              <div className={`text-xs font-semibold ${info?.endTime === 0 ? 'text-orange-600' : 'text-blue-600'}`}>{timeLabel}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => handleExtendSoldOut(itemId, 'item')} 
+                                className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
+                                style={isSelected
+                                  ? { background: 'linear-gradient(145deg, #d4dcee, #dfe7f5)', boxShadow: 'inset 3px 3px 6px #a8b0c4, inset -3px -3px 6px #f0f5ff', color: '#2563eb' }
+                                  : { background: 'linear-gradient(145deg, #dde4f0, #e4e8f4)', boxShadow: '4px 4px 8px #b0b8c9, -4px -4px 8px #ffffff', color: '#3b82f6' }}
+                              >
+                                {isSelected ? 'Selected' : 'Extend'}
+                              </button>
+                              <button 
+                                onClick={() => { void handleClearSoldOutItem(itemId, 'item'); setSelectedExtendItemId(null); }} 
+                                className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
+                                style={{ background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: '4px 4px 8px #c9b0b0, -4px -4px 8px #ffffff', color: '#dc2626' }}
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* Modifiers section */}
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-gray-500 mb-1 px-1">Modifiers</div>
+                  <div className="space-y-2">
+                    {soldOutModifiers.size === 0 ? (
+                      <div className="text-xs text-gray-400 px-1">No modifiers are currently sold out.</div>
+                    ) : (
+                      Array.from(soldOutModifiers).map(modId => {
+                        const mod = (modifierItems || []).find(m => m.id === modId);
+                        const info = soldOutModifierTimes.get(modId);
+                        const isSelected = selectedExtendItemId === modId && selectedExtendScope === 'modifier';
+                        const timeLabel = formatRemainingTime(info?.endTime || 0);
+                        const displayName = mod?.name || `Modifier ${modId}`;
+                        return (
+                          <div
+                            key={`mod-${modId}`}
+                            className="flex items-center justify-between rounded-xl p-2.5 transition-all duration-200"
+                            style={isSelected
+                              ? { background: 'linear-gradient(145deg, #f0e0d4, #f5e7df)', boxShadow: 'inset 3px 3px 6px #c4b0a8, inset -3px -3px 6px #fff5f0' }
+                              : { background: 'linear-gradient(145deg, #f6eee8, #eee4dc)', boxShadow: '3px 3px 6px #c9beb8, -3px -3px 6px #ffffff' }}
                           >
-                            Clear
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
+                            <div>
+                              <div className="text-sm font-bold text-gray-700">{displayName}</div>
+                              <div className={`text-xs font-semibold ${info?.endTime === 0 ? 'text-orange-600' : 'text-blue-600'}`}>{timeLabel}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => handleExtendSoldOut(modId, 'modifier')} 
+                                className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
+                                style={isSelected
+                                  ? { background: 'linear-gradient(145deg, #f0e0d4, #f5e7df)', boxShadow: 'inset 3px 3px 6px #c4b0a8, inset -3px -3px 6px #fff5f0', color: '#c2410c' }
+                                  : { background: 'linear-gradient(145deg, #f0e0d4, #f5e7df)', boxShadow: '4px 4px 8px #c4b0a8, -4px -4px 8px #ffffff', color: '#ea580c' }}
+                              >
+                                {isSelected ? 'Selected' : 'Extend'}
+                              </button>
+                              <button 
+                                onClick={() => { void handleClearSoldOutItem(modId, 'modifier'); setSelectedExtendItemId(null); }} 
+                                className="min-w-[80px] h-9 px-3 rounded-xl border-0 text-sm font-bold transition-all duration-200 active:scale-95"
+                                style={{ background: 'linear-gradient(145deg, #f0d4d4, #f4dcdc)', boxShadow: '4px 4px 8px #c9b0b0, -4px -4px 8px #ffffff', color: '#dc2626' }}
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
             

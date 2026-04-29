@@ -9,6 +9,12 @@ interface BottomActionBarProps {
   onDiscount?: () => void;
   onSoldOut?: () => void;
   onReprint?: () => void;
+  /** default 'reprint' — 'clear' shows Clear and calls onClear instead of Reprint */
+  reprintOrClear?: 'reprint' | 'clear';
+  onClear?: () => void;
+  /** default 'split' — 'takeInfo' shows Take Info and calls onTakeInfo instead of Split */
+  splitOrTakeInfo?: 'split' | 'takeInfo';
+  onTakeInfo?: () => void;
 }
 
 const btnClass = [
@@ -51,20 +57,32 @@ const BottomActionBar: React.FC<BottomActionBarProps> = ({
   onDiscount,
   onSoldOut,
   onReprint,
+  reprintOrClear = 'reprint',
+  onClear,
+  splitOrTakeInfo = 'split',
+  onTakeInfo,
 }) => {
+  const primaryLeftClick =
+    reprintOrClear === 'clear' ? (onClear ?? (() => {})) : (onReprint ?? (() => {}));
+  const splitClick =
+    splitOrTakeInfo === 'takeInfo' ? (onTakeInfo ?? (() => {})) : onSplitOrder;
   return (
     <div className="bottom-action-bar border-t-0 px-2 py-1 flex-shrink-0 bg-[#e0e5ec] rounded-xl">
       <div className="grid" style={{ gridTemplateColumns: 'repeat(7, 1fr)', gap: 'clamp(4px, 0.8vh, 8px)' }}>
-        <button className={btnClass} onClick={onReprint} style={btnStyle}>
-          Reprint
+        <button className={btnClass} onClick={primaryLeftClick} style={btnStyle}>
+          {reprintOrClear === 'clear' ? 'Clear' : 'Reprint'}
         </button>
 
         <button className={btnClass} onClick={onVoid} style={btnStyle}>
           Void
         </button>
 
-        <button className={btnClass} onClick={onSplitOrder} style={btnStyle}>
-          Split<br/>Order
+        <button className={btnClass} onClick={splitClick} style={btnStyle}>
+          {splitOrTakeInfo === 'takeInfo' ? (
+            <>Take<br/>Info</>
+          ) : (
+            <>Split<br/>Order</>
+          )}
         </button>
 
         <button className={btnClass} onClick={onOpenPrice} style={btnStyle}>

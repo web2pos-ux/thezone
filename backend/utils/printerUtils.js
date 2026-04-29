@@ -8,6 +8,18 @@ const { splitStoredTetraRef, truncateForReceipt } = require('./tetraReceiptRefDi
 const execAsync = util.promisify(exec);
 
 /**
+ * Kitchen ticket footer: MM-DD-YY + spaces + 12h time (same string for TEXT + GRAPHIC footers).
+ */
+function formatKitchenTicketFooterDateTime(d = new Date()) {
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const dateStr = `${mm}-${dd}-${yy}`;
+  const timeStr = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  return `${dateStr}      ${timeStr}`;
+}
+
+/**
  * Windows Raw Printing API를 사용하여 ESC/POS 데이터 전송
  * RawPrinterHelper C# 클래스를 PowerShell에서 동적으로 생성하여 사용
  * @param {string} printerName - 프린터 이름
@@ -464,14 +476,14 @@ function buildKitchenTicketText(orderData) {
   output += LF;
   const serverName = orderInfo.server || orderInfo.serverName || orderData.server || orderData.serverName || '';
   const now = new Date();
-  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  const dateTimeStr = formatKitchenTicketFooterDateTime(now);
   if (serverName) {
     output += LEFT + BOLD_ON + serverName + BOLD_OFF;
     output += '                    '.slice(0, Math.max(1, 20 - serverName.length));
-    output += timeStr + LF;
+    output += dateTimeStr + LF;
   } else {
     output += CENTER;
-    output += `---------- ${timeStr} ----------` + LF;
+    output += `---------- ${dateTimeStr} ----------` + LF;
   }
   output += LEFT;
   
@@ -1543,12 +1555,12 @@ function buildEscPosKitchenTicketWithLayout(orderData, layout) {
     output += renderElement(key, footerStyle, data, width, LF);
   });
   
-  // 시간 구분선
+  // 시간 구분선 (MM-DD-YY + 접수 시간)
   output += ESC_POS.CENTER;
   const now = new Date();
-  const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-  const halfWidth = Math.floor((width - timeStr.length - 2) / 2);
-  output += getSeparatorLine('dashed', halfWidth) + ' ' + timeStr + ' ' + getSeparatorLine('dashed', halfWidth) + LF;
+  const dateTimeStr = formatKitchenTicketFooterDateTime(now);
+  const halfWidth = Math.floor((width - dateTimeStr.length - 2) / 2);
+  output += getSeparatorLine('dashed', halfWidth) + ' ' + dateTimeStr + ' ' + getSeparatorLine('dashed', halfWidth) + LF;
   output += ESC_POS.LEFT;
   
   // 여백 및 컷
@@ -2141,6 +2153,7 @@ async function printRawToWindows(printerName, buffer) {
 }
 
 module.exports = {
+  formatKitchenTicketFooterDateTime,
   getWindowsPrinters,
   extractIPFromPort,
   printTextToWindows,

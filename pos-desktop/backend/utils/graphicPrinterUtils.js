@@ -7,6 +7,7 @@ const { createCanvas, registerFont } = require('canvas');
 const path = require('path');
 const fs = require('fs');
 const { splitStoredTetraRef, truncateForReceipt } = require('./tetraReceiptRefDisplay');
+const { formatKitchenTicketFooterDateTime } = require('./printerUtils');
 
 // Keep font family string consistent across the file.
 // (A missing FONT_FAMILY caused graphic Kitchen Ticket to crash and fall back to TEXT mode.)
@@ -1427,18 +1428,18 @@ function renderKitchenTicketGraphic(orderData, exportFormat) {
   // 구분선
   y = drawSeparator(ctx, y, 'solid');
   
-  // 푸터: 서버이름 (왼쪽) + 주문시간 (오른쪽)
+  // 푸터: 서버이름 (왼쪽) + MM-DD-YY + 접수 시간 (오른쪽)
   y += 10;
   const serverName = orderInfo.server || orderInfo.serverName || orderData.server || orderData.serverName || '';
-  const timeText = (() => { const now = new Date(); const h = now.getHours(); const m = now.getMinutes(); const ampm = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:${String(m).padStart(2, '0')}${ampm}`; })();
+  const dateTimeText = formatKitchenTicketFooterDateTime(new Date());
   if (serverName) {
-    y = drawLeftRightText(ctx, serverName, timeText, y, {
+    y = drawLeftRightText(ctx, serverName, dateTimeText, y, {
       fontSize: PRINTER_CONFIG.fontSize.large,
       fontWeight: 'bold'
     });
   } else {
     y = drawTextBlock(ctx, {
-      text: timeText,
+      text: dateTimeText,
       fontSize: PRINTER_CONFIG.fontSize.large,
       fontWeight: 'bold',
       align: 'right'

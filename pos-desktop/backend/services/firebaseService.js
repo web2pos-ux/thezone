@@ -11,6 +11,7 @@ const {
   LOCAL_MIRROR_WRITE_OPTIONS,
   extractQueuedSyncProvenanceFromPayload,
 } = require('./firebaseConflictPolicy');
+const { enrichFirebaseOrderForPos } = require('../utils/firebaseDeliveryChannel');
 
 function assertInternetForFirebaseAccess() {
   if (!networkConnectivity.isInternetConnected()) {
@@ -120,9 +121,37 @@ function getFirestore() {
  * 온라인 주문 채널(리스너·SSE·목록)에서 제외할 POS 미러 여부.
  * - 신규: `posConflictAuthority` / `posConflictPolicy` 메타( firebaseConflictPolicy )
  * - 레거시: 배달·투고·픽업 등 source=POS 휴리스틱( isPosDeliveryMirrorFirestoreOrder )
+ *
+ * Urban Piper / 외부 딜리버리 채널에서 들어온 주문은 수락 후 POS 미러 메타가
+ * 붙더라도 제외하지 않는다 — 패널 카드가 수락 즉시 사라지는 문제 방지.
  */
 function isExcludedFromOnlineOrderChannel(order) {
+  if (!order || typeof order !== 'object') return false;
+  if (isUpOrDeliveryChannelOrder(order)) return false;
   return isPosMirrorMetadataOrder(order) || isPosDeliveryMirrorFirestoreOrder(order);
+}
+
+/**
+ * Urban Piper 마커 또는 외부 딜리버리 채널(sourceIds.channel)이 있는 주문인지 판별.
+ */
+function isUpOrDeliveryChannelOrder(order) {
+  if (!order || typeof order !== 'object') return false;
+  if (order.rawUrbanPiper != null && order.rawUrbanPiper !== '') return true;
+  const src = String(order.source || '').toLowerCase();
+  if (src.includes('urbanpiper') || (src.includes('urban') && src.includes('piper'))) return true;
+  const sid = order.sourceIds;
+  if (sid && typeof sid === 'object') {
+    const ch = String(sid.channel || sid.urbanpiperOrderId || sid.urbanpiper_order_id || '').trim();
+    if (ch) return true;
+  }
+  const sid2 = order.source_ids;
+  if (sid2 && typeof sid2 === 'object') {
+    const ch2 = String(sid2.channel || '').trim();
+    if (ch2) return true;
+  }
+  const dc = String(order.deliveryCompany || order.delivery_company || '').trim();
+  if (dc) return true;
+  return false;
 }
 
 /**
@@ -167,12 +196,13 @@ function listenToOnlineOrders(restaurantId, { onNewOrder, onOrderUpdate, onError
   
   console.log(`👂 온라인 주문 리스너 시작 - Restaurant ID: ${restaurantId}`);
 
-  // pending 상태의 주문만 실시간 감지 (서브컬렉션 우선)
+  // 수신 대기 중인 주문 상태를 모두 감지
+  const PENDING_STATUSES = ['pending', 'placed', 'new', 'received'];
   let isInitial = true;
   const restaurantRef = firestore.collection('restaurants').doc(restaurantId);
   const unsubscribe = restaurantRef
     .collection('orders')
-    .where('status', '==', 'pending')
+    .where('status', 'in', PENDING_STATUSES)
     .onSnapshot(
       (snapshot) => {
         snapshot.docChanges().forEach((change) => {
@@ -351,14 +381,16 @@ async function getOnlineOrders(restaurantId, options = {}) {
     const activeOrders = orders.filter((o) => !terminalFb.has(String(o.status || '').toLowerCase()));
     const activeWithoutPosMirror = activeOrders.filter((o) => !isExcludedFromOnlineOrderChannel(o));
 
+    const enrichedForPos = activeWithoutPosMirror.map((o) => enrichFirebaseOrderForPos(o));
+
     // 결과를 createdAt 기준 내림차순 정렬 (클라이언트 사이드)
-    activeWithoutPosMirror.sort((a, b) => {
+    enrichedForPos.sort((a, b) => {
       const aTime = a.createdAt?._seconds || 0;
       const bTime = b.createdAt?._seconds || 0;
       return bTime - aTime;
     });
 
-    return activeWithoutPosMirror;
+    return enrichedForPos;
   } catch (error) {
     console.error('[getOnlineOrders] Error:', error.message);
     throw error;
@@ -880,11 +912,17 @@ async function syncMenuItemVisibility(restaurantId, categoryId, itemId, visibili
       if (visibilityData.onlineAvailableUntil !== undefined) {
         updateData.onlineAvailableUntil = visibilityData.onlineAvailableUntil;
       }
+      if (visibilityData.onlineAvailableFrom !== undefined) {
+        updateData.onlineAvailableFrom = visibilityData.onlineAvailableFrom;
+      }
       if (visibilityData.deliveryHideType) {
         updateData.deliveryHideType = visibilityData.deliveryHideType;
       }
       if (visibilityData.deliveryAvailableUntil !== undefined) {
         updateData.deliveryAvailableUntil = visibilityData.deliveryAvailableUntil;
+      }
+      if (visibilityData.deliveryAvailableFrom !== undefined) {
+        updateData.deliveryAvailableFrom = visibilityData.deliveryAvailableFrom;
       }
     } else {
       // 기존 호환성: boolean 값
@@ -989,6 +1027,134 @@ async function syncCategoryVisibility(restaurantId, categoryId, onlineVisible, d
   } catch (error) {
     console.error('❌ 카테고리 visibility 동기화 실패:', error.message);
     throw error;
+  }
+}
+
+// ===== Sold-Out 동기화 (POS → Firebase, 단방향) =====
+// 고객 온라인 주문 사이트가 실시간으로 sold-out 항목을 감지/적용하기 위함.
+// Firestore 구조: restaurants/{restaurantId}/soldOut/{docId}
+// docId 규칙:
+//   - item:     `item_<firebaseItemId or local-{posKeyId}>`
+//   - category: `category_<firebaseCategoryId or local-{posKeyId}>`
+//   - modifier: `modifier_<groupSeg>_<nameSeg>` (modifier는 Firebase 개별 매핑 없음 — group+name 조합으로 식별)
+function buildSoldOutDocId(scope, posKeyId, meta = {}) {
+  if (scope === 'item') {
+    const id = meta.firebaseItemId || `local-${posKeyId}`;
+    return `item_${id}`;
+  }
+  if (scope === 'category') {
+    const id = meta.firebaseCategoryId || `local-${posKeyId}`;
+    return `category_${id}`;
+  }
+  if (scope === 'modifier') {
+    const groupSeg = meta.modifierGroupFirebaseId
+      ? `g${meta.modifierGroupFirebaseId}`
+      : `lg${meta.modifierGroupId || 'unknown'}`;
+    const rawName = String(meta.modifierName || meta.name || '').trim();
+    const nameSeg = rawName.replace(/[^a-zA-Z0-9가-힣_]/g, '_').slice(0, 60) || `m${posKeyId}`;
+    return `modifier_${groupSeg}_${nameSeg}`;
+  }
+  return `${scope}_${posKeyId}`;
+}
+
+async function syncSoldOutRecord(restaurantId, payload) {
+  if (!restaurantId) {
+    throw new Error('restaurantId is required');
+  }
+  if (!payload || !payload.scope || payload.posKeyId === undefined || payload.posKeyId === null) {
+    throw new Error('scope and posKeyId are required');
+  }
+
+  const firestore = getFirestore();
+  const meta = payload.meta || {};
+  const docId = buildSoldOutDocId(payload.scope, payload.posKeyId, meta);
+
+  try {
+    const ref = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('soldOut')
+      .doc(docId);
+
+    const data = {
+      scope: payload.scope,
+      posKeyId: String(payload.posKeyId),
+      soldoutType: payload.soldoutType || 'today',
+      endTime: Number(payload.endTime || 0),
+      selector: payload.selector || null,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (payload.scope === 'item') {
+      if (meta.firebaseItemId) data.firebaseItemId = meta.firebaseItemId;
+      if (meta.itemName) data.itemName = meta.itemName;
+      if (meta.firebaseCategoryId) data.firebaseCategoryId = meta.firebaseCategoryId;
+    } else if (payload.scope === 'category') {
+      if (meta.firebaseCategoryId) data.firebaseCategoryId = meta.firebaseCategoryId;
+      if (meta.categoryName) data.categoryName = meta.categoryName;
+    } else if (payload.scope === 'modifier') {
+      if (meta.modifierGroupFirebaseId) data.modifierGroupFirebaseId = meta.modifierGroupFirebaseId;
+      if (meta.modifierGroupName) data.modifierGroupName = meta.modifierGroupName;
+      if (meta.modifierName) data.modifierName = meta.modifierName;
+      if (meta.modifierGroupId !== undefined && meta.modifierGroupId !== null) {
+        data.modifierGroupPosId = String(meta.modifierGroupId);
+      }
+    }
+
+    await ref.set(data, { merge: true });
+    console.log(`✅ Sold-Out sync: ${payload.scope}/${docId} (endTime=${data.endTime})`);
+    return { success: true, docId };
+  } catch (error) {
+    console.error('❌ Sold-Out sync 실패:', error.message);
+    throw error;
+  }
+}
+
+async function removeSoldOutRecord(restaurantId, scope, posKeyId, meta = {}) {
+  if (!restaurantId) throw new Error('restaurantId is required');
+  if (!scope || posKeyId === undefined || posKeyId === null) {
+    throw new Error('scope and posKeyId are required');
+  }
+
+  const firestore = getFirestore();
+  const docId = buildSoldOutDocId(scope, posKeyId, meta);
+
+  try {
+    const ref = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('soldOut')
+      .doc(docId);
+    await ref.delete().catch(() => {});
+    console.log(`🗑 Sold-Out remove: ${scope}/${docId}`);
+    return { success: true, docId };
+  } catch (error) {
+    console.error('❌ Sold-Out remove 실패:', error.message);
+    throw error;
+  }
+}
+
+async function clearExpiredSoldOutInFirebase(restaurantId, nowMs = Date.now()) {
+  if (!restaurantId) return { success: false, removed: 0 };
+  const firestore = getFirestore();
+  try {
+    const ref = firestore
+      .collection('restaurants')
+      .doc(restaurantId)
+      .collection('soldOut');
+    const snap = await ref
+      .where('endTime', '>', 0)
+      .where('endTime', '<=', nowMs)
+      .get();
+    if (snap.empty) return { success: true, removed: 0 };
+    const batch = firestore.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    console.log(`🧹 Sold-Out 만료 정리: ${snap.size}건`);
+    return { success: true, removed: snap.size };
+  } catch (error) {
+    console.error('❌ Sold-Out 만료 정리 실패:', error.message);
+    return { success: false, error: error.message };
   }
 }
 
@@ -1182,8 +1348,10 @@ function listenToMenuVisibilityChanges(restaurantId, onVisibilityChange) {
                   deliveryVisible: item.deliveryVisible !== false,
                   onlineHideType: item.onlineHideType || 'visible',
                   onlineAvailableUntil: item.onlineAvailableUntil || null,
+                  onlineAvailableFrom: item.onlineAvailableFrom || null,
                   deliveryHideType: item.deliveryHideType || 'visible',
-                  deliveryAvailableUntil: item.deliveryAvailableUntil || null
+                  deliveryAvailableUntil: item.deliveryAvailableUntil || null,
+                  deliveryAvailableFrom: item.deliveryAvailableFrom || null
                 });
               }
             }
@@ -1539,6 +1707,10 @@ module.exports = {
   getMenuVisibilityFromFirebase,
   syncCategoryVisibility,
   listenToMenuVisibilityChanges,
+  // Sold-Out sync (POS → Firebase)
+  syncSoldOutRecord,
+  removeSoldOutRecord,
+  clearExpiredSoldOutInFirebase,
   listenToDayOffChanges,
   listenToPauseChanges,
   listenToPrepTimeChanges,

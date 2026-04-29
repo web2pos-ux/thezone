@@ -85,6 +85,28 @@ module.exports = (db) => {
     });
   };
 
+  /** TRANSACTION COMMIT 이후만 호출. Sub POS/핸드헬드에 table_updated (SQL·비즈니스 로직 불변). */
+  function emitDeviceTableUpdatedFromElement(req, elementId, status, currentOrderId) {
+    try {
+      const io = req.app && req.app.get('io');
+      if (!io || elementId == null || String(elementId).trim() === '') return;
+      const tid = String(elementId);
+      const payload = {
+        table_id: tid,
+        element_id: tid,
+        status: String(status != null ? status : ''),
+      };
+      if (currentOrderId != null && currentOrderId !== '') {
+        const n = Number(currentOrderId);
+        if (Number.isFinite(n)) payload.current_order_id = n;
+      }
+      io.to('device_handheld').emit('table_updated', payload);
+      io.to('device_sub_pos').emit('table_updated', payload);
+    } catch (e) {
+      console.warn('[table-operations] emitDeviceTableUpdatedFromElement:', e && e.message);
+    }
+  }
+
   const calculateItemsSubtotal = (items = []) =>
     items.reduce((sum, item) => sum + Number(item.price || 0) * (Number(item.quantity) || 1), 0);
 
@@ -383,6 +405,9 @@ module.exports = (db) => {
 
           await dbRun('COMMIT');
 
+          emitDeviceTableUpdatedFromElement(req, fromTableId, sourceStatus, sourceOrderIdValue);
+          emitDeviceTableUpdatedFromElement(req, toTableId, 'Occupied', newOrderId);
+
           return res.json({
             success: true,
             message: `Table ${fromTableId} partially moved to ${toTableId}`,
@@ -429,6 +454,9 @@ module.exports = (db) => {
         );
 
         await dbRun('COMMIT');
+
+        emitDeviceTableUpdatedFromElement(req, fromTableId, 'Available', null);
+        emitDeviceTableUpdatedFromElement(req, toTableId, 'Occupied', order ? order.id : null);
 
         console.log('[TABLE MOVE] Successfully moved table');
 
@@ -638,6 +666,8 @@ module.exports = (db) => {
 
           await dbRun('COMMIT');
 
+          emitDeviceTableUpdatedFromElement(req, fromTableId, sourceStatus, sourceOrderIdValue);
+
           // Firebase에 머지 히스토리 동기화
           const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
           if (restaurantId) {
@@ -688,6 +718,8 @@ module.exports = (db) => {
           );
           
           await dbRun('COMMIT');
+
+          emitDeviceTableUpdatedFromElement(req, fromTableId, 'Available', null);
           
           // Firebase에 머지 히스토리 동기화
           const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
@@ -750,6 +782,9 @@ module.exports = (db) => {
 
       await dbRun('COMMIT');
 
+          emitDeviceTableUpdatedFromElement(req, fromTableId, 'Available', null);
+          emitDeviceTableUpdatedFromElement(req, toTableId, 'Occupied', fromOrder.id);
+
           return res.json({
         success: true,
             message: `Table ${fromTableId} order moved to ${toTableId}`,
@@ -783,6 +818,8 @@ module.exports = (db) => {
             );
 
             await dbRun('COMMIT');
+
+          emitDeviceTableUpdatedFromElement(req, fromTableId, 'Available', null);
 
           // Firebase에 머지 히스토리 동기화
           const restaurantId = process.env.FIREBASE_RESTAURANT_ID;
@@ -903,6 +940,9 @@ module.exports = (db) => {
         );
 
         await dbRun('COMMIT');
+
+        emitDeviceTableUpdatedFromElement(req, fromTableId, 'Available', null);
+        emitDeviceTableUpdatedFromElement(req, toTableId, 'Occupied', toOrder.id);
 
         console.log('[TABLE MERGE] Successfully merged tables');
         
@@ -1150,6 +1190,8 @@ module.exports = (db) => {
 
         await dbRun('COMMIT');
 
+        emitDeviceTableUpdatedFromElement(req, fromTableId, sourceStatus, sourceOrderIdValue);
+
         console.log('[TABLE TO TOGO] Successfully merged to Togo');
 
         // Firebase에 머지 히스토리 동기화
@@ -1270,6 +1312,8 @@ module.exports = (db) => {
         );
 
         await dbRun('COMMIT');
+
+        emitDeviceTableUpdatedFromElement(req, toTableId, 'Occupied', fromOrder.id);
 
         console.log('[TOGO TO TABLE MOVE] Successfully moved');
 

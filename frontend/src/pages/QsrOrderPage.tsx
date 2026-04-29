@@ -65,7 +65,6 @@ import {
 } from '../utils/softNeumorphic';
 import { PrintBillModal } from '../components/PrintBillModal';
 import OnlineOrderPanel from '../components/OnlineOrderPanel';
-import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
 import DayClosingModal from '../components/DayClosingModal';
 import DayOpeningModal from '../components/DayOpeningModal';
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
@@ -1454,6 +1453,11 @@ const QsrOrderPage = () => {
   const [soldOutMode, setSoldOutMode] = useState(false);
   const [selectedSoldOutType, setSelectedSoldOutType] = useState<string>('');
   const [selectedExtendItemId, setSelectedExtendItemId] = useState<string | null>(null);
+  // --- Modifier sold-out (additive) ---
+  const [soldOutModifierIds, setSoldOutModifierIds] = useState<Set<string>>(new Set());
+  const [soldOutModifierTimes, setSoldOutModifierTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
+  // Extend selection scope (item or modifier) for the inline sold-out modal — additive.
+  const [selectedExtendScope, setSelectedExtendScope] = useState<'item' | 'modifier'>('item');
   const [currentUser, setCurrentUser] = useState<string>('Staff'); // TODO: Replace with actual signed-in user info
   
   // Gift Card States
@@ -1700,6 +1704,8 @@ const handleVoidPinClear = useCallback(() => {
         const itemSet = new Set<string>();
         const catSet = new Set<string>();
         const times = new Map<string, { type: string; endTime: number; selector: string }>();
+        const modSet = new Set<string>();
+        const modTimes = new Map<string, { type: string; endTime: number; selector: string }>();
         records.forEach(r => {
           if (String(r.scope) === 'item') {
             const id = String(r.key_id);
@@ -1707,11 +1713,17 @@ const handleVoidPinClear = useCallback(() => {
             times.set(id, { type: String(r.soldout_type || ''), endTime: Number(r.end_time || 0), selector: String(r.selector || '') });
           } else if (String(r.scope) === 'category') {
             catSet.add(String(r.key_id));
+          } else if (String(r.scope) === 'modifier') {
+            const id = String(r.key_id);
+            modSet.add(id);
+            modTimes.set(id, { type: String(r.soldout_type || ''), endTime: Number(r.end_time || 0), selector: String(r.selector || '') });
           }
         });
         setSoldOutItems(itemSet);
         setSoldOutCategories(catSet);
         setSoldOutTimes(times);
+        setSoldOutModifierIds(modSet);
+        setSoldOutModifierTimes(modTimes);
       } catch {}
     };
   }, [API_URL, menuId]);
@@ -1752,11 +1764,27 @@ const handleVoidPinClear = useCallback(() => {
         setSoldOutItems(newSoldOutItems);
         setSoldOutTimes(newSoldOutTimes);
       }
+
+      // Modifier sold-out auto-recovery (additive)
+      const newModSet = new Set(soldOutModifierIds);
+      const newModTimes = new Map(soldOutModifierTimes);
+      let modChanged = false;
+      soldOutModifierTimes.forEach((info, mid) => {
+        if (info.endTime > 0 && now >= info.endTime) {
+          newModSet.delete(mid);
+          newModTimes.delete(mid);
+          modChanged = true;
+        }
+      });
+      if (modChanged) {
+        setSoldOutModifierIds(newModSet);
+        setSoldOutModifierTimes(newModTimes);
+      }
     };
     
     const interval = setInterval(checkSoldOutTimes, 60000); // check every 1 minute
     return () => clearInterval(interval);
-  }, [soldOutItems, soldOutTimes]);
+  }, [soldOutItems, soldOutTimes, soldOutModifierIds, soldOutModifierTimes]);
 
   const handleOpenKitchenMemo = () => {
     setKitchenMemo('');
@@ -1766,6 +1794,67 @@ const handleVoidPinClear = useCallback(() => {
   const handleOpenSoldOut = () => {
     setShowSoldOutModal(true);
   };
+
+  // Modifier sold-out toggle (called from ModifierPanel when soldOutMode is active).
+  const handleModifierSoldOutToggle = useCallback(async (modifierId: string) => {
+    if (!menuId) return;
+    const id = String(modifierId);
+    const isAlready = soldOutModifierIds.has(id);
+
+    if (isAlready) {
+      const newSet = new Set(soldOutModifierIds);
+      newSet.delete(id);
+      const newTimes = new Map(soldOutModifierTimes);
+      newTimes.delete(id);
+      setSoldOutModifierIds(newSet);
+      setSoldOutModifierTimes(newTimes);
+      try {
+        await fetch(`${API_URL}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        console.error('Failed to clear sold-out modifier:', e);
+      }
+      return;
+    }
+
+    const now = Date.now();
+    let endTime = 0;
+    let typeStr = selectedSoldOutType || 'indefinite';
+    switch (selectedSoldOutType) {
+      case '30min':
+        endTime = now + 30 * 60 * 1000;
+        break;
+      case '1hour':
+        endTime = now + 60 * 60 * 1000;
+        break;
+      case 'today':
+        endTime = now + 24 * 60 * 60 * 1000;
+        break;
+      case 'indefinite':
+      default:
+        endTime = 0;
+        typeStr = 'indefinite';
+        break;
+    }
+
+    const newSet = new Set(soldOutModifierIds);
+    newSet.add(id);
+    const newTimes = new Map(soldOutModifierTimes);
+    newTimes.set(id, { type: typeStr, endTime, selector: currentUser });
+    setSoldOutModifierIds(newSet);
+    setSoldOutModifierTimes(newTimes);
+
+    try {
+      await fetch(`${API_URL}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: typeStr, endTime, selector: currentUser }),
+      });
+    } catch (e) {
+      console.error('Failed to set sold-out modifier:', e);
+    }
+  }, [API_URL, menuId, soldOutModifierIds, soldOutModifierTimes, selectedSoldOutType, currentUser]);
 
   const handleSoldOutOption = (option: string) => {
     setSelectedSoldOutType(option);
@@ -1806,18 +1895,29 @@ const handleVoidPinClear = useCallback(() => {
     setSoldOutMode(false);
   };
 
-  // Toggle selection for extending a sold-out item
-  const handleExtendSoldOut = (itemId: string) => {
-    setSelectedExtendItemId(prev => prev === itemId ? null : itemId);
+  // Toggle selection for extending a sold-out item or modifier (defaults to item for backward compat).
+  const handleExtendSoldOut = (itemId: string, scope: 'item' | 'modifier' = 'item') => {
+    setSelectedExtendItemId(prev => (prev === itemId && selectedExtendScope === scope) ? null : itemId);
+    setSelectedExtendScope(scope);
   };
 
-  // Add time to a selected sold-out item based on option type
+  // Add time to a selected sold-out item or modifier based on option type
   const handleAddTimeToSoldOut = async (optionType: string) => {
     if (!selectedExtendItemId) return;
     
+    const isModifier = selectedExtendScope === 'modifier';
+    const scopePath = isModifier ? 'modifier' : 'item';
     const now = Date.now();
-    const info = soldOutTimes.get(selectedExtendItemId);
-    const newTimes = new Map(soldOutTimes);
+    const info = isModifier
+      ? soldOutModifierTimes.get(selectedExtendItemId)
+      : soldOutTimes.get(selectedExtendItemId);
+    const applyTimes = (next: Map<string, { type: string; endTime: number; selector: string }>) => {
+      if (isModifier) setSoldOutModifierTimes(next);
+      else setSoldOutTimes(next);
+    };
+    const baseMap = isModifier
+      ? new Map(soldOutModifierTimes)
+      : new Map(soldOutTimes);
     
     let addMs = 0;
     let newType = optionType;
@@ -1834,13 +1934,13 @@ const handleVoidPinClear = useCallback(() => {
         break;
       case 'indefinite':
         // Set to indefinite (0)
-        newTimes.set(selectedExtendItemId, { type: 'indefinite', endTime: 0, selector: info?.selector || currentUser });
-        setSoldOutTimes(newTimes);
+        baseMap.set(selectedExtendItemId, { type: 'indefinite', endTime: 0, selector: info?.selector || currentUser });
+        applyTimes(baseMap);
         setSelectedExtendItemId(null);
         try {
           const mid = String(menuId || '');
           if (mid) {
-            await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(selectedExtendItemId)}`, {
+            await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/${scopePath}/${encodeURIComponent(selectedExtendItemId)}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ type: 'indefinite', endTime: 0, selector: currentUser })
@@ -1867,14 +1967,14 @@ const handleVoidPinClear = useCallback(() => {
       newType = '30min';
     }
     
-    newTimes.set(selectedExtendItemId, { type: newType, endTime: newEndTime, selector: info?.selector || currentUser });
-    setSoldOutTimes(newTimes);
+    baseMap.set(selectedExtendItemId, { type: newType, endTime: newEndTime, selector: info?.selector || currentUser });
+    applyTimes(baseMap);
     setSelectedExtendItemId(null);
     
     try {
       const mid = String(menuId || '');
       if (mid) {
-        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(selectedExtendItemId)}`, {
+        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/${scopePath}/${encodeURIComponent(selectedExtendItemId)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: newType, endTime: newEndTime, selector: currentUser })
@@ -1883,18 +1983,27 @@ const handleVoidPinClear = useCallback(() => {
     } catch {}
   };
 
-  // Clear Sold Out for a single item
-  const handleClearSoldOutItem = async (itemId: string) => {
-    const next = new Set(soldOutItems);
-    next.delete(itemId);
-    setSoldOutItems(next);
-    const times = new Map(soldOutTimes);
-    times.delete(itemId);
-    setSoldOutTimes(times);
+  // Clear Sold Out for a single item or modifier (defaults to item for backward compat).
+  const handleClearSoldOutItem = async (itemId: string, scope: 'item' | 'modifier' = 'item') => {
+    if (scope === 'modifier') {
+      const next = new Set(soldOutModifierIds);
+      next.delete(itemId);
+      setSoldOutModifierIds(next);
+      const times = new Map(soldOutModifierTimes);
+      times.delete(itemId);
+      setSoldOutModifierTimes(times);
+    } else {
+      const next = new Set(soldOutItems);
+      next.delete(itemId);
+      setSoldOutItems(next);
+      const times = new Map(soldOutTimes);
+      times.delete(itemId);
+      setSoldOutTimes(times);
+    }
     try {
       const mid = String(menuId || '');
       if (mid) {
-        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/item/${encodeURIComponent(itemId)}`, { method: 'DELETE' });
+        await fetch(`${API_URL}/sold-out/${encodeURIComponent(mid)}/${scope}/${encodeURIComponent(itemId)}`, { method: 'DELETE' });
       }
     } catch {}
   };
@@ -2718,18 +2827,47 @@ const handleVoidPinClear = useCallback(() => {
     const s = String(raw || '').trim();
     if (!s) return '';
     const key = s.toUpperCase().replace(/\s+/g, '');
-    if (key === 'UBEREATS' || key === 'UBER') return 'Uber';
-    if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'Ddash';
+    if (key === 'UBEREATS' || key === 'UBER') return 'UBER';
+    if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'DDASH';
     if (key === 'SKIPTHEDISHES' || key === 'SKIP') return 'SKIP';
-    if (key === 'FANTUAN') return 'Fantuan';
-    return s;
+    if (key === 'FANTUAN' || key === 'FTUAN') return 'FTAN';
+    return s.toUpperCase();
   };
 
   const orderListGetDeliveryMeta = (order: any) => {
-    const company =
-      order?.deliveryCompany || order?.delivery_company ||
-      order?.deliveryChannel || order?.delivery_channel ||
-      order?.order_source || '';
+    const labelSource = String(
+      order?.name || order?.customer_name || order?.customerName || ''
+    ).trim();
+    const inferredCompany =
+      /ubereats|uber eats|^uber\b/i.test(labelSource) ? 'UBEREATS' :
+      /doordash|door dash|^ddash\b/i.test(labelSource) ? 'DOORDASH' :
+      /skipthedishes|^skip\b/i.test(labelSource) ? 'SKIPTHEDISHES' :
+      /fantuan/i.test(labelSource) ? 'FANTUAN' :
+      /grubhub/i.test(labelSource) ? 'GRUBHUB' :
+      '';
+    const sidRaw = order?.sourceIds?.channel ?? order?.fullOrder?.sourceIds?.channel;
+    let fromSourceIds = '';
+    if (sidRaw != null && String(sidRaw).trim() !== '') {
+      const ns = String(sidRaw).trim().toLowerCase().replace(/[\s_-]+/g, '');
+      if (ns === 'ubereats' || ns === 'uber') fromSourceIds = 'UBEREATS';
+      else if (ns === 'doordash' || ns === 'ddash') fromSourceIds = 'DOORDASH';
+      else if (ns === 'skipthedishes' || ns === 'skip') fromSourceIds = 'SKIPTHEDISHES';
+      else if (ns === 'fantuan') fromSourceIds = 'FANTUAN';
+      else if (ns === 'grubhub') fromSourceIds = 'GRUBHUB';
+    }
+    const chCol = order?.channel;
+    let fromSqliteChannel = '';
+    if (chCol != null && String(chCol).trim() !== '') {
+      const ns = String(chCol).trim().toLowerCase().replace(/[\s_-]+/g, '');
+      if (ns === 'ubereats' || ns === 'uber') fromSqliteChannel = 'UBEREATS';
+      else if (ns === 'doordash' || ns === 'ddash') fromSqliteChannel = 'DOORDASH';
+      else if (ns === 'skipthedishes' || ns === 'skip') fromSqliteChannel = 'SKIPTHEDISHES';
+      else if (ns === 'fantuan') fromSqliteChannel = 'FANTUAN';
+      else if (ns === 'grubhub') fromSqliteChannel = 'GRUBHUB';
+      else fromSqliteChannel = String(chCol).trim().toUpperCase().replace(/\s+/g, '');
+    }
+    const dcPrimary = String(order?.delivery_company ?? order?.deliveryCompany ?? '').trim();
+    const company = dcPrimary || fromSourceIds || fromSqliteChannel || inferredCompany || '';
     let orderNumber =
       order?.deliveryOrderNumber || order?.delivery_order_number ||
       order?.externalOrderNumber || order?.external_order_number || '';
@@ -11998,18 +12136,6 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                     />
                   </div>
 
-                  {/* Online Order Alert Button */}
-                  <div className="ml-auto">
-                    <OnlineOrderAlertButton
-                      restaurantId={onlineOrderRestaurantId}
-                      onOrderAccepted={(order, readyTime) => {
-                        console.log('Online order accepted:', order.orderNumber, readyTime);
-                      }}
-                      onOrderRejected={(order, reason) => {
-                        console.log('Online order rejected:', order.orderNumber, reason);
-                      }}
-                    />
-                  </div>
                 </div>
               )}
 
@@ -12961,6 +13087,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   showEmptySlots={true}
                   emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
                   lockLayout={isSalesOrder || isQsrMode}
+                  soldOutModifierIds={soldOutModifierIds}
+                  soldOutMode={soldOutMode}
+                  onModifierSoldOutToggle={handleModifierSoldOutToggle}
                 />
 
                 {/* QSR Function Buttons */}
@@ -16361,7 +16490,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   <h3 className="text-lg font-semibold text-gray-800">Sold Out Options</h3>
                   {selectedExtendItemId && (
                     <div className="text-sm text-blue-600 font-medium mt-1">
-                      Select time to add to: {menuItems.find(i => i.id === selectedExtendItemId)?.name}
+                      {selectedExtendScope === 'modifier' ? (
+                        <>Select time to add to modifier: {(() => {
+                          let modName: string | undefined;
+                          for (const it of menuItems as any[]) {
+                            const groups = (it && (it.modifierGroups || it.modifier_groups)) || [];
+                            for (const g of groups) {
+                              const mods = (g && (g.modifiers || g.options)) || [];
+                              const found = mods.find((m: any) => String(m.id ?? m.modifier_id) === String(selectedExtendItemId));
+                              if (found) { modName = String(found.name || found.title || ''); break; }
+                            }
+                            if (modName) break;
+                          }
+                          return modName || `#${selectedExtendItemId}`;
+                        })()}</>
+                      ) : (
+                        <>Select time to add to: {menuItems.find(i => i.id === selectedExtendItemId)?.name}</>
+                      )}
                     </div>
                   )}
                 </div>
@@ -16402,7 +16547,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                 {/* Right column: list with per-item actions */}
                 <div>
                   <div className="font-medium text-gray-800 mb-2">Current Sold Out Items</div>
-                  <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[26vh] overflow-y-auto pr-1">
                     {Array.from(soldOutItems).length === 0 ? (
                       <div className="text-sm text-gray-500">No items are currently sold out.</div>
                     ) : (
@@ -16410,7 +16555,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                         const item = menuItems.find(i => i.id === itemId);
                         const info = soldOutTimes.get(itemId);
                         if (!item) return null;
-                        const isSelected = selectedExtendItemId === itemId;
+                        const isSelected = selectedExtendItemId === itemId && selectedExtendScope === 'item';
                         const timeLabel = formatRemainingTime(info?.endTime || 0);
                         return (
                           <div key={itemId} className={`flex items-center justify-between border rounded p-2 transition-all ${isSelected ? 'bg-blue-100 border-blue-400' : 'bg-gray-50'}`}>
@@ -16420,13 +16565,61 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                             </div>
                             <div className="flex items-center gap-2">
                               <button 
-                                onClick={() => handleExtendSoldOut(itemId)} 
+                                onClick={() => handleExtendSoldOut(itemId, 'item')} 
                                 className={`min-w-[80px] h-9 px-3 rounded-lg text-sm font-semibold shadow transition-all ${isSelected ? 'bg-blue-800 text-white' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'}`}
                               >
                                 {isSelected ? 'Selected' : 'Extend'}
                               </button>
                               <button 
-                                onClick={() => { handleClearSoldOutItem(itemId); setSelectedExtendItemId(null); }} 
+                                onClick={() => { handleClearSoldOutItem(itemId, 'item'); setSelectedExtendItemId(null); }} 
+                                className="min-w-[80px] h-9 px-3 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold shadow"
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Modifiers section (additive) */}
+                  <div className="font-medium text-gray-800 mt-4 mb-2">Current Sold Out Modifiers</div>
+                  <div className="space-y-2 max-h-[26vh] overflow-y-auto pr-1">
+                    {Array.from(soldOutModifierIds).length === 0 ? (
+                      <div className="text-sm text-gray-500">No modifiers are currently sold out.</div>
+                    ) : (
+                      Array.from(soldOutModifierIds).map(modId => {
+                        // Look up modifier display name from any item that contains it.
+                        let modName: string | undefined;
+                        for (const it of menuItems as any[]) {
+                          const groups = (it && (it.modifierGroups || it.modifier_groups)) || [];
+                          for (const g of groups) {
+                            const mods = (g && (g.modifiers || g.options)) || [];
+                            const found = mods.find((m: any) => String(m.id ?? m.modifier_id) === String(modId));
+                            if (found) { modName = String(found.name || found.title || ''); break; }
+                          }
+                          if (modName) break;
+                        }
+                        if (!modName) modName = `Modifier #${modId}`;
+                        const info = soldOutModifierTimes.get(modId);
+                        const isSelected = selectedExtendItemId === modId && selectedExtendScope === 'modifier';
+                        const timeLabel = formatRemainingTime(info?.endTime || 0);
+                        return (
+                          <div key={`mod-${modId}`} className={`flex items-center justify-between border rounded p-2 transition-all ${isSelected ? 'bg-blue-100 border-blue-400' : 'bg-gray-50'}`}>
+                            <div>
+                              <div className="text-sm font-medium text-gray-800">{modName}</div>
+                              <div className={`text-xs font-semibold ${info?.endTime === 0 ? 'text-orange-600' : 'text-blue-600'}`}>{timeLabel}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleExtendSoldOut(modId, 'modifier')}
+                                className={`min-w-[80px] h-9 px-3 rounded-lg text-sm font-semibold shadow transition-all ${isSelected ? 'bg-blue-800 text-white' : 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white'}`}
+                              >
+                                {isSelected ? 'Selected' : 'Extend'}
+                              </button>
+                              <button
+                                onClick={() => { handleClearSoldOutItem(modId, 'modifier'); setSelectedExtendItemId(null); }}
                                 className="min-w-[80px] h-9 px-3 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold shadow"
                               >
                                 Clear

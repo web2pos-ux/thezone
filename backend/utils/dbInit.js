@@ -533,6 +533,8 @@ async function initDatabase(db) {
       { col: 'original_server_name', sql: "ALTER TABLE orders ADD COLUMN original_server_name TEXT" },
       { col: 'shift_transferred_at', sql: "ALTER TABLE orders ADD COLUMN shift_transferred_at TEXT" },
       { col: 'online_tip', sql: "ALTER TABLE orders ADD COLUMN online_tip REAL DEFAULT 0" },
+      { col: 'delivery_fee', sql: "ALTER TABLE orders ADD COLUMN delivery_fee REAL DEFAULT 0" },
+      { col: 'delivery_company', sql: "ALTER TABLE orders ADD COLUMN delivery_company TEXT" },
     ];
     for (const m of ordersMigrations) {
       if (!ordersColNames.includes(m.col)) {
@@ -1066,8 +1068,10 @@ async function initDatabase(db) {
       delivery_visible INTEGER DEFAULT 1,
       online_hide_type TEXT,
       online_available_until TEXT,
+      online_available_from TEXT,
       delivery_hide_type TEXT,
       delivery_available_until TEXT,
+      delivery_available_from TEXT,
       firebase_id TEXT,
       FOREIGN KEY (category_id) REFERENCES menu_categories(category_id) ON DELETE CASCADE,
       FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE

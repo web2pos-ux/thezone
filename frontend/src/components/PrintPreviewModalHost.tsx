@@ -554,13 +554,15 @@ const PrintPreviewModalHost: React.FC = () => {
 
   const fallbackBody = fallbackText ?? '';
 
+  /** Thermal graphic preview: ~30% narrower panel vs previous max-w-2xl (42rem); content scaled down proportionally */
+  const PREVIEW_SCALE = 0.7;
 
 
   return (
 
     <div
 
-      className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/50 p-2 sm:p-3"
 
       role="dialog"
 
@@ -570,7 +572,7 @@ const PrintPreviewModalHost: React.FC = () => {
 
     >
 
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-lg bg-white shadow-2xl flex flex-col">
+      <div className="flex h-[calc(100vh-16px)] max-h-[calc(100vh-16px)] w-full max-w-[470px] flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
 
         <div className="flex items-center justify-between border-b px-4 py-3 bg-slate-50">
 
@@ -620,7 +622,7 @@ const PrintPreviewModalHost: React.FC = () => {
 
         </div>
 
-        <div className="flex-1 overflow-auto min-h-[12rem] bg-neutral-200">
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-neutral-200">
 
           {loadingGraphic && (
 
@@ -630,7 +632,7 @@ const PrintPreviewModalHost: React.FC = () => {
 
           {!loadingGraphic && graphicUrl && (
 
-            <div className="flex justify-center p-4">
+            <div className="flex min-h-0 flex-1 justify-center overflow-auto p-3 sm:p-4">
 
               <img
 
@@ -638,9 +640,18 @@ const PrintPreviewModalHost: React.FC = () => {
 
                 alt=""
 
-                className="max-w-full h-auto shadow-md border border-neutral-400 bg-white"
+                className="h-auto shadow-md border border-neutral-400 bg-white"
 
-                style={{ imageRendering: 'pixelated' }}
+                style={{
+                  imageRendering: 'pixelated',
+                  width:
+                    metaDims.w != null && metaDims.w > 0
+                      ? `${Math.max(1, Math.round(metaDims.w * PREVIEW_SCALE))}px`
+                      : '70%',
+                  maxWidth: '100%',
+                  maxHeight: 'calc(100vh - 140px)',
+                  objectFit: 'contain',
+                }}
 
               />
 
@@ -650,7 +661,10 @@ const PrintPreviewModalHost: React.FC = () => {
 
           {!loadingGraphic && !graphicUrl && fallbackBody && (
 
-            <pre className="p-4 text-xs leading-relaxed font-mono bg-white text-slate-900 whitespace-pre-wrap break-words">
+            <pre
+              className="min-h-0 flex-1 overflow-auto p-4 font-mono text-slate-900 whitespace-pre-wrap break-words leading-relaxed bg-white"
+              style={{ fontSize: `${Math.round(12 * PREVIEW_SCALE)}px` }}
+            >
 
               {fallbackBody}
 

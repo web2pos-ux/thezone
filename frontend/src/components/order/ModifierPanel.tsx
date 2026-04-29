@@ -62,9 +62,15 @@ interface ModifierPanelProps {
   showEmptySlots?: boolean;
   emptySlotMode?: 'none' | 'configured' | 'fill';
   lockLayout?: boolean;
+  /** Set of modifier ids currently sold out — they render greyed out + 'SOLD OUT' overlay. */
+  soldOutModifierIds?: Set<string>;
+  /** When true, tapping a modifier toggles its sold-out state via onModifierSoldOutToggle instead of selecting it. */
+  soldOutMode?: boolean;
+  /** Called when a modifier is tapped while soldOutMode is true. */
+  onModifierSoldOutToggle?: (modifierId: string) => void;
 }
 
-const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; price?: number; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; itemHeightPx: number; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, price, onSelect, layoutSettings, modifierColors, itemHeightPx, setSelectedModifierIdForColor, lockLayout }) => {
+const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean; groupId: string; selectionType?: string; price?: number; onSelect: (groupId: string, id: string, selectionType: string) => void; layoutSettings: any; modifierColors: {[k:string]: string}; itemHeightPx: number; setSelectedModifierIdForColor?: (id: string) => void; lockLayout?: boolean; isSoldOut?: boolean;}> = ({ id, label, isSelected, groupId, selectionType, price, onSelect, layoutSettings, modifierColors, itemHeightPx, setSelectedModifierIdForColor, lockLayout, isSoldOut }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !!lockLayout });
   const style: React.CSSProperties = {
     touchAction: lockLayout ? 'manipulation' : 'none',
@@ -98,7 +104,7 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
     !resolvedBgIsHex && !isSelected ? bgClass : ''
   } p-2 rounded-xl ${textClass} border ${
     isSelected ? 'border-gray-300' : 'border-gray-200'
-  } flex items-center justify-center w-full h-full`;
+  } flex items-center justify-center w-full h-full relative`;
 
   return (
     <button
@@ -115,11 +121,11 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
         if (setSelectedModifierIdForColor) setSelectedModifierIdForColor(id);
       }}
       className={className}
-      title={`Color: ${bgClass}`}
+      title={isSoldOut ? `${label} — SOLD OUT` : `Color: ${bgClass}`}
       {...attributes}
       {...listeners}
     >
-      <div className={`${layoutSettings.modifierFontExtraBold ? 'font-black' : layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words flex flex-col items-center justify-center`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
+      <div className={`${layoutSettings.modifierFontExtraBold ? 'font-black' : layoutSettings.modifierFontBold ? 'font-bold' : 'font-normal'} text-center break-words flex flex-col items-center justify-center ${isSoldOut ? 'line-through opacity-60' : ''}`} style={{ fontSize: `${layoutSettings.modifierFontSize}px`, letterSpacing: '0.1px' }}>
         <span>{label}</span>
         {layoutSettings.modifierShowPrices && price !== undefined && price !== 0 && (
           <span style={{ fontSize: `${Math.max(10, layoutSettings.modifierFontSize - 2)}px` }} className="opacity-80">
@@ -127,6 +133,26 @@ const SortableModifier: React.FC<{id: string; label: string; isSelected: boolean
           </span>
         )}
       </div>
+      {isSoldOut && (
+        <span
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: 2,
+            right: 4,
+            fontSize: '9px',
+            fontWeight: 800,
+            color: '#dc2626',
+            background: 'rgba(255,255,255,0.85)',
+            padding: '0 4px',
+            borderRadius: 6,
+            letterSpacing: '0.5px',
+            pointerEvents: 'none',
+          }}
+        >
+          SOLD
+        </span>
+      )}
     </button>
   );
 };
@@ -162,7 +188,10 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
   extraButton2,
   showEmptySlots = true,
   emptySlotMode,
-  lockLayout = false
+  lockLayout = false,
+  soldOutModifierIds,
+  soldOutMode = false,
+  onModifierSoldOutToggle,
 }) => {
   const effectiveEmptyMode: 'none' | 'configured' | 'fill' =
     emptySlotMode || (showEmptySlots === false ? 'none' : 'fill');
@@ -345,6 +374,15 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                         return <SortableEmptySlot key={`missing-${idx}`} id={`EMPTY:${idx}`} layoutSettings={layoutSettings} itemHeightPx={itemHeight} />
                       }
                       const isSelected = selectedModifiers[entry.groupId]?.includes(slotId);
+                      const isModSoldOut = !!(soldOutModifierIds && soldOutModifierIds.has(String(slotId)));
+                      // In sold-out mode, route taps to onModifierSoldOutToggle instead of normal selection.
+                      const wrappedOnSelect = (gid: string, mid: string, st: string) => {
+                        if (soldOutMode) {
+                          onModifierSoldOutToggle?.(mid);
+                          return;
+                        }
+                        handleModifierSelection(gid, mid, st);
+                      };
                       return (
                         <SortableModifier 
                           key={slotId}
@@ -354,12 +392,13 @@ const ModifierPanel: React.FC<ModifierPanelProps> = ({
                           groupId={entry.groupId}
                           selectionType={entry.selectionType}
                           price={entry.price}
-                          onSelect={handleModifierSelection}
+                          onSelect={wrappedOnSelect}
                           layoutSettings={layoutSettings}
                           modifierColors={modifierColors}
                           itemHeightPx={itemHeight}
                           setSelectedModifierIdForColor={setSelectedModifierIdForColor}
                           lockLayout={lockLayout}
+                          isSoldOut={isModSoldOut}
                         />
                       );
                     });

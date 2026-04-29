@@ -44,16 +44,18 @@ function registerFirebaseBootRealtimeListeners(db, restaurantId, broadcastToRest
           db.run(
             `UPDATE menu_items SET 
                     online_visible = ?, delivery_visible = ?,
-                    online_hide_type = ?, online_available_until = ?,
-                    delivery_hide_type = ?, delivery_available_until = ?
+                    online_hide_type = ?, online_available_until = ?, online_available_from = ?,
+                    delivery_hide_type = ?, delivery_available_until = ?, delivery_available_from = ?
                   WHERE item_id = ?`,
             [
               change.onlineVisible ? 1 : 0,
               change.deliveryVisible ? 1 : 0,
               change.onlineHideType || 'visible',
               change.onlineAvailableUntil || null,
+              change.onlineAvailableFrom || null,
               change.deliveryHideType || 'visible',
               change.deliveryAvailableUntil || null,
+              change.deliveryAvailableFrom || null,
               posItemId,
             ],
             (err) => (err ? reject(err) : resolve()),
@@ -72,8 +74,10 @@ function registerFirebaseBootRealtimeListeners(db, restaurantId, broadcastToRest
               delivery_visible: change.deliveryVisible ? 1 : 0,
               online_hide_type: change.onlineHideType || 'visible',
               online_available_until: change.onlineAvailableUntil,
+              online_available_from: change.onlineAvailableFrom,
               delivery_hide_type: change.deliveryHideType || 'visible',
               delivery_available_until: change.deliveryAvailableUntil,
+              delivery_available_from: change.deliveryAvailableFrom,
             },
           });
         }

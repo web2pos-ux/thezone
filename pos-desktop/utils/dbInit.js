@@ -884,8 +884,10 @@ async function initDatabase(db) {
       delivery_visible INTEGER DEFAULT 1,
       online_hide_type TEXT,
       online_available_until TEXT,
+      online_available_from TEXT,
       delivery_hide_type TEXT,
       delivery_available_until TEXT,
+      delivery_available_from TEXT,
       firebase_id TEXT,
       FOREIGN KEY (category_id) REFERENCES menu_categories(category_id) ON DELETE CASCADE,
       FOREIGN KEY (menu_id) REFERENCES menus(menu_id) ON DELETE CASCADE

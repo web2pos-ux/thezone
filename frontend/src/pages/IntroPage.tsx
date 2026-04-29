@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getAPI_BASE, API_URL } from '../config/constants';
 import {
@@ -205,30 +205,6 @@ const IntroPage: React.FC<IntroPageProps> = ({ deviceEntry = null }) => {
     }
     navigate(getIntroNavPathForStoredOperationMode());
   };
-
-  /** 비데모: Dealer Settings가 저장한 `pos_setup_config.operationMode` 기준으로, PIN 4자리 검증 성공 시 즉시 POS 진입 */
-  useEffect(() => {
-    if (demo) return;
-    if (pin.length !== 4) return;
-
-    let cancelled = false;
-    const snapshot = pin;
-    void (async () => {
-      const valid = await verifyIntroPin(snapshot);
-      if (cancelled) return;
-      if (!valid) return;
-      if (deviceEntry) {
-        setDeviceIntroSession(deviceEntry);
-        navigate(deviceEntry === 'handheld' ? '/handheld' : '/sub-pos');
-        return;
-      }
-      navigate(getIntroNavPathForStoredOperationMode());
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pin, demo, navigate, verifyIntroPin, deviceEntry]);
 
   const runDemoDestination = async (d: IntroDemoDestination) => {
     if (d.kind === 'path') {

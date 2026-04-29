@@ -163,6 +163,9 @@ module.exports = (db) => {
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN online_order_number TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN payment_status TEXT DEFAULT 'pending'`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE orders ADD COLUMN paid_at TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN delivery_fee REAL DEFAULT 0`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN delivery_company TEXT`); } catch (e) { /* ignore if exists */ }
+			try { await dbRun(`ALTER TABLE orders ADD COLUMN customer_address TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN guest_number INTEGER`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN modifiers_json TEXT`); } catch (e) { /* ignore if exists */ }
 			try { await dbRun(`ALTER TABLE order_items ADD COLUMN memo_json TEXT`); } catch (e) { /* ignore if exists */ }
@@ -627,7 +630,7 @@ router.post('/:id/guest-status/bulk', async (req, res) => {
 				params.push(servicePatternFilter);
 			}
 			const whereClause = clauses.length ? ('WHERE ' + clauses.join(' AND ')) : '';
-			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, o.service_pattern, o.online_tip, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
+			const sql = `SELECT o.id, o.order_number, o.order_type, o.subtotal, o.tax, o.total, o.status, o.created_at, o.closed_at, o.table_id, o.server_id, o.server_name, o.customer_phone, o.customer_name, o.fulfillment_mode, o.ready_time, o.pickup_minutes, o.order_source, o.delivery_company, o.channel, o.external_order_number, o.kitchen_note, o.adjustments_json, o.order_mode, o.online_order_number, o.firebase_order_id, o.service_pattern, o.online_tip, t.name AS table_name, COALESCE((SELECT SUM(r.total) FROM refunds r WHERE r.order_id = o.id), 0) AS refunded_total FROM orders o LEFT JOIN table_map_elements t ON o.table_id = t.element_id ${whereClause} ORDER BY o.id DESC LIMIT ?`;
 			console.log('[GET /orders] SQL:', sql);
 			console.log('[GET /orders] Params:', [...params, Number(limit)]);
 			const rows = await dbAll(sql, [...params, Number(limit)]);

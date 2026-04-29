@@ -17,6 +17,15 @@ const DELIVERY_CHANNELS = {
     apiEndpoint: null, // Firebase 통합 사용
     webhookSupport: true
   },
+  urbanpiper: {
+    id: 'urbanpiper',
+    name: 'Urban Piper',
+    shortName: 'UP',
+    color: '#1F2937',
+    enabled: false,
+    apiEndpoint: 'https://pos-int.urbanpiper.com/external/api/v1',
+    webhookSupport: true
+  },
   ubereats: {
     id: 'ubereats',
     name: 'UberEats',
@@ -121,13 +130,37 @@ module.exports = (db) => {
     try {
       const savedSettings = await dbAll('SELECT * FROM delivery_channel_settings');
       
+      // Urban Piper Firebase 설정 조회 (목록에도 반영)
+      let upFb = null;
+      try {
+        const settingRow = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
+        const rId = (settingRow && settingRow.value) ? settingRow.value.trim() : '';
+        if (rId) {
+          const firebaseService = require('../services/firebaseService');
+          const firestore = firebaseService.getFirestore();
+          if (firestore) {
+            const snap = await firestore.collection('restaurants').doc(rId).collection('settings').doc('urbanPiper').get();
+            if (snap.exists) upFb = snap.data();
+          }
+        }
+      } catch { /* non-fatal */ }
+
       const channels = Object.values(DELIVERY_CHANNELS).map(channel => {
         const saved = savedSettings.find(s => s.channel_id === channel.id);
+        const isUp = channel.id === 'urbanpiper';
         return {
           ...channel,
           enabled: saved ? !!saved.enabled : channel.enabled,
-          configured: !!saved?.api_key || channel.id === 'thezoneorder',
-          settings: saved ? JSON.parse(saved.settings_json || '{}') : {}
+          configured: !!(isUp && upFb?.apiKey) || !!saved?.api_key || channel.id === 'thezoneorder',
+          settings: saved ? JSON.parse(saved.settings_json || '{}') : {},
+          ...(isUp ? {
+            api_key:      upFb?.apiKey || saved?.api_key || null,
+            api_secret:   upFb?.apiSecret || saved?.api_secret || null,
+            store_id:     upFb?.storeId || saved?.store_id || null,
+            merchant_id:  upFb?.merchantId || saved?.merchant_id || null,
+            api_endpoint: upFb?.baseUrl || null,
+            webhook_url:  upFb?.webhookUrl || saved?.webhook_url || null,
+          } : {}),
         };
       });
       
@@ -150,13 +183,33 @@ module.exports = (db) => {
       
       const saved = await dbGet('SELECT * FROM delivery_channel_settings WHERE channel_id = ?', [channelId]);
       
+      let fbData = null;
+      if (channelId === 'urbanpiper') {
+        try {
+          const settingRow = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
+          const rId = (settingRow && settingRow.value) ? settingRow.value.trim() : '';
+          if (rId) {
+            const firebaseService = require('../services/firebaseService');
+            const firestore = firebaseService.getFirestore();
+            if (firestore) {
+              const snap = await firestore.collection('restaurants').doc(rId).collection('settings').doc('urbanPiper').get();
+              if (snap.exists) fbData = snap.data();
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
       const channel = {
         ...DELIVERY_CHANNELS[channelId],
         enabled: saved ? !!saved.enabled : DELIVERY_CHANNELS[channelId].enabled,
-        configured: !!saved?.api_key || channelId === 'thezoneorder',
+        configured: !!(fbData?.apiKey || saved?.api_key) || channelId === 'thezoneorder',
         settings: saved ? JSON.parse(saved.settings_json || '{}') : {},
-        merchantId: saved?.merchant_id || null,
-        storeId: saved?.store_id || null
+        merchantId: fbData?.merchantId || saved?.merchant_id || null,
+        storeId: fbData?.storeId || saved?.store_id || null,
+        api_key: fbData?.apiKey || saved?.api_key || null,
+        api_secret: fbData?.apiSecret || saved?.api_secret || null,
+        api_endpoint: fbData?.baseUrl || (saved ? JSON.parse(saved.settings_json || '{}').baseUrl : null) || DELIVERY_CHANNELS[channelId]?.apiEndpoint || null,
+        webhook_url: fbData?.webhookUrl || saved?.webhook_url || null,
       };
       
       res.json({ success: true, channel });
@@ -202,7 +255,31 @@ module.exports = (db) => {
         JSON.stringify(settings || {})
       ]);
       
-      console.log(`[CHANNELS] Configured: ${channelId}`);
+      console.log(`[CHANNELS] Configured (SQLite): ${channelId}`);
+
+      // Urban Piper → Firebase에도 저장 (여러 POS에서 공유)
+      if (channelId === 'urbanpiper') {
+        try {
+          const urbanPiperService = require('../services/urbanPiperService');
+          const settingRow = await dbGet("SELECT value FROM admin_settings WHERE key = 'firebase_restaurant_id'");
+          const restaurantId = (settingRow && settingRow.value) ? settingRow.value.trim() : '';
+          if (restaurantId) {
+            await urbanPiperService.saveConfigToFirebase(restaurantId, {
+              apiKey:     apiKey || '',
+              apiSecret:  apiSecret || '',
+              storeId:    storeId || '',
+              merchantId: merchantId || '',
+              baseUrl:    (settings && settings.baseUrl) || DELIVERY_CHANNELS.urbanpiper.apiEndpoint || '',
+              authMode:   (settings && settings.authMode) || 'basic',
+              webhookUrl: webhookUrl || '',
+            });
+            console.log(`[CHANNELS] UP config also saved to Firebase`);
+          }
+        } catch (fbErr) {
+          console.warn('[CHANNELS] Firebase save failed (non-fatal):', fbErr?.message);
+        }
+      }
+
       res.json({ success: true, message: `${DELIVERY_CHANNELS[channelId].name} configured successfully` });
     } catch (error) {
       console.error('[CHANNELS] Configure error:', error);
@@ -377,6 +454,24 @@ module.exports = (db) => {
         });
       }
       
+      // Urban Piper: 실제 ping 호출
+      if (channelId === 'urbanpiper') {
+        const urbanPiperService = require('../services/urbanPiperService');
+        const ping = await urbanPiperService.ping(db);
+        return res.json({
+          success: !ping.skipped,
+          connected: !!ping.ok,
+          message: ping.ok
+            ? 'Urban Piper API reachable'
+            : (ping.skipped ? `Urban Piper not configured: ${ping.error}` : `Urban Piper unreachable: ${ping.error || ping.status}`),
+          details: {
+            status: ping.status,
+            storeId: saved?.store_id || 'Not set',
+            merchantId: saved?.merchant_id || 'Not set'
+          }
+        });
+      }
+
       // TZO는 Firebase 연동 상태 확인
       if (channelId === 'thezoneorder') {
         const restaurantId = require('fs').existsSync('.env') 

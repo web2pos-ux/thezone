@@ -16,6 +16,7 @@ import SoldOutModal from '../components/SoldOutModal';
 import { API_URL } from '../config/constants';
 import { isPanelTogoPayKitchenSuppressActive } from '../utils/printUtils';
 import BottomActionBar from '../components/order/BottomActionBar';
+import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
 import ModifierPanel from '../components/order/ModifierPanel';
 import OrderCatalogPanel, { CatalogSnapshot } from './order/OrderCatalogPanel';
 import PaymentSplitModals from './order/modules/PaymentSplitModals';
@@ -241,6 +242,27 @@ const OrderPage = () => {
   const pendingTogoInfoRef = useRef<{ name: string; phone: string } | null>(null);
   /** 투고 정보 모달에서 Pay/OK로 결제만 연 경우 — 결제 완료 시점 처리 분기용 */
   const togoWalkInPayAfterInfoRef = useRef(false);
+  /** Bottom bar: Reprint vs Clear — 주문 저장됨 + 주방 출력 완료 시에만 Reprint */
+  const [bottomBarPersistedOrderId, setBottomBarPersistedOrderId] = useState<number | null>(() => {
+    const raw = orderIdFromState;
+    if (raw != null && raw !== '') {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  });
+  const [bottomBarKitchenOutputDone, setBottomBarKitchenOutputDone] = useState(false);
+  const [takeInfoModalOpen, setTakeInfoModalOpen] = useState(false);
+  const [takeInfoModalMode, setTakeInfoModalMode] = useState<'togo' | 'online' | 'delivery'>('togo');
+  const [takeInfoPrefillSnapshot, setTakeInfoPrefillSnapshot] = useState<{
+    customerPhone?: string;
+    customerName?: string;
+    pickupMinutes?: number;
+    customerAddress?: string;
+    customerZip?: string;
+    note?: string;
+    onlineOrderNumber?: string;
+  } | null>(null);
   /** PaymentModal에서 결제 확정 후 PaymentCompleteModal로 넘어갔으면 true — 모달 닫기 취소와 구분 */
   const paymentFlowEnteredCompleteRef = useRef(false);
   /** 스플릿에서 게스트 Pay 선택 시 onClose가 뒤따름 — 투고 Pay/OK 취소 오탐 방지 */
@@ -681,6 +703,9 @@ const OrderPage = () => {
   const [soldOutTimes, setSoldOutTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
   const [soldOutMode, setSoldOutMode] = useState(false);
   const [selectedSoldOutType, setSelectedSoldOutType] = useState<string>('');
+  // --- Modifier sold-out (additive; does not affect existing item sold-out logic) ---
+  const [soldOutModifierIds, setSoldOutModifierIds] = useState<Set<string>>(new Set());
+  const [soldOutModifierTimes, setSoldOutModifierTimes] = useState<Map<string, { type: string; endTime: number; selector: string }>>(new Map());
   const [currentUser, setCurrentUser] = useState<string>('Staff'); // TODO: Replace with actual signed-in user info
 
   // Auto-open Sold Out modal when navigated from SalesPage
@@ -828,6 +853,8 @@ const handleVoidPinClear = useCallback(() => {
         const itemSet = new Set<string>();
         const catSet = new Set<string>();
         const times = new Map<string, { type: string; endTime: number; selector: string }>();
+        const modSet = new Set<string>();
+        const modTimes = new Map<string, { type: string; endTime: number; selector: string }>();
         records.forEach(r => {
           if (String(r.scope) === 'item') {
             const id = String(r.key_id);
@@ -835,11 +862,17 @@ const handleVoidPinClear = useCallback(() => {
             times.set(id, { type: String(r.soldout_type || ''), endTime: Number(r.end_time || 0), selector: String(r.selector || '') });
           } else if (String(r.scope) === 'category') {
             catSet.add(String(r.key_id));
+          } else if (String(r.scope) === 'modifier') {
+            const id = String(r.key_id);
+            modSet.add(id);
+            modTimes.set(id, { type: String(r.soldout_type || ''), endTime: Number(r.end_time || 0), selector: String(r.selector || '') });
           }
         });
         setSoldOutItems(itemSet);
         setSoldOutCategories(catSet);
         setSoldOutTimes(times);
+        setSoldOutModifierIds(modSet);
+        setSoldOutModifierTimes(modTimes);
       } catch {}
     };
   }, [API_URL, menuId]);
@@ -877,11 +910,27 @@ const handleVoidPinClear = useCallback(() => {
         setSoldOutItems(newSoldOutItems);
         setSoldOutTimes(newSoldOutTimes);
       }
+
+      // Modifier sold-out auto-recovery (additive)
+      const newModSet = new Set(soldOutModifierIds);
+      const newModTimes = new Map(soldOutModifierTimes);
+      let modChanged = false;
+      soldOutModifierTimes.forEach((info, mid) => {
+        if (info.endTime > 0 && now >= info.endTime) {
+          newModSet.delete(mid);
+          newModTimes.delete(mid);
+          modChanged = true;
+        }
+      });
+      if (modChanged) {
+        setSoldOutModifierIds(newModSet);
+        setSoldOutModifierTimes(newModTimes);
+      }
     };
     
     const interval = setInterval(checkSoldOutTimes, 60000); // check every 1 minute
     return () => clearInterval(interval);
-  }, [soldOutItems, soldOutTimes]);
+  }, [soldOutItems, soldOutTimes, soldOutModifierIds, soldOutModifierTimes]);
 
   const handleOpenKitchenMemo = () => {
     setKitchenMemo('');
@@ -891,6 +940,68 @@ const handleVoidPinClear = useCallback(() => {
   const handleOpenSoldOut = () => {
     setShowSoldOutModal(true);
   };
+
+  // Modifier sold-out toggle (called from ModifierPanel when soldOutMode is active).
+  const handleModifierSoldOutToggle = useCallback(async (modifierId: string) => {
+    if (!menuId) return;
+    const id = String(modifierId);
+    const isAlready = soldOutModifierIds.has(id);
+
+    // Toggle: if already sold out, clear it; else add with current selectedSoldOutType.
+    if (isAlready) {
+      const newSet = new Set(soldOutModifierIds);
+      newSet.delete(id);
+      const newTimes = new Map(soldOutModifierTimes);
+      newTimes.delete(id);
+      setSoldOutModifierIds(newSet);
+      setSoldOutModifierTimes(newTimes);
+      try {
+        await fetch(`${API_URL}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        console.error('Failed to clear sold-out modifier:', e);
+      }
+      return;
+    }
+
+    const now = Date.now();
+    let endTime = 0;
+    let typeStr = selectedSoldOutType || 'indefinite';
+    switch (selectedSoldOutType) {
+      case '30min':
+        endTime = now + 30 * 60 * 1000;
+        break;
+      case '1hour':
+        endTime = now + 60 * 60 * 1000;
+        break;
+      case 'today':
+        endTime = now + 24 * 60 * 60 * 1000;
+        break;
+      case 'indefinite':
+      default:
+        endTime = 0;
+        typeStr = 'indefinite';
+        break;
+    }
+
+    const newSet = new Set(soldOutModifierIds);
+    newSet.add(id);
+    const newTimes = new Map(soldOutModifierTimes);
+    newTimes.set(id, { type: typeStr, endTime, selector: currentUser });
+    setSoldOutModifierIds(newSet);
+    setSoldOutModifierTimes(newTimes);
+
+    try {
+      await fetch(`${API_URL}/sold-out/${encodeURIComponent(String(menuId))}/modifier/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: typeStr, endTime, selector: currentUser }),
+      });
+    } catch (e) {
+      console.error('Failed to set sold-out modifier:', e);
+    }
+  }, [API_URL, menuId, soldOutModifierIds, soldOutModifierTimes, selectedSoldOutType, currentUser]);
 
   // === Reprint Kitchen Ticket ===
   const handleReprint = async () => {
@@ -984,6 +1095,63 @@ const handleVoidPinClear = useCallback(() => {
       console.error('[Reprint] Failed. Check printer connection.');
     }
   };
+
+  const useTakeInfoInsteadOfSplit =
+    isSalesOrder &&
+    (normalizedOrderTypeLower === 'togo' ||
+      normalizedOrderTypeLower === 'online' ||
+      normalizedOrderTypeLower === 'delivery');
+  const bottomBarShowReprintNotClear =
+    bottomBarPersistedOrderId != null && bottomBarKitchenOutputDone;
+
+  const handleTakeInfoConfirmFromPickupModal = useCallback((data: PickupOrderConfirmData) => {
+    setOrderPickupInfo({
+      readyTimeLabel: data.readyTimeLabel,
+      pickupMinutes: data.pickupMinutes,
+    });
+    const fm = data.fulfillmentMode === 'online' ? 'online' : data.fulfillmentMode === 'delivery' ? 'delivery' : 'togo';
+    setOrderFulfillmentMode(fm);
+    if (data.fulfillmentMode === 'online') {
+      onlineOrderNumberForKitchenRef.current = data.onlineOrderNumber || '';
+      setOrderCustomerInfo({
+        name: '',
+        phone: data.customerPhone || '',
+      });
+    } else {
+      const safeName = sanitizeCustomerName(data.customerName);
+      setOrderCustomerInfo({
+        name: safeName || '',
+        phone: data.customerPhone || '',
+      });
+    }
+    setTakeInfoModalOpen(false);
+    setTakeInfoPrefillSnapshot(null);
+  }, []);
+
+  const handleTakeInfoOpen = useCallback(() => {
+    let mode: 'togo' | 'online' | 'delivery' = 'togo';
+    if (normalizedOrderTypeLower === 'online') mode = 'online';
+    else if (normalizedOrderTypeLower === 'delivery') mode = 'delivery';
+    else if (normalizedOrderTypeLower === 'togo') mode = 'togo';
+    else return;
+    setTakeInfoModalMode(mode);
+    setTakeInfoPrefillSnapshot({
+      customerPhone: orderCustomerInfo.phone || '',
+      customerName: orderCustomerInfo.name || '',
+      pickupMinutes: orderPickupInfo.pickupMinutes ?? 15,
+      customerAddress: '',
+      customerZip: '',
+      note: '',
+      onlineOrderNumber: String(initialOnlineOrderNumber || onlineOrderNumberForKitchenRef.current || '').trim(),
+    });
+    setTakeInfoModalOpen(true);
+  }, [
+    normalizedOrderTypeLower,
+    orderCustomerInfo.phone,
+    orderCustomerInfo.name,
+    orderPickupInfo.pickupMinutes,
+    initialOnlineOrderNumber,
+  ]);
 
   // handleSoldOutOption, handleSoldOutConfirm, handleExtendSoldOut, handleAddTimeToSoldOut, handleClearSoldOutItem
   // are now handled by SoldOutModal component
@@ -1653,6 +1821,7 @@ const handleVoidPinClear = useCallback(() => {
     savedOrderIdRef.current = saved.orderId;
     savedOrderNumberRef.current =
       normalizeDailyPosOrderNumber(String(saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || '')) || null;
+    setBottomBarPersistedOrderId(saved.orderId);
     
     // Live Order 실시간 업데이트를 위한 이벤트 발생
     const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -1868,6 +2037,7 @@ const handleVoidPinClear = useCallback(() => {
         savedOrderIdRef.current = saved.orderId;
         savedOrderNumberRef.current =
           normalizeDailyPosOrderNumber(String(saved.order_number || String(saved.dailyNumber || '').padStart(3, '0') || '')) || null;
+        setBottomBarPersistedOrderId(saved.orderId);
         
         // Live Order 실시간 업데이트를 위한 이벤트 발생
         const tableIdForOrder = (location.state && (location.state as any).tableId) || null;
@@ -7042,6 +7212,9 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         const savedOrder = await saveRes.json();
         const newOrderId = savedOrder?.orderId ?? savedOrder?.id;
         try { savedOrderIdRef.current = newOrderId ?? savedOrderIdRef.current; } catch {}
+        if (newOrderId != null && Number.isFinite(Number(newOrderId))) {
+          setBottomBarPersistedOrderId(Number(newOrderId));
+        }
         try {
           const rawOn =
             savedOrder?.order_number || String(savedOrder?.dailyNumber || '').padStart(3, '0') || '';
@@ -7521,6 +7694,8 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
     }
     savedOrderIdRef.current = null;
     savedOrderNumberRef.current = null;
+    setBottomBarPersistedOrderId(null);
+    setBottomBarKitchenOutputDone(false);
 
     const tableIdForMap = st?.tableId;
     try {
@@ -7620,6 +7795,7 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           await printKitchenOrders(true, orderItemsSnapshot);
           didPrePrintKitchenAdditional = true;
           kitchenTicketPrintedRef.current = true;
+          setBottomBarKitchenOutputDone(true);
         } catch {}
       }
 
@@ -7647,9 +7823,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         if (!wasUpdateMode) {
           await printKitchenOrders(false, orderItemsSnapshot);
           kitchenTicketPrintedRef.current = true;
+          setBottomBarKitchenOutputDone(true);
         } else if (!didPrePrintKitchenAdditional) {
           await printKitchenOrders(false, orderItemsSnapshot);
           kitchenTicketPrintedRef.current = true;
+          setBottomBarKitchenOutputDone(true);
         }
       }
 
@@ -8388,6 +8566,10 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
             }
           }
         } catch {}
+        try {
+          setBottomBarPersistedOrderId(Number(resolvedOrderId));
+          setBottomBarKitchenOutputDone(true);
+        } catch {}
       } catch (e) {
         console.warn('Failed to load existing order:', e);
       }
@@ -8449,7 +8631,11 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
           if (guests.length > 1) initializeSplitGuests(guests);
         } catch {}
         try { 
-          savedOrderIdRef.current = Number(st.orderId); 
+          savedOrderIdRef.current = Number(st.orderId);
+          try {
+            setBottomBarPersistedOrderId(Number(st.orderId));
+            setBottomBarKitchenOutputDone(true);
+          } catch {}
           // orderId가 설정된 후 결제 상태 불러오기
           console.log(`📥 Order loaded, fetching paid guests for orderId: ${st.orderId}`);
           const apHistory =
@@ -11615,14 +11801,23 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
                   showEmptySlots={true}
                   emptySlotMode={isSalesOrder ? 'configured' : 'fill'}
                   lockLayout={isSalesOrder}
+                  soldOutModifierIds={soldOutModifierIds}
+                  soldOutMode={soldOutMode}
+                  onModifierSoldOutToggle={handleModifierSoldOutToggle}
                 />
 
                 {/* Right-side Function Buttons (placed under modifier panel) */}
                 <div className="pl-2 pr-0 py-0 flex-shrink-0 mt-auto">
                   <BottomActionBar
+                    reprintOrClear={bottomBarShowReprintNotClear ? 'reprint' : 'clear'}
+                    onClear={() => {
+                      void handleTogoInfoAfterCancel();
+                    }}
                     onReprint={handleReprint}
                     onVoid={() => { handleOpenVoid(); }}
                     onSplitOrder={handleSplitOrderClick}
+                    splitOrTakeInfo={useTakeInfoInsteadOfSplit ? 'takeInfo' : 'split'}
+                    onTakeInfo={handleTakeInfoOpen}
                     onItemMemo={handleOpenKitchenMemo}
                     onOpenPrice={() => { setOpenPriceName(''); setOpenPriceAmount(''); setOpenPriceNote(''); setSelectedTaxGroupId(null); setSelectedPrinterGroupId(null); setShowOpenPriceModal(true); }}
                     onDiscount={handleOpenDiscount}
@@ -14625,11 +14820,18 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         menuId={menuId}
         apiUrl={API_URL}
         menuItems={menuItems.map(i => ({ id: i.id, name: i.name }))}
+        modifierItems={Array.from(entryMap.values()).map((e: any) => ({ id: String(e.id), name: String(e.label || e.id) }))}
         onSoldOutChange={(items: Set<string>, times: Map<string, any>) => {
           // Only update if modal actually loaded data (prevent reset from empty initial state)
           if (items.size > 0 || soldOutItems.size === 0) {
             setSoldOutItems(items);
             setSoldOutTimes(times);
+          }
+        }}
+        onModifierSoldOutChange={(mods: Set<string>, times: Map<string, any>) => {
+          if (mods.size > 0 || soldOutModifierIds.size === 0) {
+            setSoldOutModifierIds(mods);
+            setSoldOutModifierTimes(times);
           }
         }}
         onEnterSoldOutMode={(durationType?: string) => {
@@ -14827,6 +15029,22 @@ const [showExtra3ColorModal, setShowExtra3ColorModal] = useState(false);
         </div>
       )}
         </>
+      )}
+
+      {takeInfoModalOpen && (
+        <PickupOrderModal
+          isOpen={takeInfoModalOpen}
+          onClose={() => {
+            setTakeInfoModalOpen(false);
+            setTakeInfoPrefillSnapshot(null);
+          }}
+          onConfirm={handleTakeInfoConfirmFromPickupModal}
+          selectedServer={selectedServer ? { id: selectedServer.id as any, name: selectedServer.name } : null}
+          initialMode={takeInfoModalMode}
+          initialTab="pickup"
+          prefillSnapshot={takeInfoPrefillSnapshot || undefined}
+          hideOnlinePaymentComplete
+        />
       )}
 
       {showTogoInfoAfterModal && (() => {

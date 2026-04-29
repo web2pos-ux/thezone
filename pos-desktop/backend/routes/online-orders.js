@@ -5,12 +5,15 @@ const express = require('express');
 const router = express.Router();
 const firebaseService = require('../services/firebaseService');
 const salesSyncService = require('../services/salesSyncService');
-const { dbRun, dbGet, dbAll } = require('../db');
+const { db, dbRun, dbGet, dbAll } = require('../db');
 const { computePromotionAdjustment } = require('../utils/promotionCalculator');
 const { getLocalDatetimeString } = require('../utils/datetimeUtils');
 const preorderReprintService = require('../services/preorderReprintService');
 const { resolveServicePattern } = require('../utils/orderServicePattern');
 const networkConnectivityService = require('../services/networkConnectivityService');
+const firebaseDeliveryChannel = require('../utils/firebaseDeliveryChannel');
+const firebaseOrderSqliteMirror = require('../utils/firebaseOrderSqliteMirror');
+const urbanPiperService = require('../services/urbanPiperService');
 
 // 활성 리스너 저장 (레스토랑별)
 const activeListeners = new Map();
@@ -130,6 +133,77 @@ async function syncSqliteOnlineTipFromFirebase(localOrderId, order) {
   }
 }
 
+/** Firebase Urban Piper / sourceIds.channel → SQLite orders.order_type·fulfillment_mode·delivery_company */
+async function syncSqliteDeliveryFieldsFromFirebase(localOrderId, order) {
+  if (localOrderId == null || !Number.isFinite(Number(localOrderId))) return;
+  const extra = firebaseDeliveryChannel.resolveFirestoreDeliveryEnrichment(order);
+  if (!extra) return;
+  const dc = extra.deliveryCompany != null && String(extra.deliveryCompany).trim() !== '' ? String(extra.deliveryCompany).trim() : null;
+  try {
+    await dbRun(
+      `UPDATE orders SET order_type = ?, fulfillment_mode = ?, delivery_company = COALESCE(?, delivery_company) WHERE id = ?`,
+      [extra.orderType, extra.fulfillmentMode, dc, localOrderId]
+    );
+  } catch (e) {
+    console.warn('[Online] syncSqliteDeliveryFieldsFromFirebase:', e.message);
+  }
+}
+
+/** Firestore 주문의 소계·세금·배달비·외부주문번호·채널 등 → SQLite orders (및 가능하면 order_items 세금) */
+async function persistFirebaseOrderFinancialsToSqlite(localOrderId, order) {
+  if (localOrderId == null || !Number.isFinite(Number(localOrderId)) || !order) return;
+  try {
+    const amounts = firebaseOrderSqliteMirror.getOrderLevelAmounts(order);
+    const tb = firebaseOrderSqliteMirror.buildTaxBreakdownJson(order, amounts);
+    const ext = firebaseOrderSqliteMirror.extractPlatformExternalOrderId(order);
+    const ch = firebaseOrderSqliteMirror.inferChannelSlug(order);
+    const osrc = firebaseOrderSqliteMirror.inferOrderSource(order);
+    const displayNum = order.orderNumber != null ? String(order.orderNumber).trim() : null;
+    const addr = String(order.deliveryAddress || order.customerAddress || '').trim() || null;
+    const notes = String(order.notes || '').trim() || null;
+
+    await dbRun(
+      `UPDATE orders SET
+        subtotal = ?, tax = ?, tax_rate = ?, tax_breakdown = ?,
+        delivery_fee = ?, external_order_number = ?, online_order_number = ?,
+        customer_address = ?, notes = ?, channel = ?, order_source = ?
+      WHERE id = ?`,
+      [
+        amounts.subtotal,
+        amounts.tax,
+        amounts.taxRate,
+        tb,
+        amounts.deliveryFee,
+        ext,
+        displayNum,
+        addr,
+        notes,
+        ch || null,
+        osrc,
+        localOrderId,
+      ]
+    );
+
+    const rows = firebaseOrderSqliteMirror.buildOrderItemRowsForSqlite(order);
+    const existingCount = await dbGet('SELECT COUNT(*) as c FROM order_items WHERE order_id = ?', [localOrderId]);
+    const n = Number(existingCount?.c || 0);
+    if (Array.isArray(rows) && rows.length > 0 && n === rows.length) {
+      const list = await dbAll('SELECT id FROM order_items WHERE order_id = ? ORDER BY id ASC', [localOrderId]);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const oid = list[i]?.id;
+        if (!oid) continue;
+        await dbRun(
+          `UPDATE order_items SET tax = ?, tax_rate = ?, modifiers_json = COALESCE(?, modifiers_json) WHERE id = ?`,
+          [r.tax, r.tax_rate, r.modifiers_json || null, oid]
+        );
+      }
+    }
+  } catch (e) {
+    console.warn('[Online] persistFirebaseOrderFinancialsToSqlite:', e.message);
+  }
+}
+
 /** Kitchen/출력 헤더: SQLite `order_number`(일일 순번) 우선 — Sales 카드·POS 영수증과 동일 */
 function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, firebaseOrderId) {
   if (localOrder?.order_number != null && String(localOrder.order_number).trim() !== '') {
@@ -155,6 +229,15 @@ function resolveOnlineKitchenOrderNumberHeader(localOrder, firebaseOrder, fireba
     { col: 'card_last4', sql: 'ALTER TABLE orders ADD COLUMN card_last4 TEXT' },
     { col: 'paid_at', sql: 'ALTER TABLE orders ADD COLUMN paid_at TEXT' },
     { col: 'online_tip', sql: 'ALTER TABLE orders ADD COLUMN online_tip REAL DEFAULT 0' },
+    { col: 'subtotal', sql: 'ALTER TABLE orders ADD COLUMN subtotal REAL DEFAULT 0' },
+    { col: 'tax', sql: 'ALTER TABLE orders ADD COLUMN tax REAL DEFAULT 0' },
+    { col: 'tax_rate', sql: 'ALTER TABLE orders ADD COLUMN tax_rate REAL DEFAULT 0' },
+    { col: 'tax_breakdown', sql: 'ALTER TABLE orders ADD COLUMN tax_breakdown TEXT' },
+    { col: 'delivery_fee', sql: 'ALTER TABLE orders ADD COLUMN delivery_fee REAL DEFAULT 0' },
+    { col: 'delivery_company', sql: 'ALTER TABLE orders ADD COLUMN delivery_company TEXT' },
+    { col: 'customer_address', sql: 'ALTER TABLE orders ADD COLUMN customer_address TEXT' },
+    { col: 'channel', sql: 'ALTER TABLE orders ADD COLUMN channel TEXT' },
+    { col: 'external_order_number', sql: 'ALTER TABLE orders ADD COLUMN external_order_number TEXT' },
   ];
   for (const m of migrations) {
     try {
@@ -275,17 +358,44 @@ function startOrderListener(restaurantId) {
         if (!localOrder) {
           const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
 
+          const extraDel = firebaseDeliveryChannel.resolveFirestoreDeliveryEnrichment(order);
+          const otIns = extraDel ? extraDel.orderType : 'ONLINE';
+          const fmIns = extraDel ? extraDel.fulfillmentMode : 'online';
+          const dcIns = extraDel && extraDel.deliveryCompany ? extraDel.deliveryCompany : null;
+
+          const amounts = firebaseOrderSqliteMirror.getOrderLevelAmounts(order);
+          const tbJson = firebaseOrderSqliteMirror.buildTaxBreakdownJson(order, amounts);
+          const extId = firebaseOrderSqliteMirror.extractPlatformExternalOrderId(order);
+          const chSlug = firebaseOrderSqliteMirror.inferChannelSlug(order);
+          const osrc = firebaseOrderSqliteMirror.inferOrderSource(order);
+          const displayNum = order.orderNumber != null ? String(order.orderNumber).trim() : null;
+          const addr = String(order.deliveryAddress || '').trim() || null;
+          const notes = String(order.notes || '').trim() || null;
+          const itemRows = firebaseOrderSqliteMirror.buildOrderItemRowsForSqlite(order);
+
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (
+              order_number, order_type, total, subtotal, tax, tax_rate, tax_breakdown, delivery_fee,
+              status, created_at, customer_phone, customer_name, customer_address, notes,
+              firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at,
+              ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip,
+              delivery_company, external_order_number, online_order_number, channel, order_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [
               null,
-              'ONLINE',
-              order.total || 0,
+              otIns,
+              amounts.total,
+              amounts.subtotal,
+              amounts.tax,
+              amounts.taxRate,
+              tbJson,
+              amounts.deliveryFee,
               'PENDING',
               createdAtStr,
               order.customerPhone || null,
               order.customerName || null,
+              addr,
+              notes,
               firebaseOrderId,
               isPaid ? 'paid' : pStatus,
               order.paymentMethod || 'cash',
@@ -294,30 +404,43 @@ function startOrderListener(restaurantId) {
               paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
               rf.readyTime || null,
               rf.pickupMinutes,
-              'online',
-              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+              fmIns,
+              resolveServicePattern({ orderType: otIns, fulfillmentMode: fmIns, tableId: order.tableId || order.table_id || null }),
               onlineTipVal,
+              dcIns,
+              extId,
+              displayNum,
+              chSlug || null,
+              osrc,
             ]
           );
           localOrder = { id: result.lastID };
 
-          if (Array.isArray(order.items)) {
-            for (const item of order.items) {
-              await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
-              );
-            }
+          for (const row of itemRows) {
+            await dbRun(
+              `INSERT INTO order_items (order_id, item_id, name, quantity, price, tax, tax_rate, modifiers_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                localOrder.id,
+                row.item_id,
+                row.name,
+                row.quantity,
+                row.price,
+                row.tax,
+                row.tax_rate,
+                row.modifiers_json,
+              ]
+            );
           }
           const posDaily = await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
           console.log(
-            `✅ 온라인 주문 SQLite 저장: id=${localOrder.id} pos#=${posDaily || '—'} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'}) ready_time=${rf.readyTime || '—'} pickup_minutes=${rf.pickupMinutes ?? '—'}`
+            `✅ 온라인 주문 SQLite 저장: id=${localOrder.id} pos#=${posDaily || '—'} | 결제: ${isPaid ? 'PAID' : pStatus} (${order.paymentMethod || 'cash'}) subtotal=${amounts.subtotal} tax=${amounts.tax} ext=${extId || '—'}`
           );
         }
         if (localOrder?.id) {
           await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStr);
           await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
+          await syncSqliteDeliveryFieldsFromFirebase(localOrder.id, order);
         }
       } catch (saveError) {
         console.error('SSE 온라인 주문 SQLite 저장 실패:', saveError.message);
@@ -352,6 +475,8 @@ function startOrderListener(restaurantId) {
             typeof createdAt === 'string' ? createdAt : createdAt?.toISOString?.() ? createdAt.toISOString() : '';
           await syncSqliteReadyFieldsFromFirebase(lo.id, order, createdAtStr || null);
           await syncSqliteOnlineTipFromFirebase(lo.id, order);
+          await syncSqliteDeliveryFieldsFromFirebase(lo.id, order);
+          await persistFirebaseOrderFinancialsToSqlite(lo.id, order);
         }
       } catch (e) {
         console.warn('[Online] onOrderUpdate SQLite sync:', e.message);
@@ -473,8 +598,9 @@ function broadcastToClients(restaurantId, data) {
 
 // 주문 데이터 포맷팅 (프론트엔드용)
 function formatOrderForFrontend(order) {
+  const o = firebaseDeliveryChannel.enrichFirebaseOrderForPos(order);
   // items에 프로모션 관련 필드 포함
-  const formattedItems = (order.items || []).map(item => ({
+  const formattedItems = (o.items || []).map(item => ({
     ...item,
     discountAmount: item.discountAmount || 0,
     discountPercent: item.discountPercent || 0,
@@ -483,59 +609,73 @@ function formatOrderForFrontend(order) {
   }));
 
   const resolvedOrderNumber =
-    order.orderNumber ||
-    order.order_number ||
-    order.externalOrderNumber ||
-    order.displayOrderNumber ||
-    order.firebaseOrderNumber ||
+    o.orderNumber ||
+    o.order_number ||
+    o.externalOrderNumber ||
+    o.displayOrderNumber ||
+    o.firebaseOrderNumber ||
     null;
 
-  const paymentStatus = (order.paymentStatus || 'pending').toLowerCase();
-  const statusLc = String(order.status || '').toLowerCase();
+  const paymentStatus = (o.paymentStatus || 'pending').toLowerCase();
+  const statusLc = String(o.status || '').toLowerCase();
   const isPaid =
     paymentStatus === 'paid' ||
     paymentStatus === 'completed' ||
     statusLc === 'paid' ||
     statusLc === 'completed' ||
     statusLc === 'closed' ||
-    order.paid === true ||
-    order.isPaid === true;
+    o.paid === true ||
+    o.isPaid === true;
+
+  const extFromDoc =
+    (o.externalOrderNumber != null && String(o.externalOrderNumber).trim() !== '' && String(o.externalOrderNumber).trim()) ||
+    (o.external_order_number != null && String(o.external_order_number).trim() !== '' && String(o.external_order_number).trim()) ||
+    null;
+  const externalOrderNumberResolved = extFromDoc || firebaseOrderSqliteMirror.extractPlatformExternalOrderId(o) || null;
 
   return {
-    id: order.id,
+    id: o.id,
     orderNumber: resolvedOrderNumber,
     /** POS SQLite 일일 순번 — 프론트가 camel/snake 모두에서 읽을 수 있게 */
-    order_number: order.order_number != null && String(order.order_number).trim() !== '' ? String(order.order_number).trim() : null,
-    customerName: order.customerName,
-    customerPhone: order.customerPhone,
-    customerEmail: order.customerEmail || null,
-    orderType: order.orderType,
-    status: order.status,
+    order_number: o.order_number != null && String(o.order_number).trim() !== '' ? String(o.order_number).trim() : null,
+    customerName: o.customerName,
+    customerPhone: o.customerPhone,
+    customerEmail: o.customerEmail || null,
+    orderType: o.orderType,
+    order_type: o.order_type != null ? o.order_type : undefined,
+    status: o.status,
     items: formattedItems,
-    subtotal: order.subtotal,
-    subtotalAfterDiscount: order.subtotalAfterDiscount || order.subtotal,
-    tax: order.tax,
-    total: order.total,
-    notes: order.notes,
-    createdAt: order.createdAt?.toDate?.() || order.createdAt,
-    updatedAt: order.updatedAt?.toDate?.() || order.updatedAt,
+    subtotal: o.subtotal,
+    subtotalAfterDiscount: o.subtotalAfterDiscount || o.subtotal,
+    tax: o.tax,
+    total: o.total,
+    notes: o.notes,
+    createdAt: o.createdAt?.toDate?.() || o.createdAt,
+    updatedAt: o.updatedAt?.toDate?.() || o.updatedAt,
     // 결제 정보
     paymentStatus: isPaid ? 'paid' : paymentStatus,
-    paymentMethod: order.paymentMethod || 'cash',
-    paymentTransactionId: order.paymentTransactionId || null,
-    cardLast4: order.cardLast4 || null,
-    paidAt: order.paidAt?.toDate?.() || order.paidAt || null,
+    paymentMethod: o.paymentMethod || 'cash',
+    paymentTransactionId: o.paymentTransactionId || null,
+    cardLast4: o.cardLast4 || null,
+    paidAt: o.paidAt?.toDate?.() || o.paidAt || null,
     isPaid,
     // 프로모션 관련 필드
-    discountAmount: order.discountAmount || 0,
-    promotionId: order.promotionId || null,
-    promotionName: order.promotionName || null,
-    promotionType: order.promotionType || null,
-    promotionPercent: order.promotionPercent || order.discountPercent || null,
-    taxBreakdown: order.taxBreakdown || null,
-    deliveryFee: order.deliveryFee || 0,
+    discountAmount: o.discountAmount || 0,
+    promotionId: o.promotionId || null,
+    promotionName: o.promotionName || null,
+    promotionType: o.promotionType || null,
+    promotionPercent: o.promotionPercent || o.discountPercent || null,
+    taxBreakdown: o.taxBreakdown || null,
+    deliveryFee: o.deliveryFee || 0,
     /** 온라인(파이어베이스) 주문 팁 — SQLite `online_tip`과 병합될 수 있음 */
-    tip: parseFirebaseOrderTip(order),
+    tip: parseFirebaseOrderTip(o),
+    deliveryCompany: o.deliveryCompany || o.delivery_company || null,
+    delivery_company: o.delivery_company || o.deliveryCompany || null,
+    fulfillmentMode: o.fulfillmentMode || o.fulfillment_mode || null,
+    fulfillment_mode: o.fulfillment_mode || o.fulfillmentMode || null,
+    sourceIds: o.sourceIds || null,
+    externalOrderNumber: externalOrderNumberResolved,
+    external_order_number: externalOrderNumberResolved,
   };
 }
 
@@ -766,35 +906,79 @@ router.get('/:restaurantId', async (req, res) => {
         const onlineTipList = parseFirebaseOrderTip(order);
 
         try {
+          const extraDel = firebaseDeliveryChannel.resolveFirestoreDeliveryEnrichment(order);
+          const otIns = extraDel ? extraDel.orderType : 'ONLINE';
+          const fmIns = extraDel ? extraDel.fulfillmentMode : 'online';
+          const dcIns = extraDel && extraDel.deliveryCompany ? extraDel.deliveryCompany : null;
+
+          const amounts = firebaseOrderSqliteMirror.getOrderLevelAmounts(order);
+          const tbJson = firebaseOrderSqliteMirror.buildTaxBreakdownJson(order, amounts);
+          const extId = firebaseOrderSqliteMirror.extractPlatformExternalOrderId(order);
+          const chSlug = firebaseOrderSqliteMirror.inferChannelSlug(order);
+          const osrc = firebaseOrderSqliteMirror.inferOrderSource(order);
+          const displayNum = order.orderNumber != null ? String(order.orderNumber).trim() : null;
+          const addr = String(order.deliveryAddress || '').trim() || null;
+          const notes = String(order.notes || '').trim() || null;
+          const itemRows = firebaseOrderSqliteMirror.buildOrderItemRowsForSqlite(order);
+
           const result = await dbRun(
-            `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO orders (
+              order_number, order_type, total, subtotal, tax, tax_rate, tax_breakdown, delivery_fee,
+              status, created_at, customer_phone, customer_name, customer_address, notes,
+              firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at,
+              ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip,
+              delivery_company, external_order_number, online_order_number, channel, order_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [
               null,
-              'ONLINE',
-              order.total || 0,
+              otIns,
+              amounts.total,
+              amounts.subtotal,
+              amounts.tax,
+              amounts.taxRate,
+              tbJson,
+              amounts.deliveryFee,
               'PENDING',
               createdAtStr,
               order.customerPhone || null,
               order.customerName || null,
+              addr,
+              notes,
               firebaseOrderId,
+              'pending',
+              order.paymentMethod || 'cash',
+              order.paymentTransactionId || null,
+              order.cardLast4 || null,
+              null,
               rf.readyTime || null,
               rf.pickupMinutes,
-              'online',
-              resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+              fmIns,
+              resolveServicePattern({ orderType: otIns, fulfillmentMode: fmIns, tableId: order.tableId || order.table_id || null }),
               onlineTipList,
+              dcIns,
+              extId,
+              displayNum,
+              chSlug || null,
+              osrc,
             ]
           );
           localOrder = { id: result.lastID, order_number: null };
-          
-          if (Array.isArray(order.items)) {
-            for (const item of order.items) {
-              await dbRun(
-                `INSERT INTO order_items (order_id, item_id, name, quantity, price)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
-              );
-            }
+
+          for (const row of itemRows) {
+            await dbRun(
+              `INSERT INTO order_items (order_id, item_id, name, quantity, price, tax, tax_rate, modifiers_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                localOrder.id,
+                row.item_id,
+                row.name,
+                row.quantity,
+                row.price,
+                row.tax,
+                row.tax_rate,
+                row.modifiers_json,
+              ]
+            );
           }
           const posDailyNew = await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
           if (posDailyNew) localOrder.order_number = posDailyNew;
@@ -820,6 +1004,8 @@ router.get('/:restaurantId', async (req, res) => {
                 : '';
           await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStrForSync || null);
           await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
+          await syncSqliteDeliveryFieldsFromFirebase(localOrder.id, order);
+          await persistFirebaseOrderFinancialsToSqlite(localOrder.id, order);
         } catch (e) {
           console.warn('[Online] GET list SQLite ready sync:', e.message);
         }
@@ -835,7 +1021,7 @@ router.get('/:restaurantId', async (req, res) => {
       if (localOrder?.id) {
         try {
           const sqliteRow = await dbGet(
-            'SELECT status, payment_status, online_tip FROM orders WHERE id = ?',
+            'SELECT status, payment_status, online_tip, external_order_number FROM orders WHERE id = ?',
             [localOrder.id]
           );
           if (sqliteRow) {
@@ -849,6 +1035,11 @@ router.get('/:restaurantId', async (req, res) => {
             if (Number.isFinite(ot) && ot >= 0) {
               formatted.tip = ot;
               formatted.onlineTip = ot;
+            }
+            const extSql = sqliteRow.external_order_number != null && String(sqliteRow.external_order_number).trim();
+            if (extSql) {
+              formatted.external_order_number = String(sqliteRow.external_order_number).trim();
+              formatted.externalOrderNumber = formatted.external_order_number;
             }
           }
         } catch (e) {
@@ -978,11 +1169,28 @@ router.post('/order/:orderId/ready', async (req, res) => {
     }
 
     const { orderId } = req.params;
+    const { restaurantId } = req.body || {};
     const result = await firebaseService.updateOrderStatus(orderId, 'ready');
+
+    // Urban Piper Food Ready
+    let upResult = null;
+    try {
+      if (urbanPiperService.isConfiguredSync() || (await urbanPiperService.isConfigured(db))) {
+        const order = await firebaseService.getOrderById(orderId, restaurantId || null);
+        const upId = firebaseDeliveryChannel.extractUrbanPiperOrderId(order);
+        if (upId) {
+          upResult = await urbanPiperService.markFoodReady(upId, db);
+          console.log('[READY] UP food ready result:', JSON.stringify(upResult));
+        }
+      }
+    } catch (upErr) {
+      console.warn('[READY] UP food ready error (non-fatal):', upErr && upErr.message);
+    }
 
     res.json({
       success: true,
       message: '주문이 준비되었습니다',
+      urbanPiper: upResult || null,
       ...result
     });
   } catch (error) {
@@ -1172,12 +1380,35 @@ router.post('/order/:orderId/accept', async (req, res) => {
       console.warn('[ACCEPT] preorder reprint schedule:', preErr && preErr.message);
     }
 
+    // Urban Piper Acknowledge
+    let upAckResult = null;
+    try {
+      if (urbanPiperService.isConfiguredSync() || (await urbanPiperService.isConfigured(db))) {
+        const order = await firebaseService.getOrderById(orderId, restaurantId || null);
+        const upId = firebaseDeliveryChannel.extractUrbanPiperOrderId(order);
+        if (upId) {
+          const prepNum = Number(prepTime);
+          upAckResult = await urbanPiperService.acknowledgeOrder(
+            upId,
+            Number.isFinite(prepNum) && prepNum > 0 ? prepNum : 20,
+            db
+          );
+          console.log('[ACCEPT] UP acknowledge result:', JSON.stringify(upAckResult));
+        } else {
+          console.log('[ACCEPT] No Urban Piper order ID found — skip UP ack');
+        }
+      }
+    } catch (upErr) {
+      console.warn('[ACCEPT] UP acknowledge error (non-fatal):', upErr && upErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Order accepted',
       prepTime,
       pickupTime,
       readyTime,
+      urbanPiper: upAckResult || null,
       ...result
     });
   } catch (error) {
@@ -1197,13 +1428,94 @@ router.post('/order/:orderId/reject', async (req, res) => {
     const { reason, restaurantId } = req.body;
     const result = await firebaseService.rejectOrder(orderId, reason || '', restaurantId || null);
 
+    // Urban Piper Cancel
+    let upCancelResult = null;
+    try {
+      if (urbanPiperService.isConfiguredSync() || (await urbanPiperService.isConfigured(db))) {
+        const order = await firebaseService.getOrderById(orderId, restaurantId || null);
+        const upId = firebaseDeliveryChannel.extractUrbanPiperOrderId(order);
+        if (upId) {
+          upCancelResult = await urbanPiperService.cancelOrder(upId, reason || 'Rejected by restaurant', db);
+          console.log('[REJECT] UP cancel result:', JSON.stringify(upCancelResult));
+        }
+      }
+    } catch (upErr) {
+      console.warn('[REJECT] UP cancel error (non-fatal):', upErr && upErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Order rejected',
+      urbanPiper: upCancelResult || null,
       ...result
     });
   } catch (error) {
     console.error('Order reject failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 주문 단위 Prep Time 재설정 (수락 이후 변경)
+router.post('/order/:orderId/update-prep', async (req, res) => {
+  try {
+    if (!ensureFirebaseInit()) {
+      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+    }
+
+    const { orderId } = req.params;
+    const { prepTime, pickupTime, readyTime, restaurantId } = req.body;
+    const prepNum = Number(prepTime);
+
+    if (!Number.isFinite(prepNum) || prepNum <= 0) {
+      return res.status(400).json({ success: false, error: 'prepTime (minutes) is required' });
+    }
+
+    const rtStr =
+      (readyTime != null && String(readyTime).trim() !== '' && String(readyTime).trim()) ||
+      (pickupTime != null && String(pickupTime).trim() !== '' && String(pickupTime).trim()) ||
+      null;
+
+    const firestore = require('firebase-admin').firestore();
+    const updateData = {
+      prepTime: Math.round(prepNum),
+      updatedAt: require('firebase-admin').firestore.FieldValue.serverTimestamp(),
+    };
+    if (rtStr) updateData.readyTime = rtStr;
+    if (pickupTime) updateData.pickupTime = pickupTime;
+
+    if (restaurantId) {
+      await firestore.collection('restaurants').doc(restaurantId).collection('orders').doc(orderId).update(updateData);
+    } else {
+      await firestore.collection('orders').doc(orderId).update(updateData);
+    }
+
+    try {
+      await dbRun(
+        `UPDATE orders SET ready_time = COALESCE(?, ready_time), pickup_minutes = ? WHERE firebase_order_id = ?`,
+        [rtStr, Math.round(prepNum), orderId]
+      );
+    } catch (sqlErr) {
+      console.warn('[UPDATE-PREP] SQLite sync:', sqlErr.message);
+    }
+
+    let upResult = null;
+    try {
+      if (urbanPiperService.isConfiguredSync() || (await urbanPiperService.isConfigured(db))) {
+        const order = await firebaseService.getOrderById(orderId, restaurantId || null);
+        const upId = firebaseDeliveryChannel.extractUrbanPiperOrderId(order);
+        if (upId) {
+          upResult = await urbanPiperService.acknowledgeOrder(upId, Math.round(prepNum), db);
+          console.log('[UPDATE-PREP] UP result:', JSON.stringify(upResult));
+        }
+      }
+    } catch (upErr) {
+      console.warn('[UPDATE-PREP] UP error (non-fatal):', upErr && upErr.message);
+    }
+
+    console.log(`[UPDATE-PREP] orderId: ${orderId}, prepTime: ${prepNum}min`);
+    res.json({ success: true, prepTime: Math.round(prepNum), pickupTime: rtStr, urbanPiper: upResult || null });
+  } catch (error) {
+    console.error('[UPDATE-PREP] failed:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2092,17 +2404,44 @@ async function catchUpPendingOnlineOrders(restaurantId) {
       if (!localOrder) {
         const paidAtRaw = order.paidAt?.toDate?.() || order.paidAt || null;
 
+        const extraDel = firebaseDeliveryChannel.resolveFirestoreDeliveryEnrichment(order);
+        const otIns = extraDel ? extraDel.orderType : 'ONLINE';
+        const fmIns = extraDel ? extraDel.fulfillmentMode : 'online';
+        const dcIns = extraDel && extraDel.deliveryCompany ? extraDel.deliveryCompany : null;
+
+        const amounts = firebaseOrderSqliteMirror.getOrderLevelAmounts(order);
+        const tbJson = firebaseOrderSqliteMirror.buildTaxBreakdownJson(order, amounts);
+        const extId = firebaseOrderSqliteMirror.extractPlatformExternalOrderId(order);
+        const chSlug = firebaseOrderSqliteMirror.inferChannelSlug(order);
+        const osrc = firebaseOrderSqliteMirror.inferOrderSource(order);
+        const displayNum = order.orderNumber != null ? String(order.orderNumber).trim() : null;
+        const addr = String(order.deliveryAddress || '').trim() || null;
+        const notes = String(order.notes || '').trim() || null;
+        const itemRows = firebaseOrderSqliteMirror.buildOrderItemRowsForSqlite(order);
+
         const result = await dbRun(
-          `INSERT INTO orders (order_number, order_type, total, status, created_at, customer_phone, customer_name, firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at, ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO orders (
+              order_number, order_type, total, subtotal, tax, tax_rate, tax_breakdown, delivery_fee,
+              status, created_at, customer_phone, customer_name, customer_address, notes,
+              firebase_order_id, payment_status, payment_method, payment_transaction_id, card_last4, paid_at,
+              ready_time, pickup_minutes, fulfillment_mode, service_pattern, online_tip,
+              delivery_company, external_order_number, online_order_number, channel, order_source
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             null,
-            'ONLINE',
-            order.total || 0,
+            otIns,
+            amounts.total,
+            amounts.subtotal,
+            amounts.tax,
+            amounts.taxRate,
+            tbJson,
+            amounts.deliveryFee,
             'PENDING',
             createdAtStr,
             order.customerPhone || null,
             order.customerName || null,
+            addr,
+            notes,
             firebaseOrderId,
             isPaid ? 'paid' : pStatus,
             order.paymentMethod || 'cash',
@@ -2111,32 +2450,46 @@ async function catchUpPendingOnlineOrders(restaurantId) {
             paidAtRaw ? (typeof paidAtRaw === 'string' ? paidAtRaw : paidAtRaw.toISOString()) : null,
             rf.readyTime || null,
             rf.pickupMinutes,
-            'online',
-            resolveServicePattern({ orderType: 'ONLINE', fulfillmentMode: 'online', tableId: null }),
+            fmIns,
+            resolveServicePattern({ orderType: otIns, fulfillmentMode: fmIns, tableId: order.tableId || order.table_id || null }),
             onlineTipVal,
+            dcIns,
+            extId,
+            displayNum,
+            chSlug || null,
+            osrc,
           ]
         );
         localOrder = { id: result.lastID };
 
-        if (Array.isArray(order.items)) {
-          for (const item of order.items) {
-            await dbRun(
-              `INSERT INTO order_items (order_id, item_id, name, quantity, price)
-                 VALUES (?, ?, ?, ?, ?)`,
-              [localOrder.id, item.id || null, item.name || '', item.quantity || 1, item.price || 0]
-            );
-          }
+        for (const row of itemRows) {
+          await dbRun(
+            `INSERT INTO order_items (order_id, item_id, name, quantity, price, tax, tax_rate, modifiers_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              localOrder.id,
+              row.item_id,
+              row.name,
+              row.quantity,
+              row.price,
+              row.tax,
+              row.tax_rate,
+              row.modifiers_json,
+            ]
+          );
         }
         await assignPosDailyOrderNumberToSqliteOrder(localOrder.id);
         inserted += 1;
         didInsertThis = true;
         console.log(
-          `📥 catch-up 온라인 주문 SQLite 저장: id=${localOrder.id} firebase=${firebaseOrderId} | 결제: ${isPaid ? 'PAID' : pStatus}`
+          `📥 catch-up 온라인 주문 SQLite 저장: id=${localOrder.id} firebase=${firebaseOrderId} | 결제: ${isPaid ? 'PAID' : pStatus} subtotal=${amounts.subtotal} tax=${amounts.tax}`
         );
       }
       if (localOrder?.id) {
         await syncSqliteReadyFieldsFromFirebase(localOrder.id, order, createdAtStr);
         await syncSqliteOnlineTipFromFirebase(localOrder.id, order);
+        await syncSqliteDeliveryFieldsFromFirebase(localOrder.id, order);
+        await persistFirebaseOrderFinancialsToSqlite(localOrder.id, order);
       }
 
       if (didInsertThis && localOrder?.id) {

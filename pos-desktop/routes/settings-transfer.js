@@ -54,7 +54,7 @@ router.post('/export', requireManager, async (req, res) => {
     if (sections.includes('menu')) {
       const menus = await dbAll('SELECT menu_id, name, description, is_active, sales_channels, created_at FROM menus');
       const categories = await dbAll('SELECT category_id, name, menu_id, sort_order, image_url FROM menu_categories');
-      const items = await dbAll('SELECT item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until, kitchen_ticket_elements FROM menu_items');
+      const items = await dbAll('SELECT item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, online_available_from, delivery_hide_type, delivery_available_until, delivery_available_from, kitchen_ticket_elements FROM menu_items');
       const modifierGroups = await dbAll('SELECT modifier_group_id, name, selection_type, min_selection, max_selection, menu_id, is_deleted, firebase_id FROM modifier_groups');
       const modifiers = await dbAll('SELECT modifier_id, name, price_delta, price_delta2, type, sort_order, is_deleted FROM modifiers');
       const modifierGroupLinks = await dbAll('SELECT modifier_group_id, modifier_id FROM modifier_group_links');
@@ -227,8 +227,8 @@ router.post('/import', requireManager, upload.single('file'), async (req, res) =
                   ? (typeof row.kitchen_ticket_elements === 'string' ? row.kitchen_ticket_elements : JSON.stringify(row.kitchen_ticket_elements || []))
                   : '[]';
                 await dbRun(
-                  'INSERT INTO menu_items (item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, delivery_hide_type, delivery_available_until, kitchen_ticket_elements) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  [row.item_id, row.name, row.short_name, row.price, row.price2, row.description, row.category_id, row.menu_id, row.is_open_price, row.image_url, row.sort_order, row.online_visible, row.delivery_visible, row.online_hide_type, row.online_available_until, row.delivery_hide_type, row.delivery_available_until, kteJson]
+                  'INSERT INTO menu_items (item_id, name, short_name, price, price2, description, category_id, menu_id, is_open_price, image_url, sort_order, online_visible, delivery_visible, online_hide_type, online_available_until, online_available_from, delivery_hide_type, delivery_available_until, delivery_available_from, kitchen_ticket_elements) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                  [row.item_id, row.name, row.short_name, row.price, row.price2, row.description, row.category_id, row.menu_id, row.is_open_price, row.image_url, row.sort_order, row.online_visible, row.delivery_visible, row.online_hide_type, row.online_available_until, row.online_available_from, row.delivery_hide_type, row.delivery_available_until, row.delivery_available_from, kteJson]
                 );
               }
               for (const row of (m.modifierGroups || [])) {

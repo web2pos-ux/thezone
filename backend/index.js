@@ -220,8 +220,10 @@ const startServer = async () => {
       const hasDeliveryVisible = columns.some(col => col.name === 'delivery_visible');
       const hasOnlineHideType = columns.some(col => col.name === 'online_hide_type');
       const hasOnlineAvailableUntil = columns.some(col => col.name === 'online_available_until');
+      const hasOnlineAvailableFrom = columns.some(col => col.name === 'online_available_from');
       const hasDeliveryHideType = columns.some(col => col.name === 'delivery_hide_type');
       const hasDeliveryAvailableUntil = columns.some(col => col.name === 'delivery_available_until');
+      const hasDeliveryAvailableFrom = columns.some(col => col.name === 'delivery_available_from');
       
       if (!hasOnlineVisible) {
         await dbRun("ALTER TABLE menu_items ADD COLUMN online_visible INTEGER DEFAULT 1");
@@ -247,6 +249,16 @@ const startServer = async () => {
       if (!hasDeliveryAvailableUntil) {
         await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_available_until TEXT");
         console.log("Successfully added 'delivery_available_until' column to 'menu_items' table.");
+      }
+      // Time-window 'from' columns (HH:MM) — when both from/until set with hide_type='time_limited',
+      // visibility is treated as a recurring daily window (e.g., 11:00–15:00).
+      if (!hasOnlineAvailableFrom) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN online_available_from TEXT");
+        console.log("Successfully added 'online_available_from' column to 'menu_items' table.");
+      }
+      if (!hasDeliveryAvailableFrom) {
+        await dbRun("ALTER TABLE menu_items ADD COLUMN delivery_available_from TEXT");
+        console.log("Successfully added 'delivery_available_from' column to 'menu_items' table.");
       }
     };
     
@@ -569,6 +581,10 @@ app.use('/api/remote-sync', remoteSyncRoutes);
 // Dealer Access Routes (딜러/총판/시스템 관리자 전용)
 const dealerAccessRoutes = require('./routes/dealer-access');
 app.use('/api/dealer-access', dealerAccessRoutes);
+
+// Urban Piper 웹훅 — UP/Atlas 에서 주문 상태 변경 시 이 엔드포인트로 POST
+const urbanPiperWebhookRoutes = require('./routes/urbanpiper-webhook');
+app.use('/api/urbanpiper', urbanPiperWebhookRoutes);
 
 // --- 태블릿 다운로드 페이지 ---
 app.get('/table', (req, res) => {
@@ -1032,6 +1048,15 @@ server.listen(PORT, async () => {
         console.log(`🔄 Auto-initializing services for restaurant: ${restaurantId}`);
 
         await remoteSyncService.initialize(restaurantId);
+
+        // Urban Piper 자격증명을 Firebase에서 읽어 SQLite에 캐시
+        try {
+          const urbanPiperService = require('./services/urbanPiperService');
+          await urbanPiperService.loadConfig(db);
+          console.log('[Boot] Urban Piper config synced from Firebase → SQLite cache');
+        } catch (upErr) {
+          console.warn('[Boot] UP config sync skipped:', upErr?.message);
+        }
 
         if (typeof restartOnlineOrderListenersForRestaurant === 'function') {
           await restartOnlineOrderListenersForRestaurant(restaurantId);

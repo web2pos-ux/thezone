@@ -31,6 +31,7 @@ const tableSubMenus = [
 const orderSubMenus = [
   { path: '/backoffice/order-setup', label: 'Order Screen Setup', icon: '⚙️' },
   { path: '/backoffice/promotions', label: 'Promotions', icon: '🎁' },
+  { path: '/backoffice/online-order', label: 'Online / Delivery', icon: '🚗' },
 ];
 
 const employeeSubMenus = [

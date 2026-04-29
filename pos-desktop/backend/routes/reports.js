@@ -2020,6 +2020,12 @@ function getDeliveryPlatformRevenue(db, startDate, endDate) {
             WHEN o.channel LIKE '%postmate%' OR o.channel LIKE '%POSTMATE%' THEN 'Postmates'
             WHEN o.channel LIKE '%tryotter%' OR o.channel LIKE '%OTTER%' THEN 'TryOtter'
             WHEN o.channel LIKE '%urban%' OR o.channel LIKE '%URBAN%' THEN 'UrbanPipe'
+            WHEN UPPER(COALESCE(o.delivery_company,'')) LIKE '%UBER%' THEN 'UberEats'
+            WHEN UPPER(COALESCE(o.delivery_company,'')) LIKE '%DOOR%' THEN 'DoorDash'
+            WHEN UPPER(COALESCE(o.delivery_company,'')) LIKE '%SKIP%' THEN 'SkipTheDishes'
+            WHEN UPPER(COALESCE(o.delivery_company,'')) LIKE '%GRUB%' THEN 'GrubHub'
+            WHEN UPPER(COALESCE(o.delivery_company,'')) LIKE '%FANTUAN%' THEN 'Fantuan'
+            WHEN UPPER(COALESCE(o.order_source,'')) LIKE '%URBAN%' OR UPPER(COALESCE(o.order_source,'')) LIKE '%PIPER%' THEN 'UrbanPipe'
             WHEN o.order_type = 'DELIVERY' THEN 'Direct Delivery'
             ELSE 'Other Delivery'
           END,
@@ -2034,7 +2040,7 @@ function getDeliveryPlatformRevenue(db, startDate, endDate) {
         AND ${PAID_STATUSES_SQL_O}
         AND UPPER(p.status) IN ('APPROVED','COMPLETED','SETTLED','PAID')
         AND UPPER(COALESCE(p.payment_method, '')) != 'NO_SHOW_FORFEITED'
-        AND (o.order_type = 'DELIVERY' OR o.order_type = 'ONLINE' OR o.channel IS NOT NULL)
+        AND (o.order_type = 'DELIVERY' OR o.order_type = 'ONLINE' OR o.channel IS NOT NULL OR o.delivery_company IS NOT NULL OR o.order_source IS NOT NULL)
       GROUP BY DATE(o.created_at), platform
       ORDER BY date, platform
     `, [startDate, endDate], (err, rows) => {

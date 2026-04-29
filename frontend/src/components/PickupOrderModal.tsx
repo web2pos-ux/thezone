@@ -47,6 +47,18 @@ interface PickupOrderModalProps {
   selectedServer?: { id?: number | null; name?: string } | null;
   initialMode?: 'togo' | 'delivery' | 'online';
   initialTab?: 'pickup' | 'complete';
+  /** Prefill when opening from Order screen (Take Info) */
+  prefillSnapshot?: {
+    customerPhone?: string;
+    customerName?: string;
+    pickupMinutes?: number;
+    customerAddress?: string;
+    customerZip?: string;
+    note?: string;
+    onlineOrderNumber?: string;
+  } | null;
+  /** Hide Online "Payment Complete" when used only to edit customer/prep info */
+  hideOnlinePaymentComplete?: boolean;
 }
 
 const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
@@ -58,6 +70,8 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
   selectedServer,
   initialMode,
   initialTab,
+  prefillSnapshot,
+  hideOnlinePaymentComplete,
 }) => {
   const [activeTab, setActiveTab] = useState<'pickup' | 'complete'>(initialTab || 'pickup');
   const [pickupTime, setPickupTime] = useState(15);
@@ -318,14 +332,37 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setOrderMode(initialMode || 'togo');
+      const mode = initialMode || 'togo';
+      setOrderMode(mode);
       setActiveTab(initialTab || 'pickup');
+      const pf = prefillSnapshot;
+      if (pf) {
+        if (pf.customerPhone != null && pf.customerPhone !== '') {
+          const formatted = formatTogoPhone(pf.customerPhone);
+          setCustomerPhone(formatted);
+          customerPhoneRef.current = formatted;
+        }
+        if (mode === 'online') {
+          const onum = (pf.onlineOrderNumber != null && String(pf.onlineOrderNumber).trim() !== '')
+            ? String(pf.onlineOrderNumber).trim()
+            : (pf.customerName != null ? String(pf.customerName) : '');
+          if (onum) setCustomerNameInput(onum);
+        } else if (pf.customerName != null && pf.customerName !== '') {
+          setCustomerNameInput(formatNameWithTrailingSpace(String(pf.customerName)));
+        }
+        if (typeof pf.pickupMinutes === 'number' && Number.isFinite(pf.pickupMinutes)) {
+          setPickupTime(Math.max(0, pf.pickupMinutes));
+        }
+        if (pf.customerAddress != null) setCustomerAddress(pf.customerAddress);
+        if (pf.customerZip != null) setCustomerZip(pf.customerZip);
+        if (pf.note != null) setTogoNote(pf.note);
+      }
       if (initialMode === 'online') {
         setKeyboardTarget('name');
         setTimeout(() => nameInputRef.current?.focus(), 100);
       }
     }
-  }, [isOpen, initialMode, initialTab]);
+  }, [isOpen, initialMode, initialTab, prefillSnapshot]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -493,7 +530,7 @@ const PickupOrderModal: React.FC<PickupOrderModalProps> = ({
               <h3 className="text-lg font-extrabold text-slate-800">{newTabLabel}</h3>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={resetAndClose} className={`rounded-[14px] border-0 px-4 py-3 font-bold text-gray-700 transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO.inset}>Cancel</button>
-                {orderMode === 'online' && (
+                {orderMode === 'online' && !hideOnlinePaymentComplete && (
                   <button type="button" onClick={handlePaymentCompleteClick} className={`rounded-[14px] border-0 px-4 py-3 text-sm font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO_PRIMARY_BLUE}>Payment Complete</button>
                 )}
                 <button type="button" onClick={handleOkClick} className={`rounded-[14px] border-0 px-5 py-3 font-bold text-white transition-all hover:brightness-[1.02] touch-manipulation ${NEO_MODAL_BTN_PRESS}`} style={PAY_NEO_PRIMARY_BLUE}>OK</button>

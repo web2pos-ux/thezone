@@ -65,7 +65,6 @@ import OrderDetailModal, { OrderData, OrderChannelType } from '../components/Ord
 import PaymentCompleteModal from '../components/PaymentCompleteModal';
 import TipEntryModal from '../components/TipEntryModal';
 import PickupOrderModal, { PickupOrderConfirmData } from '../components/PickupOrderModal';
-import OnlineOrderAlertButton from '../components/OnlineOrderAlertButton';
 import { PickupChannelGlassButton } from '../components/PickupChannelGlassButton';
 // SoldOutModal removed - Sold Out is handled in OrderPage
 
@@ -1202,8 +1201,10 @@ const SalesPage: React.FC = () => {
     delivery_visible: number;
     online_hide_type: 'visible' | 'permanent' | 'time_limited';
     online_available_until: string | null;
+    online_available_from: string | null;
     delivery_hide_type: 'visible' | 'permanent' | 'time_limited';
     delivery_available_until: string | null;
+    delivery_available_from: string | null;
   }>>([]);
   const [menuHideSelectedCategory, setMenuHideSelectedCategory] = useState<string | null>(null);
   const [menuHideLoading, setMenuHideLoading] = useState<boolean>(false);
@@ -2203,6 +2204,41 @@ const SalesPage: React.FC = () => {
     return company.length > 6 ? company.slice(0, 6).toUpperCase() : company.toUpperCase();
   };
 
+  /**
+   * 들어온 온라인/딜리버리 주문(Firestore 포맷)에 대해 prepTimeSettings의 어느 채널 키를 쓸지 결정.
+   * Urban Piper 등 채널 슬러그가 식별 안 되면 thezoneorder로 폴백.
+   */
+  const getChannelKeyForOnlineOrder = (
+    order: any
+  ): 'thezoneorder' | 'ubereats' | 'doordash' | 'skipthedishes' => {
+    const company = String(order?.deliveryCompany || order?.delivery_company || '')
+      .toUpperCase()
+      .replace(/[\s_-]+/g, '');
+    if (company === 'UBEREATS' || company === 'UBER') return 'ubereats';
+    if (company === 'DOORDASH') return 'doordash';
+    if (company === 'SKIPTHEDISHES' || company === 'SKIP') return 'skipthedishes';
+    return 'thezoneorder';
+  };
+
+  /**
+   * 채널별 prepTimeSettings에서 (mode, time, prepMinutes)을 안전하게 뽑는다.
+   * Urban Piper 테스트 등 미식별 채널은 thezoneorder 설정을 따른다.
+   */
+  const resolveOnlineOrderPrepConfig = (order: any): {
+    channelKey: 'thezoneorder' | 'ubereats' | 'doordash' | 'skipthedishes';
+    mode: 'auto' | 'manual';
+    time: string;
+    prepMinutes: number;
+  } => {
+    const channelKey = getChannelKeyForOnlineOrder(order);
+    const settings = prepTimeSettingsRef.current as any;
+    const cfg = settings?.[channelKey] || settings?.thezoneorder || { mode: 'manual', time: '20m' };
+    const time = String(cfg.time || '20m');
+    const prepMinutes = parseInt(time.replace(/[^\d]/g, ''), 10) || 20;
+    const mode = cfg.mode === 'auto' ? 'auto' : 'manual';
+    return { channelKey, mode, time, prepMinutes };
+  };
+
   const formatChannelOrderNumber = (orderNum?: string | number | null, phone?: string | null): string => {
     const raw = String(orderNum || '').trim();
     if (raw && raw !== '0' && raw !== 'undefined' && raw !== 'null') {
@@ -2215,11 +2251,12 @@ const SalesPage: React.FC = () => {
     return '—';
   };
 
-  /** 딜리버리 패널: 플랫폼/수동 Delivery Order Number, 뒤에서 최대 8자리 */
+  /** 딜리버리 패널: 플랫폼·외부 주문번호 — 7자 초과 시 문자열 끝(뒷자리)부터 7글자만 표시 (`slice(-7)`) */
   const formatDeliveryOrderNumberForPanel = (orderNum?: string | number | null): string => {
     const raw = String(orderNum ?? '').trim();
     if (!raw || raw === '0' || raw === 'undefined' || raw === 'null') return '—';
-    return raw.length > 8 ? raw.slice(-8) : raw;
+    const lastN = 7;
+    return raw.length > lastN ? raw.slice(-lastN) : raw;
   };
 
   /** Online row (Togo panel): TZO-MMDDYY-XXXX → TZO-XXXX, fallback: phone last 4, POS order # */
@@ -3020,7 +3057,12 @@ const SalesPage: React.FC = () => {
         phone: o.customerPhone || '',
         name: o.customerName || 'Online Order',
         items: (o.items || []).map((it: any) => it.name),
-        virtualChannel: 'online',
+        virtualChannel: (() => {
+          const ot = String(o.orderType || o.order_type || '').toUpperCase();
+          const fm = String(o.fulfillmentMode || o.fulfillment_mode || '').toLowerCase();
+          if (ot === 'DELIVERY' || fm === 'delivery') return 'delivery' as VirtualOrderChannel;
+          return 'online';
+        })(),
         virtualTableId: buildVirtualTableCode('online', idx + 1),
         fullOrder: o, // ì „ì²´ ë°ì´í„° ë³´ê´€
         // ì¶”ê°€ í•„ë“œ
@@ -3109,21 +3151,21 @@ const SalesPage: React.FC = () => {
         !previousOnlineOrdersRef.current.includes(o.id)
       );
       
-      // ìƒˆ ì£¼ë¬¸ ì²˜ë¦¬
+      // 새 주문 처리: 채널(채널 슬러그/Urban Piper) 별 prepTimeSettings 모드 적용
       if (pendingOrders.length > 0) {
         const newOrder = pendingOrders[0];
+        const { channelKey, mode, prepMinutes: chanPrepMinutes } = resolveOnlineOrderPrepConfig(newOrder);
 
-        if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
+        if (mode === 'auto') {
           if (!claimOnlineAutoAcceptPrintOnce(onlineAutoAcceptPrintOnceRef, newOrder.id)) {
             console.log('[loadOnlineOrders] Skip duplicate auto accept/print (already handled e.g. by SSE):', newOrder.id);
           } else {
             playOnlineOrderSound();
-            console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
-            const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
-            const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+            console.log('[loadOnlineOrders] New order alarm played:', newOrder.id, 'channel:', channelKey);
+            const prepMinutes = chanPrepMinutes;
             const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
 
-            console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
+            console.log(`[loadOnlineOrders] Auto accepting order: ${newOrder.id}, channel: ${channelKey}, prepTime: ${prepMinutes}min, pickupTime: ${pickupTime}`);
 
             fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
               method: 'POST',
@@ -3145,14 +3187,14 @@ const SalesPage: React.FC = () => {
                 console.error('[loadOnlineOrders] Auto accept or print failed:', err);
               });
           }
-        } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
-          // Manual ëª¨ë“œ: ì•Œë¦¼ ëª¨ë‹¬ í‘œì‹œ
+        } else if (!showNewOrderAlert) {
+          // Manual 모드: 알림 모달 표시 (Urban Piper / 딜리버리 채널 포함)
           playOnlineOrderSound();
-          console.log('[loadOnlineOrders] New order alarm played:', newOrder.id);
+          console.log('[loadOnlineOrders] New order alarm played:', newOrder.id, 'channel:', channelKey);
           setNewOrderAlertData(newOrder);
-          setSelectedPrepTime(20);
+          setSelectedPrepTime(chanPrepMinutes || 20);
           setShowNewOrderAlert(true);
-          console.log('[loadOnlineOrders] New order detected (manual mode):', newOrder.id);
+          console.log('[loadOnlineOrders] New order detected (manual mode):', newOrder.id, 'channel:', channelKey);
         }
       }
       
@@ -3555,20 +3597,20 @@ const SalesPage: React.FC = () => {
           console.log('[SSE] Message received:', data.type);
 
           if (data.type === 'new_order') {
-            // ìƒˆ ì£¼ë¬¸ í‘¸ì‹œ ìˆ˜ì‹ 
+            // 새 주문 푸시 수신
             const newOrder = data.order;
             console.log('[SSE] New order received:', newOrder.id);
+            const { channelKey, mode, prepMinutes: chanPrepMinutes } = resolveOnlineOrderPrepConfig(newOrder);
 
-            if (prepTimeSettingsRef.current.thezoneorder.mode === 'auto') {
+            if (mode === 'auto') {
               if (!claimOnlineAutoAcceptPrintOnce(onlineAutoAcceptPrintOnceRef, newOrder.id)) {
                 console.log('[SSE] Skip duplicate auto accept/print (already handled e.g. by polling):', newOrder.id);
               } else {
                 playOnlineOrderSound();
-                const prepTimeStr = prepTimeSettingsRef.current.thezoneorder.time || '20m';
-                const prepMinutes = parseInt(prepTimeStr.replace('m', '')) || 20;
+                const prepMinutes = chanPrepMinutes;
                 const pickupTime = getLocalDatetimeString(new Date(Date.now() + prepMinutes * 60000));
 
-                console.log(`[SSE] Auto accepting order: ${newOrder.id}, prepTime: ${prepMinutes}min`);
+                console.log(`[SSE] Auto accepting order: ${newOrder.id}, channel: ${channelKey}, prepTime: ${prepMinutes}min`);
 
                 fetch(`${API_URL}/online-orders/order/${newOrder.id}/accept`, {
                   method: 'POST',
@@ -3591,10 +3633,12 @@ const SalesPage: React.FC = () => {
                     console.error('[SSE] Auto accept or print failed:', err);
                   });
               }
-            } else if (prepTimeSettingsRef.current.thezoneorder.mode === 'manual' && !showNewOrderAlert) {
+            } else if (!showNewOrderAlert) {
+              // Manual 모드: 알림 모달 (Urban Piper / 딜리버리 채널 포함)
               playOnlineOrderSound();
+              console.log('[SSE] Manual mode — open accept modal:', newOrder.id, 'channel:', channelKey);
               setNewOrderAlertData(newOrder);
-              setSelectedPrepTime(20);
+              setSelectedPrepTime(chanPrepMinutes || 20);
               setShowNewOrderAlert(true);
             }
 
@@ -3894,7 +3938,12 @@ const SalesPage: React.FC = () => {
             ? 'togo'
             : null;
         const apiVirtualId = typeof o.virtual_table_id === 'string' ? o.virtual_table_id.trim() : '';
-        const virtualChannel = normalizeVirtualOrderChannel(o.virtual_table_channel, 'togo');
+        const virtualChannel =
+          fulfillment === 'delivery'
+            ? ('delivery' as VirtualOrderChannel)
+            : fulfillment === 'online'
+            ? ('online' as VirtualOrderChannel)
+            : normalizeVirtualOrderChannel(o.virtual_table_channel, 'togo');
         return {
           id: safeId,
           order_id: o.order_id || null, // orders í…Œì´ë¸”ì˜ ì‹¤ì œ id (delivery ì£¼ë¬¸ì—ì„œ items ì¡°íšŒìš©)
@@ -3918,7 +3967,8 @@ const SalesPage: React.FC = () => {
           readyTimeLabel: o.readyTimeLabel || readyTimeLabel,
           virtualTableId: apiVirtualId || null,
           virtualChannel,
-          // Delivery ì „ìš© í•„ë“œ
+          // Delivery ì „ìš© í•„ë“œ (SQLite `channel` 슬러그 — orderListGetDeliveryMeta에서 배지용으로 매핑)
+          channel: o.channel != null && String(o.channel).trim() !== '' ? String(o.channel).trim() : null,
           deliveryCompany: o.deliveryCompany || o.delivery_company || '',
           deliveryOrderNumber: (() => {
             const raw = String(o.deliveryOrderNumber || o.delivery_order_number || '').trim();
@@ -3939,6 +3989,9 @@ const SalesPage: React.FC = () => {
               : null),
           prepTime: o.prepTime || o.prep_time || 0,
           onlineOrderNumber: o.onlineOrderNumber || o.online_order_number || '',
+          external_order_number: o.external_order_number != null && String(o.external_order_number).trim() !== ''
+            ? String(o.external_order_number).trim()
+            : null,
           firebase_order_id: o.firebase_order_id || o.firebaseOrderId || null,
         };
       });
@@ -5447,27 +5500,42 @@ const SalesPage: React.FC = () => {
 
     try {
       if (orderType === 'delivery') {
-        const order = togoOrders.find(o => String(o.id) === String(id));
+        const fromTogo = togoOrders.find((o) => String(o.id) === String(id));
+        const fromOnline = onlineQueueCards.find(
+          (c) => String(c.id) === String(id) && isRightPanelDeliveryOrder(c)
+        );
+        const order = fromTogo || fromOnline;
         if (!order) return;
-        const dSt = String(order.status || order.fullOrder?.status || '').toUpperCase();
-        const dReady =
-          dSt === 'PAID' ||
-          dSt === 'COMPLETED' ||
-          dSt === 'CLOSED' ||
-          dSt === 'READY' ||
-          dSt === 'READY_FOR_PICKUP' ||
-          dSt === 'PREPARED';
-        if (!dReady) return;
-        const actualOrderId = order.order_id || order.id;
-        if (Number.isFinite(Number(actualOrderId))) {
-          await fetch(`${API_URL}/orders/${actualOrderId}/status`, {
+        const fo = (order as any).fullOrder || {};
+        const dSt = String(order.status || fo.status || '').toUpperCase();
+        const dIsPickedUp = dSt === 'PICKED_UP';
+        if (dIsPickedUp) return;
+        /** 스와이프는 UI와 같이 허용됨 — 결제 전(UNPAID)도 목록에서 제거. SQLite PATCH는 `dReady`일 때만 */
+        // UP 딜리버리 채널 주문은 수락 후 'confirmed' 상태 → 이것도 PICKED_UP 처리 대상
+        const dIsPaid =
+          dSt === 'PAID' || dSt === 'COMPLETED' || dSt === 'CLOSED' ||
+          dSt === 'READY' || dSt === 'READY_FOR_PICKUP' || dSt === 'PREPARED' ||
+          dSt === 'CONFIRMED' || dSt === 'ACKNOWLEDGED' || dSt === 'ACCEPTED';
+        const dIsDeliveryChannel = isRightPanelDeliveryOrder(order);
+        const dReady = dIsPaid || dIsDeliveryChannel;
+        const actualOrderIdRaw =
+          (order as any).order_id != null && String((order as any).order_id).trim() !== ''
+            ? (order as any).order_id
+            : fo.localOrderId ?? fo.order_id ?? (Number.isFinite(Number(order.id)) ? order.id : null);
+        const actualOrderIdNum = Number(actualOrderIdRaw);
+        if (dReady && Number.isFinite(actualOrderIdNum)) {
+          await fetch(`${API_URL}/orders/${actualOrderIdNum}/status`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'PICKED_UP' }),
           });
         }
-        const deliveryMetaId = order.deliveryMetaId || order.delivery_meta_id || null;
-        if (deliveryMetaId != null && String(deliveryMetaId).trim() !== '') {
+        const deliveryMetaId = (order as any).deliveryMetaId || (order as any).delivery_meta_id || null;
+        if (
+          dReady &&
+          deliveryMetaId != null &&
+          String(deliveryMetaId).trim() !== ''
+        ) {
           try {
             await fetch(`${API_URL}/orders/delivery-orders/${encodeURIComponent(String(deliveryMetaId))}/status`, {
               method: 'PATCH',
@@ -5476,8 +5544,24 @@ const SalesPage: React.FC = () => {
             });
           } catch {}
         }
-        registerSwipeRemovedPanelIds(id, order.id, order.order_id, deliveryMetaId, actualOrderId);
-        setTogoOrders(prev => prev.filter(o => String(o.id) !== String(id) && String(o.deliveryMetaId || '') !== String(deliveryMetaId || '')));
+        const firebaseOid = String(fo.id || (order as any).firebase_order_id || (order as any).firebaseOrderId || '').trim();
+        const onlineNum = String((order as any).onlineOrderNumber || fo.onlineOrderNumber || fo.orderNumber || '').trim();
+        registerSwipeRemovedPanelIds(
+          id,
+          order.id,
+          (order as any).order_id,
+          deliveryMetaId,
+          Number.isFinite(actualOrderIdNum) ? actualOrderIdNum : actualOrderIdRaw,
+          firebaseOid || null,
+          onlineNum || null
+        );
+        setTogoOrders((prev) =>
+          prev.filter(
+            (o) =>
+              String(o.id) !== String(id) && String((o as any).deliveryMetaId || '') !== String(deliveryMetaId || '')
+          )
+        );
+        setOnlineQueueCards((prev) => prev.filter((c) => String(c.id) !== String(id)));
       } else if (orderType === 'online') {
         const card = onlineQueueCards.find(c => String(c.id) === String(id));
         if (card) {
@@ -5575,11 +5659,8 @@ const SalesPage: React.FC = () => {
         registerSwipeRemovedPanelIds(id, order.id, order.order_id, actualOrderId);
         setTogoOrders(prev => prev.filter(o => String(o.id) !== String(id)));
       }
-      // PATCH/Firebase 반영 전에 즉시 load* 하면 목록이 덮어씌워져 카드가 부활함 — 지연 후 동기화
-      window.setTimeout(() => {
-        void loadOnlineOrders();
-        void loadTogoOrders();
-      }, 2000);
+      // 전체 loadTogoOrders/loadOnlineOrders 호출은 목록·가상테이블 메타를 전부 다시 만들어 투고 패널이 깜빡임.
+      // 위에서 이미 로컬 state + swipeRemovedPanelIdsRef 로 반영했고, 주기 폴링(10s)·다른 이벤트에서 동기화됨.
       if (showOrderListModal) {
         fetchOrderList(orderListDate, orderListOpenMode);
       }
@@ -8033,6 +8114,7 @@ const SalesPage: React.FC = () => {
     return '';
   };
 
+  /** 배달 카드 배지 — SQLite `delivery_company`(UBEREATS 등) 기준 축약 */
   const orderListNormalizeDeliveryAbbr = (raw: any) => {
       const s = String(raw || '').trim();
       if (!s) return '';
@@ -8040,7 +8122,7 @@ const SalesPage: React.FC = () => {
       if (key === 'UBEREATS' || key === 'UBER') return 'UBER';
       if (key === 'DOORDASH' || key === 'DOORASH' || key === 'DDASH' || key === 'DASH') return 'DDASH';
       if (key === 'SKIPTHEDISHES' || key === 'SKIP') return 'SKIP';
-      if (key === 'FANTUAN') return 'FTUAN';
+      if (key === 'FANTUAN' || key === 'FTUAN') return 'FTAN';
       return s.toUpperCase();
     };
 
@@ -8086,19 +8168,41 @@ const SalesPage: React.FC = () => {
         /fantuan/i.test(labelSource) ? 'FANTUAN' :
         /grubhub/i.test(labelSource) ? 'GRUBHUB' :
         '';
+      const sidRaw = order?.sourceIds?.channel ?? order?.fullOrder?.sourceIds?.channel;
+      let fromSourceIds = '';
+      if (sidRaw != null && String(sidRaw).trim() !== '') {
+        const ns = String(sidRaw).trim().toLowerCase().replace(/[\s_-]+/g, '');
+        if (ns === 'ubereats' || ns === 'uber') fromSourceIds = 'UBEREATS';
+        else if (ns === 'doordash' || ns === 'ddash') fromSourceIds = 'DOORDASH';
+        else if (ns === 'skipthedishes' || ns === 'skip') fromSourceIds = 'SKIPTHEDISHES';
+        else if (ns === 'fantuan') fromSourceIds = 'FANTUAN';
+        else if (ns === 'grubhub') fromSourceIds = 'GRUBHUB';
+      }
+      /** SQLite `orders.channel` 등 — 슬러그(ubereats) → delivery_company와 동일 토큰 */
+      const chCol = order?.channel;
+      let fromSqliteChannel = '';
+      if (chCol != null && String(chCol).trim() !== '') {
+        const ns = String(chCol).trim().toLowerCase().replace(/[\s_-]+/g, '');
+        if (ns === 'ubereats' || ns === 'uber') fromSqliteChannel = 'UBEREATS';
+        else if (ns === 'doordash' || ns === 'ddash') fromSqliteChannel = 'DOORDASH';
+        else if (ns === 'skipthedishes' || ns === 'skip') fromSqliteChannel = 'SKIPTHEDISHES';
+        else if (ns === 'fantuan') fromSqliteChannel = 'FANTUAN';
+        else if (ns === 'grubhub') fromSqliteChannel = 'GRUBHUB';
+        else fromSqliteChannel = String(chCol).trim().toUpperCase().replace(/\s+/g, '');
+      }
+      /** 1순위: `delivery_company`(SQLite/API). 비었을 때만 Firestore·슬러그·이름 추론 (order_source는 배지에 쓰지 않음) */
+      const dcPrimary = String(order?.delivery_company ?? order?.deliveryCompany ?? '').trim();
       const company =
-        order?.deliveryCompany ||
-        order?.delivery_company ||
-        order?.deliveryChannel ||
-        order?.delivery_channel ||
-        order?.order_source ||
+        dcPrimary ||
+        fromSourceIds ||
+        fromSqliteChannel ||
         inferredCompany ||
         '';
       let orderNumber =
+        order?.external_order_number ||
+        order?.externalOrderNumber ||
         order?.deliveryOrderNumber ||
         order?.delivery_order_number ||
-        order?.externalOrderNumber ||
-        order?.external_order_number ||
         '';
       if (!orderNumber) {
         orderNumber =
@@ -11492,15 +11596,6 @@ const SalesPage: React.FC = () => {
                   Pickup List
                 </button>
               )}
-              {fsrTogoButtonVisible && <OnlineOrderAlertButton
-                restaurantId={onlineOrderRestaurantId}
-                onOrderAccepted={(order, readyTime) => {
-                  console.log('Online order accepted:', order.orderNumber, readyTime);
-                }}
-                onOrderRejected={(order, reason) => {
-                  console.log('Online order rejected:', order.orderNumber, reason);
-                }}
-              />}
               <button
                 className="h-[35px] px-3 flex items-center justify-center text-sm font-bold transition-all duration-150"
                 style={{ borderRadius: '10px', border: 'none', background: '#e0e5ec', boxShadow: '4px 4px 8px #b8bec7, -4px -4px 8px #ffffff', color: '#6B7280', cursor: 'pointer' }}
@@ -11862,12 +11957,16 @@ const SalesPage: React.FC = () => {
                           (order as any).posOrderNumber ||
                           (isDailyPosDisplayDigits((order as any).number) ? (order as any).number : null)
                       );
-                      const deliveryExternalNumber = formatDeliveryOrderNumberForPanel(
+                      const deliveryExternalRaw =
+                        (order as any).external_order_number ||
+                        (order as any).externalOrderNumber ||
+                        (order as any).fullOrder?.external_order_number ||
+                        (order as any).fullOrder?.externalOrderNumber ||
                         (order as any).deliveryOrderNumber ||
                         (order as any).fullOrder?.deliveryOrderNumber ||
-                        (order as any).fullOrder?.externalOrderNumber ||
-                        deliveryMeta.orderNumber
-                      );
+                        deliveryMeta.orderNumber;
+                      const deliveryExternalNumber = formatDeliveryOrderNumberForPanel(deliveryExternalRaw);
+                      const deliveryExternalTitle = String(deliveryExternalRaw ?? '').trim() || deliveryExternalNumber;
                       const panelServerRow2 = pickPanelOrderServerLabel(order);
                       return (
                         <div
@@ -11953,15 +12052,12 @@ const SalesPage: React.FC = () => {
                                   </span>
                                 ) : null}
                                 <span
-                                  className={`min-w-0 text-right font-bold tabular-nums leading-none ${
-                                    String(deliveryExternalNumber).length > 14 ? 'truncate' : 'shrink-0 whitespace-nowrap'
-                                  }`}
+                                  className="min-w-0 flex-1 text-right font-bold tabular-nums leading-none truncate"
                                   style={{
                                     fontSize: `${togoPanelCardChannelOrderPx}px`,
                                     color: togoPanelPosLikeTextColor(Boolean(isSourceTogo || isTargetSelectable)),
-                                    maxWidth: String(deliveryExternalNumber).length > 14 ? (panelServerRow2 ? '36%' : '52%') : undefined,
                                   }}
-                                  title={deliveryExternalNumber}
+                                  title={deliveryExternalTitle}
                                 >
                                   {deliveryExternalNumber}
                                 </span>
@@ -13506,16 +13602,19 @@ const SalesPage: React.FC = () => {
                             const updateItemHideType = async (
                               channel: 'online' | 'delivery',
                               hideType: 'visible' | 'permanent' | 'time_limited',
-                              availableUntil?: string
+                              availableUntil?: string | null,
+                              availableFrom?: string | null
                             ) => {
                               try {
                                 const updateData: any = {};
                                 if (channel === 'online') {
                                   updateData.online_hide_type = hideType;
-                                  updateData.online_available_until = hideType === 'time_limited' ? availableUntil : null;
+                                  updateData.online_available_until = hideType === 'time_limited' ? (availableUntil ?? null) : null;
+                                  updateData.online_available_from = hideType === 'time_limited' ? (availableFrom ?? null) : null;
                                 } else {
                                   updateData.delivery_hide_type = hideType;
-                                  updateData.delivery_available_until = hideType === 'time_limited' ? availableUntil : null;
+                                  updateData.delivery_available_until = hideType === 'time_limited' ? (availableUntil ?? null) : null;
+                                  updateData.delivery_available_from = hideType === 'time_limited' ? (availableFrom ?? null) : null;
                                 }
                                 
                                 await fetch(`${API_URL}/menu-visibility/item/${selectedItem.item_id}`, {
@@ -13530,11 +13629,13 @@ const SalesPage: React.FC = () => {
                                       ...item,
                                       ...(channel === 'online' ? {
                                         online_hide_type: hideType,
-                                        online_available_until: hideType === 'time_limited' ? (availableUntil || null) : null,
+                                        online_available_until: hideType === 'time_limited' ? (availableUntil ?? null) : null,
+                                        online_available_from: hideType === 'time_limited' ? (availableFrom ?? null) : null,
                                         online_visible: hideType === 'permanent' ? 0 : 1
                                       } : {
                                         delivery_hide_type: hideType,
-                                        delivery_available_until: hideType === 'time_limited' ? (availableUntil || null) : null,
+                                        delivery_available_until: hideType === 'time_limited' ? (availableUntil ?? null) : null,
+                                        delivery_available_from: hideType === 'time_limited' ? (availableFrom ?? null) : null,
                                         delivery_visible: hideType === 'permanent' ? 0 : 1
                                       })
                                     };
@@ -13546,12 +13647,16 @@ const SalesPage: React.FC = () => {
                               }
                             };
                             
-                            const timeOptions = [
-                              '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', 
-                              '14:00', '14:30', '15:00', '15:30', '16:00', '16:30',
-                              '17:00', '17:30', '18:00', '18:30', '19:00', '19:30',
-                              '20:00', '20:30', '21:00', '21:30', '22:00'
-                            ];
+                            // Full-day 30-minute slots so users can build any window (e.g. 11:00–15:00 lunch).
+                            const timeOptions = ((): string[] => {
+                              const out: string[] = [];
+                              for (let h = 0; h < 24; h++) {
+                                for (const m of [0, 30]) {
+                                  out.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+                                }
+                              }
+                              return out;
+                            })();
                             
                             // í† ê¸€ ë²„íŠ¼ ì»´í¬ë„ŒíŠ¸: í´ë¦­í•˜ë©´ í™œì„±í™”, ë‹¤ì‹œ í´ë¦­í•˜ë©´ visibleë¡œ
                             const ToggleButton = ({ 
@@ -13583,6 +13688,7 @@ const SalesPage: React.FC = () => {
                             const handleToggle = (channel: 'online' | 'delivery', targetType: 'permanent' | 'time_limited') => {
                               const currentType = channel === 'online' ? selectedItem.online_hide_type : selectedItem.delivery_hide_type;
                               const currentUntil = channel === 'online' ? selectedItem.online_available_until : selectedItem.delivery_available_until;
+                              const currentFrom = channel === 'online' ? selectedItem.online_available_from : selectedItem.delivery_available_from;
                               
                               if (currentType === targetType) {
                                 // ì´ë¯¸ í™œì„±í™” → visibleë¡œ í† ê¸€
@@ -13590,7 +13696,7 @@ const SalesPage: React.FC = () => {
                               } else {
                                 // ë‹¤ë¥¸ ìƒíƒœ → í•´ë‹¹ íƒ€ìž…ìœ¼ë¡œ ë³€ê²½
                                 if (targetType === 'time_limited') {
-                                  updateItemHideType(channel, 'time_limited', currentUntil || '15:00');
+                                  updateItemHideType(channel, 'time_limited', currentUntil || '15:00', currentFrom || null);
                                 } else {
                                   updateItemHideType(channel, 'permanent');
                                 }
@@ -13654,15 +13760,38 @@ const SalesPage: React.FC = () => {
                                         )}
                                       </button>
                                       {selectedItem.online_hide_type === 'time_limited' && (
-                                        <select
-                                          value={selectedItem.online_available_until || '15:00'}
-                                          onChange={(e) => updateItemHideType('online', 'time_limited', e.target.value)}
-                                          className="w-full px-3 py-2 text-xs bg-amber-50 border-t border-amber-200 font-medium text-amber-800 focus:outline-none"
-                                        >
-                                          {timeOptions.map(t => (
-                                            <option key={t} value={t}>{t}</option>
-                                          ))}
-                                        </select>
+                                        <div className="flex flex-col gap-1 px-3 py-2 bg-amber-50 border-t border-amber-200">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-amber-700 w-10">From</span>
+                                            <select
+                                              value={selectedItem.online_available_from || ''}
+                                              onChange={(e) => updateItemHideType('online', 'time_limited', selectedItem.online_available_until || '15:00', e.target.value || null)}
+                                              className="flex-1 px-2 py-1 text-xs bg-white border border-amber-300 rounded font-medium text-amber-800 focus:outline-none"
+                                            >
+                                              <option value="">— (start of day)</option>
+                                              {timeOptions.map(t => (
+                                                <option key={`f-${t}`} value={t}>{t}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-amber-700 w-10">Until</span>
+                                            <select
+                                              value={selectedItem.online_available_until || '15:00'}
+                                              onChange={(e) => updateItemHideType('online', 'time_limited', e.target.value, selectedItem.online_available_from || null)}
+                                              className="flex-1 px-2 py-1 text-xs bg-white border border-amber-300 rounded font-medium text-amber-800 focus:outline-none"
+                                            >
+                                              {timeOptions.map(t => (
+                                                <option key={`u-${t}`} value={t}>{t}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          <div className="text-[10px] text-amber-700/80 italic">
+                                            {selectedItem.online_available_from
+                                              ? `Visible only between ${selectedItem.online_available_from} – ${selectedItem.online_available_until || '15:00'} (daily)`
+                                              : `Visible until ${selectedItem.online_available_until || '15:00'} each day`}
+                                          </div>
+                                        </div>
                                       )}
                                     </div>
                                   </div>
@@ -13716,15 +13845,38 @@ const SalesPage: React.FC = () => {
                                         )}
                                       </button>
                                       {selectedItem.delivery_hide_type === 'time_limited' && (
-                                        <select
-                                          value={selectedItem.delivery_available_until || '15:00'}
-                                          onChange={(e) => updateItemHideType('delivery', 'time_limited', e.target.value)}
-                                          className="w-full px-3 py-2 text-xs bg-amber-50 border-t border-amber-200 font-medium text-amber-800 focus:outline-none"
-                                        >
-                                          {timeOptions.map(t => (
-                                            <option key={t} value={t}>{t}</option>
-                                          ))}
-                                        </select>
+                                        <div className="flex flex-col gap-1 px-3 py-2 bg-amber-50 border-t border-amber-200">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-amber-700 w-10">From</span>
+                                            <select
+                                              value={selectedItem.delivery_available_from || ''}
+                                              onChange={(e) => updateItemHideType('delivery', 'time_limited', selectedItem.delivery_available_until || '15:00', e.target.value || null)}
+                                              className="flex-1 px-2 py-1 text-xs bg-white border border-amber-300 rounded font-medium text-amber-800 focus:outline-none"
+                                            >
+                                              <option value="">— (start of day)</option>
+                                              {timeOptions.map(t => (
+                                                <option key={`df-${t}`} value={t}>{t}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-amber-700 w-10">Until</span>
+                                            <select
+                                              value={selectedItem.delivery_available_until || '15:00'}
+                                              onChange={(e) => updateItemHideType('delivery', 'time_limited', e.target.value, selectedItem.delivery_available_from || null)}
+                                              className="flex-1 px-2 py-1 text-xs bg-white border border-amber-300 rounded font-medium text-amber-800 focus:outline-none"
+                                            >
+                                              {timeOptions.map(t => (
+                                                <option key={`du-${t}`} value={t}>{t}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          <div className="text-[10px] text-amber-700/80 italic">
+                                            {selectedItem.delivery_available_from
+                                              ? `Visible only between ${selectedItem.delivery_available_from} – ${selectedItem.delivery_available_until || '15:00'} (daily)`
+                                              : `Visible until ${selectedItem.delivery_available_until || '15:00'} each day`}
+                                          </div>
+                                        </div>
                                       )}
                                     </div>
                                   </div>
@@ -13754,8 +13906,10 @@ const SalesPage: React.FC = () => {
                               body: JSON.stringify({
                                 online_hide_type: selectedItem.online_hide_type,
                                 online_available_until: selectedItem.online_available_until,
+                                online_available_from: selectedItem.online_available_from,
                                 delivery_hide_type: selectedItem.delivery_hide_type,
                                 delivery_available_until: selectedItem.delivery_available_until,
+                                delivery_available_from: selectedItem.delivery_available_from,
                               })
                             });
                             const data = await response.json();
@@ -13938,12 +14092,37 @@ const SalesPage: React.FC = () => {
         )}
 
         {/* ìƒˆ ì˜¨ë¼ì¸ ì£¼ë¬¸ ì•Œë¦¼ ëª¨ë‹¬ (Manual ëª¨ë“œ) */}
-        {showNewOrderAlert && newOrderAlertData && (
+        {showNewOrderAlert && newOrderAlertData && (() => {
+          const _alertOrder: any = newOrderAlertData;
+          const _alertOt = String(_alertOrder.orderType || _alertOrder.order_type || '').toUpperCase();
+          const _alertFm = String(_alertOrder.fulfillmentMode || _alertOrder.fulfillment_mode || '').toLowerCase();
+          const _alertCompany = String(_alertOrder.deliveryCompany || _alertOrder.delivery_company || '').trim();
+          const _alertIsDelivery = _alertOt === 'DELIVERY' || _alertFm === 'delivery' || !!_alertCompany;
+          const _alertChannelLabel = _alertIsDelivery
+            ? abbreviateDeliveryChannel(_alertCompany || 'Delivery')
+            : 'ONLINE';
+          const _alertExtRaw = String(
+            _alertOrder.externalOrderNumber ||
+              _alertOrder.external_order_number ||
+              ''
+          ).trim();
+          const _alertExtTail = formatDeliveryOrderNumberForPanel(_alertExtRaw);
+          const _alertHeaderTitle = _alertIsDelivery ? 'New Delivery Order' : 'New Online Order';
+          const _alertHeaderGradient = _alertIsDelivery
+            ? 'bg-gradient-to-r from-purple-500 to-purple-600'
+            : 'bg-gradient-to-r from-orange-500 to-orange-600';
+          return (
           <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[70]">
             <div className="bg-white rounded-2xl shadow-2xl w-[480px] max-h-[90vh] overflow-hidden animate-pulse-once">
               {/* Header */}
-              <div className="bg-gradient-to-r from-orange-500 to-orange-600 px-6 py-4">
-                <h2 className="text-xl font-bold text-white text-center">New Online Order</h2>
+              <div className={`${_alertHeaderGradient} px-6 py-4`}>
+                <h2 className="text-xl font-bold text-white text-center">{_alertHeaderTitle}</h2>
+                {_alertIsDelivery && (
+                  <div className="mt-1 text-center text-xs font-semibold text-white/90 tracking-wider">
+                    {_alertChannelLabel}
+                    {_alertExtTail && _alertExtTail !== '—' ? ` · #${_alertExtTail}` : ''}
+                  </div>
+                )}
               </div>
               
               {/* ì£¼ë¬¸ ì •ë³´ */}
@@ -14034,8 +14213,8 @@ const SalesPage: React.FC = () => {
                 </button>
                 <button
                   onClick={async () => {
-                    // Accept: ì£¼ë¬¸ ìˆ˜ë½
                     try {
+                      claimOnlineAutoAcceptPrintOnce(onlineAutoAcceptPrintOnceRef, newOrderAlertData.id);
                       const pickupTime = getLocalDatetimeString(new Date(Date.now() + selectedPrepTime * 60000));
                       await fetch(`${API_URL}/online-orders/order/${newOrderAlertData.id}/accept`, {
                         method: 'POST',
@@ -14071,7 +14250,8 @@ const SalesPage: React.FC = () => {
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* Card Detail Modal — individual card click */}
         {showCardDetailModal && cardDetailOrder && (() => {
@@ -14305,6 +14485,41 @@ const SalesPage: React.FC = () => {
                     className={`min-w-0 flex-1 rounded-[10px] border-0 px-2 py-3 text-base font-semibold text-gray-900 touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
                     style={PAY_NEO.key}
                   >Reprint</button>
+                  {/* Food Ready 버튼 — UP/딜리버리 채널 주문에만 표시 */}
+                  {cdChannel === 'delivery' && (() => {
+                    const cdFirebaseId =
+                      (cdOrder as any).firebase_id ||
+                      (cdOrder as any).firebaseOrderId ||
+                      (cdOrder as any).firebase_order_id ||
+                      (cdOrder as any).fullOrder?.id ||
+                      null;
+                    const cdIsAlreadyReady =
+                      cdStatus === 'READY' || cdStatus === 'READY_FOR_PICKUP' ||
+                      cdStatus === 'COMPLETED' || cdStatus === 'PICKED_UP';
+                    if (!cdFirebaseId || cdIsAlreadyReady) return null;
+                    return (
+                      <button
+                        key="food-ready-btn"
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await fetch(
+                              `${API_URL}/online-orders/order/${encodeURIComponent(String(cdFirebaseId))}/ready`,
+                              { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+                            );
+                            setShowCardDetailModal(false);
+                            loadOnlineOrders();
+                          } catch (e) {
+                            console.error('[Food Ready] Failed:', e);
+                          }
+                        }}
+                        className={`min-w-0 flex-1 rounded-[10px] border-0 px-2 py-3 text-base font-semibold text-white touch-manipulation ${NEO_PRESS_INSET_ONLY_NO_SHIFT}`}
+                        style={{ background: 'linear-gradient(135deg,#16a34a,#15803d)', boxShadow: '0 2px 8px rgba(22,163,74,0.35)' }}
+                      >
+                        Food Ready
+                      </button>
+                    );
+                  })()}
                   <button
                     type="button"
                     onClick={() => {
